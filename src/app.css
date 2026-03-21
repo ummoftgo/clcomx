@@ -1,0 +1,104 @@
+:root {
+  --tab-height: 36px;
+  --tab-bg: #1e1e2e;
+  --tab-active-bg: #313244;
+  --tab-text: #cdd6f4;
+  --tab-border: #45475a;
+  --app-bg: #1e1e2e;
+  --ui-scale: 1;
+  --ui-font-family: Pretendard, Segoe UI, system-ui;
+  --ui-font-fallback: Malgun Gothic, Apple SD Gothic Neo, sans-serif;
+  --ui-font-stack: var(--ui-font-family), var(--ui-font-fallback), system-ui, -apple-system, sans-serif;
+  --ui-font-size-xs: 11px;
+  --ui-font-size-sm: 12px;
+  --ui-font-size-base: 14px;
+  --ui-font-size-md: 15px;
+  --ui-font-size-lg: 18px;
+  --ui-font-size-xl: 22px;
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
+  --ui-radius-sm: 8px;
+  --ui-radius-md: 12px;
+  --ui-radius-lg: 16px;
+  --ui-radius-xl: 22px;
+  --ui-bg-app: #1e1e2e;
+  --ui-bg-surface: #23263a;
+  --ui-bg-elevated: #2a2e43;
+  --ui-bg-overlay: rgba(15, 23, 42, 0.48);
+  --ui-text-primary: #cdd6f4;
+  --ui-text-secondary: #dbe4ff;
+  --ui-text-muted: #94a3b8;
+  --ui-border-subtle: #45475a;
+  --ui-border-strong: #5b6074;
+  --ui-accent: #89b4fa;
+  --ui-accent-soft: rgba(137, 180, 250, 0.18);
+  --ui-accent-text: #0f172a;
+  --ui-danger: #ef4444;
+  --ui-danger-soft: rgba(239, 68, 68, 0.14);
+  --ui-success: #22c55e;
+  --ui-warning: #f59e0b;
+  --ui-focus-ring: rgba(137, 180, 250, 0.26);
+  --ui-shadow-rgb: 15, 23, 42;
+  scrollbar-color: color-mix(in srgb, var(--ui-accent) 56%, var(--ui-border-subtle)) transparent;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ui-accent) 56%, var(--ui-border-subtle)) transparent;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--ui-bg-app, var(--app-bg));
+  color: var(--ui-text-primary, var(--tab-text));
+  font-family: var(--ui-font-stack);
+  font-size: var(--ui-font-size-base);
+}
+
+body {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ui-border-strong) 72%, var(--ui-accent) 28%);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--ui-accent) 54%, var(--ui-border-strong) 46%);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

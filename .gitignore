@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Frontend / app build outputs
+dist/
+.svelte-kit/
+.vite/
+coverage/
+
+# Rust / Tauri build outputs
+src-tauri/target/
+src-tauri/gen/
+src-tauri/.tauri/
+
+# Local tools and downloaded binaries
+.tools/
+msedgedriver.exe
+
+# Runtime state and local cache
+setting.json
+workspace.json
+tab_history.json
+temp/
+
+# Local assistant / developer state
+.claude/
+HANDOVER.md
+docs/plans/
+docs/subtasks/
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

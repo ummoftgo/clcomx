@@ -1,0 +1,41 @@
+name: E2E Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build debug app
+        run: npm run tauri build -- --debug --no-bundle
+
+      - name: Install Edge driver
+        run: |
+          cargo install --git https://github.com/chippers/msedgedriver-tool
+          & "$HOME/.cargo/bin/msedgedriver-tool.exe"
+          $PWD.Path >> $env:GITHUB_PATH
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: Run smoke E2E
+        run: npm run test:e2e

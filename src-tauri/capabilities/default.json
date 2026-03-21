@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-utils/schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for CLCOMX",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    "core:window:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-set-size",
+    "core:window:allow-set-title",
+    "core:event:default"
+  ]
+}
