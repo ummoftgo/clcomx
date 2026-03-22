@@ -12,11 +12,12 @@ import {
 } from "../helpers/tauri";
 import { TEST_IDS } from "../../src/lib/testids";
 import { createStepLogger } from "../helpers/log";
+import { getTerminalViewportState } from "../helpers/terminal";
 
 describe.skipIf(process.platform !== "win32")("CLCOMX workspace-restore pack", () => {
   const TEST_DISTRO = process.env.CLCOMX_TEST_DISTRO ?? "clcomx-test";
   const stateDir = createE2eStateDir("clcomx-e2e-workspace-restore-");
-  let session: TauriSession;
+  let session: TauriSession | null = null;
   const log = createStepLogger("workspace-restore");
 
   beforeAll(async () => {
@@ -136,7 +137,7 @@ describe.skipIf(process.platform !== "win32")("CLCOMX workspace-restore pack", (
   }
 
   it("restores main and secondary windows from workspace.json and reattaches mock PTYs", async () => {
-    await expectRestoredWindows(session);
+    await expectRestoredWindows(session!);
 
     const workspacePath = path.join(stateDir, "workspace.json");
     expect(fs.existsSync(workspacePath)).toBe(true);
@@ -146,8 +147,84 @@ describe.skipIf(process.platform !== "win32")("CLCOMX workspace-restore pack", (
     );
 
     log.step("restarting app with same state dir", { stateDir });
-    await session.cleanup();
+    await session?.cleanup();
     session = await startTauriSession({ stateDir });
-    await expectRestoredWindows(session);
+    await expectRestoredWindows(session!);
+  });
+
+  it("keeps restored long-output sessions pinned to the bottom of scrollback", async () => {
+    await session?.cleanup();
+    session = null;
+
+    const longStateDir = createE2eStateDir("clcomx-e2e-workspace-scroll-restore-");
+    const workspacePath = path.join(longStateDir, "workspace.json");
+    fs.writeFileSync(
+      workspacePath,
+      JSON.stringify(
+        {
+          windows: [
+            {
+              label: "main",
+              name: "main",
+              role: "main",
+              tabs: [
+                {
+                  sessionId: "long-session",
+                  agentId: "claude",
+                  distro: TEST_DISTRO,
+                  workDir: "/home/tester/workspace",
+                  title: "long-session",
+                  pinned: false,
+                  locked: false,
+                  resumeToken: "__clcomx_test_long_output_stream__",
+                  ptyId: null,
+                },
+              ],
+              activeSessionId: "long-session",
+              x: 0,
+              y: 0,
+              width: 1024,
+              height: 720,
+              maximized: false,
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    let longSession = await startTauriSession({ stateDir: longStateDir });
+    try {
+      const { driver } = longSession;
+      log.step("waiting for long-output restore window");
+      await waitForTestId(driver, TEST_IDS.appRoot);
+      await waitForAttributeValue(
+        driver,
+        TEST_IDS.terminalShell,
+        "data-pty-id",
+        (value) => value !== null && value !== "-1",
+        10_000,
+      );
+
+      const terminalShell = await waitForTestId(driver, TEST_IDS.terminalShell);
+      const sessionId = await terminalShell.getAttribute("data-session-id");
+      expect(sessionId).toBe("long-session");
+
+      const immediateViewport = await getTerminalViewportState(driver, sessionId!);
+      log.step("immediate viewport", immediateViewport);
+      expect(immediateViewport).not.toBeNull();
+      expect(immediateViewport?.viewportY).toBe(immediateViewport?.baseY);
+
+      await driver.sleep(2400);
+
+      const delayedViewport = await getTerminalViewportState(driver, sessionId!);
+      log.step("delayed viewport", delayedViewport);
+      expect(delayedViewport).not.toBeNull();
+      expect(delayedViewport?.viewportY).toBe(delayedViewport?.baseY);
+    } finally {
+      await longSession.cleanup();
+    }
   });
 });

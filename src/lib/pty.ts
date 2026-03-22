@@ -37,6 +37,7 @@ export async function spawnPty(
     mockAgentId: agentId,
     mockDistro: distro,
     mockWorkDir: workDir,
+    mockResumeToken: resumeToken,
   });
 }
 

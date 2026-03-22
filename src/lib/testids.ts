@@ -37,6 +37,8 @@ export const TEST_IDS = {
   closeTabDialog: "close-tab-dialog",
   closeWindowDialog: "close-window-dialog",
   contextMenu: "context-menu",
+  editorPickerModal: "editor-picker-modal",
+  editorPickerList: "editor-picker-list",
 } as const;
 
 export function toTestIdSegment(value: string) {
@@ -81,4 +83,8 @@ export function settingsNavSectionTestId(sectionId: string) {
 
 export function contextMenuItemTestId(itemId: string) {
   return `context-menu-item-${toTestIdSegment(itemId)}`;
+}
+
+export function editorPickerItemTestId(editorId: string) {
+  return `editor-picker-item-${toTestIdSegment(editorId)}`;
 }

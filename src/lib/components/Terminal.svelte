@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
-  import { Terminal } from "@xterm/xterm";
+  import { Terminal, type IDisposable } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import ImagePasteModal from "./ImagePasteModal.svelte";
+  import EditorPickerModal from "./EditorPickerModal.svelte";
+  import ContextMenu from "../ui/components/ContextMenu.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     createPendingClipboardImage,
@@ -22,12 +24,22 @@
     resizePty,
     takePtyInitialOutput,
   } from "../pty";
-  import { t, translate } from "../i18n";
+  import { t } from "../i18n";
   import { getSettings } from "../stores/settings.svelte";
   import { getThemeById } from "../themes";
+  import type { ContextMenuItem } from "../ui/context-menu";
   import { Button } from "../ui";
   import { buildFontStack, serializeFontFamilyList } from "../font-family";
+  import {
+    listAvailableEditors,
+    openInEditor,
+    resolveTerminalPath,
+    type DetectedEditor,
+    type ResolvedTerminalPath,
+  } from "../editors";
+  import { createTerminalFileLinks } from "../terminal/file-links";
   import { TEST_IDS } from "../testids";
+  import { openExternalUrl } from "../workspace";
   import {
     TEST_BRIDGE_EVENTS,
     decodeBase64Blob,
@@ -76,17 +88,40 @@
   let draftValue = $state("");
   let draftOpen = $state(false);
   let pendingClipboardImage = $state<PendingClipboardImage | null>(null);
+  let linkMenuVisible = $state(false);
+  let linkMenuX = $state(0);
+  let linkMenuY = $state(0);
+  let linkMenuTarget = $state<
+    | { kind: "url"; url: string }
+    | { kind: "file"; path: ResolvedTerminalPath }
+    | null
+  >(null);
+  let linkHovering = $state(false);
+  let suppressSelectionUntilMouseUp = false;
   let clipboardBusy = $state(false);
   let clipboardError = $state<string | null>(null);
   let clipboardNotice = $state<string | null>(null);
+  let editorPickerVisible = $state(false);
+  let editorPickerPath = $state<ResolvedTerminalPath | null>(null);
+  let detectedEditors = $state<DetectedEditor[]>([]);
+  let editorsLoaded = false;
+  let editorsError = $state<string | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
   let unlistenOutput: UnlistenFn | null = null;
   let unlistenExit: UnlistenFn | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let fileLinkProviderDisposable: IDisposable | null = null;
   let replayInProgress = false;
   let replayBuffer: PtyOutputChunk[] = [];
   let testHookRegistered = $state(false);
+  let bottomLockTimer: ReturnType<typeof setTimeout> | null = null;
+  let bottomLockDeadline = 0;
+  let bottomLockMaxDeadline = 0;
+  let followTail = true;
   const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
+  const BOTTOM_LOCK_MAX_MS = 12000;
+  const BOTTOM_LOCK_QUIET_MS = 1400;
+  const WEB_LINK_REGEX = /(?:https?|ftp):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/i;
 
   const settings = getSettings();
   const terminalFontFamily = $derived(
@@ -101,6 +136,43 @@
       ),
       "monospace",
     ),
+  );
+  const linkMenuItems = $derived<ContextMenuItem[]>(
+    linkMenuTarget?.kind === "file"
+      ? [
+          {
+            id: "open-file",
+            kind: "item",
+            label: $t("terminal.filePaths.openFile"),
+            icon: "file",
+          },
+          {
+            id: "open-in-other-editor",
+            kind: "item",
+            label: $t("terminal.filePaths.openInOtherEditor"),
+            icon: "open-with",
+          },
+          {
+            id: "copy-path",
+            kind: "item",
+            label: $t("terminal.filePaths.copyPath"),
+            icon: "copy",
+          },
+        ]
+      : [
+          {
+            id: "open-link-in-browser",
+            kind: "item",
+            label: $t("terminal.links.openInBrowser"),
+            icon: "external-link",
+          },
+          {
+            id: "copy-link",
+            kind: "item",
+            label: $t("terminal.links.copyLink"),
+            icon: "copy",
+          },
+        ],
   );
 
   function hexToRgba(color: string | undefined, alpha: number, fallback: string) {
@@ -142,6 +214,87 @@
       cols: term.cols > 0 ? term.cols : settings.interface.windowDefaultCols,
       rows: term.rows > 0 ? term.rows : settings.interface.windowDefaultRows,
     };
+  }
+
+  function writeTerminalData(term: Terminal, data: string) {
+    return new Promise<void>((resolve) => {
+      if (!data) {
+        resolve();
+        return;
+      }
+
+      term.write(data, () => resolve());
+    });
+  }
+
+  function clearBottomLockTimer() {
+    if (bottomLockTimer) {
+      clearTimeout(bottomLockTimer);
+      bottomLockTimer = null;
+    }
+  }
+
+  function releaseBottomLock() {
+    clearBottomLockTimer();
+    bottomLockDeadline = 0;
+    bottomLockMaxDeadline = 0;
+  }
+
+  function scrollTerminalToBottom() {
+    requestAnimationFrame(() => {
+      terminal?.scrollToBottom();
+    });
+  }
+
+  function isBottomLockActive() {
+    return terminal !== null && Date.now() < bottomLockDeadline;
+  }
+
+  function canExtendBottomLock() {
+    return terminal !== null && Date.now() < bottomLockMaxDeadline;
+  }
+
+  function scheduleBottomLockTick() {
+    clearBottomLockTimer();
+
+    if (!terminal) {
+      return;
+    }
+
+    terminal.scrollToBottom();
+
+    if (Date.now() >= bottomLockDeadline) {
+      releaseBottomLock();
+      return;
+    }
+
+    bottomLockTimer = setTimeout(() => {
+      bottomLockTimer = null;
+      scheduleBottomLockTick();
+    }, 80);
+  }
+
+  function armBottomLock(maxDurationMs = BOTTOM_LOCK_MAX_MS, quietWindowMs = BOTTOM_LOCK_QUIET_MS) {
+    const now = Date.now();
+    bottomLockMaxDeadline = now + maxDurationMs;
+    bottomLockDeadline = Math.min(bottomLockMaxDeadline, now + quietWindowMs);
+    followTail = true;
+    scheduleBottomLockTick();
+  }
+
+  function extendBottomLock(quietWindowMs = BOTTOM_LOCK_QUIET_MS) {
+    if (!canExtendBottomLock()) {
+      return;
+    }
+
+    bottomLockDeadline = Math.min(bottomLockMaxDeadline, Date.now() + quietWindowMs);
+    followTail = true;
+    scheduleBottomLockTick();
+  }
+
+  function disableAutoFollow() {
+    followTail = false;
+    releaseBottomLock();
   }
 
   function getDraftLineHeight() {
@@ -212,6 +365,192 @@
     }, 2600);
   }
 
+  function openContextMenu(
+    target: { kind: "url"; url: string } | { kind: "file"; path: ResolvedTerminalPath },
+    x: number,
+    y: number,
+  ) {
+    suppressSelectionUntilMouseUp = true;
+    terminal?.clearSelection();
+    linkMenuTarget = target;
+    linkMenuX = x;
+    linkMenuY = y;
+    linkMenuVisible = true;
+  }
+
+  function closeLinkMenu() {
+    linkMenuVisible = false;
+    linkMenuTarget = null;
+  }
+
+  function releaseLinkSelectionBlock() {
+    suppressSelectionUntilMouseUp = false;
+  }
+
+  function getFilePathNotice(error: unknown, fallbackKey: string) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/path does not exist/i.test(message)) {
+      return $t("terminal.filePaths.pathNotFound");
+    }
+    return $t(fallbackKey);
+  }
+
+  async function ensureEditorsLoaded() {
+    if (editorsLoaded && !editorsError) {
+      return detectedEditors;
+    }
+
+    editorsError = null;
+
+    try {
+      detectedEditors = await listAvailableEditors();
+    } catch (error) {
+      editorsError = error instanceof Error ? error.message : String(error);
+      detectedEditors = [];
+    } finally {
+      editorsLoaded = true;
+    }
+
+    return detectedEditors;
+  }
+
+  async function showEditorPicker(path: ResolvedTerminalPath) {
+    await ensureEditorsLoaded();
+    editorPickerPath = path;
+    editorPickerVisible = true;
+  }
+
+  function closeEditorPicker() {
+    editorPickerVisible = false;
+    editorPickerPath = null;
+  }
+
+  async function openPathInEditor(
+    path: ResolvedTerminalPath,
+    preferredEditorId?: string | null,
+    forcePicker = false,
+  ) {
+    const editors = await ensureEditorsLoaded();
+
+    if (editors.length === 0) {
+      setClipboardNotice(editorsError || $t("terminal.filePaths.noEditors"));
+      return;
+    }
+
+    if (forcePicker || settings.interface.fileOpenMode === "picker") {
+      await showEditorPicker(path);
+      return;
+    }
+
+    const preferredId = preferredEditorId?.trim() || settings.interface.defaultEditorId.trim();
+    const preferredEditor = editors.find((editor) => editor.id === preferredId);
+    if (!preferredEditor) {
+      await showEditorPicker(path);
+      return;
+    }
+
+    await openInEditor(preferredEditor.id, path);
+  }
+
+  async function handleEditorSelect(editor: DetectedEditor) {
+    if (!editorPickerPath) {
+      return;
+    }
+
+    try {
+      await openInEditor(editor.id, editorPickerPath);
+      closeEditorPicker();
+    } catch (error) {
+      console.error("Failed to open path in editor", error);
+      setClipboardNotice(getFilePathNotice(error, "terminal.filePaths.openFailed"));
+    }
+  }
+
+  async function openFileLinkMenu(rawPath: string, event: MouseEvent) {
+    suppressSelectionUntilMouseUp = true;
+    terminal?.clearSelection();
+
+    try {
+      const path = await resolveTerminalPath(rawPath, distro, workDir);
+      openContextMenu({ kind: "file", path }, event.clientX, event.clientY);
+    } catch (error) {
+      console.warn("Failed to resolve terminal file path", error);
+      setClipboardNotice(getFilePathNotice(error, "terminal.filePaths.resolveFailed"));
+    }
+  }
+
+  async function openFileLinkMenuForTest(rawPath: string) {
+    suppressSelectionUntilMouseUp = true;
+    terminal?.clearSelection();
+
+    const path = await resolveTerminalPath(rawPath, distro, workDir);
+    openContextMenu({ kind: "file", path }, 160, 160);
+  }
+
+  function openUrlLinkMenuForTest(url: string) {
+    terminal?.clearSelection();
+    openContextMenu({ kind: "url", url }, 160, 160);
+  }
+
+  async function handleLinkMenuSelect(item: Extract<ContextMenuItem, { kind: "item" }>) {
+    if (!linkMenuTarget) return;
+
+    try {
+      if (linkMenuTarget.kind === "url") {
+        if (item.id === "open-link-in-browser") {
+          await openExternalUrl(linkMenuTarget.url);
+          return;
+        }
+
+        if (item.id === "copy-link") {
+          await navigator.clipboard.writeText(linkMenuTarget.url);
+          setClipboardNotice($t("terminal.links.copySuccess"));
+        }
+        return;
+      }
+
+      if (item.id === "open-file") {
+        await openPathInEditor(linkMenuTarget.path);
+        return;
+      }
+
+      if (item.id === "open-in-other-editor") {
+        await showEditorPicker(linkMenuTarget.path);
+        return;
+      }
+
+      if (item.id === "copy-path") {
+        await navigator.clipboard.writeText(linkMenuTarget.path.copyText);
+        setClipboardNotice($t("terminal.filePaths.copySuccess"));
+      }
+    } catch (error) {
+      console.error("Failed to handle link menu action", error);
+      setClipboardNotice(
+        linkMenuTarget.kind === "file"
+          ? getFilePathNotice(error, "terminal.filePaths.openFailed")
+          : $t("terminal.links.openFailed"),
+      );
+    }
+  }
+
+  function handleLinkHover() {
+    linkHovering = true;
+  }
+
+  function handleLinkLeave() {
+    linkHovering = false;
+  }
+
+  function handleLinkPointerMove(event: MouseEvent) {
+    if (!suppressSelectionUntilMouseUp || (event.buttons & 1) === 0) {
+      return;
+    }
+
+    terminal?.clearSelection();
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   function handleFocusRequest(event: Event) {
     const focusEvent = event as CustomEvent<{ sessionId?: string }>;
     const targetSessionId = focusEvent.detail?.sessionId;
@@ -252,6 +591,19 @@
     }
 
     return getPtyOutputSnapshot(livePtyId);
+  }
+
+  function getViewportStateForTest() {
+    if (!terminal) {
+      return null;
+    }
+
+    return {
+      viewportY: terminal.buffer.active.viewportY,
+      baseY: terminal.buffer.active.baseY,
+      rows: terminal.rows,
+      cols: terminal.cols,
+    };
   }
 
   function insertIntoDraft(text: string, moveCaretToEnd = false) {
@@ -330,7 +682,7 @@
     try {
       const imageBlob = await readImageFromClipboard();
       if (!imageBlob) {
-        setClipboardNotice(translate("terminal.assist.clipboardNoImage"));
+        setClipboardNotice($t("terminal.assist.clipboardNoImage"));
         if (draftOpen) {
           focusDraft();
         } else {
@@ -470,7 +822,13 @@
     }
 
     if (initialOutputReady) {
-      terminal.write(data);
+      const shouldStickToBottom = followTail || isBottomLockActive();
+      extendBottomLock();
+      terminal.write(data, () => {
+        if (shouldStickToBottom) {
+          terminal?.scrollToBottom();
+        }
+      });
     }
   }
 
@@ -480,9 +838,7 @@
     replayBuffer = [];
 
     const snapshot = await getPtyOutputSnapshot(id);
-    if (snapshot.data) {
-      term.write(snapshot.data);
-    }
+    await writeTerminalData(term, snapshot.data);
 
     const pendingChunks = replayBuffer
       .filter((chunk) => chunk.seq > snapshot.seq)
@@ -490,10 +846,11 @@
 
     replayInProgress = false;
     for (const chunk of pendingChunks) {
-      term.write(chunk.data);
+      await writeTerminalData(term, chunk.data);
     }
 
     initialOutputReady = true;
+    armBottomLock();
   }
 
   async function spawnNewPty(term: Terminal) {
@@ -507,10 +864,9 @@
         .replaceAll(RESUME_FAILED_MARKER, "");
       onResumeFallback?.();
     }
-    if (sanitizedOutput) {
-      term.write(sanitizedOutput);
-    }
+    await writeTerminalData(term, sanitizedOutput);
     initialOutputReady = true;
+    armBottomLock();
     onPtyId?.(livePtyId);
   }
 
@@ -523,13 +879,50 @@
       cursorBlink: false,
       cursorStyle: "block",
       allowProposedApi: true,
-      scrollback: 10000,
+      scrollback: settings.terminal.scrollback,
       disableStdin: false,
     });
 
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(new WebLinksAddon(
+      (event, url) => {
+        if (event.button !== 0) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        terminal?.clearSelection();
+        openContextMenu({ kind: "url", url }, event.clientX, event.clientY);
+      },
+      {
+        urlRegex: WEB_LINK_REGEX,
+        hover: handleLinkHover,
+        leave: handleLinkLeave,
+      },
+    ));
+    fileLinkProviderDisposable = term.registerLinkProvider({
+      provideLinks(bufferLineNumber, callback) {
+        callback(
+          createTerminalFileLinks(
+            term,
+            bufferLineNumber,
+            (event, text) => {
+              if (event.button !== 0) {
+                return;
+              }
+
+              event.preventDefault();
+              event.stopPropagation();
+              void openFileLinkMenu(text, event);
+            },
+            handleLinkHover,
+            handleLinkLeave,
+          ),
+        );
+      },
+    });
 
     term.open(outputEl);
     inputTextarea = term.textarea;
@@ -583,6 +976,9 @@
     resizeObserver = new ResizeObserver(() => {
       if (visible && fit) {
         fit.fit();
+        if (followTail || isBottomLockActive()) {
+          scrollTerminalToBottom();
+        }
         syncDraftHeight();
       }
     });
@@ -592,15 +988,33 @@
       if (livePtyId >= 0) {
         void resizePty(livePtyId, cols, rows);
       }
+      if (followTail || isBottomLockActive()) {
+        scrollTerminalToBottom();
+      }
+    });
+
+    term.onScroll((viewportY) => {
+      if (!terminal || isBottomLockActive()) {
+        return;
+      }
+
+      followTail = viewportY >= terminal.buffer.active.baseY;
     });
 
     inputTextarea?.addEventListener("paste", handleTerminalPaste as EventListener, true);
+    outputEl.addEventListener("mousemove", handleLinkPointerMove, true);
+    outputEl.addEventListener("wheel", disableAutoFollow, true);
+    window.addEventListener("mouseup", releaseLinkSelectionBlock, true);
+    window.addEventListener("blur", releaseLinkSelectionBlock);
     window.addEventListener("clcomx:focus-active-terminal", handleFocusRequest);
     window.addEventListener(TEST_BRIDGE_EVENTS.openPendingImage, handleTestPendingImage as EventListener);
     if (isTestBridgeEnabled()) {
       getOrCreateTerminalTestHooks()[sessionId] = {
         openPendingImage: openPendingImageForTest,
         getOutputSnapshot: getOutputSnapshotForTest,
+        getViewportState: getViewportStateForTest,
+        openUrlMenu: openUrlLinkMenuForTest,
+        openFileMenu: openFileLinkMenuForTest,
       };
       testHookRegistered = true;
     }
@@ -609,9 +1023,13 @@
   $effect(() => {
     if (!terminalReady || !visible) return;
 
+    armBottomLock();
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         fitAddon?.fit();
+        if (followTail || isBottomLockActive()) {
+          terminal?.scrollToBottom();
+        }
         if (livePtyId >= 0 && terminal) {
           void resizePty(livePtyId, terminal.cols, terminal.rows);
         }
@@ -619,6 +1037,12 @@
         focusOutput();
       });
     });
+  });
+
+  $effect(() => {
+    if (visible) return;
+    closeLinkMenu();
+    closeEditorPicker();
   });
 
   $effect(() => {
@@ -634,6 +1058,7 @@
     if (!terminalReady) return;
     terminal!.options.fontSize = settings.terminal.fontSize;
     terminal!.options.fontFamily = terminalFontFamily;
+    terminal!.options.scrollback = settings.terminal.scrollback;
     fitAddon?.fit();
     tick().then(syncDraftHeight);
   });
@@ -651,13 +1076,19 @@
       testHookRegistered = false;
     }
     inputTextarea?.removeEventListener("paste", handleTerminalPaste as EventListener, true);
+    outputEl?.removeEventListener("mousemove", handleLinkPointerMove, true);
+    outputEl?.removeEventListener("wheel", disableAutoFollow, true);
+    window.removeEventListener("mouseup", releaseLinkSelectionBlock, true);
+    window.removeEventListener("blur", releaseLinkSelectionBlock);
     unlistenOutput?.();
     unlistenExit?.();
     resizeObserver?.disconnect();
     if (noticeTimer) {
       clearTimeout(noticeTimer);
     }
+    releaseBottomLock();
     revokePendingClipboardImage(pendingClipboardImage);
+    fileLinkProviderDisposable?.dispose();
     terminal?.dispose();
   });
 </script>
@@ -674,7 +1105,12 @@
   class:hidden={!visible}
   bind:this={shellEl}
 >
-  <div class="terminal-output" data-testid={TEST_IDS.terminalOutput} bind:this={outputEl}>
+  <div
+    class="terminal-output"
+    class:terminal-output--link-hover={linkHovering}
+    data-testid={TEST_IDS.terminalOutput}
+    bind:this={outputEl}
+  >
     {#if spawnError}
       <div class="terminal-error">
         {$t("terminal.assist.startFailed", { values: { message: spawnError } })}
@@ -761,6 +1197,15 @@
   </div>
 </div>
 
+<ContextMenu
+  visible={linkMenuVisible}
+  x={linkMenuX}
+  y={linkMenuY}
+  items={linkMenuItems}
+  onSelect={handleLinkMenuSelect}
+  onClose={closeLinkMenu}
+/>
+
 <ImagePasteModal
   visible={pendingClipboardImage !== null}
   image={pendingClipboardImage}
@@ -768,6 +1213,17 @@
   error={clipboardError}
   onCancel={() => resetClipboardImage(true)}
   onConfirm={confirmClipboardImage}
+/>
+
+<EditorPickerModal
+  visible={editorPickerVisible}
+  title={$t("terminal.filePaths.pickerTitle")}
+  description={$t("terminal.filePaths.pickerDescription")}
+  emptyLabel={editorsError || $t("terminal.filePaths.noEditors")}
+  defaultEditorId={settings.interface.defaultEditorId}
+  editors={detectedEditors}
+  onSelect={handleEditorSelect}
+  onClose={closeEditorPicker}
 />
 
 <style>
@@ -791,6 +1247,10 @@
     min-height: 0;
     padding: var(--ui-space-1);
     position: relative;
+  }
+
+  .terminal-output.terminal-output--link-hover {
+    cursor: pointer;
   }
 
   .assist-panel {

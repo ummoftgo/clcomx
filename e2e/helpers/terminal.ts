@@ -1,10 +1,74 @@
 import { Key, type WebDriver, type WebElement } from "selenium-webdriver";
-import { TEST_IDS } from "../../src/lib/testids";
+import { TEST_IDS, contextMenuItemTestId, editorPickerItemTestId } from "../../src/lib/testids";
 import { clickTestId, waitForTestId } from "./tauri";
 
 export interface TerminalOutputSnapshot {
   data: string;
   seq: number;
+}
+
+export interface TerminalViewportState {
+  viewportY: number;
+  baseY: number;
+  rows: number;
+  cols: number;
+}
+
+export async function openUrlMenuForSession(driver: WebDriver, sessionId: string, url: string) {
+  await driver.executeAsyncScript(
+    `
+      const [sessionId, url, done] = arguments;
+      const hook = window.__clcomxTestHooks?.terminals?.[sessionId];
+      if (!hook?.openUrlMenu) {
+        done({ ok: false, error: 'Missing terminal openUrlMenu test hook' });
+        return;
+      }
+
+      try {
+        hook.openUrlMenu(url);
+        done({ ok: true });
+      } catch (error) {
+        done({ ok: false, error: String(error) });
+      }
+    `,
+    sessionId,
+    url,
+  ).then((result: { ok: boolean; error?: string }) => {
+    if (!result?.ok) {
+      throw new Error(result?.error ?? "Failed to open URL menu");
+    }
+  });
+}
+
+export async function openFileMenuForSession(driver: WebDriver, sessionId: string, rawPath: string) {
+  await driver.executeAsyncScript(
+    `
+      const [sessionId, rawPath, done] = arguments;
+      const hook = window.__clcomxTestHooks?.terminals?.[sessionId];
+      if (!hook?.openFileMenu) {
+        done({ ok: false, error: 'Missing terminal openFileMenu test hook' });
+        return;
+      }
+
+      Promise.resolve(hook.openFileMenu(rawPath))
+        .then(() => done({ ok: true }))
+        .catch((error) => done({ ok: false, error: String(error) }));
+    `,
+    sessionId,
+    rawPath,
+  ).then((result: { ok: boolean; error?: string }) => {
+    if (!result?.ok) {
+      throw new Error(result?.error ?? "Failed to open file menu");
+    }
+  });
+}
+
+export async function waitForContextMenuItem(driver: WebDriver, itemId: string) {
+  return waitForTestId(driver, contextMenuItemTestId(itemId));
+}
+
+export async function waitForEditorPickerItem(driver: WebDriver, editorId: string) {
+  return waitForTestId(driver, editorPickerItemTestId(editorId));
 }
 
 export async function openDraft(driver: WebDriver) {
@@ -68,6 +132,35 @@ export async function getTerminalOutputSnapshot(
     `,
     sessionId,
   ).then((result: TerminalOutputSnapshot | { __error: string } | null) => {
+    if (result && typeof result === "object" && "__error" in result) {
+      throw new Error(result.__error);
+    }
+    return result;
+  });
+}
+
+export async function getTerminalViewportState(
+  driver: WebDriver,
+  sessionId: string,
+): Promise<TerminalViewportState | null> {
+  return driver.executeAsyncScript(
+    `
+      const sessionId = arguments[0];
+      const done = arguments[arguments.length - 1];
+      const hook = window.__clcomxTestHooks?.terminals?.[sessionId];
+      if (!hook?.getViewportState) {
+        done(null);
+        return;
+      }
+
+      try {
+        done(hook.getViewportState());
+      } catch (error) {
+        done({ __error: String(error) });
+      }
+    `,
+    sessionId,
+  ).then((result: TerminalViewportState | { __error: string } | null) => {
     if (result && typeof result === "object" && "__error" in result) {
       throw new Error(result.__error);
     }

@@ -27,6 +27,7 @@ CLCOMX의 데스크톱 E2E는 다음을 자동 검증하기 위한 구조다.
 - `npm run test:e2e:workspace-restore`
 - `npm run test:e2e:image-paste`
 - `npm run test:e2e:terminal-input`
+- `npm run test:e2e:terminal-links`
 
 개별 팩 스크립트는 이제 Windows에서 직접 `vitest`를 돌리지 않고, PowerShell runner를 통해 최신 exe 빌드/실행 경로를 우선 사용한다.
 
@@ -52,6 +53,7 @@ CLCOMX의 데스크톱 E2E는 다음을 자동 검증하기 위한 구조다.
   - seeded `workspace.json` 기반 startup restore
   - main/secondary window 복원
   - 복원된 mock PTY 재부착
+  - 장출력 복원 후 viewport가 바닥에 유지되는지 확인
 - `image-paste`
   - test mode 이미지 주입
   - 미리보기 모달 표시
@@ -64,11 +66,16 @@ CLCOMX의 데스크톱 E2E는 다음을 자동 검증하기 위한 구조다.
   - `Ctrl+Enter` 전송
   - `Insert` / `Send` 차이 검증
   - mock PTY output snapshot 확인
+- `terminal-links`
+  - URL 링크 메뉴
+  - 파일 경로 링크 메뉴
+  - 에디터 picker 진입
 
 다음 단계 후보:
 
 - 직접 터미널 키 입력(`/`, `@`, `$`)
 - IME/한글 입력 자동 검증
+- 실제 긴 Claude 세션 복구 시 viewport 점프 추가 추적
 
 ## Test mode
 
@@ -117,6 +124,7 @@ npm run test:e2e:windows -- -SkipBuild
 
 ```powershell
 npm run test:e2e:windows -- -Project image-paste
+npm run test:e2e:windows -- -Project terminal-links
 ```
 
 이 경로가 권장인 이유:
@@ -162,6 +170,7 @@ npm run test:e2e:wsl -- --skip-build
 
 ```bash
 npm run test:e2e:wsl -- --project image-paste
+npm run test:e2e:wsl -- --project terminal-links
 ```
 
 이 경로는 내부적으로:
@@ -211,6 +220,8 @@ e2e/
 │   └── windows-tabs.test.ts
 ├── image-paste/
 │   └── image-paste.test.ts
+├── terminal-links/
+│   └── terminal-links.test.ts
 ├── terminal-input/
 │   └── terminal-input.test.ts
 └── workspace-restore/
@@ -239,6 +250,8 @@ E2E는 `data-testid`를 기준으로 동작한다.
 - `terminal-draft-textarea`
 - `terminal-draft-insert`
 - `terminal-draft-send`
+- `editor-picker-modal`
+- `editor-picker-list`
 - `close-tab-dialog`
 - `image-paste-modal`
 - `settings-storage-files`

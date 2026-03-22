@@ -117,6 +117,10 @@ export async function closeApp(): Promise<void> {
   await invoke("close_app");
 }
 
+export async function openExternalUrl(url: string): Promise<void> {
+  await invoke("open_external_url", { url });
+}
+
 export async function notifyWindowReady(label: string): Promise<void> {
   await invoke("window_ready", { label });
 }

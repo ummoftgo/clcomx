@@ -202,23 +202,78 @@ fn append_output(
     .map_err(|e| e.to_string())
 }
 
+fn append_mock_output(
+    app: &AppHandle,
+    session_id: u32,
+    initial_output: &Arc<Mutex<String>>,
+    output_log: &Arc<Mutex<String>>,
+    output_seq: &Arc<AtomicU64>,
+    buffer_initial_output: &Arc<AtomicBool>,
+    data: String,
+) -> Result<(), String> {
+    if buffer_initial_output.load(Ordering::SeqCst) {
+        initial_output
+            .lock()
+            .map_err(|e| e.to_string())?
+            .push_str(&data);
+    }
+
+    let seq = output_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    {
+        let mut output = output_log.lock().map_err(|e| e.to_string())?;
+        output.push_str(&data);
+        trim_output_log(&mut output);
+    }
+
+    app.emit(
+        "pty-output",
+        PtyOutput {
+            id: session_id,
+            seq,
+            data,
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
 fn create_mock_session(
     state: &PtyState,
     agent_id: Option<String>,
     distro: Option<String>,
     work_dir: Option<String>,
+    resume_token: Option<String>,
 ) -> Result<(u32, PtySession), String> {
     let id = next_session_id(state)?;
     let agent_label = match agent_id.as_deref() {
         Some("codex") => "Codex",
         _ => "Claude Code",
     };
-    let banner = format!(
-        "CLCOMX test mode\r\nAgent: {}\r\nDistro: {}\r\nWorkspace: {}\r\nMock session ready.\r\n> ",
-        agent_label,
-        distro.unwrap_or_else(|| "clcomx-test".into()),
-        work_dir.unwrap_or_else(|| "/home/tester/workspace/clcomx".into()),
-    );
+    let distro_label = distro.unwrap_or_else(|| "clcomx-test".into());
+    let work_dir_label = work_dir.unwrap_or_else(|| "/home/tester/workspace/clcomx".into());
+    let banner = if matches!(
+        resume_token.as_deref(),
+        Some("__clcomx_test_long_output__" | "__clcomx_test_long_output_stream__")
+    ) {
+        let mut output = format!(
+            "CLCOMX test mode\r\nAgent: {}\r\nDistro: {}\r\nWorkspace: {}\r\nRestored mock session.\r\n",
+            agent_label, distro_label, work_dir_label
+        );
+        for index in 0..360usize {
+            output.push_str(&format!(
+                "[{}] long restored transcript line {:03} {}\r\n",
+                agent_label,
+                index,
+                "x".repeat(220)
+            ));
+        }
+        output.push_str("> ");
+        output
+    } else {
+        format!(
+            "CLCOMX test mode\r\nAgent: {}\r\nDistro: {}\r\nWorkspace: {}\r\nMock session ready.\r\n> ",
+            agent_label, distro_label, work_dir_label,
+        )
+    };
     let initial_output = Arc::new(Mutex::new(banner.clone()));
     let output_log = Arc::new(Mutex::new(banner));
 
@@ -247,11 +302,58 @@ pub fn pty_spawn(
     mock_agent_id: Option<String>,
     mock_distro: Option<String>,
     mock_work_dir: Option<String>,
+    mock_resume_token: Option<String>,
 ) -> Result<u32, String> {
     if is_test_mode() {
-        let (id, session) = create_mock_session(state.inner(), mock_agent_id, mock_distro, mock_work_dir)?;
+        let delayed_long_output = mock_resume_token.as_deref() == Some("__clcomx_test_long_output_stream__");
+        let (id, session) =
+            create_mock_session(state.inner(), mock_agent_id, mock_distro, mock_work_dir, mock_resume_token)?;
+        let delayed_output_handles = if delayed_long_output {
+            Some((
+                session.initial_output.clone(),
+                session.output_log.clone(),
+                session.output_seq.clone(),
+                session.buffer_initial_output.clone(),
+                session.exited.clone(),
+            ))
+        } else {
+            None
+        };
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         sessions.insert(id, session);
+        drop(sessions);
+
+        if let Some((initial_output, output_log, output_seq, buffer_initial_output, exited)) =
+            delayed_output_handles
+        {
+            let app_handle = app.clone();
+            std::thread::spawn(move || {
+                let delayed_chunks: Vec<(String, u64)> = vec![
+                    ("\r\n[Claude Code] restored output stream continuing...\r\n".to_string(), 350u64),
+                    (
+                        "[Claude Code] wrapped transcript tail ".to_string() + &"y".repeat(260) + "\r\n",
+                        850u64,
+                    ),
+                    ("[Claude Code] final restore flush\r\n> ".to_string(), 1450u64),
+                ];
+
+                for (chunk, delay_ms) in delayed_chunks {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    if exited.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let _ = append_mock_output(
+                        &app_handle,
+                        id,
+                        &initial_output,
+                        &output_log,
+                        &output_seq,
+                        &buffer_initial_output,
+                        chunk,
+                    );
+                }
+            });
+        }
         return Ok(id);
     }
 

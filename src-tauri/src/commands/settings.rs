@@ -63,6 +63,9 @@ const MAX_TAB_HISTORY_LIMIT: u16 = 999;
 const DEFAULT_DRAFT_MAX_ROWS: u16 = 5;
 const MIN_DRAFT_MAX_ROWS: u16 = 1;
 const MAX_DRAFT_MAX_ROWS: u16 = 999;
+const DEFAULT_SCROLLBACK: u32 = 10_000;
+const MIN_SCROLLBACK: u32 = 1_000;
+const MAX_SCROLLBACK: u32 = 200_000;
 const DEFAULT_UI_SCALE: u16 = 100;
 const MIN_UI_SCALE: u16 = 80;
 const MAX_UI_SCALE: u16 = 200;
@@ -75,6 +78,7 @@ const MAX_WINDOW_ROWS: u16 = 100;
 const DEFAULT_WINDOW_WIDTH: u32 = 1024;
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 const DEFAULT_LANGUAGE: &str = "system";
+const DEFAULT_FILE_OPEN_MODE: &str = "picker";
 
 fn clamp_tab_history_limit(limit: u16) -> u16 {
     limit.clamp(MIN_TAB_HISTORY_LIMIT, MAX_TAB_HISTORY_LIMIT)
@@ -82,6 +86,10 @@ fn clamp_tab_history_limit(limit: u16) -> u16 {
 
 fn clamp_draft_max_rows(rows: u16) -> u16 {
     rows.clamp(MIN_DRAFT_MAX_ROWS, MAX_DRAFT_MAX_ROWS)
+}
+
+fn clamp_scrollback(value: u32) -> u32 {
+    value.clamp(MIN_SCROLLBACK, MAX_SCROLLBACK)
 }
 
 fn clamp_ui_scale(scale: u16) -> u16 {
@@ -107,6 +115,13 @@ fn normalize_language(value: &str) -> String {
     DEFAULT_LANGUAGE.into()
 }
 
+fn normalize_file_open_mode(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "default" => "default".into(),
+        _ => DEFAULT_FILE_OPEN_MODE.into(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct InterfaceSettingsPayload {
@@ -116,6 +131,8 @@ pub struct InterfaceSettingsPayload {
     pub ui_font_family_fallback: String,
     pub window_default_cols: u16,
     pub window_default_rows: u16,
+    pub file_open_mode: String,
+    pub default_editor_id: String,
 }
 
 impl Default for InterfaceSettingsPayload {
@@ -127,6 +144,8 @@ impl Default for InterfaceSettingsPayload {
             ui_font_family_fallback: "Malgun Gothic, Apple SD Gothic Neo, sans-serif".into(),
             window_default_cols: DEFAULT_WINDOW_COLS,
             window_default_rows: DEFAULT_WINDOW_ROWS,
+            file_open_mode: DEFAULT_FILE_OPEN_MODE.into(),
+            default_editor_id: String::new(),
         }
     }
 }
@@ -137,6 +156,7 @@ pub struct TerminalSettingsPayload {
     pub font_family: String,
     pub font_family_fallback: String,
     pub font_size: u16,
+    pub scrollback: u32,
     pub draft_max_rows: u16,
 }
 
@@ -146,6 +166,7 @@ impl Default for TerminalSettingsPayload {
             font_family: "JetBrains Mono, Cascadia Code, Consolas".into(),
             font_family_fallback: "Malgun Gothic, NanumGothicCoding, monospace".into(),
             font_size: 14,
+            scrollback: DEFAULT_SCROLLBACK,
             draft_max_rows: DEFAULT_DRAFT_MAX_ROWS,
         }
     }
@@ -370,6 +391,18 @@ fn u16_from_paths(value: &serde_json::Value, paths: &[&[&str]], fallback: u16) -
     fallback
 }
 
+fn u32_from_paths(value: &serde_json::Value, paths: &[&[&str]], fallback: u32) -> u32 {
+    for path in paths {
+        if let Some(found) = lookup_value(value, path).and_then(|entry| entry.as_u64()) {
+            if let Ok(parsed) = u32::try_from(found) {
+                return parsed;
+            }
+        }
+    }
+
+    fallback
+}
+
 fn string_map_from_paths(
     value: &serde_json::Value,
     paths: &[&[&str]],
@@ -433,6 +466,18 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         &[&["interface", "windowDefaultRows"], &["terminalRows"]],
         settings.interface.window_default_rows,
     ));
+    settings.interface.file_open_mode = normalize_file_open_mode(&string_from_paths(
+        value,
+        &[&["interface", "fileOpenMode"]],
+        &settings.interface.file_open_mode,
+    ));
+    settings.interface.default_editor_id = string_from_paths(
+        value,
+        &[&["interface", "defaultEditorId"]],
+        &settings.interface.default_editor_id,
+    )
+    .trim()
+    .to_string();
     settings.workspace.default_distro = string_from_paths(
         value,
         &[&["workspace", "defaultDistro"]],
@@ -465,6 +510,11 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         &[&["terminal", "fontSize"], &["fontSize"]],
         settings.terminal.font_size,
     );
+    settings.terminal.scrollback = clamp_scrollback(u32_from_paths(
+        value,
+        &[&["terminal", "scrollback"]],
+        settings.terminal.scrollback,
+    ));
     settings.terminal.draft_max_rows = clamp_draft_max_rows(u16_from_paths(
         value,
         &[&["terminal", "draftMaxRows"], &["composerMaxRows"]],
@@ -499,6 +549,8 @@ pub fn load_settings_or_default() -> SettingsPayload {
     settings.interface.ui_scale = clamp_ui_scale(settings.interface.ui_scale);
     settings.interface.window_default_cols = clamp_window_cols(settings.interface.window_default_cols);
     settings.interface.window_default_rows = clamp_window_rows(settings.interface.window_default_rows);
+    settings.interface.file_open_mode = normalize_file_open_mode(&settings.interface.file_open_mode);
+    settings.interface.default_editor_id = settings.interface.default_editor_id.trim().to_string();
     settings.workspace.default_agent_id = normalize_agent_id(&settings.workspace.default_agent_id);
     settings.workspace.default_distro = settings.workspace.default_distro.trim().to_string();
     settings.workspace.default_start_paths_by_distro = settings
@@ -516,6 +568,7 @@ pub fn load_settings_or_default() -> SettingsPayload {
         })
         .collect();
     settings.terminal.draft_max_rows = clamp_draft_max_rows(settings.terminal.draft_max_rows);
+    settings.terminal.scrollback = clamp_scrollback(settings.terminal.scrollback);
     settings.history.tab_limit = clamp_tab_history_limit(settings.history.tab_limit);
     settings
 }
@@ -946,6 +999,8 @@ pub fn save_settings(mut settings: SettingsPayload) -> Result<(), String> {
     settings.interface.ui_scale = clamp_ui_scale(settings.interface.ui_scale);
     settings.interface.window_default_cols = clamp_window_cols(settings.interface.window_default_cols);
     settings.interface.window_default_rows = clamp_window_rows(settings.interface.window_default_rows);
+    settings.interface.file_open_mode = normalize_file_open_mode(&settings.interface.file_open_mode);
+    settings.interface.default_editor_id = settings.interface.default_editor_id.trim().to_string();
     settings.workspace.default_agent_id = normalize_agent_id(&settings.workspace.default_agent_id);
     settings.workspace.default_distro = settings.workspace.default_distro.trim().to_string();
     settings.workspace.default_start_paths_by_distro = settings
@@ -963,6 +1018,7 @@ pub fn save_settings(mut settings: SettingsPayload) -> Result<(), String> {
         })
         .collect();
     settings.terminal.draft_max_rows = clamp_draft_max_rows(settings.terminal.draft_max_rows);
+    settings.terminal.scrollback = clamp_scrollback(settings.terminal.scrollback);
     settings.history.tab_limit = clamp_tab_history_limit(settings.history.tab_limit);
     let path = settings_path()?;
     ensure_parent_dir(&path)?;

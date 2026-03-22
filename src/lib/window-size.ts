@@ -66,7 +66,7 @@ export async function measureWindowSizeForTerminal(settings: Settings): Promise<
       rows: settings.interface.windowDefaultRows,
       fontSize: settings.terminal.fontSize,
       fontFamily: terminalFontFamily,
-      scrollback: 10000,
+      scrollback: settings.terminal.scrollback,
       allowProposedApi: true,
     });
 

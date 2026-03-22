@@ -1,13 +1,18 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { _ as t } from "svelte-i18n";
   import Button from "../../../ui/components/Button.svelte";
   import ThemePicker from "../../ThemePicker.svelte";
   import FontPicker from "../../FontPicker.svelte";
+  import { listAvailableEditors, type DetectedEditor } from "../../../editors";
   import { getSettings, updateSettings } from "../../../stores/settings.svelte";
   import { TEST_IDS } from "../../../testids";
-  import type { LanguagePreference } from "../../../types";
+  import type { FileOpenMode, LanguagePreference } from "../../../types";
 
   const settings = getSettings();
+  let editors = $state<DetectedEditor[]>([]);
+  let editorsLoading = $state(true);
+  let editorsError = $state<string | null>(null);
 
   function clampUiScale(value: number) {
     if (!Number.isFinite(value)) return 100;
@@ -37,6 +42,32 @@
       language: (event.target as HTMLSelectElement).value as LanguagePreference,
     });
   }
+
+  function handleFileOpenModeInput(event: Event) {
+    updateSettings({
+      interface: {
+        fileOpenMode: (event.target as HTMLSelectElement).value as FileOpenMode,
+      },
+    });
+  }
+
+  async function loadEditors() {
+    editorsLoading = true;
+    editorsError = null;
+    try {
+      editors = await listAvailableEditors();
+    } catch (error) {
+      console.error("Failed to detect installed editors", error);
+      editors = [];
+      editorsError = error instanceof Error ? error.message : String(error);
+    } finally {
+      editorsLoading = false;
+    }
+  }
+
+  onMount(() => {
+    void loadEditors();
+  });
 </script>
 
 <div class="settings-fields">
@@ -120,6 +151,62 @@
       placeholder={$t("settings.placeholders.uiFallbackFont")}
       onChange={(value) => updateSettings({ interface: { uiFontFamilyFallback: value } })}
     />
+  </div>
+
+  <div class="field-block">
+    <div class="field-head">
+      <h4>{$t("settings.fields.fileOpenMode")}</h4>
+      <p>{$t("settings.fields.fileOpenModeHint")}</p>
+    </div>
+
+    <div class="field-grid">
+      <div class="field">
+        <label for="file-open-mode">{$t("settings.fields.fileOpenMode")}</label>
+        <select
+          id="file-open-mode"
+          class="number-input"
+          value={settings.interface.fileOpenMode}
+          onchange={handleFileOpenModeInput}
+        >
+          <option value="default">{$t("settings.fileOpen.modes.default")}</option>
+          <option value="picker">{$t("settings.fileOpen.modes.picker")}</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="default-editor">{$t("settings.fields.defaultEditor")}</label>
+        <select
+          id="default-editor"
+          class="number-input"
+          value={settings.interface.defaultEditorId}
+          disabled={editorsLoading || editors.length === 0}
+          onchange={(event) =>
+            updateSettings({
+              interface: { defaultEditorId: (event.target as HTMLSelectElement).value },
+            })}
+        >
+          <option value="">
+            {#if editorsLoading}
+              {$t("settings.fileOpen.loadingEditors")}
+            {:else}
+              {$t("settings.workspace.none")}
+            {/if}
+          </option>
+          {#each editors as editor (editor.id)}
+            <option value={editor.id}>{editor.label}</option>
+          {/each}
+        </select>
+        <p class="field-message">
+          {#if editorsError}
+            {$t("settings.fileOpen.detectFailed")}
+          {:else if !editorsLoading && editors.length === 0}
+            {$t("settings.fileOpen.noEditors")}
+          {:else}
+            {$t("settings.fields.defaultEditorHint")}
+          {/if}
+        </p>
+      </div>
+    </div>
   </div>
 
   <div class="field-block">

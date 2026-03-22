@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import type { ContextMenuItem } from "../context-menu";
+  import type { ContextMenuIconId, ContextMenuItem } from "../context-menu";
   import { TEST_IDS, contextMenuItemTestId } from "../../testids";
 
   interface Props {
@@ -32,6 +32,46 @@
     if (item.disabled) return;
     onSelect(item);
     onClose();
+  }
+
+  function getIconSvg(icon?: ContextMenuIconId) {
+    switch (icon) {
+      case "external-link":
+        return `
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <path d="M11.5 4.25h4.25V8.5" />
+            <path d="M9 11L15.5 4.5" />
+            <path d="M8 5.25H6.25A2 2 0 0 0 4.25 7.25v6.5a2 2 0 0 0 2 2h6.5a2 2 0 0 0 2-2V12" />
+          </svg>
+        `;
+      case "copy":
+        return `
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="7" y="5.25" width="8.5" height="10.5" rx="1.75" />
+            <path d="M5.5 12.75H5A2 2 0 0 1 3 10.75v-6.5a2 2 0 0 1 2-2h6.5a2 2 0 0 1 2 2v.5" />
+          </svg>
+        `;
+      case "file":
+        return `
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <path d="M6.25 3.5h5.25L15.75 7v8.25a1.5 1.5 0 0 1-1.5 1.5h-8a1.5 1.5 0 0 1-1.5-1.5v-10.25a1.5 1.5 0 0 1 1.5-1.5Z" />
+            <path d="M11.5 3.5V7h4.25" />
+            <path d="M7.5 10.25h5" />
+            <path d="M7.5 13h4.25" />
+          </svg>
+        `;
+      case "open-with":
+        return `
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="3.25" y="4.25" width="8.75" height="11.5" rx="1.75" />
+            <path d="M12.25 7h2.5a2 2 0 0 1 2 2v4.75" />
+            <path d="M11.5 10.5 16.75 15.75" />
+            <path d="M13 15.75h3.75V12" />
+          </svg>
+        `;
+      default:
+        return "";
+    }
   }
 
   $effect(() => {
@@ -87,6 +127,11 @@
           disabled={item.disabled}
           onclick={() => handleSelect(item)}
         >
+          {#if item.icon}
+            <span class="menu-icon" aria-hidden="true">
+              {@html getIconSvg(item.icon)}
+            </span>
+          {/if}
           {item.label}
         </button>
       {/if}
@@ -123,6 +168,7 @@
   .header {
     display: flex;
     align-items: center;
+    gap: var(--ui-space-2);
     width: 100%;
     min-height: calc(34px * var(--ui-scale));
     padding: 0 var(--ui-space-3);
@@ -149,6 +195,26 @@
 
   .context-menu button.danger {
     color: var(--ui-danger, #ef4444);
+  }
+
+  .menu-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(18px * var(--ui-scale));
+    height: calc(18px * var(--ui-scale));
+    color: currentColor;
+    flex: 0 0 auto;
+  }
+
+  .menu-icon :global(svg) {
+    width: 100%;
+    height: 100%;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .header {

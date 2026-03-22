@@ -4,6 +4,8 @@ mod commands;
 use commands::clipboard::{
     clear_image_cache, get_image_cache_stats, open_image_cache_folder, save_clipboard_image,
 };
+use commands::editors::{list_available_editors, open_in_editor, resolve_terminal_path};
+use commands::external::open_external_url;
 use commands::fonts::list_monospace_fonts;
 use commands::pty::{
     PtyState, pty_close_and_capture_resume, pty_get_output_snapshot, pty_kill, pty_resize,
@@ -93,6 +95,10 @@ pub fn run() {
             get_image_cache_stats,
             open_image_cache_folder,
             clear_image_cache,
+            open_external_url,
+            list_available_editors,
+            resolve_terminal_path,
+            open_in_editor,
             list_wsl_distros,
             list_wsl_directories,
             list_monospace_fonts,

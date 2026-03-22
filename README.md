@@ -28,6 +28,8 @@ Electron 대신 `Rust + Tauri v2 + Svelte 5`를 사용해 메모리 사용량과
   - xterm.js 기반 터미널
   - 드래프트 입력 보조
   - 이미지 붙여넣기 시 파일 저장 후 경로 삽입
+  - URL 링크 컨텍스트 메뉴
+  - 파일 경로 링크와 Windows 에디터 열기
 - UI 커스터마이징
   - 다크/라이트 테마
   - UI 폰트 / 터미널 폰트 분리
@@ -37,6 +39,7 @@ Electron 대신 `Rust + Tauri v2 + Svelte 5`를 사용해 메모리 사용량과
   - Vitest 프론트 테스트
   - Rust unit test
   - Windows Tauri E2E 기능팩
+  - 장세션 복구/링크 메뉴 회귀 검증
 
 ## 필요사항
 
@@ -176,6 +179,33 @@ bash scripts/build-windows.sh
 
 이미지는 `temp/image` 아래에 저장됩니다.
 
+### 5. 터미널 링크와 파일 열기
+
+- `http`, `https`, `ftp` 링크를 좌클릭하면 메뉴가 열립니다.
+  - 브라우저로 열기
+  - 링크 복사
+- 터미널에 보이는 파일 경로도 좌클릭 메뉴를 지원합니다.
+  - 파일 열기
+  - 다른 에디터로 열기
+  - 경로 복사
+
+지원하는 파일 경로 예:
+
+- `/home/.../src/App.svelte:12:3`
+- `/mnt/c/.../sample.ts`
+- `src/lib/file-links.ts`
+- `../README.md`
+- `.gitignore`
+
+지원 에디터 감지:
+
+- VS Code
+- Cursor
+- Windsurf
+- PhpStorm
+- Notepad++
+- Sublime Text
+
 ## 설정
 
 설정 화면은 현재 다음 카테고리로 나뉩니다.
@@ -239,6 +269,17 @@ CLCOMX는 종료 시 에이전트 출력에서 resume token을 캡처해 다음 
 
 복원 실패 시에는 같은 디렉토리에서 새 세션으로 자동 fallback 합니다.
 
+## 버전 관리
+
+- 현재 버전: `0.1.1`
+- 버전 문서 위치: [`docs/version/`](./docs/version/)
+- 규칙:
+  - 기능 추가: `minor` 증가, `patch`는 `0`으로 초기화
+  - 수정/안정화: `patch` 증가
+  - 메이저 버전 증가는 명시적으로 지시받은 경우에만 수행
+
+이번 변경 내역은 [`docs/version/0.1.1.md`](./docs/version/0.1.1.md)에 정리돼 있습니다.
+
 ## 테스트
 
 ### 빠른 검증
@@ -256,6 +297,13 @@ npm run verify
 
 ```powershell
 npm run test:e2e:windows
+```
+
+개별 팩:
+
+```powershell
+npm run test:e2e:windows -- -Project terminal-links
+npm run test:e2e:windows -- -Project workspace-restore
 ```
 
 특정 팩만:

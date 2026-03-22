@@ -64,6 +64,29 @@
   </div>
 
   <div class="field">
+    <label for="terminal-scrollback">{$t("settings.fields.terminalScrollback")}</label>
+    <input
+      id="terminal-scrollback"
+      class="number-input number-wide"
+      type="number"
+      min="1000"
+      max="200000"
+      step="1000"
+      value={settings.terminal.scrollback}
+      oninput={(event) =>
+        updateSettings({
+          terminal: {
+            scrollback: Math.min(
+              200000,
+              Math.max(1000, Math.trunc(Number((event.target as HTMLInputElement).value) || 10000)),
+            ),
+          },
+        })}
+    />
+    <p class="field-message">{$t("settings.fields.terminalScrollbackHint")}</p>
+  </div>
+
+  <div class="field">
     <label for="draft-max-rows">{$t("settings.fields.draftMaxRows")}</label>
     <input
       id="draft-max-rows"

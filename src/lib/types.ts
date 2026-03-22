@@ -3,6 +3,7 @@ import type { AgentId } from "./agents";
 
 export type SupportedLocale = "en" | "ko";
 export type LanguagePreference = "system" | SupportedLocale;
+export type FileOpenMode = "default" | "picker";
 export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends object
     ? T[K] extends Date | RegExp | Array<unknown> | Function
@@ -41,12 +42,15 @@ export interface InterfaceSettings {
   uiFontFamilyFallback: string;
   windowDefaultCols: number;
   windowDefaultRows: number;
+  fileOpenMode: FileOpenMode;
+  defaultEditorId: string;
 }
 
 export interface TerminalSettings {
   fontFamily: string;
   fontFamilyFallback: string;
   fontSize: number;
+  scrollback: number;
   draftMaxRows: number;
 }
 
@@ -123,6 +127,8 @@ export const DEFAULT_SETTINGS: Settings = {
     uiFontFamilyFallback: "Malgun Gothic, Apple SD Gothic Neo, sans-serif",
     windowDefaultCols: 120,
     windowDefaultRows: 36,
+    fileOpenMode: "picker",
+    defaultEditorId: "",
   },
   workspace: {
     defaultAgentId: "claude",
@@ -133,6 +139,7 @@ export const DEFAULT_SETTINGS: Settings = {
     fontFamily: "JetBrains Mono, Cascadia Code, Consolas",
     fontFamilyFallback: "Malgun Gothic, NanumGothicCoding, monospace",
     fontSize: 14,
+    scrollback: 10000,
     draftMaxRows: 5,
   },
   history: {
