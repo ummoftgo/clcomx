@@ -235,7 +235,9 @@ pub struct WorkspaceTabSnapshot {
     pub distro: String,
     pub work_dir: String,
     pub title: String,
+    #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
     pub locked: bool,
     #[serde(default, alias = "claudeResumeId", alias = "claude_resume_id")]
     pub resume_token: Option<String>,

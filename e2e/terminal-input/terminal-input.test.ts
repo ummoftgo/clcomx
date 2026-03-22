@@ -62,14 +62,20 @@ describe.skipIf(process.platform !== "win32")("CLCOMX terminal-input pack", () =
     await waitForTestIdHidden(driver, TEST_IDS.draftTextarea, 10_000);
     log.step("draft hidden after submit");
 
-    await driver.wait(async () => {
+    try {
+      await driver.wait(async () => {
+        const snapshot = await getTerminalOutputSnapshot(driver, sessionId!);
+        return snapshot?.data.includes("hello\nworld")
+          && snapshot.data.includes("[mock agent] request received");
+      }, 10_000);
+    } catch (error) {
       const snapshot = await getTerminalOutputSnapshot(driver, sessionId!);
-      return snapshot?.data.includes("hello\nworld")
-        && snapshot.data.includes("[mock claude] request received");
-    }, 10_000);
+      log.error("multiline submit timeout", { snapshot });
+      throw error;
+    }
     const submitSnapshot = await getTerminalOutputSnapshot(driver, sessionId!);
     expect(submitSnapshot?.data).toContain("hello\nworld");
-    expect(submitSnapshot?.data).toContain("[mock claude] request received");
+    expect(submitSnapshot?.data).toContain("[mock agent] request received");
     expect(submitSnapshot?.data).not.toContain("hello\\");
     log.step("multiline submit reflected in output");
 
@@ -97,7 +103,7 @@ describe.skipIf(process.platform !== "win32")("CLCOMX terminal-input pack", () =
     const insertSnapshot = await getTerminalOutputSnapshot(driver, sessionId!);
     expect(insertSnapshot?.data).toContain("partial");
 
-    const receivedCount = (insertSnapshot?.data.match(/\[mock claude\] request received/g) ?? []).length;
+    const receivedCount = (insertSnapshot?.data.match(/\[mock agent\] request received/g) ?? []).length;
     expect(receivedCount).toBe(1);
     log.step("insert reflected without extra submit");
 
@@ -111,7 +117,7 @@ describe.skipIf(process.platform !== "win32")("CLCOMX terminal-input pack", () =
     }, 10_000);
     const buttonSnapshot = await getTerminalOutputSnapshot(driver, sessionId!);
     expect(buttonSnapshot?.data).toContain("button send");
-    const finalReceivedCount = (buttonSnapshot?.data.match(/\[mock claude\] request received/g) ?? []).length;
+    const finalReceivedCount = (buttonSnapshot?.data.match(/\[mock agent\] request received/g) ?? []).length;
     expect(finalReceivedCount).toBe(2);
     log.step("send button reflected in output");
   });

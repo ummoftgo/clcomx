@@ -33,9 +33,13 @@ describe.skipIf(process.platform !== "win32")("CLCOMX workspace-restore pack", (
               tabs: [
                 {
                   sessionId: "main-session",
+                  agentId: "claude",
                   distro: TEST_DISTRO,
                   workDir: "/home/tester/workspace",
                   title: "workspace",
+                  pinned: false,
+                  locked: false,
+                  resumeToken: null,
                   ptyId: null,
                 },
               ],
@@ -53,9 +57,13 @@ describe.skipIf(process.platform !== "win32")("CLCOMX workspace-restore pack", (
               tabs: [
                 {
                   sessionId: "secondary-session",
+                  agentId: "claude",
                   distro: TEST_DISTRO,
                   workDir: "/home/tester/projects",
                   title: "projects",
+                  pinned: false,
+                  locked: false,
+                  resumeToken: null,
                   ptyId: null,
                 },
               ],

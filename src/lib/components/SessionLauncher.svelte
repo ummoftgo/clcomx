@@ -7,8 +7,10 @@
   import AgentIcon from "./AgentIcon.svelte";
   import {
     TEST_IDS,
+    launcherAgentTestId,
     launcherDirectoryTestId,
     launcherDistroTestId,
+    launcherHistoryItemTestId,
   } from "../testids";
 
   type TranslationOptions = {
@@ -281,8 +283,12 @@
             </div>
           {:else}
             <div class="recent-list" data-testid={TEST_IDS.launcherRecentList}>
-              {#each historyEntries as entry (((entry.resumeToken ?? "path") + "::" + (entry.agentId ?? "claude") + "::" + entry.distro + "::" + entry.workDir + "::" + entry.lastOpenedAt))}
-                <button class="recent-item" onclick={() => selectHistory(entry)}>
+              {#each historyEntries as entry, index (((entry.resumeToken ?? "path") + "::" + (entry.agentId ?? "claude") + "::" + entry.distro + "::" + entry.workDir + "::" + entry.lastOpenedAt))}
+                <button
+                  class="recent-item"
+                  data-testid={launcherHistoryItemTestId(index)}
+                  onclick={() => selectHistory(entry)}
+                >
                   <div class="recent-header">
                     <span class="recent-title-row">
                       <AgentIcon agentId={entry.agentId ?? "claude"} />
@@ -323,11 +329,19 @@
                 <h3>{t("launcher.directory.title")}</h3>
               </div>
               <div class="header-controls">
-                <button class="picker-badge agent-trigger" onclick={() => { agentPickerOpen = true; }}>
+                <button
+                  class="picker-badge agent-trigger"
+                  data-testid={TEST_IDS.launcherAgentTrigger}
+                  onclick={() => { agentPickerOpen = true; }}
+                >
                   <AgentIcon agentId={selectedAgentId} size="sm" />
                   <span>{getAgentLabel(selectedAgentId)}</span>
                 </button>
-                <button class="picker-badge distro-trigger" onclick={() => { distroPickerOpen = true; }}>
+                <button
+                  class="picker-badge distro-trigger"
+                  data-testid={TEST_IDS.launcherDistroTrigger}
+                  onclick={() => { distroPickerOpen = true; }}
+                >
                   {selectedDistro}
                 </button>
               </div>
@@ -433,7 +447,8 @@
     tabindex="-1"
   >
     <div
-      class="picker-dialog surface"
+    class="picker-dialog surface"
+      data-testid={TEST_IDS.launcherAgentPicker}
       role="dialog"
       aria-modal="true"
       tabindex="-1"
@@ -450,11 +465,12 @@
       </div>
 
       <div class="inset-surface list-frame picker-list-frame">
-        <div class="list agent-list">
+        <div class="list agent-list" data-testid={TEST_IDS.launcherAgentList}>
           {#each builtinAgents as agent}
             <button
               class="list-item agent-picker-item"
               class:selected={agent.id === selectedAgentId}
+              data-testid={launcherAgentTestId(agent.id)}
               onclick={() => {
                 selectedAgentId = agent.id;
                 agentPickerOpen = false;
@@ -481,6 +497,7 @@
   >
     <div
       class="picker-dialog surface"
+      data-testid={TEST_IDS.launcherDistroPicker}
       role="dialog"
       aria-modal="true"
       tabindex="-1"

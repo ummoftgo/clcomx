@@ -6,6 +6,11 @@ export const TEST_IDS = {
   sessionLauncher: "session-launcher",
   launcherNewSession: "launcher-new-session",
   launcherRecentList: "launcher-recent-list",
+  launcherAgentTrigger: "launcher-agent-trigger",
+  launcherAgentPicker: "launcher-agent-picker",
+  launcherAgentList: "launcher-agent-list",
+  launcherDistroTrigger: "launcher-distro-trigger",
+  launcherDistroPicker: "launcher-distro-picker",
   launcherDistroList: "launcher-distro-list",
   launcherDirectoryList: "launcher-directory-list",
   launcherPathInput: "launcher-path-input",
@@ -58,8 +63,16 @@ export function launcherDistroTestId(distro: string) {
   return `launcher-distro-${toTestIdSegment(distro)}`;
 }
 
+export function launcherAgentTestId(agentId: string) {
+  return `launcher-agent-${toTestIdSegment(agentId)}`;
+}
+
 export function launcherDirectoryTestId(path: string) {
   return `launcher-directory-${toTestIdSegment(path)}`;
+}
+
+export function launcherHistoryItemTestId(index: number) {
+  return `launcher-history-item-${index}`;
 }
 
 export function settingsNavSectionTestId(sectionId: string) {

@@ -21,12 +21,14 @@ CLCOMX의 데스크톱 E2E는 다음을 자동 검증하기 위한 구조다.
   - `npm run verify`
 - Desktop E2E
   - `npm run test:e2e`
-  - `npm run test:e2e:smoke`
-  - `npm run test:e2e:settings`
-  - `npm run test:e2e:windows-tabs`
-  - `npm run test:e2e:workspace-restore`
-  - `npm run test:e2e:image-paste`
-  - `npm run test:e2e:terminal-input`
+- `npm run test:e2e:smoke`
+- `npm run test:e2e:settings`
+- `npm run test:e2e:windows-tabs`
+- `npm run test:e2e:workspace-restore`
+- `npm run test:e2e:image-paste`
+- `npm run test:e2e:terminal-input`
+
+개별 팩 스크립트는 이제 Windows에서 직접 `vitest`를 돌리지 않고, PowerShell runner를 통해 최신 exe 빌드/실행 경로를 우선 사용한다.
 
 ## E2E 기능팩
 

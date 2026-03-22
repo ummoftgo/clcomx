@@ -665,6 +665,7 @@
 <div
   class="terminal-shell"
   data-testid={TEST_IDS.terminalShell}
+  data-agent-id={agentId}
   data-session-id={sessionId}
   data-pty-id={String(livePtyId)}
   data-draft-open={draftOpen ? "true" : "false"}
