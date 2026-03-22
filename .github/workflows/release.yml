@@ -1,12 +1,14 @@
 name: Release
 
+# Temporarily disabled.
+# Re-enable by restoring the tag push trigger and removing `if: false` below.
+
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 jobs:
   build-windows:
+    if: false
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
