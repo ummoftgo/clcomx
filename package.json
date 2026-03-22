@@ -1,7 +1,7 @@
 {
   "name": "clcomx",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,6 +20,7 @@
     "test:e2e:image-paste": "node ./scripts/run-e2e-project.mjs image-paste",
     "test:e2e:terminal-input": "node ./scripts/run-e2e-project.mjs terminal-input",
     "test:e2e:terminal-links": "node ./scripts/run-e2e-project.mjs terminal-links",
+    "test:e2e:terminal-aux": "node ./scripts/run-e2e-project.mjs terminal-aux",
     "test:e2e:sync": "bash scripts/sync-e2e-mirror.sh",
     "test:e2e:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\e2e-smoke-windows.ps1",
     "test:e2e:wsl": "bash scripts/e2e-smoke-windows.sh",

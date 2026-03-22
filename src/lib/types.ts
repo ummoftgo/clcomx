@@ -52,6 +52,8 @@ export interface TerminalSettings {
   fontSize: number;
   scrollback: number;
   draftMaxRows: number;
+  auxTerminalShortcut: string;
+  auxTerminalDefaultHeight: number;
 }
 
 export interface WorkspaceSettings {
@@ -141,6 +143,8 @@ export const DEFAULT_SETTINGS: Settings = {
     fontSize: 14,
     scrollback: 10000,
     draftMaxRows: 5,
+    auxTerminalShortcut: "Ctrl+`",
+    auxTerminalDefaultHeight: 28,
   },
   history: {
     tabLimit: 10,

@@ -80,6 +80,17 @@ export default defineConfig({
           reporters: "default",
         },
       },
+      {
+        test: {
+          name: "terminal-aux",
+          environment: "node",
+          include: ["e2e/terminal-aux/**/*.test.ts"],
+          fileParallelism: false,
+          hookTimeout: 120_000,
+          testTimeout: 120_000,
+          reporters: "default",
+        },
+      },
     ],
   },
 });

@@ -139,6 +139,33 @@ export async function getTerminalOutputSnapshot(
   });
 }
 
+export async function getAuxTerminalOutputSnapshot(
+  driver: WebDriver,
+  sessionId: string,
+): Promise<TerminalOutputSnapshot | null> {
+  return driver.executeAsyncScript(
+    `
+      const sessionId = arguments[0];
+      const done = arguments[arguments.length - 1];
+      const hook = window.__clcomxTestHooks?.terminals?.[sessionId];
+      if (!hook?.getAuxOutputSnapshot) {
+        done(null);
+        return;
+      }
+
+      Promise.resolve(hook.getAuxOutputSnapshot())
+        .then((value) => done(value ?? null))
+        .catch((error) => done({ __error: String(error) }));
+    `,
+    sessionId,
+  ).then((result: TerminalOutputSnapshot | { __error: string } | null) => {
+    if (result && typeof result === "object" && "__error" in result) {
+      throw new Error(result.__error);
+    }
+    return result;
+  });
+}
+
 export async function getTerminalViewportState(
   driver: WebDriver,
   sessionId: string,

@@ -27,6 +27,7 @@ Electron 대신 `Rust + Tauri v2 + Svelte 5`를 사용해 메모리 사용량과
 - 터미널 UX
   - xterm.js 기반 터미널
   - 드래프트 입력 보조
+  - 탭별 보조 터미널 dock
   - 이미지 붙여넣기 시 파일 저장 후 경로 삽입
   - URL 링크 컨텍스트 메뉴
   - 파일 경로 링크와 Windows 에디터 열기
@@ -206,6 +207,16 @@ bash scripts/build-windows.sh
 - Notepad++
 - Sublime Text
 
+### 6. 보조 터미널
+
+- 각 탭에서 `터미널 열기` 버튼 또는 `Ctrl+\``로 보조 터미널을 열 수 있습니다.
+- 보조 터미널은 메인 에이전트 터미널을 밀지 않는 하단 overlay dock으로 표시됩니다.
+- 보조 터미널은 현재 탭의 `distro + workDir`에서 일반 셸로 실행됩니다.
+- 숨기면 셸 상태를 유지하고, 다시 열면 같은 셸로 이어집니다.
+- 셸 안에서 `exit`로 종료했다면 다음에 열 때 새 셸이 다시 생성됩니다.
+- 탭/앱을 닫으면 보조 터미널은 정리되고, 다음 실행 시 복원되지는 않습니다.
+- `설정 > Terminal`에서 토글 단축키와 기본 높이를 조정할 수 있습니다.
+
 ## 설정
 
 설정 화면은 현재 다음 카테고리로 나뉩니다.
@@ -222,7 +233,9 @@ bash scripts/build-windows.sh
   - 배포판별 기본 시작 경로
 - Terminal
   - 터미널 글꼴
-  - 터미널 크기 / 드래프트 관련 설정
+  - 스크롤백
+  - 보조 터미널 단축키 / 기본 높이
+  - 드래프트 관련 설정
 - Storage
   - 이미지 캐시 통계
   - 폴더 열기
@@ -271,14 +284,14 @@ CLCOMX는 종료 시 에이전트 출력에서 resume token을 캡처해 다음 
 
 ## 버전 관리
 
-- 현재 버전: `0.1.1`
+- 현재 버전: `0.1.2`
 - 버전 문서 위치: [`docs/version/`](./docs/version/)
 - 규칙:
   - 기능 추가: `minor` 증가, `patch`는 `0`으로 초기화
   - 수정/안정화: `patch` 증가
   - 메이저 버전 증가는 명시적으로 지시받은 경우에만 수행
 
-이번 변경 내역은 [`docs/version/0.1.1.md`](./docs/version/0.1.1.md)에 정리돼 있습니다.
+이번 변경 내역은 [`docs/version/0.1.2.md`](./docs/version/0.1.2.md)에 정리돼 있습니다.
 
 ## 테스트
 
@@ -304,6 +317,7 @@ npm run test:e2e:windows
 ```powershell
 npm run test:e2e:windows -- -Project terminal-links
 npm run test:e2e:windows -- -Project workspace-restore
+npm run test:e2e:windows -- -Project terminal-aux
 ```
 
 특정 팩만:

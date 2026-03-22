@@ -12,6 +12,10 @@ export interface PtyOutputSnapshot {
   seq: number;
 }
 
+function escapeShellSingleQuoted(value: string) {
+  return value.replace(/'/g, "'\\''");
+}
+
 export async function spawnPty(
   cols: number,
   rows: number,
@@ -20,7 +24,6 @@ export async function spawnPty(
   workDir: string,
   resumeToken?: string | null,
 ): Promise<number> {
-  const escapeShellSingleQuoted = (value: string) => value.replace(/'/g, "'\\''");
   const safeWorkDir = escapeShellSingleQuoted(workDir);
   const safeResumeToken = resumeToken ? escapeShellSingleQuoted(resumeToken) : null;
   const agent = getAgentDefinition(agentId);
@@ -38,6 +41,35 @@ export async function spawnPty(
     mockDistro: distro,
     mockWorkDir: workDir,
     mockResumeToken: resumeToken,
+  });
+}
+
+export async function spawnShellPty(
+  cols: number,
+  rows: number,
+  distro: string,
+  workDir: string,
+): Promise<number> {
+  const safeWorkDir = escapeShellSingleQuoted(workDir);
+
+  return await invoke<number>("pty_spawn", {
+    cols,
+    rows,
+    command: "wsl.exe",
+    args: [
+      "-d",
+      distro,
+      "-e",
+      "bash",
+      "-li",
+      "-c",
+      `if cd '${safeWorkDir}' 2>/dev/null; then exec bash -li; else cd ~ && exec bash -li; fi`,
+    ],
+    cwd: null,
+    mockAgentId: "shell",
+    mockDistro: distro,
+    mockWorkDir: workDir,
+    mockResumeToken: null,
   });
 }
 

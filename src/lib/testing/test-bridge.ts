@@ -13,6 +13,7 @@ export interface TestOpenPendingImageDetail {
 export interface TerminalTestHook {
   openPendingImage: (detail: Omit<TestOpenPendingImageDetail, "sessionId">) => void;
   getOutputSnapshot: () => Promise<{ data: string; seq: number } | null>;
+  getAuxOutputSnapshot: () => Promise<{ data: string; seq: number } | null>;
   getViewportState: () => { viewportY: number; baseY: number; rows: number; cols: number } | null;
   openUrlMenu: (url: string) => void;
   openFileMenu: (rawPath: string) => Promise<void>;

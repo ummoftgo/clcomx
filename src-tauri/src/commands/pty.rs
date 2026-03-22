@@ -245,6 +245,7 @@ fn create_mock_session(
 ) -> Result<(u32, PtySession), String> {
     let id = next_session_id(state)?;
     let agent_label = match agent_id.as_deref() {
+        Some("shell") => "Shell",
         Some("codex") => "Codex",
         _ => "Claude Code",
     };

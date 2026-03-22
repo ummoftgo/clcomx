@@ -19,6 +19,8 @@
   import {
     type PtyOutputChunk,
     getPtyOutputSnapshot,
+    killPty,
+    spawnShellPty,
     spawnPty,
     writePty,
     resizePty,
@@ -30,6 +32,7 @@
   import type { ContextMenuItem } from "../ui/context-menu";
   import { Button } from "../ui";
   import { buildFontStack, serializeFontFamilyList } from "../font-family";
+  import { matchesShortcut } from "../hotkeys";
   import {
     listAvailableEditors,
     openInEditor,
@@ -77,6 +80,8 @@
 
   let shellEl: HTMLDivElement;
   let outputEl: HTMLDivElement;
+  let auxOutputEl = $state<HTMLDivElement | null>(null);
+  let assistPanelEl = $state<HTMLDivElement | null>(null);
   let draftEl = $state<HTMLTextAreaElement | null>(null);
   let terminal: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
@@ -110,7 +115,26 @@
   let unlistenOutput: UnlistenFn | null = null;
   let unlistenExit: UnlistenFn | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let assistResizeObserver: ResizeObserver | null = null;
   let fileLinkProviderDisposable: IDisposable | null = null;
+  let auxTerminal: Terminal | null = null;
+  let auxFitAddon: FitAddon | null = null;
+  let auxResizeObserver: ResizeObserver | null = null;
+  let auxOutputPointerCleanup: (() => void) | null = null;
+  let auxPtyId = $state(-1);
+  let auxVisible = $state(false);
+  let auxInitialized = $state(false);
+  let auxExited = $state(false);
+  let auxBusy = $state(false);
+  let auxSpawnError = $state<string | null>(null);
+  let auxHeightPercent = $state(28);
+  let auxHeightCustomized = false;
+  let auxFollowTail = true;
+  let assistPanelHeight = $state(0);
+  let resizingAux = false;
+  let auxResizePointerId: number | null = null;
+  let auxResizeStartY = 0;
+  let auxResizeStartPercent = 0;
   let replayInProgress = false;
   let replayBuffer: PtyOutputChunk[] = [];
   let testHookRegistered = $state(false);
@@ -172,8 +196,28 @@
             label: $t("terminal.links.copyLink"),
             icon: "copy",
           },
-        ],
+      ],
   );
+
+  function clampAuxHeightPercent(value: number) {
+    if (!Number.isFinite(value)) {
+      return clampAuxHeightPercent(settings.terminal.auxTerminalDefaultHeight);
+    }
+    return Math.min(70, Math.max(18, Math.round(value)));
+  }
+
+  function buildTerminalOptions(theme = getThemeById(settings.interface.theme)?.theme) {
+    return {
+      fontSize: settings.terminal.fontSize,
+      fontFamily: terminalFontFamily,
+      theme,
+      cursorBlink: false,
+      cursorStyle: "block" as const,
+      allowProposedApi: true,
+      scrollback: settings.terminal.scrollback,
+      disableStdin: false,
+    };
+  }
 
   function hexToRgba(color: string | undefined, alpha: number, fallback: string) {
     if (!color) return fallback;
@@ -345,14 +389,56 @@
     });
   }
 
+  function focusTerminalSurface(term: Terminal | null, container: HTMLElement | null) {
+    if (!term || !container) {
+      return;
+    }
+
+    term.focus();
+
+    const helperTextarea = container.querySelector(
+      ".xterm-helper-textarea",
+    ) as HTMLTextAreaElement | null;
+    helperTextarea?.focus({ preventScroll: true });
+  }
+
   function focusOutput() {
     if (!terminalReady || !visible) return;
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        terminal?.focus();
+        focusTerminalSurface(terminal, outputEl);
       });
     });
+  }
+
+  function focusAuxTerminal() {
+    if (!auxVisible || !visible) return;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        focusTerminalSurface(auxTerminal, auxOutputEl);
+      });
+    });
+  }
+
+  function syncAssistPanelHeight() {
+    assistPanelHeight = assistPanelEl?.offsetHeight ?? 0;
+    if (shellEl) {
+      shellEl.style.setProperty("--assist-panel-height", `${assistPanelHeight}px`);
+    }
+  }
+
+  function isEditableTarget(target: EventTarget | null) {
+    if (!(target instanceof Element)) {
+      return false;
+    }
+
+    return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+  }
+
+  function handleAuxOutputPointerDown() {
+    focusAuxTerminal();
   }
 
   function setClipboardNotice(message: string) {
@@ -363,6 +449,30 @@
     noticeTimer = setTimeout(() => {
       clipboardNotice = null;
     }, 2600);
+  }
+
+  function handleAuxShortcut(event: KeyboardEvent) {
+    if (!visible || !matchesShortcut(event, settings.terminal.auxTerminalShortcut)) {
+      return;
+    }
+
+    const targetNode = event.target instanceof Node ? event.target : null;
+
+    if (
+      (pendingClipboardImage !== null || editorPickerVisible) &&
+      targetNode !== null &&
+      !shellEl.contains(targetNode)
+    ) {
+      return;
+    }
+
+    if (isEditableTarget(event.target) && targetNode !== null && !shellEl.contains(targetNode)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    void toggleAuxTerminal();
   }
 
   function openContextMenu(
@@ -593,6 +703,14 @@
     return getPtyOutputSnapshot(livePtyId);
   }
 
+  async function getAuxOutputSnapshotForTest() {
+    if (auxPtyId < 0) {
+      return null;
+    }
+
+    return getPtyOutputSnapshot(auxPtyId);
+  }
+
   function getViewportStateForTest() {
     if (!terminal) {
       return null;
@@ -805,7 +923,199 @@
     });
   }
 
+  function disposeAuxTerminalInstance() {
+    auxResizeObserver?.disconnect();
+    auxResizeObserver = null;
+    auxOutputPointerCleanup?.();
+    auxOutputPointerCleanup = null;
+    auxTerminal?.dispose();
+    auxTerminal = null;
+    auxFitAddon = null;
+    auxOutputEl?.replaceChildren();
+  }
+
+  async function createAuxTerminalInstance() {
+    if (!auxOutputEl) {
+      return;
+    }
+
+    disposeAuxTerminalInstance();
+
+    const auxTerm = new Terminal(buildTerminalOptions());
+    const auxFit = new FitAddon();
+    auxTerm.loadAddon(auxFit);
+    auxTerm.open(auxOutputEl);
+    auxOutputEl.addEventListener("pointerdown", handleAuxOutputPointerDown, true);
+    auxOutputPointerCleanup = () => {
+      auxOutputEl?.removeEventListener("pointerdown", handleAuxOutputPointerDown, true);
+    };
+
+    auxTerm.onData((data) => {
+      if (auxPtyId >= 0) {
+        void writePty(auxPtyId, data);
+      }
+    });
+
+    auxTerm.onResize(({ cols, rows }) => {
+      if (auxPtyId >= 0) {
+        void resizePty(auxPtyId, cols, rows);
+      }
+      if (auxFollowTail) {
+        auxTerm.scrollToBottom();
+      }
+    });
+
+    auxTerm.onScroll((viewportY) => {
+      auxFollowTail = viewportY >= auxTerm.buffer.active.baseY;
+    });
+
+    auxResizeObserver = new ResizeObserver(() => {
+      if (visible && auxVisible && auxFitAddon) {
+        auxFitAddon.fit();
+        auxTerminal?.scrollToBottom();
+      }
+    });
+    auxResizeObserver.observe(auxOutputEl);
+
+    auxTerminal = auxTerm;
+    auxFitAddon = auxFit;
+    auxFollowTail = true;
+
+    await tick();
+    requestAnimationFrame(() => {
+      auxFit.fit();
+    });
+  }
+
+  async function spawnAuxShell(term: Terminal) {
+    const { cols, rows } = getInitialPtySize(term);
+    auxBusy = true;
+    auxSpawnError = null;
+
+    try {
+      auxPtyId = await spawnShellPty(cols, rows, distro, workDir);
+      const initialOutput = await takePtyInitialOutput(auxPtyId);
+      await writeTerminalData(term, initialOutput);
+      auxExited = false;
+      auxFollowTail = true;
+    } catch (error) {
+      auxSpawnError = error instanceof Error ? error.message : String(error);
+      auxPtyId = -1;
+    } finally {
+      auxBusy = false;
+    }
+  }
+
+  async function ensureAuxTerminalVisible() {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
+    auxVisible = true;
+    if (!auxInitialized) {
+      auxInitialized = true;
+    }
+
+    await tick();
+
+    if (!auxTerminal || auxExited) {
+      await createAuxTerminalInstance();
+    }
+
+    if (!auxTerminal) {
+      return;
+    }
+
+    if (auxPtyId < 0) {
+      await spawnAuxShell(auxTerminal);
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        auxFitAddon?.fit();
+        if (auxPtyId >= 0 && auxTerminal) {
+          void resizePty(auxPtyId, auxTerminal.cols, auxTerminal.rows);
+        }
+        auxTerminal?.scrollToBottom();
+        focusAuxTerminal();
+      });
+    });
+  }
+
+  function hideAuxTerminal() {
+    auxVisible = false;
+    resizingAux = false;
+    focusOutput();
+  }
+
+  async function toggleAuxTerminal() {
+    if (auxVisible) {
+      hideAuxTerminal();
+      return;
+    }
+
+    await ensureAuxTerminalVisible();
+  }
+
+  function handleAuxPtyExit() {
+    auxExited = true;
+    auxPtyId = -1;
+    auxVisible = false;
+    auxBusy = false;
+    focusOutput();
+  }
+
+  function stopAuxResize() {
+    resizingAux = false;
+    auxResizePointerId = null;
+    window.removeEventListener("pointermove", handleAuxResizeMove, true);
+    window.removeEventListener("pointerup", stopAuxResize, true);
+    window.removeEventListener("pointercancel", stopAuxResize, true);
+    document.body.style.removeProperty("cursor");
+    document.body.style.removeProperty("user-select");
+  }
+
+  function handleAuxResizeMove(event: PointerEvent) {
+    if (!resizingAux || auxResizePointerId !== event.pointerId || !shellEl) {
+      return;
+    }
+
+    event.preventDefault();
+    const delta = auxResizeStartY - event.clientY;
+    const availableHeight = Math.max(shellEl.clientHeight - assistPanelHeight - 12, 1);
+    const percentDelta = (delta / availableHeight) * 100;
+    auxHeightPercent = clampAuxHeightPercent(auxResizeStartPercent + percentDelta);
+    auxHeightCustomized = true;
+  }
+
+  function handleAuxResizeStart(event: PointerEvent) {
+    if (event.button !== 0 || !auxVisible) {
+      return;
+    }
+
+    event.preventDefault();
+    resizingAux = true;
+    auxResizePointerId = event.pointerId;
+    auxResizeStartY = event.clientY;
+    auxResizeStartPercent = auxHeightPercent;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handleAuxResizeMove, true);
+    window.addEventListener("pointerup", stopAuxResize, true);
+    window.addEventListener("pointercancel", stopAuxResize, true);
+  }
+
   function handleOutputChunk(event: PtyOutputChunk) {
+    if (event.id === auxPtyId && auxTerminal) {
+      const shouldStickToBottom = auxFollowTail;
+      auxTerminal.write(event.data, () => {
+        if (shouldStickToBottom) {
+          auxTerminal?.scrollToBottom();
+        }
+      });
+      return;
+    }
+
     if (event.id !== livePtyId || !terminal) {
       return;
     }
@@ -872,16 +1182,7 @@
 
   onMount(async () => {
     const initialTheme = getThemeById(settings.interface.theme)?.theme;
-    const term = new Terminal({
-      fontSize: settings.terminal.fontSize,
-      fontFamily: terminalFontFamily,
-      theme: initialTheme,
-      cursorBlink: false,
-      cursorStyle: "block",
-      allowProposedApi: true,
-      scrollback: settings.terminal.scrollback,
-      disableStdin: false,
-    });
+    const term = new Terminal(buildTerminalOptions(initialTheme));
 
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -929,6 +1230,7 @@
 
     await tick();
     syncDraftHeight();
+    syncAssistPanelHeight();
 
     requestAnimationFrame(() => {
       fit.fit();
@@ -943,6 +1245,11 @@
     unlistenExit = await listen<number>("pty-exit", (event) => {
       if (event.payload === livePtyId) {
         onExit?.(event.payload);
+        return;
+      }
+
+      if (event.payload === auxPtyId) {
+        handleAuxPtyExit();
       }
     });
 
@@ -980,9 +1287,17 @@
           scrollTerminalToBottom();
         }
         syncDraftHeight();
+        syncAssistPanelHeight();
       }
     });
     resizeObserver.observe(outputEl);
+
+    assistResizeObserver = new ResizeObserver(() => {
+      syncAssistPanelHeight();
+    });
+    if (assistPanelEl) {
+      assistResizeObserver.observe(assistPanelEl);
+    }
 
     term.onResize(({ cols, rows }) => {
       if (livePtyId >= 0) {
@@ -1006,12 +1321,14 @@
     outputEl.addEventListener("wheel", disableAutoFollow, true);
     window.addEventListener("mouseup", releaseLinkSelectionBlock, true);
     window.addEventListener("blur", releaseLinkSelectionBlock);
+    window.addEventListener("keydown", handleAuxShortcut, true);
     window.addEventListener("clcomx:focus-active-terminal", handleFocusRequest);
     window.addEventListener(TEST_BRIDGE_EVENTS.openPendingImage, handleTestPendingImage as EventListener);
     if (isTestBridgeEnabled()) {
       getOrCreateTerminalTestHooks()[sessionId] = {
         openPendingImage: openPendingImageForTest,
         getOutputSnapshot: getOutputSnapshotForTest,
+        getAuxOutputSnapshot: getAuxOutputSnapshotForTest,
         getViewportState: getViewportStateForTest,
         openUrlMenu: openUrlLinkMenuForTest,
         openFileMenu: openFileLinkMenuForTest,
@@ -1034,7 +1351,21 @@
           void resizePty(livePtyId, terminal.cols, terminal.rows);
         }
         syncDraftHeight();
-        focusOutput();
+      });
+    });
+  });
+
+  $effect(() => {
+    if (!visible || !auxVisible || !auxTerminal) return;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        auxFitAddon?.fit();
+        if (auxPtyId >= 0 && auxTerminal) {
+          void resizePty(auxPtyId, auxTerminal.cols, auxTerminal.rows);
+        }
+        auxTerminal?.scrollToBottom();
+        focusAuxTerminal();
       });
     });
   });
@@ -1051,6 +1382,9 @@
     if (!terminalReady) return;
     if (themeDef) {
       terminal!.options.theme = themeDef.theme;
+      if (auxTerminal) {
+        auxTerminal.options.theme = themeDef.theme;
+      }
     }
   });
 
@@ -1059,7 +1393,13 @@
     terminal!.options.fontSize = settings.terminal.fontSize;
     terminal!.options.fontFamily = terminalFontFamily;
     terminal!.options.scrollback = settings.terminal.scrollback;
+    if (auxTerminal) {
+      auxTerminal.options.fontSize = settings.terminal.fontSize;
+      auxTerminal.options.fontFamily = terminalFontFamily;
+      auxTerminal.options.scrollback = settings.terminal.scrollback;
+    }
     fitAddon?.fit();
+    auxFitAddon?.fit();
     tick().then(syncDraftHeight);
   });
 
@@ -1068,9 +1408,22 @@
     tick().then(syncDraftHeight);
   });
 
+  $effect(() => {
+    draftOpen;
+    tick().then(syncAssistPanelHeight);
+  });
+
+  $effect(() => {
+    settings.terminal.auxTerminalDefaultHeight;
+    if (!auxHeightCustomized) {
+      auxHeightPercent = clampAuxHeightPercent(settings.terminal.auxTerminalDefaultHeight);
+    }
+  });
+
   onDestroy(() => {
     window.removeEventListener("clcomx:focus-active-terminal", handleFocusRequest);
     window.removeEventListener(TEST_BRIDGE_EVENTS.openPendingImage, handleTestPendingImage as EventListener);
+    window.removeEventListener("keydown", handleAuxShortcut, true);
     if (isTestBridgeEnabled()) {
       delete getOrCreateTerminalTestHooks()[sessionId];
       testHookRegistered = false;
@@ -1080,15 +1433,21 @@
     outputEl?.removeEventListener("wheel", disableAutoFollow, true);
     window.removeEventListener("mouseup", releaseLinkSelectionBlock, true);
     window.removeEventListener("blur", releaseLinkSelectionBlock);
+    stopAuxResize();
     unlistenOutput?.();
     unlistenExit?.();
     resizeObserver?.disconnect();
+    assistResizeObserver?.disconnect();
     if (noticeTimer) {
       clearTimeout(noticeTimer);
     }
     releaseBottomLock();
     revokePendingClipboardImage(pendingClipboardImage);
     fileLinkProviderDisposable?.dispose();
+    if (auxPtyId >= 0) {
+      void killPty(auxPtyId);
+    }
+    disposeAuxTerminalInstance();
     terminal?.dispose();
   });
 </script>
@@ -1099,6 +1458,8 @@
   data-agent-id={agentId}
   data-session-id={sessionId}
   data-pty-id={String(livePtyId)}
+  data-aux-pty-id={String(auxPtyId)}
+  data-aux-visible={auxVisible ? "true" : "false"}
   data-draft-open={draftOpen ? "true" : "false"}
   data-pending-image={pendingClipboardImage ? "true" : "false"}
   data-test-hook-registered={testHookRegistered ? "true" : "false"}
@@ -1124,7 +1485,54 @@
     {/if}
   </div>
 
-  <div class="assist-panel" class:assist-panel--draft-open={draftOpen}>
+  {#if auxInitialized}
+    <div
+      class="aux-panel"
+      class:aux-panel--hidden={!auxVisible}
+      style:height={auxVisible ? `${auxHeightPercent}%` : "0px"}
+    >
+      <div class="aux-surface">
+        <button
+          type="button"
+          class="aux-resize-handle"
+          tabindex="-1"
+          aria-label={$t("terminal.aux.resizeHint")}
+          title={$t("terminal.aux.resizeHint")}
+          onpointerdown={handleAuxResizeStart}
+        ></button>
+
+        <div class="aux-header">
+          <div class="aux-copy">
+            <span class="aux-title">{$t("terminal.aux.title")}</span>
+            <span class="aux-path">
+              {$t("terminal.aux.currentPath")}: {workDir}
+            </span>
+          </div>
+
+          <Button
+            size="sm"
+            variant="ghost"
+            onclick={(event) => {
+              (event.currentTarget as HTMLButtonElement | null)?.blur();
+              hideAuxTerminal();
+            }}
+          >
+            {$t("common.actions.close")}
+          </Button>
+        </div>
+
+        <div class="aux-output" data-testid={TEST_IDS.auxTerminalShell} bind:this={auxOutputEl}>
+          {#if auxSpawnError}
+            <div class="terminal-error">
+              {$t("terminal.aux.startFailed", { values: { message: auxSpawnError } })}
+            </div>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <div class="assist-panel" class:assist-panel--draft-open={draftOpen} bind:this={assistPanelEl}>
     <div class="assist-header">
       <div class="assist-copy">
         <span class="assist-label">{$t("terminal.assist.label")}</span>
@@ -1134,6 +1542,22 @@
       <div class="assist-actions">
         <Button size="sm" onclick={handlePasteImageFromClipboard}>
           {$t("terminal.assist.pasteImage")}
+        </Button>
+        <Button
+          size="sm"
+          data-testid={TEST_IDS.auxTerminalToggle}
+          variant={auxVisible ? "primary" : "secondary"}
+          onclick={(event) => {
+            (event.currentTarget as HTMLButtonElement | null)?.blur();
+            void toggleAuxTerminal();
+          }}
+          disabled={auxBusy}
+        >
+          {#if auxVisible}
+            {$t("terminal.assist.hideTerminal")}
+          {:else}
+            {$t("terminal.assist.openTerminal")}
+          {/if}
         </Button>
         <Button
           size="sm"
@@ -1251,6 +1675,98 @@
 
   .terminal-output.terminal-output--link-hover {
     cursor: pointer;
+  }
+
+  .aux-panel {
+    position: absolute;
+    left: var(--ui-space-1);
+    right: var(--ui-space-1);
+    bottom: calc(var(--assist-panel-height, 0px) + var(--ui-space-1));
+    overflow: hidden;
+    min-height: 0;
+    max-height: calc(100% - var(--assist-panel-height, 0px) - calc(12px * var(--ui-scale)));
+    border: 1px solid color-mix(in srgb, var(--ui-border-strong, var(--tab-border)) 76%, transparent);
+    border-radius: var(--ui-radius-lg);
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-surface, var(--tab-active-bg)) 90%, transparent), transparent),
+      color-mix(in srgb, var(--ui-bg-app, var(--app-bg)) 88%, transparent);
+    box-shadow: 0 -12px 28px rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.22);
+    transition: height 160ms ease, border-color 160ms ease, opacity 160ms ease, transform 160ms ease;
+    z-index: 15;
+  }
+
+  .aux-panel.aux-panel--hidden {
+    height: 0 !important;
+    border-color: transparent;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+  }
+
+  .aux-surface {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .aux-resize-handle {
+    flex: 0 0 auto;
+    height: calc(14px * var(--ui-scale));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    cursor: ns-resize;
+    color: var(--ui-text-muted, var(--tab-text));
+  }
+
+  .aux-resize-handle::before {
+    content: "";
+    width: calc(56px * var(--ui-scale));
+    height: calc(4px * var(--ui-scale));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ui-border-strong, var(--tab-border)) 74%, transparent);
+  }
+
+  .aux-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ui-space-3);
+    padding: 0 var(--ui-space-4) var(--ui-space-3);
+  }
+
+  .aux-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--ui-space-1);
+  }
+
+  .aux-title {
+    font-size: var(--ui-font-size-sm);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ui-text-secondary, var(--tab-text));
+  }
+
+  .aux-path {
+    font-size: var(--ui-font-size-sm);
+    line-height: 1.45;
+    color: var(--ui-text-muted, var(--tab-text));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .aux-output {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    padding: 0 var(--ui-space-3) var(--ui-space-3);
   }
 
   .assist-panel {

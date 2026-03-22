@@ -66,6 +66,10 @@ const MAX_DRAFT_MAX_ROWS: u16 = 999;
 const DEFAULT_SCROLLBACK: u32 = 10_000;
 const MIN_SCROLLBACK: u32 = 1_000;
 const MAX_SCROLLBACK: u32 = 200_000;
+const DEFAULT_AUX_TERMINAL_SHORTCUT: &str = "Ctrl+`";
+const DEFAULT_AUX_TERMINAL_HEIGHT: u16 = 28;
+const MIN_AUX_TERMINAL_HEIGHT: u16 = 18;
+const MAX_AUX_TERMINAL_HEIGHT: u16 = 70;
 const DEFAULT_UI_SCALE: u16 = 100;
 const MIN_UI_SCALE: u16 = 80;
 const MAX_UI_SCALE: u16 = 200;
@@ -90,6 +94,10 @@ fn clamp_draft_max_rows(rows: u16) -> u16 {
 
 fn clamp_scrollback(value: u32) -> u32 {
     value.clamp(MIN_SCROLLBACK, MAX_SCROLLBACK)
+}
+
+fn clamp_aux_terminal_height(value: u16) -> u16 {
+    value.clamp(MIN_AUX_TERMINAL_HEIGHT, MAX_AUX_TERMINAL_HEIGHT)
 }
 
 fn clamp_ui_scale(scale: u16) -> u16 {
@@ -119,6 +127,15 @@ fn normalize_file_open_mode(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "default" => "default".into(),
         _ => DEFAULT_FILE_OPEN_MODE.into(),
+    }
+}
+
+fn normalize_aux_terminal_shortcut(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        DEFAULT_AUX_TERMINAL_SHORTCUT.into()
+    } else {
+        trimmed.into()
     }
 }
 
@@ -158,6 +175,8 @@ pub struct TerminalSettingsPayload {
     pub font_size: u16,
     pub scrollback: u32,
     pub draft_max_rows: u16,
+    pub aux_terminal_shortcut: String,
+    pub aux_terminal_default_height: u16,
 }
 
 impl Default for TerminalSettingsPayload {
@@ -168,6 +187,8 @@ impl Default for TerminalSettingsPayload {
             font_size: 14,
             scrollback: DEFAULT_SCROLLBACK,
             draft_max_rows: DEFAULT_DRAFT_MAX_ROWS,
+            aux_terminal_shortcut: DEFAULT_AUX_TERMINAL_SHORTCUT.into(),
+            aux_terminal_default_height: DEFAULT_AUX_TERMINAL_HEIGHT,
         }
     }
 }
@@ -520,6 +541,16 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         &[&["terminal", "draftMaxRows"], &["composerMaxRows"]],
         settings.terminal.draft_max_rows,
     ));
+    settings.terminal.aux_terminal_shortcut = normalize_aux_terminal_shortcut(&string_from_paths(
+        value,
+        &[&["terminal", "auxTerminalShortcut"]],
+        &settings.terminal.aux_terminal_shortcut,
+    ));
+    settings.terminal.aux_terminal_default_height = clamp_aux_terminal_height(u16_from_paths(
+        value,
+        &[&["terminal", "auxTerminalDefaultHeight"]],
+        settings.terminal.aux_terminal_default_height,
+    ));
 
     settings.history.tab_limit = clamp_tab_history_limit(u16_from_paths(
         value,
@@ -569,6 +600,9 @@ pub fn load_settings_or_default() -> SettingsPayload {
         .collect();
     settings.terminal.draft_max_rows = clamp_draft_max_rows(settings.terminal.draft_max_rows);
     settings.terminal.scrollback = clamp_scrollback(settings.terminal.scrollback);
+    settings.terminal.aux_terminal_shortcut = normalize_aux_terminal_shortcut(&settings.terminal.aux_terminal_shortcut);
+    settings.terminal.aux_terminal_default_height =
+        clamp_aux_terminal_height(settings.terminal.aux_terminal_default_height);
     settings.history.tab_limit = clamp_tab_history_limit(settings.history.tab_limit);
     settings
 }
@@ -1019,6 +1053,9 @@ pub fn save_settings(mut settings: SettingsPayload) -> Result<(), String> {
         .collect();
     settings.terminal.draft_max_rows = clamp_draft_max_rows(settings.terminal.draft_max_rows);
     settings.terminal.scrollback = clamp_scrollback(settings.terminal.scrollback);
+    settings.terminal.aux_terminal_shortcut = normalize_aux_terminal_shortcut(&settings.terminal.aux_terminal_shortcut);
+    settings.terminal.aux_terminal_default_height =
+        clamp_aux_terminal_height(settings.terminal.aux_terminal_default_height);
     settings.history.tab_limit = clamp_tab_history_limit(settings.history.tab_limit);
     let path = settings_path()?;
     ensure_parent_dir(&path)?;
