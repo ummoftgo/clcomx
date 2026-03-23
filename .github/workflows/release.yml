@@ -1,21 +1,25 @@
 name: Release
 
-# Temporarily disabled.
-# Re-enable by restoring the tag push trigger and removing `if: false` below.
-
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
-    if: false
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -28,12 +32,19 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build frontend assets
+        run: npm run build
+
       - name: Build Tauri app
         run: npx tauri build
+
+      - name: Package portable zip
+        shell: pwsh
+        run: ./scripts/package-portable-windows.ps1 -ProjectDir $PWD.Path
 
       - name: Upload release artifacts
         uses: softprops/action-gh-release@v2
         with:
           files: |
             src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/portable/*.zip

@@ -109,6 +109,20 @@ npm install
 
 Windows Rust / Node 환경은 [scripts/win-env.sh](./scripts/win-env.sh)가 탐지합니다.
 
+탐지가 안 될 경우 WSL에서 override를 줄 수 있습니다.
+
+```bash
+export CLCOMX_WIN_CARGO_DIR='C:\Users\<user>\.cargo\bin'
+export CLCOMX_WIN_NODE_DIR='C:\Program Files\nodejs'
+```
+
+WSL 경로를 넘겨도 됩니다.
+
+```bash
+export CLCOMX_WIN_CARGO_DIR="$(wslpath -w /mnt/c/Users/<user>/.cargo/bin)"
+export CLCOMX_WIN_NODE_DIR="$(wslpath -w '/mnt/c/Program Files/nodejs')"
+```
+
 ## 실행 방법
 
 ### 개발 테스트 빌드 후 실행
@@ -124,6 +138,12 @@ bash scripts/build-dev.sh
 1. WSL에서 프론트엔드 빌드
 2. Windows에서 Tauri debug 빌드
 3. `clcomx.exe` 실행
+
+주의:
+
+- 일반 개발/배포 빌드에는 **Windows mirror 경로가 필요하지 않습니다.**
+- mirror(`C:\temp\clcomx`)는 WSL에서 Windows **E2E를 돌릴 때만** 쓰는 경로입니다.
+- 평소 빌드는 저장소를 checkout한 실제 경로에서 바로 실행해야 합니다.
 
 ### 개발 모드
 
@@ -141,7 +161,8 @@ bash scripts/build-windows.sh
 
 산출물:
 
-- `src-tauri/target/release/bundle/`
+- 설치본: `src-tauri/target/release/bundle/nsis/CLCOMX_<version>_x64-setup.exe`
+- 포터블: `src-tauri/target/release/bundle/portable/CLCOMX_<version>_x64-portable.zip`
 
 ## 사용 방법
 
@@ -206,6 +227,20 @@ bash scripts/build-windows.sh
 - PhpStorm
 - Notepad++
 - Sublime Text
+
+감지는 다음 순서로 시도합니다.
+
+- Windows PATH (`where.exe`)
+- 대표 설치 경로
+- Windows Registry `App Paths`
+- 공통 설치 루트 재귀 탐색
+
+감지가 안 되는 환경에서는 Windows에서 editor executable 경로를 직접 지정할 수 있습니다.
+
+```bash
+export CLCOMX_WIN_EDITOR_VSCODE_PATH='C:\Users\<user>\AppData\Local\Programs\Microsoft VS Code\Code.exe'
+export CLCOMX_WIN_EDITOR_PHPSTORM_PATH='C:\Users\<user>\AppData\Local\JetBrains\Toolbox\scripts\PhpStorm.cmd'
+```
 
 ### 6. 보조 터미널
 
