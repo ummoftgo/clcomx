@@ -1,18 +1,18 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { _ as t } from "svelte-i18n";
   import Button from "../../../ui/components/Button.svelte";
   import ThemePicker from "../../ThemePicker.svelte";
   import FontPicker from "../../FontPicker.svelte";
-  import { listAvailableEditors, type DetectedEditor } from "../../../editors";
+  import { ensureEditorsDetected, getEditorDetectionState } from "../../../stores/editors.svelte";
   import { getSettings, updateSettings } from "../../../stores/settings.svelte";
   import { TEST_IDS } from "../../../testids";
   import type { FileOpenMode, LanguagePreference } from "../../../types";
 
   const settings = getSettings();
-  let editors = $state<DetectedEditor[]>([]);
-  let editorsLoading = $state(true);
-  let editorsError = $state<string | null>(null);
+  const editorDetection = getEditorDetectionState();
+  const editors = $derived(editorDetection.editors);
+  const editorsLoading = $derived(editorDetection.loading);
+  const editorsError = $derived(editorDetection.error);
 
   function clampUiScale(value: number) {
     if (!Number.isFinite(value)) return 100;
@@ -51,23 +51,9 @@
     });
   }
 
-  async function loadEditors() {
-    editorsLoading = true;
-    editorsError = null;
-    try {
-      editors = await listAvailableEditors();
-    } catch (error) {
-      console.error("Failed to detect installed editors", error);
-      editors = [];
-      editorsError = error instanceof Error ? error.message : String(error);
-    } finally {
-      editorsLoading = false;
-    }
+  function primeEditors() {
+    void ensureEditorsDetected();
   }
-
-  onMount(() => {
-    void loadEditors();
-  });
 </script>
 
 <div class="settings-fields">
@@ -180,6 +166,8 @@
           class="number-input"
           value={settings.interface.defaultEditorId}
           disabled={editorsLoading || editors.length === 0}
+          onfocus={primeEditors}
+          onpointerdown={primeEditors}
           onchange={(event) =>
             updateSettings({
               interface: { defaultEditorId: (event.target as HTMLSelectElement).value },

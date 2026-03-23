@@ -281,6 +281,11 @@ const ko = {
       startFailed: "보조 터미널 시작 실패: {message}",
       resizeHint: "드래그해서 높이 조절",
     },
+    loading: {
+      connecting: "세션 연결 중",
+      restoring: "세션 복구 중",
+      hint: "터미널을 준비하는 동안 잠시만 기다려 주세요.",
+    },
     filePaths: {
       openFile: "파일 열기",
       openInOtherEditor: "다른 에디터로 열기",

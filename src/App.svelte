@@ -26,6 +26,7 @@
   import { getOtherWindows, syncWorkspaceSnapshot } from "./lib/stores/workspace.svelte";
   import { getSettings, updateSettings } from "./lib/stores/settings.svelte";
   import { getTabHistory, recordTabHistory } from "./lib/stores/tab-history.svelte";
+  import { primeEditorsDetection } from "./lib/stores/editors.svelte";
   import { getBootstrap } from "./lib/bootstrap";
   import { setLanguagePreference, t } from "./lib/i18n";
   import { TEST_IDS } from "./lib/testids";
@@ -272,6 +273,8 @@
       initialPlacementTimer = setTimeout(() => {
         scheduleWindowPlacementPersist();
       }, 500);
+
+      primeEditorsDetection(1200);
     })();
   });
 

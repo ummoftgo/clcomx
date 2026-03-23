@@ -26,6 +26,7 @@
     takePtyInitialOutput,
   } from "../pty";
   import { t } from "../i18n";
+  import { ensureEditorsDetected, getEditorDetectionState } from "../stores/editors.svelte";
   import { getSettings } from "../stores/settings.svelte";
   import { getThemeById } from "../themes";
   import type { ContextMenuItem } from "../ui/context-menu";
@@ -33,7 +34,6 @@
   import { buildFontStack, serializeFontFamilyList } from "../font-family";
   import { matchesShortcut } from "../hotkeys";
   import {
-    listAvailableEditors,
     openInEditor,
     resolveTerminalPath,
     type DetectedEditor,
@@ -102,6 +102,11 @@
   let initialOutputReady = false;
   let terminalReady = $state(false);
   let spawnError = $state<string | null>(null);
+  let terminalLoadingState = $state<"connecting" | "restoring" | null>(null);
+  let terminalLoadingStartedAt = 0;
+  let terminalLoadingHasRenderableOutput = false;
+  let terminalLoadingQuietTimer: ReturnType<typeof setTimeout> | null = null;
+  let terminalLoadingMaxTimer: ReturnType<typeof setTimeout> | null = null;
   let draftValue = $state("");
   let draftOpen = $state(false);
   let pendingClipboardImage = $state<PendingClipboardImage | null>(null);
@@ -120,9 +125,9 @@
   let clipboardNotice = $state<string | null>(null);
   let editorPickerVisible = $state(false);
   let editorPickerPath = $state<ResolvedTerminalPath | null>(null);
-  let detectedEditors = $state<DetectedEditor[]>([]);
-  let editorsLoaded = false;
-  let editorsError = $state<string | null>(null);
+  const editorDetection = getEditorDetectionState();
+  const detectedEditors = $derived(editorDetection.editors);
+  const editorsError = $derived(editorDetection.error);
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
   let unlistenOutput: UnlistenFn | null = null;
   let unlistenExit: UnlistenFn | null = null;
@@ -162,6 +167,9 @@
   const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
   const BOTTOM_LOCK_MAX_MS = 12000;
   const BOTTOM_LOCK_QUIET_MS = 1400;
+  const MIN_TERMINAL_LOADING_MS = 360;
+  const TERMINAL_LOADING_QUIET_MS = 1300;
+  const TERMINAL_LOADING_MAX_MS = 8000;
   const WEB_LINK_REGEX = /(?:https?|ftp):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/i;
 
   const settings = getSettings();
@@ -214,6 +222,11 @@
             icon: "copy",
           },
       ],
+  );
+  const terminalLoadingLabel = $derived(
+    terminalLoadingState === "restoring"
+      ? $t("terminal.loading.restoring")
+      : $t("terminal.loading.connecting"),
   );
 
   function clampAuxHeightPercent(value: number) {
@@ -286,6 +299,17 @@
 
       term.write(data, () => resolve());
     });
+  }
+
+  function hasRenderableTerminalOutput(data: string) {
+    if (!data) {
+      return false;
+    }
+
+    const withoutOsc = data.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "");
+    const withoutCsi = withoutOsc.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+    const withoutControl = withoutCsi.replace(/[\u0000-\u001f\u007f]/g, "");
+    return withoutControl.trim().length > 0;
   }
 
   function writeAuxTerminalData(term: Terminal, data: string) {
@@ -505,6 +529,80 @@
     }, 2600);
   }
 
+  async function waitForTerminalPaint() {
+    await tick();
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+  }
+
+  async function showTerminalLoadingState(state: "connecting" | "restoring") {
+    clearTerminalLoadingTimers();
+    terminalLoadingState = state;
+    terminalLoadingStartedAt = performance.now();
+    terminalLoadingHasRenderableOutput = false;
+    terminalLoadingMaxTimer = setTimeout(() => {
+      terminalLoadingMaxTimer = null;
+      void clearTerminalLoadingState(true);
+    }, TERMINAL_LOADING_MAX_MS);
+    await waitForTerminalPaint();
+  }
+
+  function clearTerminalLoadingTimers() {
+    if (terminalLoadingQuietTimer) {
+      clearTimeout(terminalLoadingQuietTimer);
+      terminalLoadingQuietTimer = null;
+    }
+    if (terminalLoadingMaxTimer) {
+      clearTimeout(terminalLoadingMaxTimer);
+      terminalLoadingMaxTimer = null;
+    }
+  }
+
+  function noteTerminalLoadingActivity() {
+    if (terminalLoadingState === null) {
+      return;
+    }
+
+    terminalLoadingHasRenderableOutput = true;
+  }
+
+  function handleTerminalRender() {
+    if (terminalLoadingState === null || !terminalLoadingHasRenderableOutput) {
+      return;
+    }
+
+    if (terminalLoadingQuietTimer) {
+      clearTimeout(terminalLoadingQuietTimer);
+    }
+    terminalLoadingQuietTimer = setTimeout(() => {
+      terminalLoadingQuietTimer = null;
+      void clearTerminalLoadingState();
+    }, TERMINAL_LOADING_QUIET_MS);
+  }
+
+  async function clearTerminalLoadingState(force = false) {
+    if (terminalLoadingState === null) {
+      return;
+    }
+
+    if (!force) {
+      const elapsed = performance.now() - terminalLoadingStartedAt;
+      const remaining = MIN_TERMINAL_LOADING_MS - elapsed;
+      if (remaining > 0) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, remaining);
+        });
+      }
+    }
+
+    clearTerminalLoadingTimers();
+    terminalLoadingHasRenderableOutput = false;
+    terminalLoadingState = null;
+  }
+
   function handleAuxShortcut(event: KeyboardEvent) {
     if (!visible || !matchesShortcut(event, settings.terminal.auxTerminalShortcut)) {
       return;
@@ -560,22 +658,7 @@
   }
 
   async function ensureEditorsLoaded() {
-    if (editorsLoaded && !editorsError) {
-      return detectedEditors;
-    }
-
-    editorsError = null;
-
-    try {
-      detectedEditors = await listAvailableEditors();
-    } catch (error) {
-      editorsError = error instanceof Error ? error.message : String(error);
-      detectedEditors = [];
-    } finally {
-      editorsLoaded = true;
-    }
-
-    return detectedEditors;
+    return await ensureEditorsDetected();
   }
 
   async function showEditorPicker(path: ResolvedTerminalPath) {
@@ -1217,6 +1300,9 @@
       const shouldStickToBottom = followTail || isBottomLockActive();
       extendBottomLock();
       terminal.write(data, () => {
+        if (hasRenderableTerminalOutput(data)) {
+          noteTerminalLoadingActivity();
+        }
         if (shouldStickToBottom) {
           terminal?.scrollToBottom();
         }
@@ -1243,10 +1329,18 @@
 
     initialOutputReady = true;
     armBottomLock();
+    if (
+      hasRenderableTerminalOutput(snapshot.data) ||
+      pendingChunks.some((chunk) => hasRenderableTerminalOutput(chunk.data))
+    ) {
+      noteTerminalLoadingActivity();
+    }
   }
 
   async function attachOrSpawnPty(term: Terminal) {
+    spawnError = null;
     if (ptyId >= 0) {
+      await showTerminalLoadingState("restoring");
       try {
         await attachToExistingPty(ptyId, term);
         return;
@@ -1256,7 +1350,11 @@
         replayInProgress = false;
         replayBuffer = [];
         initialOutputReady = false;
+        terminalLoadingState = "connecting";
+        terminalLoadingStartedAt = performance.now();
       }
+    } else {
+      await showTerminalLoadingState("connecting");
     }
 
     await spawnNewPty(term);
@@ -1276,6 +1374,9 @@
     await writeTerminalData(term, sanitizedOutput);
     initialOutputReady = true;
     armBottomLock();
+    if (hasRenderableTerminalOutput(sanitizedOutput)) {
+      noteTerminalLoadingActivity();
+    }
     onPtyId?.(livePtyId);
   }
 
@@ -1367,6 +1468,7 @@
       await attachOrSpawnPty(term);
     } catch (error) {
       spawnError = error instanceof Error ? error.message : String(error);
+      await clearTerminalLoadingState();
     }
 
     term.onData((data) => {
@@ -1401,6 +1503,10 @@
       if (followTail || isBottomLockActive()) {
         scrollTerminalToBottom();
       }
+    });
+
+    term.onRender(() => {
+      handleTerminalRender();
     });
 
     term.onScroll((viewportY) => {
@@ -1560,6 +1666,7 @@
     if (noticeTimer) {
       clearTimeout(noticeTimer);
     }
+    clearTerminalLoadingTimers();
     clearAuxLayoutSettleTimer();
     releaseBottomLock();
     revokePendingClipboardImage(pendingClipboardImage);
@@ -1586,6 +1693,7 @@
   data-draft-open={draftOpen ? "true" : "false"}
   data-pending-image={pendingClipboardImage ? "true" : "false"}
   data-test-hook-registered={testHookRegistered ? "true" : "false"}
+  data-loading-state={terminalLoadingState ?? "idle"}
   class:hidden={!visible}
   bind:this={shellEl}
 >
@@ -1604,6 +1712,24 @@
     {#if clipboardNotice}
       <div class="terminal-notice">
         {clipboardNotice}
+      </div>
+    {/if}
+
+    {#if terminalLoadingState !== null && !spawnError}
+      <div class="terminal-connect-overlay">
+        <div class="terminal-connect-card">
+          <div class="terminal-connect-eyebrow">CLCOMX</div>
+          <div class="terminal-connect-title">{terminalLoadingLabel}</div>
+          <div class="terminal-connect-hint">{$t("terminal.loading.hint")}</div>
+          <div class="terminal-connect-dots" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div class="terminal-connect-bar" aria-hidden="true">
+            <span></span>
+          </div>
+        </div>
       </div>
     {/if}
   </div>
@@ -1795,6 +1921,119 @@
     min-height: 0;
     padding: var(--ui-space-1);
     position: relative;
+  }
+
+  .terminal-connect-overlay {
+    position: absolute;
+    inset: var(--ui-space-1);
+    display: grid;
+    place-items: center;
+    padding: clamp(20px, 3vw, 28px);
+    border-radius: calc(var(--ui-radius-lg) + 2px);
+    background:
+      linear-gradient(180deg, rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.16), rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.3)),
+      color-mix(in srgb, var(--ui-bg-app, var(--app-bg)) 72%, transparent);
+    backdrop-filter: blur(6px);
+    z-index: 8;
+  }
+
+  .terminal-connect-card {
+    min-width: min(320px, 100%);
+    max-width: min(420px, 100%);
+    display: grid;
+    gap: var(--ui-space-2);
+    padding: clamp(18px, 2.2vw, 24px);
+    border: 1px solid color-mix(in srgb, var(--ui-border-strong, var(--tab-border)) 78%, transparent);
+    border-radius: calc(var(--ui-radius-xl) + 2px);
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-surface, var(--tab-active-bg)) 94%, transparent), transparent),
+      color-mix(in srgb, var(--ui-bg-app, var(--app-bg)) 90%, transparent);
+    box-shadow: 0 18px 40px rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.24);
+  }
+
+  .terminal-connect-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ui-text-muted, var(--tab-text));
+  }
+
+  .terminal-connect-title {
+    font-size: clamp(18px, 2vw, 22px);
+    font-weight: 700;
+    line-height: 1.2;
+    color: var(--ui-text-primary, var(--tab-text));
+  }
+
+  .terminal-connect-hint {
+    font-size: var(--ui-font-size-sm);
+    line-height: 1.55;
+    color: var(--ui-text-muted, var(--tab-text));
+  }
+
+  .terminal-connect-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: var(--ui-space-1);
+  }
+
+  .terminal-connect-dots span {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ui-accent, var(--tab-accent, #6ea8ff)) 82%, white 18%);
+    animation: terminal-loading-bounce 1.1s ease-in-out infinite;
+  }
+
+  .terminal-connect-dots span:nth-child(2) {
+    animation-delay: 0.12s;
+  }
+
+  .terminal-connect-dots span:nth-child(3) {
+    animation-delay: 0.24s;
+  }
+
+  .terminal-connect-bar {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: 4px;
+    margin-top: var(--ui-space-1);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ui-border-subtle, var(--tab-border)) 72%, transparent);
+  }
+
+  .terminal-connect-bar span {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -24%;
+    width: 24%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ui-accent, var(--tab-accent, #6ea8ff)) 92%, white 8%), transparent);
+    animation: terminal-loading-sweep 1.5s ease-in-out infinite;
+  }
+
+  @keyframes terminal-loading-bounce {
+    0%, 80%, 100% {
+      transform: translateY(0);
+      opacity: 0.42;
+    }
+    40% {
+      transform: translateY(-4px);
+      opacity: 1;
+    }
+  }
+
+  @keyframes terminal-loading-sweep {
+    0% {
+      transform: translateX(0);
+    }
+    100% {
+      transform: translateX(520%);
+    }
   }
 
   .terminal-output.terminal-output--link-hover {

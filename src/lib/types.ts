@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import type { AgentId } from "./agents";
+import type { ThemePack } from "./themes";
 
 export type SupportedLocale = "en" | "ko";
 export type LanguagePreference = "system" | SupportedLocale;
@@ -123,6 +124,7 @@ export interface AppBootstrap {
   settings: DeepPartial<Settings> | null;
   tabHistory: TabHistoryEntry[];
   workspace: WorkspaceSnapshot | null;
+  themePack: ThemePack | null;
   testMode: boolean;
 }
 

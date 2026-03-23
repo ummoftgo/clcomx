@@ -18,6 +18,7 @@ msedgedriver.exe
 
 # Runtime state and local cache
 setting.json
+theme.json
 workspace.json
 tab_history.json
 temp/

@@ -281,6 +281,11 @@ const en = {
       startFailed: "Failed to start auxiliary terminal: {message}",
       resizeHint: "Drag to resize",
     },
+    loading: {
+      connecting: "Connecting session",
+      restoring: "Restoring session",
+      hint: "Please wait while the terminal is prepared.",
+    },
     filePaths: {
       openFile: "Open File",
       openInOtherEditor: "Open In Another Editor",

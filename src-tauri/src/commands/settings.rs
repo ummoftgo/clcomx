@@ -20,6 +20,10 @@ fn workspace_path() -> Result<PathBuf, String> {
     state_path("workspace.json")
 }
 
+fn theme_path() -> Result<PathBuf, String> {
+    state_path("theme.json")
+}
+
 fn default_agent_id() -> String {
     "claude".into()
 }
@@ -319,7 +323,25 @@ pub struct AppBootstrap {
     pub settings: SettingsPayload,
     pub tab_history: Vec<TabHistoryEntry>,
     pub workspace: Option<WorkspaceSnapshot>,
+    pub theme_pack: ThemePackPayload,
     pub test_mode: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ThemeSourceEntryPayload {
+    pub id: String,
+    pub name: String,
+    pub dark: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extends: Option<String>,
+    pub theme: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ThemePackPayload {
+    pub themes: Vec<ThemeSourceEntryPayload>,
 }
 
 pub struct WorkspaceState {
@@ -1514,12 +1536,65 @@ pub fn close_app(app: AppHandle) -> Result<(), String> {
     std::process::exit(0);
 }
 
+fn bundled_theme_pack() -> Result<ThemePackPayload, String> {
+    serde_json::from_str(include_str!("../../../src/lib/themes/default-theme-pack.json"))
+        .map_err(|error| format!("Invalid bundled theme pack: {error}"))
+}
+
+fn load_theme_pack_or_default() -> ThemePackPayload {
+    let bundled = bundled_theme_pack().unwrap_or_default();
+    let path = match theme_path() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Failed to resolve theme.json path: {error}");
+            return bundled;
+        }
+    };
+
+    if !path.exists() {
+        if let Err(error) = ensure_parent_dir(&path) {
+            eprintln!("Failed to prepare theme.json directory: {error}");
+            return bundled;
+        }
+
+        match serde_json::to_string_pretty(&bundled) {
+            Ok(serialized) => {
+                if let Err(error) = fs::write(&path, format!("{serialized}\n")) {
+                    eprintln!("Failed to create {}: {error}", path.display());
+                }
+            }
+            Err(error) => {
+                eprintln!("Failed to serialize bundled theme pack: {error}");
+            }
+        }
+
+        return bundled;
+    }
+
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            eprintln!("Failed to read {}: {error}", path.display());
+            return bundled;
+        }
+    };
+
+    match serde_json::from_str::<ThemePackPayload>(&raw) {
+        Ok(pack) => pack,
+        Err(error) => {
+            eprintln!("Invalid {}: {error}", path.display());
+            bundled
+        }
+    }
+}
+
 #[tauri::command]
 pub fn bootstrap_app(state: tauri::State<'_, WorkspaceState>) -> Result<AppBootstrap, String> {
     Ok(AppBootstrap {
         settings: load_settings_or_default(),
         tab_history: load_tab_history_or_default(),
         workspace: Some(snapshot_from_state(state.inner())?),
+        theme_pack: load_theme_pack_or_default(),
         test_mode: is_test_mode(),
     })
 }

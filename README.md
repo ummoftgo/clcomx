@@ -283,6 +283,7 @@ export CLCOMX_WIN_EDITOR_PHPSTORM_PATH='C:\Users\<user>\AppData\Local\JetBrains\
 기본적으로 앱을 **어느 디렉토리에서 실행하느냐**에 따라 다음 파일들이 그 위치에 저장됩니다.
 
 - `setting.json`
+- `theme.json`
 - `workspace.json`
 - `tab_history.json`
 - `temp/image/*`
@@ -295,6 +296,11 @@ export CLCOMX_WIN_EDITOR_PHPSTORM_PATH='C:\Users\<user>\AppData\Local\JetBrains\
   - UI/터미널 설정
   - 메인 창 위치/크기
   - 기본 에이전트 / 기본 배포판 / 배포판별 시작 경로
+- `theme.json`
+  - 실행 디렉토리의 사용자 편집용 테마 팩
+  - 첫 실행 시 기본 테마팩이 자동 생성됨
+  - 같은 `id`를 재사용하면 기본 테마를 override 가능
+  - `extends`로 기존 테마 일부 색만 수정 가능
 - `workspace.json`
   - 창/탭 배치
   - 활성 탭
@@ -319,14 +325,14 @@ CLCOMX는 종료 시 에이전트 출력에서 resume token을 캡처해 다음 
 
 ## 버전 관리
 
-- 현재 버전: `0.1.3`
+- 현재 버전: `0.2.0`
 - 버전 문서 위치: [`docs/version/`](./docs/version/)
 - 규칙:
   - 기능 추가: `minor` 증가, `patch`는 `0`으로 초기화
   - 수정/안정화: `patch` 증가
   - 메이저 버전 증가는 명시적으로 지시받은 경우에만 수행
 
-이번 변경 내역은 [`docs/version/0.1.3.md`](./docs/version/0.1.3.md)에 정리돼 있습니다.
+이번 변경 내역은 [`docs/version/0.2.0.md`](./docs/version/0.2.0.md)에 정리돼 있습니다.
 
 ## 테스트
 

@@ -5,6 +5,7 @@ const DEFAULT_BOOTSTRAP: AppBootstrap = {
   settings: null,
   tabHistory: [],
   workspace: null,
+  themePack: null,
   testMode: false,
 };
 

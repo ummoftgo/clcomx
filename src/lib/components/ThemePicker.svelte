@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ as t } from "svelte-i18n";
-  import { DARK_THEMES, LIGHT_THEMES } from "../themes";
+  import { DARK_THEMES, LIGHT_THEMES, getThemeById } from "../themes";
 
   interface Props {
     selectedId: string;
@@ -10,6 +10,10 @@
   let { selectedId, onChange }: Props = $props();
 
   let tab = $state<"dark" | "light">("dark");
+
+  $effect(() => {
+    tab = getThemeById(selectedId)?.dark === false ? "light" : "dark";
+  });
 </script>
 
 <div class="theme-picker">

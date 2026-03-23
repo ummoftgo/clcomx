@@ -4,6 +4,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -21,6 +22,7 @@ use windows::{
 };
 
 const SUPPORTED_EDITORS: &[&str] = &["vscode", "cursor", "windsurf", "phpstorm", "notepadpp", "sublime"];
+static EDITOR_DETECTION_CACHE: OnceLock<Mutex<Option<Vec<DetectedEditor>>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -447,7 +449,32 @@ fn detect_editor_binary(editor_id: &str) -> Option<PathBuf> {
         return Some(path);
     }
 
-    search_editor_binary_in_roots(editor_id, 5)
+    search_editor_binary_in_roots(editor_id, 3)
+}
+
+fn detect_available_editors() -> Vec<DetectedEditor> {
+    let cache = EDITOR_DETECTION_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some(editors) = guard.as_ref() {
+            return editors.clone();
+        }
+    }
+
+    let detected = SUPPORTED_EDITORS
+        .iter()
+        .copied()
+        .filter(|editor_id| detect_editor_binary(editor_id).is_some())
+        .map(|editor_id| DetectedEditor {
+            id: editor_id.to_string(),
+            label: editor_label(editor_id).to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(detected.clone());
+    }
+
+    detected
 }
 
 fn parse_line_and_column(value: &str) -> (String, Option<u32>, Option<u32>) {
@@ -645,16 +672,10 @@ fn spawn_editor_process(
 }
 
 #[tauri::command]
-pub fn list_available_editors() -> Result<Vec<DetectedEditor>, String> {
-    Ok(SUPPORTED_EDITORS
-        .iter()
-        .copied()
-        .filter(|editor_id| detect_editor_binary(editor_id).is_some())
-        .map(|editor_id| DetectedEditor {
-            id: editor_id.to_string(),
-            label: editor_label(editor_id).to_string(),
-        })
-        .collect())
+pub async fn list_available_editors() -> Result<Vec<DetectedEditor>, String> {
+    tauri::async_runtime::spawn_blocking(detect_available_editors)
+        .await
+        .map_err(|error| format!("Editor detection task failed: {error}"))
 }
 
 #[tauri::command]

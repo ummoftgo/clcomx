@@ -8,7 +8,7 @@ import { initializeSessionsFromWorkspace } from "./lib/stores/sessions.svelte";
 import { initializeTabHistory } from "./lib/stores/tab-history.svelte";
 import { initializeWorkspaceSnapshot } from "./lib/stores/workspace.svelte";
 import { initializeI18n } from "./lib/i18n";
-import { getThemeById } from "./lib/themes";
+import { getThemeById, initializeThemes } from "./lib/themes";
 import { applyUiPreferenceVariables, applyUiThemeVariables } from "./lib/ui";
 
 function applyInitialTheme() {
@@ -31,6 +31,7 @@ function applyInitialTheme() {
 async function bootstrapApp() {
   const windowLabel = getCurrentWindow().label;
   const bootstrap = await loadBootstrap();
+  initializeThemes(bootstrap.themePack);
   initializeSettings(bootstrap.settings);
   initializeI18n(getSettings().language, navigator.language);
   initializeTabHistory(bootstrap.tabHistory);
