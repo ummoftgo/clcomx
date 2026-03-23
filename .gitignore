@@ -25,6 +25,7 @@ temp/
 
 # Local assistant / developer state
 .claude/
+.worktrees/
 HANDOVER.md
 docs/plans/
 docs/subtasks/
