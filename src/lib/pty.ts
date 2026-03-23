@@ -51,6 +51,24 @@ export async function spawnShellPty(
   workDir: string,
 ): Promise<number> {
   const safeWorkDir = escapeShellSingleQuoted(workDir);
+  const auxRcHeredoc = [
+    'cat > "$__clcomx_aux_rc" <<\'CLCOMX_AUX_RC\'',
+    'rm -f -- "${BASH_SOURCE[0]}"',
+    "[ -r /etc/bash.bashrc ] && . /etc/bash.bashrc",
+    "[ -r ~/.bashrc ] && . ~/.bashrc",
+    "__clcomx_update_cwd() {",
+    "  local __clcomx_pwd_b64",
+    "  __clcomx_pwd_b64=$(printf '%s' \"$PWD\" | base64 | tr -d '\\r\\n')",
+    "  printf '\\033]633;CLCOMX_CWD;%s\\007' \"$__clcomx_pwd_b64\"",
+    "}",
+    "PROMPT_COMMAND=\"__clcomx_update_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"",
+    "CLCOMX_AUX_RC",
+  ].join("\n");
+  const shellCommand = [
+    "__clcomx_aux_rc=$(mktemp /tmp/clcomx-aux-rc.XXXXXX)",
+    auxRcHeredoc,
+    `if cd '${safeWorkDir}' 2>/dev/null; then exec bash --noprofile --rcfile "$__clcomx_aux_rc" -i; else cd ~ && exec bash --noprofile --rcfile "$__clcomx_aux_rc" -i; fi`,
+  ].join("\n");
 
   return await invoke<number>("pty_spawn", {
     cols,
@@ -63,7 +81,7 @@ export async function spawnShellPty(
       "bash",
       "-li",
       "-c",
-      `if cd '${safeWorkDir}' 2>/dev/null; then exec bash -li; else cd ~ && exec bash -li; fi`,
+      shellCommand,
     ],
     cwd: null,
     mockAgentId: "shell",

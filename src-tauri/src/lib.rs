@@ -17,8 +17,8 @@ use commands::settings::{
     load_settings_or_default, is_window_ready, load_tab_history, load_workspace,
     load_workspace_or_default, move_session_to_window, move_window_sessions_to_main,
     open_empty_window, record_tab_history, remove_window, restore_secondary_windows, save_settings,
-    save_workspace, set_session_pty, set_session_resume_token, trim_tab_history, update_window_geometry,
-    window_ready,
+    save_workspace, set_session_aux_terminal_state, set_session_pty, set_session_resume_token,
+    trim_tab_history, update_window_geometry, window_ready,
 };
 use commands::wsl::{WslState, list_wsl_distros, list_wsl_directories};
 use tauri::{Manager, PhysicalPosition, PhysicalSize};
@@ -79,6 +79,7 @@ pub fn run() {
             save_settings,
             save_workspace,
             set_session_pty,
+            set_session_aux_terminal_state,
             set_session_resume_token,
             clear_session_pty,
             open_empty_window,

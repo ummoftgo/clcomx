@@ -19,7 +19,6 @@
   import {
     type PtyOutputChunk,
     getPtyOutputSnapshot,
-    killPty,
     spawnShellPty,
     spawnPty,
     writePty,
@@ -41,6 +40,7 @@
     type ResolvedTerminalPath,
   } from "../editors";
   import { createTerminalFileLinks } from "../terminal/file-links";
+  import { consumeAuxShellMetadata } from "../terminal/aux-shell-metadata";
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
   import {
@@ -59,8 +59,16 @@
     distro: string;
     workDir: string;
     ptyId: number;
+    storedAuxPtyId?: number;
+    storedAuxVisible?: boolean;
+    storedAuxHeightPercent?: number | null;
     resumeToken?: string | null;
     onPtyId?: (ptyId: number) => void;
+    onAuxStateChange?: (state: {
+      auxPtyId: number;
+      auxVisible: boolean;
+      auxHeightPercent: number | null;
+    }) => void;
     onExit?: (ptyId: number) => void;
     onResumeFallback?: () => void;
   }
@@ -72,8 +80,12 @@
     distro,
     workDir,
     ptyId,
+    storedAuxPtyId = -1,
+    storedAuxVisible = false,
+    storedAuxHeightPercent = null,
     resumeToken = null,
     onPtyId,
+    onAuxStateChange,
     onExit,
     onResumeFallback,
   }: Props = $props();
@@ -124,12 +136,17 @@
   let auxPtyId = $state(-1);
   let auxVisible = $state(false);
   let auxInitialized = $state(false);
-  let auxExited = $state(false);
+  let auxExited = $state(true);
   let auxBusy = $state(false);
   let auxSpawnError = $state<string | null>(null);
+  let auxCurrentPath = $state("");
+  let auxMetadataRemainder = "";
   let auxHeightPercent = $state(28);
   let auxHeightCustomized = false;
   let auxFollowTail = true;
+  let auxAttached = false;
+  let auxStateHydrated = false;
+  let auxLayoutSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let assistPanelHeight = $state(0);
   let resizingAux = false;
   let auxResizePointerId: number | null = null;
@@ -269,6 +286,15 @@
 
       term.write(data, () => resolve());
     });
+  }
+
+  function writeAuxTerminalData(term: Terminal, data: string) {
+    const parsed = consumeAuxShellMetadata(data, auxMetadataRemainder);
+    auxMetadataRemainder = parsed.remainder;
+    if (parsed.cwd) {
+      auxCurrentPath = parsed.cwd;
+    }
+    return writeTerminalData(term, parsed.text);
   }
 
   function clearBottomLockTimer() {
@@ -439,6 +465,34 @@
 
   function handleAuxOutputPointerDown() {
     focusAuxTerminal();
+  }
+
+  function clearAuxLayoutSettleTimer() {
+    if (auxLayoutSettleTimer) {
+      clearTimeout(auxLayoutSettleTimer);
+      auxLayoutSettleTimer = null;
+    }
+  }
+
+  function settleAuxTerminalLayout() {
+    if (!visible || !auxVisible || !auxTerminal) {
+      return;
+    }
+
+    auxFitAddon?.fit();
+    if (auxPtyId >= 0 && auxTerminal) {
+      void resizePty(auxPtyId, auxTerminal.cols, auxTerminal.rows);
+    }
+    auxTerminal.scrollToBottom();
+    auxTerminal.refresh(0, Math.max(auxTerminal.rows - 1, 0));
+  }
+
+  function scheduleAuxLayoutSettle(delay = 220) {
+    clearAuxLayoutSettleTimer();
+    auxLayoutSettleTimer = setTimeout(() => {
+      auxLayoutSettleTimer = null;
+      settleAuxTerminalLayout();
+    }, delay);
   }
 
   function setClipboardNotice(message: string) {
@@ -931,6 +985,8 @@
     auxTerminal?.dispose();
     auxTerminal = null;
     auxFitAddon = null;
+    auxMetadataRemainder = "";
+    auxAttached = false;
     auxOutputEl?.replaceChildren();
   }
 
@@ -973,6 +1029,7 @@
       if (visible && auxVisible && auxFitAddon) {
         auxFitAddon.fit();
         auxTerminal?.scrollToBottom();
+        scheduleAuxLayoutSettle();
       }
     });
     auxResizeObserver.observe(auxOutputEl);
@@ -984,6 +1041,7 @@
     await tick();
     requestAnimationFrame(() => {
       auxFit.fit();
+      scheduleAuxLayoutSettle();
     });
   }
 
@@ -991,19 +1049,33 @@
     const { cols, rows } = getInitialPtySize(term);
     auxBusy = true;
     auxSpawnError = null;
+    auxCurrentPath = workDir;
+    auxMetadataRemainder = "";
 
     try {
       auxPtyId = await spawnShellPty(cols, rows, distro, workDir);
       const initialOutput = await takePtyInitialOutput(auxPtyId);
-      await writeTerminalData(term, initialOutput);
+      await writeAuxTerminalData(term, initialOutput);
       auxExited = false;
       auxFollowTail = true;
+      auxAttached = true;
     } catch (error) {
       auxSpawnError = error instanceof Error ? error.message : String(error);
       auxPtyId = -1;
     } finally {
       auxBusy = false;
     }
+  }
+
+  async function attachToExistingAuxPty(id: number, term: Terminal) {
+    auxPtyId = id;
+    auxCurrentPath = workDir;
+    auxMetadataRemainder = "";
+    const snapshot = await getPtyOutputSnapshot(id);
+    await writeAuxTerminalData(term, snapshot.data);
+    auxExited = false;
+    auxFollowTail = true;
+    auxAttached = true;
   }
 
   async function ensureAuxTerminalVisible() {
@@ -1026,18 +1098,25 @@
       return;
     }
 
-    if (auxPtyId < 0) {
-      await spawnAuxShell(auxTerminal);
+    if (!auxAttached) {
+      if (auxPtyId >= 0) {
+        try {
+          await attachToExistingAuxPty(auxPtyId, auxTerminal);
+        } catch (error) {
+          console.warn("Failed to attach to existing auxiliary PTY, spawning a new shell", error);
+          auxPtyId = -1;
+          await spawnAuxShell(auxTerminal);
+        }
+      } else {
+        await spawnAuxShell(auxTerminal);
+      }
     }
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        auxFitAddon?.fit();
-        if (auxPtyId >= 0 && auxTerminal) {
-          void resizePty(auxPtyId, auxTerminal.cols, auxTerminal.rows);
-        }
-        auxTerminal?.scrollToBottom();
+        settleAuxTerminalLayout();
         focusAuxTerminal();
+        scheduleAuxLayoutSettle();
       });
     });
   }
@@ -1045,6 +1124,7 @@
   function hideAuxTerminal() {
     auxVisible = false;
     resizingAux = false;
+    clearAuxLayoutSettleTimer();
     focusOutput();
   }
 
@@ -1062,6 +1142,8 @@
     auxPtyId = -1;
     auxVisible = false;
     auxBusy = false;
+    auxMetadataRemainder = "";
+    auxAttached = false;
     focusOutput();
   }
 
@@ -1108,7 +1190,7 @@
   function handleOutputChunk(event: PtyOutputChunk) {
     if (event.id === auxPtyId && auxTerminal) {
       const shouldStickToBottom = auxFollowTail;
-      auxTerminal.write(event.data, () => {
+      void writeAuxTerminalData(auxTerminal, event.data).then(() => {
         if (shouldStickToBottom) {
           auxTerminal?.scrollToBottom();
         }
@@ -1161,6 +1243,23 @@
 
     initialOutputReady = true;
     armBottomLock();
+  }
+
+  async function attachOrSpawnPty(term: Terminal) {
+    if (ptyId >= 0) {
+      try {
+        await attachToExistingPty(ptyId, term);
+        return;
+      } catch (error) {
+        console.warn("Failed to attach to existing PTY, spawning a new one", error);
+        livePtyId = -1;
+        replayInProgress = false;
+        replayBuffer = [];
+        initialOutputReady = false;
+      }
+    }
+
+    await spawnNewPty(term);
   }
 
   async function spawnNewPty(term: Terminal) {
@@ -1265,11 +1364,7 @@
         });
       });
 
-      if (ptyId >= 0) {
-        await attachToExistingPty(ptyId, term);
-      } else {
-        await spawnNewPty(term);
-      }
+      await attachOrSpawnPty(term);
     } catch (error) {
       spawnError = error instanceof Error ? error.message : String(error);
     }
@@ -1360,12 +1455,9 @@
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        auxFitAddon?.fit();
-        if (auxPtyId >= 0 && auxTerminal) {
-          void resizePty(auxPtyId, auxTerminal.cols, auxTerminal.rows);
-        }
-        auxTerminal?.scrollToBottom();
+        settleAuxTerminalLayout();
         focusAuxTerminal();
+        scheduleAuxLayoutSettle();
       });
     });
   });
@@ -1420,6 +1512,33 @@
     }
   });
 
+  $effect(() => {
+    if (auxStateHydrated) return;
+    auxPtyId = storedAuxPtyId;
+    auxVisible = storedAuxVisible;
+    auxInitialized = storedAuxVisible;
+    auxExited = storedAuxPtyId < 0;
+    auxHeightPercent = clampAuxHeightPercent(
+      storedAuxHeightPercent ?? settings.terminal.auxTerminalDefaultHeight,
+    );
+    auxHeightCustomized = storedAuxHeightPercent !== null;
+    auxStateHydrated = true;
+  });
+
+  $effect(() => {
+    onAuxStateChange?.({
+      auxPtyId,
+      auxVisible,
+      auxHeightPercent: auxHeightCustomized ? auxHeightPercent : null,
+    });
+  });
+
+  $effect(() => {
+    if (auxPtyId < 0) {
+      auxCurrentPath = workDir;
+    }
+  });
+
   onDestroy(() => {
     window.removeEventListener("clcomx:focus-active-terminal", handleFocusRequest);
     window.removeEventListener(TEST_BRIDGE_EVENTS.openPendingImage, handleTestPendingImage as EventListener);
@@ -1441,14 +1560,18 @@
     if (noticeTimer) {
       clearTimeout(noticeTimer);
     }
+    clearAuxLayoutSettleTimer();
     releaseBottomLock();
     revokePendingClipboardImage(pendingClipboardImage);
     fileLinkProviderDisposable?.dispose();
-    if (auxPtyId >= 0) {
-      void killPty(auxPtyId);
-    }
     disposeAuxTerminalInstance();
     terminal?.dispose();
+  });
+
+  $effect(() => {
+    if (!terminalReady || !visible || !storedAuxVisible) return;
+    if (auxVisible && auxAttached) return;
+    void ensureAuxTerminalVisible();
   });
 </script>
 
@@ -1489,7 +1612,8 @@
     <div
       class="aux-panel"
       class:aux-panel--hidden={!auxVisible}
-      style:height={auxVisible ? `${auxHeightPercent}%` : "0px"}
+      style:height={`${auxHeightPercent}%`}
+      aria-hidden={!auxVisible}
     >
       <div class="aux-surface">
         <button
@@ -1505,7 +1629,7 @@
           <div class="aux-copy">
             <span class="aux-title">{$t("terminal.aux.title")}</span>
             <span class="aux-path">
-              {$t("terminal.aux.currentPath")}: {workDir}
+              {$t("terminal.aux.currentPath")}: {auxCurrentPath}
             </span>
           </div>
 
@@ -1691,16 +1815,15 @@
       linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-surface, var(--tab-active-bg)) 90%, transparent), transparent),
       color-mix(in srgb, var(--ui-bg-app, var(--app-bg)) 88%, transparent);
     box-shadow: 0 -12px 28px rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.22);
-    transition: height 160ms ease, border-color 160ms ease, opacity 160ms ease, transform 160ms ease;
+    transition: border-color 160ms ease, opacity 160ms ease, transform 160ms ease, visibility 0s linear;
     z-index: 15;
   }
 
   .aux-panel.aux-panel--hidden {
-    height: 0 !important;
-    border-color: transparent;
+    visibility: hidden;
     opacity: 0;
     pointer-events: none;
-    transform: translateY(8px);
+    transform: translateY(calc(100% + var(--ui-space-2)));
   }
 
   .aux-surface {

@@ -15,6 +15,9 @@ export type DeepPartial<T> = {
 export interface Session {
   id: string;
   ptyId: number;
+  auxPtyId: number;
+  auxVisible: boolean;
+  auxHeightPercent: number | null;
   agentId: AgentId;
   resumeToken: string | null;
   title: string;
@@ -94,6 +97,9 @@ export interface WorkspaceTabSnapshot {
   locked: boolean;
   resumeToken?: string | null;
   ptyId?: number | null;
+  auxPtyId?: number | null;
+  auxVisible?: boolean;
+  auxHeightPercent?: number | null;
 }
 
 export interface WorkspaceWindowSnapshot {

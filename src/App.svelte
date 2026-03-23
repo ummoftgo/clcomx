@@ -14,6 +14,7 @@
     moveSession,
     persistWorkspace,
     setActiveSession,
+    setSessionAuxState,
     setCurrentWindowName,
     setSessionLocked,
     setSessionPtyId,
@@ -43,10 +44,12 @@
     notifyWindowReady,
     openEmptyWindow,
     removeWindow,
+    setSessionAuxTerminalState as persistSessionAuxTerminalState,
     setSessionPty,
     setSessionResumeToken as persistSessionResumeToken,
     updateWindowGeometry,
   } from "./lib/workspace";
+  import { killPty } from "./lib/pty";
   import type { Session, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
 
@@ -301,6 +304,9 @@
       distro: session.distro,
       workDir: session.workDir,
       ptyId: session.ptyId,
+      auxPtyId: session.auxPtyId,
+      auxVisible: session.auxVisible,
+      auxHeightPercent: session.auxHeightPercent,
     }));
     activeSessionId;
     currentWindowName;
@@ -340,6 +346,9 @@
     const session: Session = {
       id: crypto.randomUUID(),
       ptyId: -1,
+      auxPtyId: -1,
+      auxVisible: false,
+      auxHeightPercent: null,
       agentId,
       resumeToken,
       title,
@@ -377,6 +386,25 @@
       session.title,
       session.resumeToken ?? null,
     );
+  }
+
+  async function handleAuxTerminalState(
+    sessionId: string,
+    auxPtyId: number,
+    auxVisible: boolean,
+    auxHeightPercent: number | null,
+  ) {
+    setSessionAuxState(sessionId, auxPtyId, auxVisible, auxHeightPercent);
+    try {
+      await persistSessionAuxTerminalState(
+        sessionId,
+        auxPtyId >= 0 ? auxPtyId : null,
+        auxVisible,
+        auxHeightPercent,
+      );
+    } catch (error) {
+      console.error("Failed to persist auxiliary terminal state", error);
+    }
   }
 
   async function handleExit(ptyId: number) {
@@ -435,6 +463,24 @@
     try {
       for (const session of sessions) {
         const resumeToken = await captureSessionResumeToken(session);
+        if (session.auxPtyId >= 0) {
+          try {
+            await killPty(session.auxPtyId);
+          } catch (error) {
+            console.error("Failed to stop auxiliary terminal PTY", error);
+          }
+        }
+        setSessionAuxState(session.id, -1, false, session.auxHeightPercent);
+        try {
+          await persistSessionAuxTerminalState(
+            session.id,
+            null,
+            false,
+            session.auxHeightPercent,
+          );
+        } catch (error) {
+          console.error("Failed to clear auxiliary terminal state", error);
+        }
         await recordTabHistory(session.agentId, session.distro, session.workDir, session.title, resumeToken);
       }
 
@@ -702,8 +748,22 @@
             distro={session.distro}
             workDir={session.workDir}
             ptyId={session.ptyId}
+            storedAuxPtyId={session.auxPtyId}
+            storedAuxVisible={session.auxVisible}
+            storedAuxHeightPercent={session.auxHeightPercent}
             resumeToken={session.resumeToken}
             onPtyId={(ptyId: number) => handlePtyId(session.id, ptyId)}
+            onAuxStateChange={(state: {
+              auxPtyId: number;
+              auxVisible: boolean;
+              auxHeightPercent: number | null;
+            }) =>
+              void handleAuxTerminalState(
+                session.id,
+                state.auxPtyId,
+                state.auxVisible,
+                state.auxHeightPercent,
+              )}
             onExit={handleExit}
             onResumeFallback={() => void handleResumeFallback(session.id)}
           />

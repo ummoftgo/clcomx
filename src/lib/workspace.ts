@@ -18,6 +18,20 @@ export async function setSessionPty(
   await invoke("set_session_pty", { sessionId, ptyId });
 }
 
+export async function setSessionAuxTerminalState(
+  sessionId: string,
+  auxPtyId: number | null,
+  auxVisible: boolean,
+  auxHeightPercent: number | null,
+): Promise<void> {
+  await invoke("set_session_aux_terminal_state", {
+    sessionId,
+    auxPtyId,
+    auxVisible,
+    auxHeightPercent,
+  });
+}
+
 export async function setSessionResumeToken(
   sessionId: string,
   resumeToken: string | null,

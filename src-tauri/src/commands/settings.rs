@@ -284,6 +284,12 @@ pub struct WorkspaceTabSnapshot {
     #[serde(default, alias = "claudeResumeId", alias = "claude_resume_id")]
     pub resume_token: Option<String>,
     pub pty_id: Option<u32>,
+    #[serde(default)]
+    pub aux_pty_id: Option<u32>,
+    #[serde(default)]
+    pub aux_visible: bool,
+    #[serde(default)]
+    pub aux_height_percent: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1172,6 +1178,28 @@ pub fn clear_session_pty(
 }
 
 #[tauri::command]
+pub fn set_session_aux_terminal_state(
+    state: tauri::State<'_, WorkspaceState>,
+    session_id: String,
+    aux_pty_id: Option<u32>,
+    aux_visible: bool,
+    aux_height_percent: Option<u16>,
+) -> Result<(), String> {
+    let mut runtime = snapshot_from_state(state.inner())?;
+    for window in &mut runtime.windows {
+        if let Some(tab) = window.tabs.iter_mut().find(|tab| tab.session_id == session_id) {
+            tab.aux_pty_id = aux_pty_id;
+            tab.aux_visible = aux_visible;
+            tab.aux_height_percent = aux_height_percent;
+            write_snapshot_to_state(state.inner(), runtime)?;
+            return Ok(());
+        }
+    }
+
+    Err("Session not found".into())
+}
+
+#[tauri::command]
 pub fn update_window_geometry(
     app: AppHandle,
     state: tauri::State<'_, WorkspaceState>,
@@ -1297,6 +1325,9 @@ pub fn close_session(
     if let Some(pty_id) = tab.pty_id {
         super::pty::kill_pty_session(pty_state.inner(), pty_id)?;
     }
+    if let Some(aux_pty_id) = tab.aux_pty_id {
+        super::pty::kill_pty_session(pty_state.inner(), aux_pty_id)?;
+    }
     write_snapshot_to_state(workspace_state.inner(), runtime.clone())?;
     write_workspace(&runtime)?;
     emit_workspace_updated(&app, &runtime)?;
@@ -1316,6 +1347,9 @@ pub fn close_session_by_pty(
     for window in &mut runtime.windows {
         if let Some(index) = window.tabs.iter().position(|tab| tab.pty_id == Some(pty_id)) {
             closed_session_id = Some(window.tabs[index].session_id.clone());
+            if let Some(aux_pty_id) = window.tabs[index].aux_pty_id {
+                super::pty::kill_pty_session(pty_state.inner(), aux_pty_id)?;
+            }
             window.tabs.remove(index);
             ensure_active_session(window);
             break;
@@ -1426,11 +1460,20 @@ pub fn close_window_sessions(
 
     let mut runtime = snapshot_from_state(workspace_state.inner())?;
     let pty_ids = collect_window_ptys(&runtime, &label);
+    let aux_pty_ids = runtime
+        .windows
+        .iter()
+        .find(|window| window.label == label)
+        .map(|window| window.tabs.iter().filter_map(|tab| tab.aux_pty_id).collect::<Vec<_>>())
+        .unwrap_or_default();
     runtime.windows.retain(|window| window.label != label);
     normalize_workspace_snapshot(&mut runtime);
 
     for pty_id in pty_ids {
         super::pty::kill_pty_session(pty_state.inner(), pty_id)?;
+    }
+    for aux_pty_id in aux_pty_ids {
+        super::pty::kill_pty_session(pty_state.inner(), aux_pty_id)?;
     }
 
     write_snapshot_to_state(workspace_state.inner(), runtime.clone())?;

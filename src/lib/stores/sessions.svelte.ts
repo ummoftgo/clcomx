@@ -24,6 +24,9 @@ function createRuntimeSession(tab: WorkspaceTabSnapshot): Session {
   return {
     id: tab.sessionId,
     ptyId: tab.ptyId ?? -1,
+    auxPtyId: tab.auxPtyId ?? -1,
+    auxVisible: tab.auxVisible ?? false,
+    auxHeightPercent: tab.auxHeightPercent ?? null,
     agentId: tab.agentId ?? "claude",
     resumeToken: tab.resumeToken ?? null,
     title: tab.title || getDefaultTitle(tab.workDir),
@@ -51,6 +54,9 @@ function createWindowSnapshot(label = currentWindowLabel): WorkspaceWindowSnapsh
         locked: session.locked,
         resumeToken: session.resumeToken,
         ptyId: session.ptyId >= 0 ? session.ptyId : null,
+        auxPtyId: session.auxPtyId >= 0 ? session.auxPtyId : null,
+        auxVisible: session.auxVisible,
+        auxHeightPercent: session.auxHeightPercent,
       })),
     activeSessionId,
   };
@@ -69,10 +75,17 @@ function applyWindowSnapshot(windowSnapshot?: WorkspaceWindowSnapshot, preserveP
         existing.resumeToken = tab.resumeToken ?? null;
         existing.distro = tab.distro;
         existing.workDir = tab.workDir;
+        existing.auxVisible = tab.auxVisible ?? false;
+        existing.auxHeightPercent = tab.auxHeightPercent ?? null;
         if (preservePtyIds && typeof tab.ptyId === "number") {
           existing.ptyId = tab.ptyId;
         } else if (!preservePtyIds) {
           existing.ptyId = -1;
+        }
+        if (preservePtyIds && typeof tab.auxPtyId === "number") {
+          existing.auxPtyId = tab.auxPtyId;
+        } else if (!preservePtyIds) {
+          existing.auxPtyId = -1;
         }
         return existing;
       }
@@ -121,7 +134,7 @@ export function initializeSessionsFromWorkspace(
 ) {
   currentWindowLabel = windowLabel;
   const windowSnapshot = workspace?.windows.find((window) => window.label === windowLabel);
-  applyWindowSnapshot(windowSnapshot, false);
+  applyWindowSnapshot(windowSnapshot, true);
   sessionsInitialized = true;
   lastSavedWorkspace = JSON.stringify(getWorkspaceSnapshot(windowLabel));
 }
@@ -162,6 +175,19 @@ export function setSessionPtyId(id: string, ptyId: number) {
   if (session) {
     session.ptyId = ptyId;
   }
+}
+
+export function setSessionAuxState(
+  id: string,
+  auxPtyId: number,
+  auxVisible: boolean,
+  auxHeightPercent: number | null,
+) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (!session) return;
+  session.auxPtyId = auxPtyId;
+  session.auxVisible = auxVisible;
+  session.auxHeightPercent = auxHeightPercent;
 }
 
 export function setSessionResumeToken(id: string, resumeToken: string | null) {
