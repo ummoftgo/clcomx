@@ -5,6 +5,7 @@ import type { ThemePack } from "./themes";
 export type SupportedLocale = "en" | "ko";
 export type LanguagePreference = "system" | SupportedLocale;
 export type FileOpenMode = "default" | "picker";
+export type SessionRuntimeMode = "plain" | "tmux";
 export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends object
     ? T[K] extends Date | RegExp | Array<unknown> | Function
@@ -15,10 +16,13 @@ export type DeepPartial<T> = {
 
 export interface Session {
   id: string;
+  runtimeMode: SessionRuntimeMode;
   ptyId: number;
   auxPtyId: number;
   auxVisible: boolean;
   auxHeightPercent: number | null;
+  tmuxSessionName: string | null;
+  tmuxActivePaneId: string | null;
   agentId: AgentId;
   resumeToken: string | null;
   title: string;
@@ -90,6 +94,7 @@ export interface TabHistoryEntry {
 
 export interface WorkspaceTabSnapshot {
   sessionId: string;
+  runtimeMode?: SessionRuntimeMode;
   agentId: AgentId;
   distro: string;
   workDir: string;
@@ -101,6 +106,8 @@ export interface WorkspaceTabSnapshot {
   auxPtyId?: number | null;
   auxVisible?: boolean;
   auxHeightPercent?: number | null;
+  tmuxSessionName?: string | null;
+  tmuxActivePaneId?: string | null;
 }
 
 export interface WorkspaceWindowSnapshot {

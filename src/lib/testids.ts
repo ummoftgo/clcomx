@@ -6,6 +6,7 @@ export const TEST_IDS = {
   sessionLauncher: "session-launcher",
   launcherNewSession: "launcher-new-session",
   launcherRecentList: "launcher-recent-list",
+  launcherRuntimeMode: "launcher-runtime-mode",
   launcherAgentTrigger: "launcher-agent-trigger",
   launcherAgentPicker: "launcher-agent-picker",
   launcherAgentList: "launcher-agent-list",
@@ -30,6 +31,9 @@ export const TEST_IDS = {
   auxTerminalShell: "aux-terminal-shell",
   draftToggle: "terminal-draft-toggle",
   auxTerminalToggle: "terminal-aux-toggle",
+  tmuxShell: "tmux-shell",
+  tmuxToolbar: "tmux-toolbar",
+  tmuxPaneGrid: "tmux-pane-grid",
   draftTextarea: "terminal-draft-textarea",
   draftInsertButton: "terminal-draft-insert",
   draftSendButton: "terminal-draft-send",
@@ -71,6 +75,10 @@ export function launcherAgentTestId(agentId: string) {
   return `launcher-agent-${toTestIdSegment(agentId)}`;
 }
 
+export function launcherRuntimeModeTestId(mode: string) {
+  return `launcher-runtime-mode-${toTestIdSegment(mode)}`;
+}
+
 export function launcherDirectoryTestId(path: string) {
   return `launcher-directory-${toTestIdSegment(path)}`;
 }
@@ -89,4 +97,8 @@ export function contextMenuItemTestId(itemId: string) {
 
 export function editorPickerItemTestId(editorId: string) {
   return `editor-picker-item-${toTestIdSegment(editorId)}`;
+}
+
+export function tmuxPaneTestId(paneId: string) {
+  return `tmux-pane-${toTestIdSegment(paneId)}`;
 }

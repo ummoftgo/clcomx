@@ -101,6 +101,11 @@ const en = {
     nav: {
       back: "Back",
     },
+    runtimeMode: {
+      plain: "Plain",
+      tmux: "Tmux",
+      tmuxDisabled: "Tmux mode is supported for Claude Code first.",
+    },
     error: {
       noDistros: "No WSL distributions found.",
       loadDistros: "Failed to list WSL distributions",
@@ -280,6 +285,17 @@ const en = {
       close: "Hide auxiliary terminal",
       startFailed: "Failed to start auxiliary terminal: {message}",
       resizeHint: "Drag to resize",
+    },
+    tmux: {
+      connecting: "Connecting tmux session",
+      restoring: "Restoring tmux session",
+      missing: "The saved tmux session is no longer available.",
+      restart: "Start New Tmux Session",
+      splitHorizontal: "Split Horizontal",
+      splitVertical: "Split Vertical",
+      closePane: "Close Pane",
+      session: "Tmux session",
+      paneDead: "Pane exited",
     },
     loading: {
       connecting: "Connecting session",

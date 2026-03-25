@@ -20,6 +20,7 @@
     setSessionPtyId,
     setSessionPinned,
     setSessionResumeToken,
+    setSessionTmuxState,
     setSessionTitle,
     syncSessionsFromWorkspace,
   } from "./lib/stores/sessions.svelte";
@@ -51,7 +52,8 @@
     updateWindowGeometry,
   } from "./lib/workspace";
   import { killPty } from "./lib/pty";
-  import type { Session, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
+  import { killTmuxSession } from "./lib/tmux";
+  import type { Session, SessionRuntimeMode, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
 
   const appWindow = getCurrentWindow();
@@ -100,8 +102,10 @@
   let initialPlacementTimer: ReturnType<typeof setTimeout> | null = null;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let TerminalComponent = $state<Component<any> | null>(null);
+  let TmuxTerminalComponent = $state<Component<any> | null>(null);
   let SettingsModalComponent = $state<Component<any> | null>(null);
   let terminalLoadPromise: Promise<void> | null = null;
+  let tmuxTerminalLoadPromise: Promise<void> | null = null;
   let settingsLoadPromise: Promise<void> | null = null;
   const pendingCloseSession = $derived(
     pendingCloseSessionId
@@ -134,6 +138,24 @@
       });
 
     await terminalLoadPromise;
+  }
+
+  async function ensureTmuxTerminalComponent() {
+    if (TmuxTerminalComponent) return;
+    if (tmuxTerminalLoadPromise) {
+      await tmuxTerminalLoadPromise;
+      return;
+    }
+
+    tmuxTerminalLoadPromise = import("./lib/components/TmuxTerminal.svelte")
+      .then((module) => {
+        TmuxTerminalComponent = module.default;
+      })
+      .finally(() => {
+        tmuxTerminalLoadPromise = null;
+      });
+
+    await tmuxTerminalLoadPromise;
   }
 
   async function ensureSettingsModalComponent() {
@@ -299,6 +321,7 @@
 
     sessions.map((session) => ({
       id: session.id,
+      runtimeMode: session.runtimeMode,
       agentId: session.agentId,
       title: session.title,
       pinned: session.pinned,
@@ -310,6 +333,8 @@
       auxPtyId: session.auxPtyId,
       auxVisible: session.auxVisible,
       auxHeightPercent: session.auxHeightPercent,
+      tmuxSessionName: session.tmuxSessionName,
+      tmuxActivePaneId: session.tmuxActivePaneId,
     }));
     activeSessionId;
     currentWindowName;
@@ -325,6 +350,9 @@
   $effect(() => {
     if (sessions.length > 0) {
       void ensureTerminalComponent();
+      if (sessions.some((session) => session.runtimeMode === "tmux")) {
+        void ensureTmuxTerminalComponent();
+      }
     }
   });
 
@@ -345,13 +373,17 @@
     workDir: string,
     title = workDir.split("/").pop() || workDir,
     resumeToken: string | null = null,
+    runtimeMode: SessionRuntimeMode = "plain",
   ) {
     const session: Session = {
       id: crypto.randomUUID(),
+      runtimeMode,
       ptyId: -1,
       auxPtyId: -1,
       auxVisible: false,
       auxHeightPercent: null,
+      tmuxSessionName: null,
+      tmuxActivePaneId: null,
       agentId,
       resumeToken,
       title,
@@ -366,10 +398,36 @@
     showSessionLauncher = false;
     void persistWorkspace();
     void ensureTerminalComponent();
+    if (runtimeMode === "tmux") {
+      void ensureTmuxTerminalComponent();
+    }
+  }
+
+  function createLauncherSession(
+    agentId: AgentId,
+    distro: string,
+    workDir: string,
+    runtimeMode: SessionRuntimeMode,
+  ) {
+    createSession(
+      agentId,
+      distro,
+      workDir,
+      workDir.split("/").pop() || workDir,
+      null,
+      runtimeMode,
+    );
   }
 
   function openHistoryEntry(entry: TabHistoryEntry) {
-    createSession(entry.agentId ?? "claude", entry.distro, entry.workDir, entry.title, entry.resumeToken ?? null);
+    createSession(
+      entry.agentId ?? "claude",
+      entry.distro,
+      entry.workDir,
+      entry.title,
+      entry.resumeToken ?? null,
+      "plain",
+    );
   }
 
   async function handlePtyId(sessionId: string, ptyId: number) {
@@ -419,6 +477,14 @@
     }
   }
 
+  function handleTmuxState(
+    sessionId: string,
+    tmuxSessionName: string | null,
+    tmuxActivePaneId: string | null,
+  ) {
+    setSessionTmuxState(sessionId, tmuxSessionName, tmuxActivePaneId);
+  }
+
   async function handleResumeFallback(sessionId: string) {
     setSessionResumeToken(sessionId, null);
     try {
@@ -465,6 +531,16 @@
     capturingResumeOnAppClose = true;
     try {
       for (const session of sessions) {
+        if (session.runtimeMode === "tmux") {
+          if (session.tmuxSessionName) {
+            try {
+              await killTmuxSession(session.distro, session.tmuxSessionName);
+            } catch (error) {
+              console.error("Failed to stop tmux session during app close", error);
+            }
+          }
+          continue;
+        }
         const resumeToken = await captureSessionResumeToken(session);
         if (session.auxPtyId >= 0) {
           try {
@@ -498,6 +574,14 @@
     if (!session) return;
 
     try {
+      if (session.runtimeMode === "tmux") {
+        if (session.tmuxSessionName) {
+          await killTmuxSession(session.distro, session.tmuxSessionName);
+        }
+        await closeSession(sessionId);
+        return;
+      }
+
       const resumeToken = await captureSessionResumeToken(session);
       await recordTabHistory(session.agentId, session.distro, session.workDir, session.title, resumeToken);
       await closeSession(sessionId);
@@ -516,7 +600,7 @@
     if (!session) return;
     if (session.locked) return;
 
-    if (session.ptyId >= 0) {
+    if (session.runtimeMode === "tmux" || session.ptyId >= 0) {
       pendingCloseSessionId = sessionId;
       showCloseTabDialog = true;
       return;
@@ -734,7 +818,7 @@
         embedded={true}
         historyEntries={historyEntries}
         onOpenHistory={openHistoryEntry}
-        onConfirm={createSession}
+        onConfirm={createLauncherSession}
       />
     </div>
 
@@ -744,32 +828,49 @@
     >
       {#if TerminalComponent}
         {#each sessions as session (session.id)}
-          <TerminalComponent
-            sessionId={session.id}
-            visible={session.id === activeSessionId}
-            agentId={session.agentId}
-            distro={session.distro}
-            workDir={session.workDir}
-            ptyId={session.ptyId}
-            storedAuxPtyId={session.auxPtyId}
-            storedAuxVisible={session.auxVisible}
-            storedAuxHeightPercent={session.auxHeightPercent}
-            resumeToken={session.resumeToken}
-            onPtyId={(ptyId: number) => handlePtyId(session.id, ptyId)}
-            onAuxStateChange={(state: {
-              auxPtyId: number;
-              auxVisible: boolean;
-              auxHeightPercent: number | null;
-            }) =>
-              void handleAuxTerminalState(
-                session.id,
-                state.auxPtyId,
-                state.auxVisible,
-                state.auxHeightPercent,
-              )}
-            onExit={handleExit}
-            onResumeFallback={() => void handleResumeFallback(session.id)}
-          />
+          {#if session.runtimeMode === "tmux"}
+            {#if TmuxTerminalComponent}
+              <TmuxTerminalComponent
+                sessionId={session.id}
+                visible={session.id === activeSessionId}
+                agentId={session.agentId}
+                distro={session.distro}
+                workDir={session.workDir}
+                resumeToken={session.resumeToken}
+                tmuxSessionName={session.tmuxSessionName}
+                tmuxActivePaneId={session.tmuxActivePaneId}
+                onStateChange={(state: { tmuxSessionName: string | null; tmuxActivePaneId: string | null }) =>
+                  handleTmuxState(session.id, state.tmuxSessionName, state.tmuxActivePaneId)}
+              />
+            {/if}
+          {:else}
+            <TerminalComponent
+              sessionId={session.id}
+              visible={session.id === activeSessionId}
+              agentId={session.agentId}
+              distro={session.distro}
+              workDir={session.workDir}
+              ptyId={session.ptyId}
+              storedAuxPtyId={session.auxPtyId}
+              storedAuxVisible={session.auxVisible}
+              storedAuxHeightPercent={session.auxHeightPercent}
+              resumeToken={session.resumeToken}
+              onPtyId={(ptyId: number) => handlePtyId(session.id, ptyId)}
+              onAuxStateChange={(state: {
+                auxPtyId: number;
+                auxVisible: boolean;
+                auxHeightPercent: number | null;
+              }) =>
+                void handleAuxTerminalState(
+                  session.id,
+                  state.auxPtyId,
+                  state.auxVisible,
+                  state.auxHeightPercent,
+                )}
+              onExit={handleExit}
+              onResumeFallback={() => void handleResumeFallback(session.id)}
+            />
+          {/if}
         {/each}
       {:else}
         <div class="terminal-loading">
@@ -783,7 +884,7 @@
     visible={showSessionLauncher}
     historyEntries={historyEntries}
     onOpenHistory={openHistoryEntry}
-    onConfirm={createSession}
+    onConfirm={createLauncherSession}
     onCancel={() => { showSessionLauncher = false; }}
   />
 

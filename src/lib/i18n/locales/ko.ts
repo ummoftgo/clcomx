@@ -101,6 +101,11 @@ const ko = {
     nav: {
       back: "뒤로",
     },
+    runtimeMode: {
+      plain: "일반",
+      tmux: "Tmux",
+      tmuxDisabled: "Tmux 모드는 우선 Claude Code에서만 지원합니다.",
+    },
     error: {
       noDistros: "WSL 배포판을 찾을 수 없습니다.",
       loadDistros: "WSL 배포판 목록을 불러오지 못했습니다",
@@ -280,6 +285,17 @@ const ko = {
       close: "보조 터미널 숨기기",
       startFailed: "보조 터미널 시작 실패: {message}",
       resizeHint: "드래그해서 높이 조절",
+    },
+    tmux: {
+      connecting: "Tmux 세션 연결 중",
+      restoring: "Tmux 세션 복구 중",
+      missing: "저장된 tmux 세션을 더 이상 찾을 수 없습니다.",
+      restart: "새 Tmux 세션 시작",
+      splitHorizontal: "가로 분할",
+      splitVertical: "세로 분할",
+      closePane: "pane 닫기",
+      session: "Tmux 세션",
+      paneDead: "pane 종료됨",
     },
     loading: {
       connecting: "세션 연결 중",

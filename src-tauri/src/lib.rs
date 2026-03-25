@@ -20,6 +20,11 @@ use commands::settings::{
     save_workspace, set_session_aux_terminal_state, set_session_pty, set_session_resume_token,
     trim_tab_history, update_window_geometry, window_ready,
 };
+use commands::tmux::{
+    TmuxState, tmux_create_session, tmux_get_session_snapshot, tmux_kill_pane, tmux_kill_session,
+    tmux_resize_session, tmux_select_pane, tmux_select_pane_direction, tmux_send_input,
+    tmux_split_pane, tmux_subscribe_session, tmux_unsubscribe_session,
+};
 use commands::wsl::{WslState, list_wsl_distros, list_wsl_directories};
 use tauri::{Manager, PhysicalPosition, PhysicalSize};
 
@@ -50,6 +55,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(PtyState::default())
+        .manage(TmuxState::default())
         .manage(WslState::default())
         .manage(WorkspaceState::new(initial_workspace))
         .manage(WindowReadyState::default())
@@ -100,6 +106,17 @@ pub fn run() {
             list_available_editors,
             resolve_terminal_path,
             open_in_editor,
+            tmux_create_session,
+            tmux_subscribe_session,
+            tmux_unsubscribe_session,
+            tmux_get_session_snapshot,
+            tmux_send_input,
+            tmux_split_pane,
+            tmux_select_pane,
+            tmux_select_pane_direction,
+            tmux_kill_pane,
+            tmux_kill_session,
+            tmux_resize_session,
             list_wsl_distros,
             list_wsl_directories,
             list_monospace_fonts,

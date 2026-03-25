@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ as translate } from "svelte-i18n";
   import { listWslDistros, listWslDirectories, type WslEntry } from "../wsl";
-  import type { TabHistoryEntry } from "../types";
+  import type { SessionRuntimeMode, TabHistoryEntry } from "../types";
   import { getSettings } from "../stores/settings.svelte";
   import { getBuiltinAgents, getAgentDefinition, getAgentLabel, summarizeResumeToken, type AgentId } from "../agents";
   import AgentIcon from "./AgentIcon.svelte";
@@ -11,6 +11,7 @@
     launcherDirectoryTestId,
     launcherDistroTestId,
     launcherHistoryItemTestId,
+    launcherRuntimeModeTestId,
   } from "../testids";
 
   type TranslationOptions = {
@@ -25,7 +26,7 @@
     embedded?: boolean;
     historyEntries: TabHistoryEntry[];
     onOpenHistory: (entry: TabHistoryEntry) => void;
-    onConfirm: (agentId: AgentId, distro: string, workDir: string) => void;
+    onConfirm: (agentId: AgentId, distro: string, workDir: string, runtimeMode: SessionRuntimeMode) => void;
     onCancel?: () => void;
   }
 
@@ -45,6 +46,7 @@
   const t = (key: string, options?: TranslationOptions) => $translate(key, options);
   let selectedDistro = $state("");
   let selectedAgentId = $state<AgentId>(settings.workspace.defaultAgentId || "claude");
+  let selectedRuntimeMode = $state<SessionRuntimeMode>("plain");
   let currentPath = $state("/home");
   let selectedPath = $state("/home");
   let directories = $state<WslEntry[]>([]);
@@ -61,6 +63,12 @@
     const preferredAgentId = settings.workspace.defaultAgentId || "claude";
     if (!selectedAgentId || !availableAgentIds.has(selectedAgentId)) {
       selectedAgentId = availableAgentIds.has(preferredAgentId) ? preferredAgentId : "claude";
+    }
+  });
+
+  $effect(() => {
+    if (selectedAgentId !== "claude" && selectedRuntimeMode === "tmux") {
+      selectedRuntimeMode = "plain";
     }
   });
 
@@ -90,6 +98,7 @@
     step = "home";
     selectedDistro = "";
     selectedAgentId = settings.workspace.defaultAgentId || "claude";
+    selectedRuntimeMode = "plain";
     currentPath = "/home";
     selectedPath = "/home";
     pathInput = "/home";
@@ -181,7 +190,12 @@
   }
 
   function confirmDirectory() {
-    onConfirm(selectedAgentId, selectedDistro, pathInput.trim() || selectedPath || currentPath);
+    onConfirm(
+      selectedAgentId,
+      selectedDistro,
+      pathInput.trim() || selectedPath || currentPath,
+      selectedRuntimeMode,
+    );
     resetToHome();
   }
 
@@ -329,6 +343,32 @@
                 <h3>{t("launcher.directory.title")}</h3>
               </div>
               <div class="header-controls">
+                <div class="mode-switch" data-testid={TEST_IDS.launcherRuntimeMode}>
+                  <button
+                    class="mode-chip"
+                    class:selected={selectedRuntimeMode === "plain"}
+                    data-testid={launcherRuntimeModeTestId("plain")}
+                    onclick={() => {
+                      selectedRuntimeMode = "plain";
+                    }}
+                  >
+                    {t("launcher.runtimeMode.plain")}
+                  </button>
+                  <button
+                    class="mode-chip"
+                    class:selected={selectedRuntimeMode === "tmux"}
+                    data-testid={launcherRuntimeModeTestId("tmux")}
+                    onclick={() => {
+                      if (selectedAgentId === "claude") {
+                        selectedRuntimeMode = "tmux";
+                      }
+                    }}
+                    disabled={selectedAgentId !== "claude"}
+                    title={selectedAgentId === "claude" ? undefined : t("launcher.runtimeMode.tmuxDisabled")}
+                  >
+                    {t("launcher.runtimeMode.tmux")}
+                  </button>
+                </div>
                 <button
                   class="picker-badge agent-trigger"
                   data-testid={TEST_IDS.launcherAgentTrigger}
@@ -767,6 +807,48 @@
     gap: var(--ui-space-2);
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .mode-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--tab-border) 72%, white 28%);
+    background: color-mix(in srgb, var(--tab-bg) 88%, white 12%);
+  }
+
+  .mode-chip {
+    min-height: calc(32px * var(--ui-scale));
+    padding: calc(6px * var(--ui-scale)) calc(12px * var(--ui-scale));
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--tab-text);
+    cursor: pointer;
+    font-size: var(--ui-font-size-sm);
+    font-weight: 600;
+    transition:
+      background 120ms ease,
+      opacity 120ms ease,
+      transform 120ms ease;
+  }
+
+  .mode-chip.selected {
+    background: color-mix(in srgb, var(--tab-active-bg) 88%, white 12%);
+    box-shadow: 0 4px 10px rgba(2, 6, 23, 0.12);
+  }
+
+  .mode-chip:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .mode-chip:hover:not(:disabled),
+  .mode-chip:focus-visible:not(:disabled) {
+    background: color-mix(in srgb, var(--tab-active-bg) 82%, white 18%);
+    outline: none;
   }
 
   .panel-header h3 {

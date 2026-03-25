@@ -28,6 +28,10 @@ fn default_agent_id() -> String {
     "claude".into()
 }
 
+fn default_runtime_mode() -> String {
+    "plain".into()
+}
+
 fn normalize_agent_id(value: &str) -> String {
     let normalized = value.trim().to_lowercase();
     if normalized.is_empty() {
@@ -276,6 +280,8 @@ struct TabHistoryFile {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceTabSnapshot {
     pub session_id: String,
+    #[serde(default = "default_runtime_mode")]
+    pub runtime_mode: String,
     #[serde(default = "default_agent_id")]
     pub agent_id: String,
     pub distro: String,
@@ -294,6 +300,10 @@ pub struct WorkspaceTabSnapshot {
     pub aux_visible: bool,
     #[serde(default)]
     pub aux_height_percent: Option<u16>,
+    #[serde(default)]
+    pub tmux_session_name: Option<String>,
+    #[serde(default)]
+    pub tmux_active_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

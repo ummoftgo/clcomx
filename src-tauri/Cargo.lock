@@ -316,6 +316,7 @@ dependencies = [
 name = "clcomx"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "portable-pty",
  "serde",
  "serde_json",

@@ -4,4 +4,5 @@ pub mod external;
 pub mod fonts;
 pub mod pty;
 pub mod settings;
+pub mod tmux;
 pub mod wsl;

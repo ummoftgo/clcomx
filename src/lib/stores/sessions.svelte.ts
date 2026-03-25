@@ -23,10 +23,13 @@ function getDefaultTitle(workDir: string) {
 function createRuntimeSession(tab: WorkspaceTabSnapshot): Session {
   return {
     id: tab.sessionId,
+    runtimeMode: tab.runtimeMode ?? "plain",
     ptyId: tab.ptyId ?? -1,
     auxPtyId: tab.auxPtyId ?? -1,
     auxVisible: tab.auxVisible ?? false,
     auxHeightPercent: tab.auxHeightPercent ?? null,
+    tmuxSessionName: tab.tmuxSessionName ?? null,
+    tmuxActivePaneId: tab.tmuxActivePaneId ?? null,
     agentId: tab.agentId ?? "claude",
     resumeToken: tab.resumeToken ?? null,
     title: tab.title || getDefaultTitle(tab.workDir),
@@ -46,6 +49,7 @@ function createWindowSnapshot(label = currentWindowLabel): WorkspaceWindowSnapsh
     role: label === MAIN_WINDOW_LABEL ? "main" : "secondary",
       tabs: sessions.map((session) => ({
         sessionId: session.id,
+        runtimeMode: session.runtimeMode,
         agentId: session.agentId,
         distro: session.distro,
         workDir: session.workDir,
@@ -57,6 +61,8 @@ function createWindowSnapshot(label = currentWindowLabel): WorkspaceWindowSnapsh
         auxPtyId: session.auxPtyId >= 0 ? session.auxPtyId : null,
         auxVisible: session.auxVisible,
         auxHeightPercent: session.auxHeightPercent,
+        tmuxSessionName: session.tmuxSessionName,
+        tmuxActivePaneId: session.tmuxActivePaneId,
       })),
     activeSessionId,
   };
@@ -71,12 +77,15 @@ function applyWindowSnapshot(windowSnapshot?: WorkspaceWindowSnapshot, preserveP
         existing.title = tab.title || getDefaultTitle(tab.workDir);
         existing.pinned = tab.pinned ?? false;
         existing.locked = tab.locked ?? false;
+        existing.runtimeMode = tab.runtimeMode ?? "plain";
         existing.agentId = tab.agentId ?? "claude";
         existing.resumeToken = tab.resumeToken ?? null;
         existing.distro = tab.distro;
         existing.workDir = tab.workDir;
         existing.auxVisible = tab.auxVisible ?? false;
         existing.auxHeightPercent = tab.auxHeightPercent ?? null;
+        existing.tmuxSessionName = tab.tmuxSessionName ?? null;
+        existing.tmuxActivePaneId = tab.tmuxActivePaneId ?? null;
         if (preservePtyIds && typeof tab.ptyId === "number") {
           existing.ptyId = tab.ptyId;
         } else if (!preservePtyIds) {
@@ -175,6 +184,17 @@ export function setSessionPtyId(id: string, ptyId: number) {
   if (session) {
     session.ptyId = ptyId;
   }
+}
+
+export function setSessionTmuxState(
+  id: string,
+  tmuxSessionName: string | null,
+  tmuxActivePaneId: string | null,
+) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (!session) return;
+  session.tmuxSessionName = tmuxSessionName;
+  session.tmuxActivePaneId = tmuxActivePaneId;
 }
 
 export function setSessionAuxState(
