@@ -647,13 +647,42 @@
     return false;
   }
 
-  async function syncPaneTerminals(nextSnapshot: TmuxSessionSnapshot | null, structuralChange: boolean) {
+  function shouldRehydratePane(
+    previousPane: TmuxSessionSnapshot["panes"][number] | null,
+    nextPane: TmuxSessionSnapshot["panes"][number],
+  ) {
+    if (!previousPane) return true;
+    return (
+      previousPane.width !== nextPane.width ||
+      previousPane.height !== nextPane.height ||
+      previousPane.cursorX !== nextPane.cursorX ||
+      previousPane.cursorY !== nextPane.cursorY ||
+      previousPane.dead !== nextPane.dead ||
+      previousPane.screenText !== nextPane.screenText
+    );
+  }
+
+  async function syncPaneTerminals(
+    previousSnapshot: TmuxSessionSnapshot | null,
+    nextSnapshot: TmuxSessionSnapshot | null,
+    structuralChange: boolean,
+  ) {
     if (!nextSnapshot) return;
     await tick();
     disposeRemovedPaneTerminals(nextSnapshot);
+    const previousPanesById = new Map((previousSnapshot?.panes ?? []).map((pane) => [pane.paneId, pane]));
 
     for (const pane of nextSnapshot.panes) {
-      await syncSinglePaneTerminal(pane, structuralChange);
+      const previousPane = previousPanesById.get(pane.paneId) ?? null;
+      if (structuralChange || shouldRehydratePane(previousPane, pane)) {
+        await syncSinglePaneTerminal(pane, structuralChange);
+        continue;
+      }
+
+      if (visible && pane.active) {
+        paneTerminals.get(pane.paneId)?.term.focus();
+      }
+      schedulePaneLayoutDebugInfo(pane);
     }
   }
 
@@ -674,7 +703,7 @@
     liveSessionName = liveSessionName ?? tmuxSessionName ?? nextSnapshot.sessionName;
     liveActivePaneId = nextSnapshot.activePaneId;
     notifyState();
-    await syncPaneTerminals(nextSnapshot, structuralChange);
+    await syncPaneTerminals(previousSnapshot, nextSnapshot, structuralChange);
     if (!previousSnapshot) {
       scheduleSessionResize(80);
     }

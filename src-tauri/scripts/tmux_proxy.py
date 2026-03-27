@@ -13,6 +13,7 @@ import time
 
 TMUX_CONTROL_START = "\x1bP1000p"
 TMUX_CONTROL_END = "\x1b\\"
+STRUCTURAL_STATE_COALESCE_SEC = 0.05
 
 
 def emit(payload):
@@ -231,9 +232,15 @@ def is_structural_event(line):
     }
 
 
+def emit_structural_state(session_name, history_lines):
+    snapshot = capture_snapshot(session_name, history_lines)
+    if snapshot:
+        emit({"type": "state", "snapshot": snapshot})
+
+
 def handle_control_line(session_name, line, history_lines):
     if line.startswith("%begin ") or line.startswith("%end ") or line.startswith("%error "):
-        return
+        return False
     if line == "%exit":
         raise EOFError("tmux control client exited")
     if line.startswith("%output "):
@@ -241,7 +248,7 @@ def handle_control_line(session_name, line, history_lines):
         decoded = unescape_tmux_output(payload)
         if decoded:
             emit({"type": "output", "paneId": pane_id, "data": decoded})
-        return
+        return False
     if line.startswith("%extended-output "):
         parts = line.split(" ", 4)
         pane_id = parts[1] if len(parts) > 1 else ""
@@ -252,12 +259,10 @@ def handle_control_line(session_name, line, history_lines):
         decoded = unescape_tmux_output(payload)
         if decoded:
             emit({"type": "output", "paneId": pane_id, "data": decoded})
-        return
+        return False
     if is_structural_event(line):
-        snapshot = capture_snapshot(session_name, history_lines)
-        if snapshot:
-            emit({"type": "state", "snapshot": snapshot})
-        return
+        return True
+    return False
 
 
 def stdin_forwarder(master_fd, stop_event):
@@ -310,10 +315,25 @@ def main():
         emit({"type": "state", "snapshot": snapshot})
 
     pending = ""
+    pending_structural_emit_at = None
     try:
         while not stop_event.is_set():
-            ready, _, _ = select.select([master_fd], [], [], 0.25)
+            now = time.monotonic()
+            if pending_structural_emit_at is not None and now >= pending_structural_emit_at:
+                emit_structural_state(args.session_name, args.history_lines)
+                pending_structural_emit_at = None
+                continue
+
+            timeout = 0.25
+            if pending_structural_emit_at is not None:
+                timeout = max(0.0, min(timeout, pending_structural_emit_at - now))
+
+            ready, _, _ = select.select([master_fd], [], [], timeout)
             if master_fd not in ready:
+                if pending_structural_emit_at is not None and time.monotonic() >= pending_structural_emit_at:
+                    emit_structural_state(args.session_name, args.history_lines)
+                    pending_structural_emit_at = None
+                    continue
                 if proc.poll() is not None:
                     break
                 continue
@@ -324,7 +344,8 @@ def main():
             lines, pending = split_control_messages(pending)
             for line in lines:
                 try:
-                    handle_control_line(args.session_name, line, args.history_lines)
+                    if handle_control_line(args.session_name, line, args.history_lines):
+                        pending_structural_emit_at = time.monotonic() + STRUCTURAL_STATE_COALESCE_SEC
                 except EOFError:
                     stop_event.set()
                     break
