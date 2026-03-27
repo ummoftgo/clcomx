@@ -38,6 +38,22 @@
     onStateChange?: (state: { tmuxSessionName: string | null; tmuxActivePaneId: string | null }) => void;
   }
 
+  interface PaneLayoutDebugInfo {
+    paneCols: number;
+    paneRows: number;
+    termCols: number;
+    termRows: number;
+    fitCols: number;
+    fitRows: number;
+    deltaCols: number;
+    deltaRows: number;
+    hostWidth: number;
+    hostHeight: number;
+    cellWidth: number;
+    cellHeight: number;
+    scrollbarWidth: number;
+  }
+
   let {
     sessionId,
     visible,
@@ -67,6 +83,7 @@
 
   let shellEl = $state<HTMLDivElement | null>(null);
   let toolbarEl = $state<HTMLDivElement | null>(null);
+  let shellBodyEl = $state<HTMLDivElement | null>(null);
   let paneGridEl = $state<HTMLDivElement | null>(null);
   let paneStageEl = $state<HTMLDivElement | null>(null);
   let measureEl = $state<HTMLDivElement | null>(null);
@@ -84,12 +101,21 @@
   let tmuxPrefixPending = $state(false);
   let outputEventCount = $state(0);
   let lastOutputPaneId = $state<string | null>(null);
+  let paneLayoutDebug = $state<Record<string, PaneLayoutDebugInfo>>({});
+  let inFlightResizeTarget = $state<{ cols: number; rows: number } | null>(null);
+  let inFlightResizeRequest: Promise<void> | null = null;
+  let measureReady = $state(false);
+  let measurementGateOpen = $state(false);
+  let lastResizeSyncKey = $state<string | null>(null);
   const subscriberId = crypto.randomUUID();
   let measureTerminal: Terminal | null = null;
   let measureFitAddon: FitAddon | null = null;
 
   const TMUX_PREFIX = "\u0002";
   const TMUX_PREFIX_TIMEOUT_MS = 1600;
+  const TMUX_SESSION_COL_GUARD = 1;
+  const TMUX_MIN_SESSION_COLS = 20;
+  const TMUX_MIN_SESSION_ROWS = 8;
 
   const paneElements = new Map<string, HTMLDivElement>();
   const pendingPaneOutput = new Map<string, string[]>();
@@ -134,25 +160,42 @@
     return liveSessionName ?? tmuxSessionName ?? null;
   }
 
+  function scheduleSessionResize(delayMs = 0) {
+    if (resizeTimer) {
+      clearTimeout(resizeTimer);
+    }
+    resizeTimer = setTimeout(() => {
+      resizeTimer = null;
+      void syncMeasuredViewportSize();
+    }, Math.max(delayMs, 0));
+  }
+
   function estimateWindowSize() {
-    if (measureTerminal && measureFitAddon && (paneStageEl || paneGridEl)) {
+    if (measureTerminal && measureFitAddon && measureEl) {
       measureFitAddon.fit();
       return {
-        cols: Math.max(80, measureTerminal.cols),
-        rows: Math.max(24, measureTerminal.rows),
+        cols: Math.max(TMUX_MIN_SESSION_COLS, measureTerminal.cols - TMUX_SESSION_COL_GUARD),
+        rows: Math.max(TMUX_MIN_SESSION_ROWS, measureTerminal.rows),
       };
     }
 
-    const width = Math.max(paneStageEl?.clientWidth || paneGridEl?.clientWidth || shellEl?.clientWidth || 0, 960);
+    const width = Math.max(
+      paneStageEl?.clientWidth || paneGridEl?.clientWidth || shellBodyEl?.clientWidth || shellEl?.clientWidth || 0,
+      960,
+    );
     const height = Math.max(
       paneStageEl?.clientHeight ||
         paneGridEl?.clientHeight ||
+        shellBodyEl?.clientHeight ||
         Math.max((shellEl?.clientHeight ?? 0) - (toolbarEl?.offsetHeight ?? 0) - 12, 0),
       540,
     );
     return {
-      cols: Math.max(80, Math.round(width / Math.max(settings.terminal.fontSize * 0.62, 7))),
-      rows: Math.max(24, Math.round(height / Math.max(settings.terminal.fontSize * 1.78, 16))),
+      cols: Math.max(
+        TMUX_MIN_SESSION_COLS,
+        Math.round(width / Math.max(settings.terminal.fontSize * 0.62, 7)) - TMUX_SESSION_COL_GUARD,
+      ),
+      rows: Math.max(TMUX_MIN_SESSION_ROWS, Math.round(height / Math.max(settings.terminal.fontSize * 1.78, 16))),
     };
   }
 
@@ -171,6 +214,26 @@
     measureTerminal.loadAddon(measureFitAddon);
     measureTerminal.open(measureEl);
     measureFitAddon.fit();
+    measureReady = true;
+    if (snapshot && liveSessionName && visible) {
+      scheduleSessionResize(80);
+    }
+  }
+
+  async function waitForFontMetricsReady() {
+    if (!("fonts" in document)) return;
+    try {
+      await Promise.race([
+        (document as Document & { fonts?: FontFaceSet }).fonts?.ready ?? Promise.resolve(),
+        new Promise((resolve) => setTimeout(resolve, 250)),
+      ]);
+    } catch {
+      // Fall back when font readiness cannot be observed.
+    }
+  }
+
+  async function waitForNextFrame() {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
   }
 
   function getPaneStyle(pane: TmuxSessionSnapshot["panes"][number]) {
@@ -183,6 +246,14 @@
   }
 
   function paneAction(node: HTMLDivElement, paneId: string) {
+    const syncActivePaneFromViewport = () => {
+      if (liveActivePaneId !== paneId) {
+        void activatePane(paneId);
+      }
+    };
+
+    node.addEventListener("pointerdown", syncActivePaneFromViewport, true);
+    node.addEventListener("focusin", syncActivePaneFromViewport, true);
     paneElements.set(paneId, node);
     if (!paneTerminals.has(paneId)) {
       createPaneTerminal(paneId, node);
@@ -210,6 +281,8 @@
         }
       },
       destroy() {
+        node.removeEventListener("pointerdown", syncActivePaneFromViewport, true);
+        node.removeEventListener("focusin", syncActivePaneFromViewport, true);
         paneElements.delete(paneId);
       },
     };
@@ -251,7 +324,105 @@
       entry.term.dispose();
       paneTerminals.delete(paneId);
       pendingPaneOutput.delete(paneId);
+      delete paneLayoutDebug[paneId];
     }
+  }
+
+  function getPaneLayoutDebugInfo(
+    pane: TmuxSessionSnapshot["panes"][number],
+    entry: { term: Terminal },
+  ): PaneLayoutDebugInfo | null {
+    const host = paneElements.get(pane.paneId);
+    const termEl = entry.term.element;
+    if (!host || !termEl) return null;
+
+    const core = (entry.term as Terminal & { _core?: any })._core;
+    const cell = core?._renderService?.dimensions?.css?.cell;
+    const cellWidth = cell?.width ?? 0;
+    const cellHeight = cell?.height ?? 0;
+    if (!cellWidth || !cellHeight) return null;
+
+    const termStyle = window.getComputedStyle(termEl);
+    const paddingX =
+      parseFloat(termStyle.getPropertyValue("padding-left")) +
+      parseFloat(termStyle.getPropertyValue("padding-right"));
+    const paddingY =
+      parseFloat(termStyle.getPropertyValue("padding-top")) +
+      parseFloat(termStyle.getPropertyValue("padding-bottom"));
+    const scrollbarWidth = 0;
+    const availableWidth = Math.max(host.clientWidth - paddingX, 0);
+    const availableHeight = Math.max(host.clientHeight - paddingY, 0);
+    const fitCols = Math.max(2, Math.floor(availableWidth / cellWidth));
+    const fitRows = Math.max(1, Math.floor(availableHeight / cellHeight));
+
+    return {
+      paneCols: pane.width,
+      paneRows: pane.height,
+      termCols: entry.term.cols,
+      termRows: entry.term.rows,
+      fitCols,
+      fitRows,
+      deltaCols: fitCols - pane.width,
+      deltaRows: fitRows - pane.height,
+      hostWidth: host.clientWidth,
+      hostHeight: host.clientHeight,
+      cellWidth,
+      cellHeight,
+      scrollbarWidth,
+    };
+  }
+
+  function updatePaneLayoutDebugInfo(pane: TmuxSessionSnapshot["panes"][number]) {
+    const entry = paneTerminals.get(pane.paneId);
+    if (!entry) return;
+    const debugInfo = getPaneLayoutDebugInfo(pane, entry);
+    if (!debugInfo) return;
+    paneLayoutDebug[pane.paneId] = debugInfo;
+  }
+
+  function schedulePaneLayoutDebugInfo(pane: TmuxSessionSnapshot["panes"][number]) {
+    requestAnimationFrame(() => {
+      updatePaneLayoutDebugInfo(pane);
+    });
+  }
+
+  function hasMatchingResizeTarget(target: { cols: number; rows: number } | null, cols: number, rows: number) {
+    return target?.cols === cols && target?.rows === rows;
+  }
+
+  async function requestSessionResize(cols: number, rows: number, errorLabel: string) {
+    if (!liveSessionName) return;
+    if (snapshot && cols === snapshot.width && rows === snapshot.height) {
+      return;
+    }
+    if (hasMatchingResizeTarget(inFlightResizeTarget, cols, rows) && inFlightResizeRequest) {
+      await inFlightResizeRequest;
+      return;
+    }
+
+    const request = (async () => {
+      inFlightResizeTarget = { cols, rows };
+      await resizeTmuxSession(sessionId, distro, liveSessionName, cols, rows);
+    })()
+      .catch((resizeError) => {
+        console.error(errorLabel, resizeError);
+      })
+      .finally(() => {
+        if (hasMatchingResizeTarget(inFlightResizeTarget, cols, rows)) {
+          inFlightResizeTarget = null;
+        }
+        if (inFlightResizeRequest === request) {
+          inFlightResizeRequest = null;
+        }
+      });
+
+    inFlightResizeRequest = request;
+    await request;
+  }
+
+  function resetResizeRequestState() {
+    inFlightResizeTarget = null;
+    inFlightResizeRequest = null;
   }
 
   function flushBufferedPaneOutput(paneId: string) {
@@ -280,11 +451,7 @@
       return;
     }
 
-    const keepViewportPinned = paneIsPinnedToBottom(entry.term);
     entry.term.write(combined, () => {
-      if (keepViewportPinned) {
-        entry.term.scrollToBottom();
-      }
       entry.lastContent += combined;
       if (entry.lastContent.length > 256 * 1024) {
         entry.lastContent = entry.lastContent.slice(-256 * 1024);
@@ -299,26 +466,8 @@
     return trimmed.split(/\r?\n/);
   }
 
-  function getPaneScrollback() {
-    return Math.max(settings.terminal.scrollback ?? 0, 0);
-  }
-
-  function paneHasScrollback(term: Terminal) {
-    return term.buffer.active.baseY > 0;
-  }
-
-  function paneIsPinnedToBottom(term: Terminal) {
-    return term.buffer.active.viewportY >= term.buffer.active.baseY;
-  }
-
   function buildSnapshotText(pane: TmuxSessionSnapshot["panes"][number]) {
     return splitSnapshotLines(pane.screenText).join("\n");
-  }
-
-  function buildHistorySequence(pane: TmuxSessionSnapshot["panes"][number]) {
-    const historyLines = splitSnapshotLines(pane.historyText);
-    if (!historyLines.length) return "";
-    return `${historyLines.join("\r\n")}\r\n`;
   }
 
   function buildVisibleScreenSequence(
@@ -356,7 +505,7 @@
       cursorBlink: false,
       cursorStyle: "block",
       disableStdin: false,
-      scrollback: getPaneScrollback(),
+      scrollback: 0,
       allowProposedApi: true,
     });
     const entry = {
@@ -368,7 +517,6 @@
       flushTimer: null,
     };
     term.open(host);
-    term.attachCustomWheelEventHandler(() => paneHasScrollback(term));
     term.onData((data) => {
       const pane = snapshot?.panes.find((entry) => entry.paneId === paneId);
       if (pane?.dead) return;
@@ -383,6 +531,10 @@
       })();
     });
     paneTerminals.set(paneId, entry);
+    const pane = snapshot?.panes.find((item) => item.paneId === paneId);
+    if (pane) {
+      schedulePaneLayoutDebugInfo(pane);
+    }
     const pending = pendingPaneOutput.get(paneId);
     if (pending?.length) {
       pendingPaneOutput.delete(paneId);
@@ -413,11 +565,7 @@
       return;
     }
 
-    const keepViewportPinned = paneIsPinnedToBottom(entry.term);
     entry.term.write(data, () => {
-      if (keepViewportPinned) {
-        entry.term.scrollToBottom();
-      }
       entry.lastContent += data;
       if (entry.lastContent.length > 256 * 1024) {
         entry.lastContent = entry.lastContent.slice(-256 * 1024);
@@ -446,17 +594,15 @@
     entry.term.resize(Math.max(2, pane.width), Math.max(1, pane.height));
     const cursorRow = Math.min(Math.max(pane.cursorY, 0), Math.max(pane.height - 1, 0)) + 1;
     const cursorCol = Math.min(Math.max(pane.cursorX, 0), Math.max(pane.width - 1, 0)) + 1;
-    const historySequence = buildHistorySequence(pane);
     const snapshotContent = buildSnapshotText(pane);
     const visibleScreenSequence = buildVisibleScreenSequence(pane, cursorRow, cursorCol);
     entry.term.reset();
-    entry.term.options.scrollback = getPaneScrollback();
-    entry.term.write(`${historySequence}${visibleScreenSequence}`, () => {
-      entry.term.scrollToBottom();
+    entry.term.write(visibleScreenSequence, () => {
       const lastRow = Math.max(pane.height - 1, 0);
       entry.term.refresh(0, lastRow);
       entry.lastContent = snapshotContent;
       entry.hydrating = false;
+      schedulePaneLayoutDebugInfo(pane);
       entry.suppressUntil = Date.now() + (structuralChange ? 900 : 260);
       if (entry.bufferedOutput.length) {
         const delayMs = Math.max(entry.suppressUntil - Date.now(), 0);
@@ -513,35 +659,33 @@
 
   async function syncMeasuredViewportSize() {
     if (!liveSessionName || !visible) return;
+    if (!measureReady) return;
     await tick();
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
-    const { cols, rows } = estimateWindowSize();
     if (!snapshot) return;
-    if (cols === snapshot.width && rows === snapshot.height) {
-      return;
-    }
-    try {
-      await resizeTmuxSession(sessionId, distro, liveSessionName, cols, rows);
-    } catch (resizeError) {
-      console.error("Failed to sync tmux viewport size", resizeError);
-    }
+    const { cols, rows } = estimateWindowSize();
+    await requestSessionResize(cols, rows, "Failed to sync tmux viewport size");
   }
 
   async function applySnapshot(nextSnapshot: TmuxSessionSnapshot) {
+    const previousSnapshot = snapshot;
     const structuralChange = isStructuralSnapshotChange(snapshot, nextSnapshot);
     snapshot = nextSnapshot;
     liveSessionName = liveSessionName ?? tmuxSessionName ?? nextSnapshot.sessionName;
     liveActivePaneId = nextSnapshot.activePaneId;
     notifyState();
     await syncPaneTerminals(nextSnapshot, structuralChange);
-    if (structuralChange) {
-      void syncMeasuredViewportSize();
+    if (!previousSnapshot) {
+      scheduleSessionResize(80);
     }
   }
 
   async function ensureTmuxSession() {
     loadingState = liveSessionName ? "restoring" : "connecting";
     error = null;
+    measureReady = Boolean(measureTerminal);
+    lastResizeSyncKey = null;
+    resetResizeRequestState();
     try {
       const existingSessionName = getPersistedSessionName();
       const { cols, rows } = estimateWindowSize();
@@ -558,7 +702,7 @@
         nextSessionName,
         cols,
         rows,
-        settings.terminal.scrollback,
+        0,
       );
       await applySnapshot(created);
     } catch (createError) {
@@ -605,6 +749,8 @@
     liveSessionName = null;
     liveActivePaneId = null;
     snapshot = null;
+    lastResizeSyncKey = null;
+    resetResizeRequestState();
     notifyState();
     await ensureTmuxSession();
   }
@@ -709,15 +855,7 @@
 
   function handleResize() {
     if (!liveSessionName) return;
-    if (resizeTimer) clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(async () => {
-      const { cols, rows } = estimateWindowSize();
-      try {
-        await resizeTmuxSession(sessionId, distro, liveSessionName!, cols, rows);
-      } catch (resizeError) {
-        console.error("Failed to resize tmux session", resizeError);
-      }
-    }, 120);
+    scheduleSessionResize(40);
   }
 
   $effect(() => {
@@ -732,35 +870,59 @@
   });
 
   $effect(() => {
-    settings.terminal.scrollback;
-    for (const entry of paneTerminals.values()) {
-      entry.term.options.scrollback = getPaneScrollback();
-    }
-  });
-
-  $effect(() => {
+    shellBodyEl;
     paneGridEl;
     paneStageEl;
     measureEl;
+    measurementGateOpen;
+    if (!measurementGateOpen) {
+      return;
+    }
     ensureMeasureTerminal();
     if (measureTerminal) {
+      measureReady = true;
       measureTerminal.options.fontSize = settings.terminal.fontSize;
       measureTerminal.options.fontFamily = terminalFontFamily;
       measureTerminal.options.theme = getThemeById(settings.interface.theme)?.theme;
       measureFitAddon?.fit();
+      if (snapshot && liveSessionName && visible) {
+        scheduleSessionResize(80);
+      }
     }
+  });
+
+  $effect(() => {
+    const sessionName = snapshot?.sessionName ?? null;
+    const snapshotWidth = snapshot?.width ?? null;
+    const snapshotHeight = snapshot?.height ?? null;
+    visible;
+    measureReady;
+    liveSessionName;
+
+    if (!visible || !measureReady || !liveSessionName || !sessionName || snapshotWidth === null || snapshotHeight === null) {
+      return;
+    }
+
+    const syncKey = `${sessionName}:${snapshotWidth}x${snapshotHeight}:${settings.terminal.fontSize}:${terminalFontFamily}`;
+    if (lastResizeSyncKey === syncKey) {
+      return;
+    }
+
+    lastResizeSyncKey = syncKey;
+    scheduleSessionResize(80);
   });
 
   $effect(() => {
     resizeObserver;
     shellEl;
     toolbarEl;
+    shellBodyEl;
     paneGridEl;
     paneStageEl;
 
     if (!resizeObserver) return;
 
-    const targets = [shellEl, toolbarEl, paneGridEl, paneStageEl].filter(
+    const targets = [shellEl, toolbarEl, shellBodyEl, paneGridEl, paneStageEl].filter(
       (value): value is HTMLDivElement => Boolean(value),
     );
     for (const target of targets) {
@@ -777,20 +939,28 @@
   });
 
   onMount(() => {
-    void (async () => {
-      await setupTmuxEventListeners();
-      await ensureTmuxSession();
-    })();
     resizeObserver = new ResizeObserver(() => {
       measureFitAddon?.fit();
       handleResize();
     });
+    void (async () => {
+      await tick();
+      await waitForFontMetricsReady();
+      measurementGateOpen = true;
+      ensureMeasureTerminal();
+      await waitForNextFrame();
+      measureFitAddon?.fit();
+      await setupTmuxEventListeners();
+      await ensureTmuxSession();
+    })();
   });
 
   onDestroy(() => {
     if (resizeTimer) clearTimeout(resizeTimer);
     clearTmuxPrefix();
     resizeObserver?.disconnect();
+    lastResizeSyncKey = null;
+    resetResizeRequestState();
     void teardownTmuxEventListeners();
     for (const entry of paneTerminals.values()) {
       if (entry.flushTimer) {
@@ -801,6 +971,8 @@
     measureTerminal?.dispose();
     measureTerminal = null;
     measureFitAddon = null;
+    measureReady = false;
+    measurementGateOpen = false;
     paneTerminals.clear();
     pendingPaneOutput.clear();
   });
@@ -838,49 +1010,68 @@
     </div>
   </div>
 
-  {#if error}
-    <div class="tmux-state-card tmux-state-card--error">
-      <p>{error}</p>
-      <button class="tmux-action" onclick={() => void restartTmuxSession()}>
-        {$t("terminal.tmux.restart")}
-      </button>
-    </div>
-  {:else if loadingState || !snapshot}
-    <div class="tmux-state-card">
-      <div class="tmux-spinner" aria-hidden="true"></div>
-      <p>{loadingLabel}</p>
-    </div>
-  {:else}
-    <div class="tmux-pane-grid" data-testid={TEST_IDS.tmuxPaneGrid} bind:this={paneGridEl}>
-      <div class="tmux-pane-stage" bind:this={paneStageEl}>
-        <div class="tmux-measure-probe" bind:this={measureEl}></div>
-        {#each snapshot.panes as pane (pane.paneId)}
-          <section
-            class="tmux-pane"
-            class:tmux-pane--active={pane.paneId === liveActivePaneId}
-            class:tmux-pane--dead={pane.dead}
-            data-testid={tmuxPaneTestId(pane.paneId)}
-            style={getPaneStyle(pane)}
-            role="button"
-            tabindex="-1"
-            onclick={() => void activatePane(pane.paneId)}
-          >
-            <div class="tmux-pane-meta">
-              <span class="tmux-pane-title">{pane.currentPath || workDir}</span>
-              {#if pane.dead}
-                <span class="tmux-pane-badge">{$t("terminal.tmux.paneDead")}</span>
-              {:else if pane.currentCommand}
-                <span class="tmux-pane-badge">{pane.currentCommand}</span>
-              {/if}
-            </div>
-            <div class="tmux-pane-body">
-              <div class="tmux-pane-viewport" use:paneAction={pane.paneId}></div>
-            </div>
-          </section>
-        {/each}
+  <div class="tmux-shell-body" bind:this={shellBodyEl}>
+    <div class="tmux-measure-probe" bind:this={measureEl}></div>
+    {#if error}
+      <div class="tmux-state-card tmux-state-card--error">
+        <p>{error}</p>
+        <button class="tmux-action" onclick={() => void restartTmuxSession()}>
+          {$t("terminal.tmux.restart")}
+        </button>
       </div>
-    </div>
-  {/if}
+    {:else if !snapshot}
+      <div class="tmux-state-card">
+        <div class="tmux-spinner" aria-hidden="true"></div>
+        <p>{loadingLabel}</p>
+      </div>
+    {:else}
+      <div class="tmux-pane-grid" data-testid={TEST_IDS.tmuxPaneGrid} bind:this={paneGridEl}>
+        <div class="tmux-pane-stage" bind:this={paneStageEl}>
+          {#each snapshot.panes as pane (pane.paneId)}
+            <section
+              class="tmux-pane"
+              class:tmux-pane--active={pane.paneId === liveActivePaneId}
+              class:tmux-pane--dead={pane.dead}
+              data-testid={tmuxPaneTestId(pane.paneId)}
+              style={getPaneStyle(pane)}
+              role="button"
+              tabindex="-1"
+              onclick={() => void activatePane(pane.paneId)}
+            >
+              <div class="tmux-pane-meta">
+                <span class="tmux-pane-title">{pane.currentPath || workDir}</span>
+                {#if pane.dead}
+                  <span class="tmux-pane-badge">{$t("terminal.tmux.paneDead")}</span>
+                {:else if pane.currentCommand}
+                  <span class="tmux-pane-badge">{pane.currentCommand}</span>
+                {/if}
+              </div>
+              <div class="tmux-pane-body">
+                <div class="tmux-pane-viewport" use:paneAction={pane.paneId}></div>
+              </div>
+              {#if paneLayoutDebug[pane.paneId]}
+                <div class="tmux-pane-geometry-debug" aria-hidden="true">
+                  <div>
+                    pane {paneLayoutDebug[pane.paneId].paneCols}x{paneLayoutDebug[pane.paneId].paneRows} / term
+                    {paneLayoutDebug[pane.paneId].termCols}x{paneLayoutDebug[pane.paneId].termRows}
+                  </div>
+                  <div>
+                    fit {paneLayoutDebug[pane.paneId].fitCols}x{paneLayoutDebug[pane.paneId].fitRows} / delta
+                    {paneLayoutDebug[pane.paneId].deltaCols >= 0 ? "+" : ""}{paneLayoutDebug[pane.paneId].deltaCols}x{paneLayoutDebug[pane.paneId].deltaRows >= 0 ? "+" : ""}{paneLayoutDebug[pane.paneId].deltaRows}
+                  </div>
+                  <div>
+                    host {paneLayoutDebug[pane.paneId].hostWidth}x{paneLayoutDebug[pane.paneId].hostHeight} / cell
+                    {paneLayoutDebug[pane.paneId].cellWidth.toFixed(2)}x{paneLayoutDebug[pane.paneId].cellHeight.toFixed(2)}
+                    / sb {paneLayoutDebug[pane.paneId].scrollbarWidth}
+                  </div>
+                </div>
+              {/if}
+            </section>
+          {/each}
+        </div>
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -958,6 +1149,9 @@
     display: grid;
     place-items: center;
     gap: var(--ui-space-3);
+    width: 100%;
+    height: 100%;
+    min-height: 0;
     border: 1px solid var(--ui-border-subtle);
     border-radius: var(--ui-radius-xl);
     background: color-mix(in srgb, var(--ui-bg-surface) 92%, var(--ui-bg-surface-elevated));
@@ -978,16 +1172,24 @@
   }
 
   .tmux-pane-grid {
+    --tmux-grid-border-width: 1px;
+    --tmux-grid-padding: 10px;
+    --tmux-stage-inset: calc(var(--tmux-grid-border-width) + var(--tmux-grid-padding));
     position: relative;
     width: 100%;
     height: 100%;
     min-height: 0;
     box-sizing: border-box;
-    padding: 10px;
+    padding: var(--tmux-grid-padding);
     overflow: hidden;
     border-radius: var(--ui-radius-xl);
-    border: 1px solid var(--ui-border-subtle);
+    border: var(--tmux-grid-border-width) solid var(--ui-border-subtle);
     background: color-mix(in srgb, var(--ui-bg-app) 92%, black 8%);
+  }
+
+  .tmux-shell-body {
+    position: relative;
+    min-height: 0;
   }
 
   .tmux-pane-stage {
@@ -1006,15 +1208,43 @@
     outline: 1px solid color-mix(in srgb, var(--ui-border-subtle) 82%, transparent);
     outline-offset: 0;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    transition:
+      outline-color 120ms ease,
+      outline-width 120ms ease,
+      box-shadow 120ms ease,
+      background-color 120ms ease;
   }
 
   .tmux-pane--active {
-    outline-color: color-mix(in srgb, var(--ui-accent) 58%, var(--ui-border-subtle));
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-accent-soft) 60%, transparent);
+    outline-width: 2px;
+    outline-color: color-mix(in srgb, var(--ui-accent) 62%, var(--ui-border-subtle));
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--ui-accent-soft) 68%, transparent),
+      inset 0 0 0 1px color-mix(in srgb, var(--ui-accent-soft) 36%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
   .tmux-pane--dead {
     opacity: 0.8;
+  }
+
+  .tmux-pane-geometry-debug {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    z-index: 11;
+    display: grid;
+    gap: 2px;
+    max-width: calc(100% - 20px);
+    padding: 6px 8px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.7);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 10px;
+    line-height: 1.35;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    pointer-events: none;
+    white-space: nowrap;
   }
 
   .tmux-pane-meta {
@@ -1033,6 +1263,17 @@
     font-size: var(--ui-font-size-xs);
     pointer-events: none;
     backdrop-filter: blur(4px);
+    transition:
+      border-color 120ms ease,
+      box-shadow 120ms ease,
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+
+  .tmux-pane--active .tmux-pane-meta {
+    color: var(--ui-text-primary);
+    background: color-mix(in srgb, rgba(0, 0, 0, 0.72) 82%, var(--ui-accent-soft));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-accent-soft) 58%, transparent);
   }
 
   .tmux-pane-title {
@@ -1054,7 +1295,7 @@
     height: 100%;
     min-height: 0;
     box-sizing: border-box;
-    padding: 3px 12px 1px;
+    padding: 0;
   }
 
   .tmux-pane-viewport {
@@ -1069,38 +1310,9 @@
     height: 100%;
   }
 
-  .tmux-pane-viewport :global(.xterm .xterm-viewport) {
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--ui-accent) 48%, var(--ui-border-subtle)) transparent;
-  }
-
-  .tmux-pane-viewport :global(.xterm .xterm-viewport::-webkit-scrollbar) {
-    width: 10px;
-    height: 10px;
-  }
-
-  .tmux-pane-viewport :global(.xterm .xterm-viewport::-webkit-scrollbar-track) {
-    background: transparent;
-  }
-
-  .tmux-pane-viewport :global(.xterm .xterm-viewport::-webkit-scrollbar-thumb) {
-    border-radius: 999px;
-    border: 2px solid transparent;
-    background: color-mix(in srgb, var(--ui-accent) 42%, var(--ui-border-subtle));
-    background-clip: padding-box;
-  }
-
-  .tmux-pane-viewport :global(.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover) {
-    background: color-mix(in srgb, var(--ui-accent) 58%, var(--ui-border-subtle));
-    background-clip: padding-box;
-  }
-
   .tmux-measure-probe {
     position: absolute;
-    inset: 0;
+    inset: 11px;
     visibility: hidden;
     pointer-events: none;
     overflow: hidden;
