@@ -398,4 +398,3 @@ npm run test:e2e:wsl -- --project smoke
 
 - [HANDOVER.md](./HANDOVER.md)
 - [docs/testing/e2e.md](./docs/testing/e2e.md)
-- [docs/plans](./docs/plans)
