@@ -1,18 +1,17 @@
+use super::pty::PtyState;
 use crate::app_env::{
-    ensure_parent_dir,
-    is_soft_follow_experiment_enabled,
-    is_terminal_debug_hooks_enabled,
-    is_test_mode,
-    state_path,
+    ensure_parent_dir, is_soft_follow_experiment_enabled, is_terminal_debug_hooks_enabled,
+    is_test_mode, state_path,
 };
 use serde::{Deserialize, Serialize};
-use super::pty::PtyState;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
+};
 
 fn settings_path() -> Result<PathBuf, String> {
     state_path("setting.json")
@@ -76,6 +75,7 @@ const MAX_DRAFT_MAX_ROWS: u16 = 999;
 const DEFAULT_SCROLLBACK: u32 = 10_000;
 const MIN_SCROLLBACK: u32 = 1_000;
 const MAX_SCROLLBACK: u32 = 200_000;
+const DEFAULT_TERMINAL_RENDERER: &str = "dom";
 const DEFAULT_AUX_TERMINAL_SHORTCUT: &str = "Ctrl+`";
 const DEFAULT_AUX_TERMINAL_HEIGHT: u16 = 28;
 const MIN_AUX_TERMINAL_HEIGHT: u16 = 18;
@@ -104,6 +104,13 @@ fn clamp_draft_max_rows(rows: u16) -> u16 {
 
 fn clamp_scrollback(value: u32) -> u32 {
     value.clamp(MIN_SCROLLBACK, MAX_SCROLLBACK)
+}
+
+fn normalize_terminal_renderer(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "webgl" => "webgl".into(),
+        _ => DEFAULT_TERMINAL_RENDERER.into(),
+    }
 }
 
 fn clamp_aux_terminal_height(value: u16) -> u16 {
@@ -183,6 +190,7 @@ pub struct TerminalSettingsPayload {
     pub font_family: String,
     pub font_family_fallback: String,
     pub font_size: u16,
+    pub renderer: String,
     pub scrollback: u32,
     pub draft_max_rows: u16,
     pub aux_terminal_shortcut: String,
@@ -195,6 +203,7 @@ impl Default for TerminalSettingsPayload {
             font_family: "JetBrains Mono, Cascadia Code, Consolas".into(),
             font_family_fallback: "Malgun Gothic, NanumGothicCoding, monospace".into(),
             font_size: 14,
+            renderer: DEFAULT_TERMINAL_RENDERER.into(),
             scrollback: DEFAULT_SCROLLBACK,
             draft_max_rows: DEFAULT_DRAFT_MAX_ROWS,
             aux_terminal_shortcut: DEFAULT_AUX_TERMINAL_SHORTCUT.into(),
@@ -460,10 +469,7 @@ fn u32_from_paths(value: &serde_json::Value, paths: &[&[&str]], fallback: u32) -
     fallback
 }
 
-fn string_map_from_paths(
-    value: &serde_json::Value,
-    paths: &[&[&str]],
-) -> BTreeMap<String, String> {
+fn string_map_from_paths(value: &serde_json::Value, paths: &[&[&str]]) -> BTreeMap<String, String> {
     for path in paths {
         let Some(found) = lookup_value(value, path).and_then(|entry| entry.as_object()) else {
             continue;
@@ -535,22 +541,17 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
     )
     .trim()
     .to_string();
-    settings.workspace.default_distro = string_from_paths(
-        value,
-        &[&["workspace", "defaultDistro"]],
-        "",
-    )
-    .trim()
-    .to_string();
+    settings.workspace.default_distro =
+        string_from_paths(value, &[&["workspace", "defaultDistro"]], "")
+            .trim()
+            .to_string();
     settings.workspace.default_agent_id = normalize_agent_id(&string_from_paths(
         value,
         &[&["workspace", "defaultAgentId"]],
         &settings.workspace.default_agent_id,
     ));
-    settings.workspace.default_start_paths_by_distro = string_map_from_paths(
-        value,
-        &[&["workspace", "defaultStartPathsByDistro"]],
-    );
+    settings.workspace.default_start_paths_by_distro =
+        string_map_from_paths(value, &[&["workspace", "defaultStartPathsByDistro"]]);
 
     settings.terminal.font_family = string_from_paths(
         value,
@@ -567,6 +568,11 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         &[&["terminal", "fontSize"], &["fontSize"]],
         settings.terminal.font_size,
     );
+    settings.terminal.renderer = normalize_terminal_renderer(&string_from_paths(
+        value,
+        &[&["terminal", "renderer"]],
+        &settings.terminal.renderer,
+    ));
     settings.terminal.scrollback = clamp_scrollback(u32_from_paths(
         value,
         &[&["terminal", "scrollback"]],
@@ -614,9 +620,12 @@ pub fn load_settings_or_default() -> SettingsPayload {
 
     settings.language = normalize_language(&settings.language);
     settings.interface.ui_scale = clamp_ui_scale(settings.interface.ui_scale);
-    settings.interface.window_default_cols = clamp_window_cols(settings.interface.window_default_cols);
-    settings.interface.window_default_rows = clamp_window_rows(settings.interface.window_default_rows);
-    settings.interface.file_open_mode = normalize_file_open_mode(&settings.interface.file_open_mode);
+    settings.interface.window_default_cols =
+        clamp_window_cols(settings.interface.window_default_cols);
+    settings.interface.window_default_rows =
+        clamp_window_rows(settings.interface.window_default_rows);
+    settings.interface.file_open_mode =
+        normalize_file_open_mode(&settings.interface.file_open_mode);
     settings.interface.default_editor_id = settings.interface.default_editor_id.trim().to_string();
     settings.workspace.default_agent_id = normalize_agent_id(&settings.workspace.default_agent_id);
     settings.workspace.default_distro = settings.workspace.default_distro.trim().to_string();
@@ -635,8 +644,10 @@ pub fn load_settings_or_default() -> SettingsPayload {
         })
         .collect();
     settings.terminal.draft_max_rows = clamp_draft_max_rows(settings.terminal.draft_max_rows);
+    settings.terminal.renderer = normalize_terminal_renderer(&settings.terminal.renderer);
     settings.terminal.scrollback = clamp_scrollback(settings.terminal.scrollback);
-    settings.terminal.aux_terminal_shortcut = normalize_aux_terminal_shortcut(&settings.terminal.aux_terminal_shortcut);
+    settings.terminal.aux_terminal_shortcut =
+        normalize_aux_terminal_shortcut(&settings.terminal.aux_terminal_shortcut);
     settings.terminal.aux_terminal_default_height =
         clamp_aux_terminal_height(settings.terminal.aux_terminal_default_height);
     settings.history.tab_limit = clamp_tab_history_limit(settings.history.tab_limit);
@@ -692,7 +703,11 @@ fn normalize_workspace_snapshot(workspace: &mut WorkspaceSnapshot) {
         normalize_window_snapshot(window);
     }
 
-    if !workspace.windows.iter().any(|window| window.label == "main") {
+    if !workspace
+        .windows
+        .iter()
+        .any(|window| window.label == "main")
+    {
         workspace.windows.insert(0, default_main_window_snapshot());
     }
 }
@@ -737,8 +752,7 @@ fn write_tab_history(entries: &[TabHistoryEntry]) -> Result<(), String> {
     })
     .map_err(|e| format!("Failed to serialize tab history: {}", e))?;
 
-    fs::write(&path, contents)
-        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+    fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path.display(), e))
 }
 
 fn read_workspace() -> Result<Option<WorkspaceSnapshot>, String> {
@@ -762,8 +776,7 @@ fn write_workspace(workspace: &WorkspaceSnapshot) -> Result<(), String> {
     let contents = serde_json::to_string_pretty(&sanitize_workspace_for_persist(workspace))
         .map_err(|e| format!("Failed to serialize workspace: {}", e))?;
 
-    fs::write(&path, contents)
-        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+    fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path.display(), e))
 }
 
 fn trim_tab_history_entries(entries: &mut Vec<TabHistoryEntry>, limit: u16) -> bool {
@@ -797,7 +810,8 @@ fn upsert_tab_history_entry(
 
     entries.retain(|entry| {
         if let Some(resume_token) = &normalized_resume_token {
-            return !(entry.agent_id == normalized_agent_id && entry.resume_token.as_ref() == Some(resume_token));
+            return !(entry.agent_id == normalized_agent_id
+                && entry.resume_token.as_ref() == Some(resume_token));
         }
 
         !(entry.agent_id == normalized_agent_id
@@ -862,7 +876,10 @@ fn snapshot_from_state(state: &WorkspaceState) -> Result<WorkspaceSnapshot, Stri
         .map_err(|e| e.to_string())
 }
 
-fn write_snapshot_to_state(state: &WorkspaceState, snapshot: WorkspaceSnapshot) -> Result<(), String> {
+fn write_snapshot_to_state(
+    state: &WorkspaceState,
+    snapshot: WorkspaceSnapshot,
+) -> Result<(), String> {
     let mut guard = state.snapshot.lock().map_err(|e| e.to_string())?;
     *guard = snapshot;
     Ok(())
@@ -889,14 +906,21 @@ fn ensure_active_session(window: &mut WindowSnapshot) {
 }
 
 fn find_window_index(workspace: &WorkspaceSnapshot, label: &str) -> Option<usize> {
-    workspace.windows.iter().position(|window| window.label == label)
+    workspace
+        .windows
+        .iter()
+        .position(|window| window.label == label)
 }
 
 fn next_available_window_label(workspace: &WorkspaceSnapshot) -> String {
     let mut index = 1u32;
     loop {
         let candidate = format!("window-{index}");
-        if workspace.windows.iter().all(|window| window.label != candidate) {
+        if workspace
+            .windows
+            .iter()
+            .all(|window| window.label != candidate)
+        {
             return candidate;
         }
         index += 1;
@@ -939,7 +963,11 @@ fn remove_session_from_workspace(
     session_id: &str,
 ) -> Option<(WorkspaceTabSnapshot, String)> {
     for window in &mut workspace.windows {
-        if let Some(index) = window.tabs.iter().position(|tab| tab.session_id == session_id) {
+        if let Some(index) = window
+            .tabs
+            .iter()
+            .position(|tab| tab.session_id == session_id)
+        {
             let tab = window.tabs.remove(index);
             ensure_active_session(window);
             return Some((tab, window.label.clone()));
@@ -964,24 +992,18 @@ fn collect_window_ptys(workspace: &WorkspaceSnapshot, label: &str) -> Vec<u32> {
         .unwrap_or_default()
 }
 
-fn build_secondary_window(
-    app: &AppHandle,
-    snapshot: &WindowSnapshot,
-) -> Result<(), String> {
+fn build_secondary_window(app: &AppHandle, snapshot: &WindowSnapshot) -> Result<(), String> {
     if app.get_webview_window(&snapshot.label).is_some() {
         return Ok(());
     }
 
-    let builder = WebviewWindowBuilder::new(
-        app,
-        &snapshot.label,
-        WebviewUrl::App("index.html".into()),
-    )
-    .title(format!("CLCOMX - {}", snapshot.name))
-    .visible(true)
-    .resizable(true)
-    .inner_size(1024.0, 720.0)
-    .position(snapshot.x as f64, snapshot.y as f64);
+    let builder =
+        WebviewWindowBuilder::new(app, &snapshot.label, WebviewUrl::App("index.html".into()))
+            .title(format!("CLCOMX - {}", snapshot.name))
+            .visible(true)
+            .resizable(true)
+            .inner_size(1024.0, 720.0)
+            .position(snapshot.x as f64, snapshot.y as f64);
 
     let window = builder.build().map_err(|e| e.to_string())?;
     let _ = window.set_position(PhysicalPosition::new(snapshot.x, snapshot.y));
@@ -999,7 +1021,10 @@ fn build_secondary_window(
 fn spawn_secondary_window_build(app: AppHandle, snapshot: WindowSnapshot) {
     std::thread::spawn(move || {
         if let Err(error) = build_secondary_window(&app, &snapshot) {
-            eprintln!("Failed to build secondary window {}: {}", snapshot.label, error);
+            eprintln!(
+                "Failed to build secondary window {}: {}",
+                snapshot.label, error
+            );
         }
     });
 }
@@ -1010,7 +1035,11 @@ pub fn restore_secondary_windows(
     ready_state: &WindowReadyState,
 ) -> Result<(), String> {
     let snapshot = snapshot_from_state(state)?;
-    for window in snapshot.windows.iter().filter(|window| window.label != "main") {
+    for window in snapshot
+        .windows
+        .iter()
+        .filter(|window| window.label != "main")
+    {
         ready_state.mark_pending(&window.label)?;
         spawn_secondary_window_build(app.clone(), window.clone());
     }
@@ -1059,7 +1088,9 @@ pub fn load_tab_history() -> Result<Vec<TabHistoryEntry>, String> {
 }
 
 #[tauri::command]
-pub fn load_workspace(state: tauri::State<'_, WorkspaceState>) -> Result<Option<WorkspaceSnapshot>, String> {
+pub fn load_workspace(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Option<WorkspaceSnapshot>, String> {
     Ok(Some(snapshot_from_state(state.inner())?))
 }
 
@@ -1067,9 +1098,12 @@ pub fn load_workspace(state: tauri::State<'_, WorkspaceState>) -> Result<Option<
 pub fn save_settings(mut settings: SettingsPayload) -> Result<(), String> {
     settings.language = normalize_language(&settings.language);
     settings.interface.ui_scale = clamp_ui_scale(settings.interface.ui_scale);
-    settings.interface.window_default_cols = clamp_window_cols(settings.interface.window_default_cols);
-    settings.interface.window_default_rows = clamp_window_rows(settings.interface.window_default_rows);
-    settings.interface.file_open_mode = normalize_file_open_mode(&settings.interface.file_open_mode);
+    settings.interface.window_default_cols =
+        clamp_window_cols(settings.interface.window_default_cols);
+    settings.interface.window_default_rows =
+        clamp_window_rows(settings.interface.window_default_rows);
+    settings.interface.file_open_mode =
+        normalize_file_open_mode(&settings.interface.file_open_mode);
     settings.interface.default_editor_id = settings.interface.default_editor_id.trim().to_string();
     settings.workspace.default_agent_id = normalize_agent_id(&settings.workspace.default_agent_id);
     settings.workspace.default_distro = settings.workspace.default_distro.trim().to_string();
@@ -1088,8 +1122,10 @@ pub fn save_settings(mut settings: SettingsPayload) -> Result<(), String> {
         })
         .collect();
     settings.terminal.draft_max_rows = clamp_draft_max_rows(settings.terminal.draft_max_rows);
+    settings.terminal.renderer = normalize_terminal_renderer(&settings.terminal.renderer);
     settings.terminal.scrollback = clamp_scrollback(settings.terminal.scrollback);
-    settings.terminal.aux_terminal_shortcut = normalize_aux_terminal_shortcut(&settings.terminal.aux_terminal_shortcut);
+    settings.terminal.aux_terminal_shortcut =
+        normalize_aux_terminal_shortcut(&settings.terminal.aux_terminal_shortcut);
     settings.terminal.aux_terminal_default_height =
         clamp_aux_terminal_height(settings.terminal.aux_terminal_default_height);
     settings.history.tab_limit = clamp_tab_history_limit(settings.history.tab_limit);
@@ -1113,7 +1149,14 @@ pub fn record_tab_history(
 ) -> Result<Vec<TabHistoryEntry>, String> {
     let settings = load_settings_or_default();
     let mut entries = read_tab_history().unwrap_or_default();
-    upsert_tab_history_entry(&mut entries, agent_id, distro, work_dir, title, resume_token);
+    upsert_tab_history_entry(
+        &mut entries,
+        agent_id,
+        distro,
+        work_dir,
+        title,
+        resume_token,
+    );
 
     trim_tab_history_entries(&mut entries, settings.history.tab_limit);
     write_tab_history(&entries)?;
@@ -1140,7 +1183,9 @@ pub fn save_workspace(
             let merged = merge_window_snapshot(runtime.windows.get(index), incoming_window);
             runtime.windows[index] = merged;
         } else {
-            runtime.windows.push(merge_window_snapshot(None, incoming_window));
+            runtime
+                .windows
+                .push(merge_window_snapshot(None, incoming_window));
         }
     }
     normalize_workspace_snapshot(&mut runtime);
@@ -1158,7 +1203,11 @@ pub fn set_session_pty(
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
     for window in &mut runtime.windows {
-        if let Some(tab) = window.tabs.iter_mut().find(|tab| tab.session_id == session_id) {
+        if let Some(tab) = window
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.session_id == session_id)
+        {
             tab.pty_id = Some(pty_id);
             write_snapshot_to_state(state.inner(), runtime)?;
             return Ok(());
@@ -1176,7 +1225,11 @@ pub fn set_session_resume_token(
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
     for window in &mut runtime.windows {
-        if let Some(tab) = window.tabs.iter_mut().find(|tab| tab.session_id == session_id) {
+        if let Some(tab) = window
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.session_id == session_id)
+        {
             tab.resume_token = resume_token
                 .as_ref()
                 .map(|value| value.trim())
@@ -1197,7 +1250,11 @@ pub fn clear_session_pty(
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
     for window in &mut runtime.windows {
-        if let Some(tab) = window.tabs.iter_mut().find(|tab| tab.session_id == session_id) {
+        if let Some(tab) = window
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.session_id == session_id)
+        {
             tab.pty_id = None;
             write_snapshot_to_state(state.inner(), runtime)?;
             return Ok(());
@@ -1217,7 +1274,11 @@ pub fn set_session_aux_terminal_state(
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
     for window in &mut runtime.windows {
-        if let Some(tab) = window.tabs.iter_mut().find(|tab| tab.session_id == session_id) {
+        if let Some(tab) = window
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.session_id == session_id)
+        {
             tab.aux_pty_id = aux_pty_id;
             tab.aux_visible = aux_visible;
             tab.aux_height_percent = aux_height_percent;
@@ -1306,8 +1367,8 @@ pub fn detach_session_to_new_window(
     height: u32,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    let (tab, source_label) = remove_session_from_workspace(&mut runtime, &session_id)
-        .ok_or("Session not found")?;
+    let (tab, source_label) =
+        remove_session_from_workspace(&mut runtime, &session_id).ok_or("Session not found")?;
 
     let new_label = next_available_window_label(&runtime);
 
@@ -1324,7 +1385,11 @@ pub fn detach_session_to_new_window(
         maximized: false,
     });
 
-    if let Some(source_window) = runtime.windows.iter_mut().find(|window| window.label == source_label) {
+    if let Some(source_window) = runtime
+        .windows
+        .iter_mut()
+        .find(|window| window.label == source_label)
+    {
         ensure_active_session(source_window);
     }
 
@@ -1350,8 +1415,8 @@ pub fn close_session(
     session_id: String,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(workspace_state.inner())?;
-    let (tab, _) = remove_session_from_workspace(&mut runtime, &session_id)
-        .ok_or("Session not found")?;
+    let (tab, _) =
+        remove_session_from_workspace(&mut runtime, &session_id).ok_or("Session not found")?;
     if let Some(pty_id) = tab.pty_id {
         super::pty::kill_pty_session(pty_state.inner(), pty_id)?;
     }
@@ -1375,7 +1440,11 @@ pub fn close_session_by_pty(
     let mut closed_session_id: Option<String> = None;
 
     for window in &mut runtime.windows {
-        if let Some(index) = window.tabs.iter().position(|tab| tab.pty_id == Some(pty_id)) {
+        if let Some(index) = window
+            .tabs
+            .iter()
+            .position(|tab| tab.pty_id == Some(pty_id))
+        {
             closed_session_id = Some(window.tabs[index].session_id.clone());
             if let Some(aux_pty_id) = window.tabs[index].aux_pty_id {
                 super::pty::kill_pty_session(pty_state.inner(), aux_pty_id)?;
@@ -1436,8 +1505,8 @@ pub fn move_session_to_window(
     target_label: String,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    let (tab, source_label) = remove_session_from_workspace(&mut runtime, &session_id)
-        .ok_or("Session not found")?;
+    let (tab, source_label) =
+        remove_session_from_workspace(&mut runtime, &session_id).ok_or("Session not found")?;
 
     if source_label == target_label {
         if let Some(source_index) = find_window_index(&runtime, &source_label) {
@@ -1448,7 +1517,8 @@ pub fn move_session_to_window(
         return Ok(());
     }
 
-    let target_index = find_window_index(&runtime, &target_label).ok_or("Target window not found")?;
+    let target_index =
+        find_window_index(&runtime, &target_label).ok_or("Target window not found")?;
     runtime.windows[target_index].tabs.push(tab);
     runtime.windows[target_index].active_session_id = Some(session_id);
     ensure_active_session(&mut runtime.windows[target_index]);
@@ -1494,7 +1564,13 @@ pub fn close_window_sessions(
         .windows
         .iter()
         .find(|window| window.label == label)
-        .map(|window| window.tabs.iter().filter_map(|tab| tab.aux_pty_id).collect::<Vec<_>>())
+        .map(|window| {
+            window
+                .tabs
+                .iter()
+                .filter_map(|tab| tab.aux_pty_id)
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     runtime.windows.retain(|window| window.label != label);
     normalize_workspace_snapshot(&mut runtime);
@@ -1545,8 +1621,10 @@ pub fn close_app(app: AppHandle) -> Result<(), String> {
 }
 
 fn bundled_theme_pack() -> Result<ThemePackPayload, String> {
-    serde_json::from_str(include_str!("../../../src/lib/themes/default-theme-pack.json"))
-        .map_err(|error| format!("Invalid bundled theme pack: {error}"))
+    serde_json::from_str(include_str!(
+        "../../../src/lib/themes/default-theme-pack.json"
+    ))
+    .map_err(|error| format!("Invalid bundled theme pack: {error}"))
 }
 
 fn load_theme_pack_or_default() -> ThemePackPayload {
@@ -1642,8 +1720,30 @@ mod tests {
         assert_eq!(parsed.terminal.font_family, "Fira Code");
         assert_eq!(parsed.terminal.font_family_fallback, "monospace");
         assert_eq!(parsed.terminal.font_size, 16);
+        assert_eq!(parsed.terminal.renderer, DEFAULT_TERMINAL_RENDERER);
         assert_eq!(parsed.terminal.draft_max_rows, 8);
         assert_eq!(parsed.history.tab_limit, 25);
+    }
+
+    #[test]
+    fn parse_settings_value_normalizes_terminal_renderer() {
+        let raw = json!({
+            "terminal": {
+                "renderer": "WEBGL"
+            }
+        });
+
+        let parsed = parse_settings_value(&raw).unwrap();
+        assert_eq!(parsed.terminal.renderer, "webgl");
+
+        let invalid = json!({
+            "terminal": {
+                "renderer": "canvas"
+            }
+        });
+
+        let invalid_parsed = parse_settings_value(&invalid).unwrap();
+        assert_eq!(invalid_parsed.terminal.renderer, DEFAULT_TERMINAL_RENDERER);
     }
 
     #[test]
@@ -1687,11 +1787,17 @@ mod tests {
         assert_eq!(parsed.workspace.default_agent_id, "codex");
         assert_eq!(parsed.workspace.default_distro, EXAMPLE_DISTRO);
         assert_eq!(
-            parsed.workspace.default_start_paths_by_distro.get(EXAMPLE_DISTRO),
+            parsed
+                .workspace
+                .default_start_paths_by_distro
+                .get(EXAMPLE_DISTRO),
             Some(&EXAMPLE_PATH.to_string())
         );
         assert_eq!(
-            parsed.workspace.default_start_paths_by_distro.get(SECOND_DISTRO),
+            parsed
+                .workspace
+                .default_start_paths_by_distro
+                .get(SECOND_DISTRO),
             Some(&SECOND_PATH.to_string())
         );
     }
@@ -1793,16 +1899,14 @@ mod tests {
 
     #[test]
     fn upsert_tab_history_keeps_distinct_agents_for_same_path_without_resume_token() {
-        let mut entries = vec![
-            TabHistoryEntry {
-                agent_id: "claude".into(),
-                distro: EXAMPLE_DISTRO.into(),
-                work_dir: "/same".into(),
-                title: "same".into(),
-                resume_token: None,
-                last_opened_at: "1".into(),
-            },
-        ];
+        let mut entries = vec![TabHistoryEntry {
+            agent_id: "claude".into(),
+            distro: EXAMPLE_DISTRO.into(),
+            work_dir: "/same".into(),
+            title: "same".into(),
+            resume_token: None,
+            last_opened_at: "1".into(),
+        }];
 
         upsert_tab_history_entry(
             &mut entries,

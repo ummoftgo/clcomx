@@ -155,6 +155,8 @@ const ko = {
       terminalPrimaryFont: "터미널 기본 글꼴",
       terminalFallbackFont: "터미널 대체 글꼴 (CJK)",
       terminalFontSize: "터미널 글꼴 크기",
+      terminalRenderer: "터미널 렌더러",
+      terminalRendererHint: "DOM을 안정 기본값으로 유지합니다. WebGL은 opt-in이며 일부 환경에서 처리량이 나아질 수 있지만, 절전 복귀나 다중 탭 장시간 사용에서는 덜 안정적일 수 있습니다.",
       terminalScrollback: "터미널 스크롤백",
       terminalScrollbackHint: "스크롤을 위해 메모리에 유지할 줄 수를 설정합니다. 복구된 세션은 항상 최신 출력 위치에서 다시 열립니다.",
       auxTerminalShortcut: "보조 터미널 단축키",
@@ -204,6 +206,12 @@ const ko = {
       noEditors: "이 Windows 환경에서 지원되는 에디터를 찾지 못했습니다.",
       loadingEditors: "설치된 에디터를 감지하는 중...",
       detectFailed: "설치된 에디터를 감지하지 못했습니다.",
+    },
+    terminalRenderer: {
+      modes: {
+        dom: "DOM (안정 기본값)",
+        webgl: "WebGL (opt-in)",
+      },
     },
     inputAssist: {
       helper: "선택형 드래프트 영역은 현재 창 높이를 넘지 않는 범위에서 이 줄 수까지 자동 확장됩니다.",

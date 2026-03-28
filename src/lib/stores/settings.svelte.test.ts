@@ -34,6 +34,7 @@ describe("settings store", () => {
     expect(settings.workspace.defaultAgentId).toBe("codex");
     expect(settings.workspace.defaultDistro).toBe(EXAMPLE_DISTRO);
     expect(settings.terminal.fontSize).toBe(16);
+    expect(settings.terminal.renderer).toBe(DEFAULT_SETTINGS.terminal.renderer);
     expect(settings.history.tabLimit).toBe(DEFAULT_SETTINGS.history.tabLimit);
   });
 
@@ -49,6 +50,9 @@ describe("settings store", () => {
       interface: {
         uiScale: 125,
         windowDefaultCols: 132,
+      },
+      terminal: {
+        renderer: "webgl",
       },
     });
 
@@ -69,12 +73,16 @@ describe("settings store", () => {
             uiScale: 125,
             windowDefaultCols: 132,
           }),
+          terminal: expect.objectContaining({
+            renderer: "webgl",
+          }),
         }),
       }),
     );
 
     expect(getSettings().interface.uiScale).toBe(125);
     expect(getSettings().interface.windowDefaultCols).toBe(132);
+    expect(getSettings().terminal.renderer).toBe("webgl");
     expect(getSettings().workspace.defaultAgentId).toBe("codex");
     expect(getSettings().workspace.defaultDistro).toBe(EXAMPLE_DISTRO);
   });

@@ -4,6 +4,7 @@
   import { FitAddon } from "@xterm/addon-fit";
   import { Unicode11Addon } from "@xterm/addon-unicode11";
   import { WebLinksAddon } from "@xterm/addon-web-links";
+  import { WebglAddon } from "@xterm/addon-webgl";
   import ImagePasteModal from "./ImagePasteModal.svelte";
   import EditorPickerModal from "./EditorPickerModal.svelte";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
@@ -35,6 +36,7 @@
   import { Button } from "../ui";
   import { buildFontStack, serializeFontFamilyList } from "../font-family";
   import { matchesShortcut } from "../hotkeys";
+  import type { TerminalRendererPreference } from "../types";
   import {
     openInEditor,
     resolveTerminalPath,
@@ -141,6 +143,7 @@
   let auxFitAddon: FitAddon | null = null;
   let auxResizeObserver: ResizeObserver | null = null;
   let auxOutputPointerCleanup: (() => void) | null = null;
+  let activeRenderer = $state<TerminalRendererPreference>("dom");
   let auxPtyId = $state(-1);
   let auxVisible = $state(false);
   let auxInitialized = $state(false);
@@ -184,6 +187,7 @@
   const settings = getSettings();
   const bootstrap = getBootstrap();
   const softFollowExperimentEnabled = $derived(bootstrap.softFollowExperiment && agentId === "claude");
+  const preferredRenderer = $derived(settings.terminal.renderer);
   const terminalFontFamily = $derived(
     buildFontStack(
       serializeFontFamilyList(
@@ -267,6 +271,62 @@
 
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11";
+  }
+
+  interface RendererController {
+    addon: WebglAddon | null;
+    contextLossDisposable: IDisposable | null;
+  }
+
+  const mainRendererController: RendererController = {
+    addon: null,
+    contextLossDisposable: null,
+  };
+
+  const auxRendererController: RendererController = {
+    addon: null,
+    contextLossDisposable: null,
+  };
+
+  function releaseRendererController(controller: RendererController) {
+    controller.contextLossDisposable?.dispose();
+    controller.contextLossDisposable = null;
+    controller.addon?.dispose();
+    controller.addon = null;
+  }
+
+  function syncRendererPreference(
+    term: Terminal,
+    controller: RendererController,
+    preferred: TerminalRendererPreference,
+    updateActiveRenderer: (value: TerminalRendererPreference) => void,
+  ) {
+    if (preferred === "dom") {
+      releaseRendererController(controller);
+      updateActiveRenderer("dom");
+      return;
+    }
+
+    if (controller.addon) {
+      updateActiveRenderer("webgl");
+      return;
+    }
+
+    try {
+      const addon = new WebglAddon();
+      controller.contextLossDisposable = addon.onContextLoss(() => {
+        console.warn("WebGL terminal renderer context lost, falling back to DOM");
+        releaseRendererController(controller);
+        updateActiveRenderer("dom");
+      });
+      term.loadAddon(addon);
+      controller.addon = addon;
+      updateActiveRenderer("webgl");
+    } catch (error) {
+      releaseRendererController(controller);
+      updateActiveRenderer("dom");
+      console.warn("Failed to activate WebGL terminal renderer, falling back to DOM", error);
+    }
   }
 
   function hexToRgba(color: string | undefined, alpha: number, fallback: string) {
@@ -1160,6 +1220,7 @@
     auxResizeObserver = null;
     auxOutputPointerCleanup?.();
     auxOutputPointerCleanup = null;
+    releaseRendererController(auxRendererController);
     auxTerminal?.dispose();
     auxTerminal = null;
     auxFitAddon = null;
@@ -1180,6 +1241,7 @@
     const auxFit = new FitAddon();
     auxTerm.loadAddon(auxFit);
     auxTerm.open(auxOutputEl);
+    syncRendererPreference(auxTerm, auxRendererController, preferredRenderer, () => {});
     auxOutputEl.addEventListener("pointerdown", handleAuxOutputPointerDown, true);
     auxOutputPointerCleanup = () => {
       auxOutputEl?.removeEventListener("pointerdown", handleAuxOutputPointerDown, true);
@@ -1534,6 +1596,9 @@
     });
 
     term.open(outputEl);
+    syncRendererPreference(term, mainRendererController, preferredRenderer, (value) => {
+      activeRenderer = value;
+    });
     inputTextarea = term.textarea;
 
     await tick();
@@ -1719,6 +1784,16 @@
   });
 
   $effect(() => {
+    if (!terminalReady || !terminal) return;
+    syncRendererPreference(terminal, mainRendererController, preferredRenderer, (value) => {
+      activeRenderer = value;
+    });
+    if (auxTerminal) {
+      syncRendererPreference(auxTerminal, auxRendererController, preferredRenderer, () => {});
+    }
+  });
+
+  $effect(() => {
     settings.terminal.draftMaxRows;
     tick().then(syncDraftHeight);
   });
@@ -1792,6 +1867,7 @@
     fileLinkProviderDisposable?.dispose();
     writeParsedDisposable?.dispose();
     disposeAuxTerminalInstance();
+    releaseRendererController(mainRendererController);
     terminal?.dispose();
   });
 
@@ -1815,6 +1891,8 @@
   data-test-hook-registered={testHookRegistered ? "true" : "false"}
   data-loading-state={terminalLoadingState ?? "idle"}
   data-soft-follow-experiment={softFollowExperimentEnabled ? "true" : "false"}
+  data-renderer-preference={preferredRenderer}
+  data-renderer={activeRenderer}
   class:hidden={!visible}
   bind:this={shellEl}
 >

@@ -54,11 +54,14 @@ export interface TerminalSettings {
   fontFamily: string;
   fontFamilyFallback: string;
   fontSize: number;
+  renderer: TerminalRendererPreference;
   scrollback: number;
   draftMaxRows: number;
   auxTerminalShortcut: string;
   auxTerminalDefaultHeight: number;
 }
+
+export type TerminalRendererPreference = "dom" | "webgl";
 
 export interface WorkspaceSettings {
   defaultAgentId: AgentId;
@@ -151,6 +154,7 @@ export const DEFAULT_SETTINGS: Settings = {
     fontFamily: "JetBrains Mono, Cascadia Code, Consolas",
     fontFamilyFallback: "Malgun Gothic, NanumGothicCoding, monospace",
     fontSize: 14,
+    renderer: "dom",
     scrollback: 10000,
     draftMaxRows: 5,
     auxTerminalShortcut: "Ctrl+`",

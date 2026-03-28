@@ -4,6 +4,7 @@
   import FontPicker from "../../FontPicker.svelte";
   import { eventToShortcut, normalizeShortcut } from "../../../hotkeys";
   import { getSettings, updateSettings } from "../../../stores/settings.svelte";
+  import type { TerminalRendererPreference } from "../../../types";
 
   const settings = getSettings();
 
@@ -41,6 +42,14 @@
     updateSettings({
       terminal: {
         auxTerminalShortcut: normalizeShortcut(shortcut),
+      },
+    });
+  }
+
+  function handleRendererInput(event: Event) {
+    updateSettings({
+      terminal: {
+        renderer: (event.target as HTMLSelectElement).value as TerminalRendererPreference,
       },
     });
   }
@@ -88,6 +97,20 @@
       />
       <span class="value-label">{settings.terminal.fontSize}px</span>
     </div>
+  </div>
+
+  <div class="field">
+    <label for="terminal-renderer">{$t("settings.fields.terminalRenderer")}</label>
+    <select
+      id="terminal-renderer"
+      class="number-input"
+      value={settings.terminal.renderer}
+      onchange={handleRendererInput}
+    >
+      <option value="dom">{$t("settings.terminalRenderer.modes.dom")}</option>
+      <option value="webgl">{$t("settings.terminalRenderer.modes.webgl")}</option>
+    </select>
+    <p class="field-message">{$t("settings.fields.terminalRendererHint")}</p>
   </div>
 
   <div class="field">

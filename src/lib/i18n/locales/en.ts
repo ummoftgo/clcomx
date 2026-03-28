@@ -155,6 +155,8 @@ const en = {
       terminalPrimaryFont: "Terminal primary font",
       terminalFallbackFont: "Terminal fallback font (CJK)",
       terminalFontSize: "Terminal font size",
+      terminalRenderer: "Terminal renderer",
+      terminalRendererHint: "DOM is the stable default. WebGL is opt-in and may improve throughput on some systems, but it can be less reliable after sleep, resume, or heavy multi-tab use.",
       terminalScrollback: "Terminal scrollback",
       terminalScrollbackHint: "Controls how many lines the terminal keeps in memory for scrolling. Restored sessions reopen at the latest output.",
       auxTerminalShortcut: "Aux terminal shortcut",
@@ -204,6 +206,12 @@ const en = {
       noEditors: "No supported editors were detected on this Windows system.",
       loadingEditors: "Detecting installed editors...",
       detectFailed: "Could not detect installed editors.",
+    },
+    terminalRenderer: {
+      modes: {
+        dom: "DOM (stable default)",
+        webgl: "WebGL (opt-in)",
+      },
     },
     inputAssist: {
       helper: "The optional draft area auto-resizes up to this many rows, capped by the current window height.",
