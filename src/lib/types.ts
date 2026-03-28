@@ -126,6 +126,8 @@ export interface AppBootstrap {
   workspace: WorkspaceSnapshot | null;
   themePack: ThemePack | null;
   testMode: boolean;
+  debugTerminalHooks: boolean;
+  softFollowExperiment: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {

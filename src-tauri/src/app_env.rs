@@ -4,18 +4,32 @@ use std::path::{Path, PathBuf};
 
 const STATE_DIR_ENV: &str = "CLCOMX_STATE_DIR";
 const TEST_MODE_ENV: &str = "CLCOMX_TEST_MODE";
+const DEBUG_TERMINAL_HOOKS_ENV: &str = "CLCOMX_DEBUG_TERMINAL_HOOKS";
+const SOFT_FOLLOW_EXPERIMENT_ENV: &str = "CLCOMX_SOFT_FOLLOW_EXPERIMENT";
 const TEST_DISTRO_ENV: &str = "CLCOMX_TEST_DISTRO";
 const TEST_HOME_ENV: &str = "CLCOMX_TEST_HOME";
 
-pub fn is_test_mode() -> bool {
+fn is_truthy_env_var(name: &str) -> bool {
     matches!(
-        env::var(TEST_MODE_ENV)
+        env::var(name)
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+pub fn is_test_mode() -> bool {
+    is_truthy_env_var(TEST_MODE_ENV)
+}
+
+pub fn is_terminal_debug_hooks_enabled() -> bool {
+    is_truthy_env_var(DEBUG_TERMINAL_HOOKS_ENV)
+}
+
+pub fn is_soft_follow_experiment_enabled() -> bool {
+    is_truthy_env_var(SOFT_FOLLOW_EXPERIMENT_ENV)
 }
 
 pub fn state_root_dir() -> Result<PathBuf, String> {

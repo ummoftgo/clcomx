@@ -7,6 +7,8 @@ const DEFAULT_BOOTSTRAP: AppBootstrap = {
   workspace: null,
   themePack: null,
   testMode: false,
+  debugTerminalHooks: false,
+  softFollowExperiment: false,
 };
 
 let bootstrapState: AppBootstrap = DEFAULT_BOOTSTRAP;

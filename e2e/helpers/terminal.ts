@@ -14,6 +14,12 @@ export interface TerminalViewportState {
   cols: number;
 }
 
+export interface TerminalBufferSnapshot extends TerminalViewportState {
+  cursorX: number;
+  cursorY: number;
+  lines: string[];
+}
+
 export async function openUrlMenuForSession(driver: WebDriver, sessionId: string, url: string) {
   await driver.executeAsyncScript(
     `
@@ -188,6 +194,35 @@ export async function getTerminalViewportState(
     `,
     sessionId,
   ).then((result: TerminalViewportState | { __error: string } | null) => {
+    if (result && typeof result === "object" && "__error" in result) {
+      throw new Error(result.__error);
+    }
+    return result;
+  });
+}
+
+export async function getTerminalBufferSnapshot(
+  driver: WebDriver,
+  sessionId: string,
+): Promise<TerminalBufferSnapshot | null> {
+  return driver.executeAsyncScript(
+    `
+      const sessionId = arguments[0];
+      const done = arguments[arguments.length - 1];
+      const hook = window.__clcomxTestHooks?.terminals?.[sessionId];
+      if (!hook?.getBufferSnapshot) {
+        done(null);
+        return;
+      }
+
+      try {
+        done(hook.getBufferSnapshot());
+      } catch (error) {
+        done({ __error: String(error) });
+      }
+    `,
+    sessionId,
+  ).then((result: TerminalBufferSnapshot | { __error: string } | null) => {
     if (result && typeof result === "object" && "__error" in result) {
       throw new Error(result.__error);
     }

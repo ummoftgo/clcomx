@@ -1,4 +1,10 @@
-use crate::app_env::{ensure_parent_dir, is_test_mode, state_path};
+use crate::app_env::{
+    ensure_parent_dir,
+    is_soft_follow_experiment_enabled,
+    is_terminal_debug_hooks_enabled,
+    is_test_mode,
+    state_path,
+};
 use serde::{Deserialize, Serialize};
 use super::pty::PtyState;
 use std::fs;
@@ -325,6 +331,8 @@ pub struct AppBootstrap {
     pub workspace: Option<WorkspaceSnapshot>,
     pub theme_pack: ThemePackPayload,
     pub test_mode: bool,
+    pub debug_terminal_hooks: bool,
+    pub soft_follow_experiment: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1596,6 +1604,8 @@ pub fn bootstrap_app(state: tauri::State<'_, WorkspaceState>) -> Result<AppBoots
         workspace: Some(snapshot_from_state(state.inner())?),
         theme_pack: load_theme_pack_or_default(),
         test_mode: is_test_mode(),
+        debug_terminal_hooks: is_terminal_debug_hooks_enabled(),
+        soft_follow_experiment: is_soft_follow_experiment_enabled(),
     })
 }
 

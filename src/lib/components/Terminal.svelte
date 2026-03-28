@@ -2,11 +2,13 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { Terminal, type IDisposable } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
+  import { Unicode11Addon } from "@xterm/addon-unicode11";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import ImagePasteModal from "./ImagePasteModal.svelte";
   import EditorPickerModal from "./EditorPickerModal.svelte";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { getBootstrap } from "../bootstrap";
   import {
     createPendingClipboardImage,
     formatPathForAgentInput,
@@ -48,6 +50,7 @@
     decodeBase64Blob,
     getOrCreateTerminalTestHooks,
     isTestBridgeEnabled,
+    type TerminalBufferSnapshot,
     type TestOpenPendingImageDetail,
   } from "../testing/test-bridge";
   import "@xterm/xterm/css/xterm.css";
@@ -164,15 +167,23 @@
   let bottomLockDeadline = 0;
   let bottomLockMaxDeadline = 0;
   let followTail = true;
+  let pendingPostWriteScroll = false;
+  let deferredBottomScrollTimer: ReturnType<typeof setTimeout> | null = null;
+  let writeParsedDisposable: IDisposable | null = null;
   const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
   const BOTTOM_LOCK_MAX_MS = 12000;
   const BOTTOM_LOCK_QUIET_MS = 1400;
   const MIN_TERMINAL_LOADING_MS = 360;
   const TERMINAL_LOADING_QUIET_MS = 1300;
   const TERMINAL_LOADING_MAX_MS = 8000;
+  const DEFERRED_BOTTOM_SCROLL_MS = 60;
   const WEB_LINK_REGEX = /(?:https?|ftp):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/i;
+  const SYNC_OUTPUT_MODE_SEQUENCE = /\u001b\[\?2026[hl]/;
+  const ABSOLUTE_CURSOR_POSITION_SEQUENCE = /\u001b\[\d+(?:;\d+)?[Hf]/;
 
   const settings = getSettings();
+  const bootstrap = getBootstrap();
+  const softFollowExperimentEnabled = $derived(bootstrap.softFollowExperiment && agentId === "claude");
   const terminalFontFamily = $derived(
     buildFontStack(
       serializeFontFamilyList(
@@ -247,6 +258,15 @@
       scrollback: settings.terminal.scrollback,
       disableStdin: false,
     };
+  }
+
+  function enableExperimentalUnicodeWidth(term: Terminal) {
+    if (!softFollowExperimentEnabled) {
+      return;
+    }
+
+    term.loadAddon(new Unicode11Addon());
+    term.unicode.activeVersion = "11";
   }
 
   function hexToRgba(color: string | undefined, alpha: number, fallback: string) {
@@ -328,6 +348,13 @@
     }
   }
 
+  function clearDeferredBottomScrollTimer() {
+    if (deferredBottomScrollTimer) {
+      clearTimeout(deferredBottomScrollTimer);
+      deferredBottomScrollTimer = null;
+    }
+  }
+
   function releaseBottomLock() {
     clearBottomLockTimer();
     bottomLockDeadline = 0;
@@ -373,6 +400,13 @@
     bottomLockMaxDeadline = now + maxDurationMs;
     bottomLockDeadline = Math.min(bottomLockMaxDeadline, now + quietWindowMs);
     followTail = true;
+
+    if (softFollowExperimentEnabled) {
+      clearBottomLockTimer();
+      scrollTerminalToBottom();
+      return;
+    }
+
     scheduleBottomLockTick();
   }
 
@@ -383,12 +417,49 @@
 
     bottomLockDeadline = Math.min(bottomLockMaxDeadline, Date.now() + quietWindowMs);
     followTail = true;
+
+    if (softFollowExperimentEnabled) {
+      clearBottomLockTimer();
+      return;
+    }
+
     scheduleBottomLockTick();
   }
 
   function disableAutoFollow() {
     followTail = false;
+    pendingPostWriteScroll = false;
+    clearDeferredBottomScrollTimer();
     releaseBottomLock();
+  }
+
+  function isLikelyTerminalRepaintChunk(data: string) {
+    if (!softFollowExperimentEnabled) {
+      return false;
+    }
+
+    if (SYNC_OUTPUT_MODE_SEQUENCE.test(data)) {
+      return true;
+    }
+
+    if (ABSOLUTE_CURSOR_POSITION_SEQUENCE.test(data)) {
+      return true;
+    }
+
+    return data.includes("\r") && !data.includes("\n");
+  }
+
+  function scheduleDeferredBottomScroll() {
+    clearDeferredBottomScrollTimer();
+    deferredBottomScrollTimer = setTimeout(() => {
+      deferredBottomScrollTimer = null;
+      if (!softFollowExperimentEnabled || !pendingPostWriteScroll || terminal?.modes.synchronizedOutputMode) {
+        return;
+      }
+
+      pendingPostWriteScroll = false;
+      scrollTerminalToBottom();
+    }, DEFERRED_BOTTOM_SCROLL_MS);
   }
 
   function getDraftLineHeight() {
@@ -861,6 +932,30 @@
     };
   }
 
+  function getBufferSnapshotForTest(): TerminalBufferSnapshot | null {
+    if (!terminal) {
+      return null;
+    }
+
+    const buffer = terminal.buffer.active;
+    const lines: string[] = [];
+
+    for (let index = 0; index < terminal.rows; index += 1) {
+      const line = buffer.getLine(buffer.viewportY + index);
+      lines.push(line?.translateToString(false) ?? "");
+    }
+
+    return {
+      baseY: buffer.baseY,
+      viewportY: buffer.viewportY,
+      cursorX: buffer.cursorX,
+      cursorY: buffer.cursorY,
+      rows: terminal.rows,
+      cols: terminal.cols,
+      lines,
+    };
+  }
+
   function insertIntoDraft(text: string, moveCaretToEnd = false) {
     if (!draftEl) {
       draftValue += text;
@@ -1081,6 +1176,7 @@
     disposeAuxTerminalInstance();
 
     const auxTerm = new Terminal(buildTerminalOptions());
+    enableExperimentalUnicodeWidth(auxTerm);
     const auxFit = new FitAddon();
     auxTerm.loadAddon(auxFit);
     auxTerm.open(auxOutputEl);
@@ -1297,15 +1393,26 @@
     }
 
     if (initialOutputReady) {
+      const repaintChunk = isLikelyTerminalRepaintChunk(data);
       const shouldStickToBottom = followTail || isBottomLockActive();
-      extendBottomLock();
+      if (!repaintChunk) {
+        extendBottomLock();
+      }
       terminal.write(data, () => {
         if (hasRenderableTerminalOutput(data)) {
           noteTerminalLoadingActivity();
         }
-        if (shouldStickToBottom) {
-          terminal?.scrollToBottom();
+        if (!shouldStickToBottom) {
+          return;
         }
+
+        if (repaintChunk || terminal?.modes.synchronizedOutputMode) {
+          pendingPostWriteScroll = true;
+          scheduleDeferredBottomScroll();
+          return;
+        }
+
+        terminal?.scrollToBottom();
       });
     }
   }
@@ -1383,6 +1490,7 @@
   onMount(async () => {
     const initialTheme = getThemeById(settings.interface.theme)?.theme;
     const term = new Terminal(buildTerminalOptions(initialTheme));
+    enableExperimentalUnicodeWidth(term);
 
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -1509,6 +1617,14 @@
       handleTerminalRender();
     });
 
+    writeParsedDisposable = term.onWriteParsed(() => {
+      if (!softFollowExperimentEnabled || !pendingPostWriteScroll || term.modes.synchronizedOutputMode) {
+        return;
+      }
+
+      scheduleDeferredBottomScroll();
+    });
+
     term.onScroll((viewportY) => {
       if (!terminal || isBottomLockActive()) {
         return;
@@ -1531,6 +1647,7 @@
         getOutputSnapshot: getOutputSnapshotForTest,
         getAuxOutputSnapshot: getAuxOutputSnapshotForTest,
         getViewportState: getViewportStateForTest,
+        getBufferSnapshot: getBufferSnapshotForTest,
         openUrlMenu: openUrlLinkMenuForTest,
         openFileMenu: openFileLinkMenuForTest,
       };
@@ -1668,9 +1785,12 @@
     }
     clearTerminalLoadingTimers();
     clearAuxLayoutSettleTimer();
+    clearDeferredBottomScrollTimer();
     releaseBottomLock();
+    pendingPostWriteScroll = false;
     revokePendingClipboardImage(pendingClipboardImage);
     fileLinkProviderDisposable?.dispose();
+    writeParsedDisposable?.dispose();
     disposeAuxTerminalInstance();
     terminal?.dispose();
   });
@@ -1694,6 +1814,7 @@
   data-pending-image={pendingClipboardImage ? "true" : "false"}
   data-test-hook-registered={testHookRegistered ? "true" : "false"}
   data-loading-state={terminalLoadingState ?? "idle"}
+  data-soft-follow-experiment={softFollowExperimentEnabled ? "true" : "false"}
   class:hidden={!visible}
   bind:this={shellEl}
 >

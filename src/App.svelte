@@ -705,6 +705,7 @@
   data-window-label={currentWindowLabel}
   data-session-count={sessions.length}
   data-test-mode={bootstrap.testMode ? "true" : "false"}
+  data-debug-terminal-hooks={bootstrap.debugTerminalHooks ? "true" : "false"}
 >
   <TabBar
     onNewTab={requestNewTab}

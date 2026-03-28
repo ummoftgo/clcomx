@@ -10,11 +10,22 @@ export interface TestOpenPendingImageDetail {
   mimeType?: string;
 }
 
+export interface TerminalBufferSnapshot {
+  baseY: number;
+  viewportY: number;
+  cursorX: number;
+  cursorY: number;
+  rows: number;
+  cols: number;
+  lines: string[];
+}
+
 export interface TerminalTestHook {
   openPendingImage: (detail: Omit<TestOpenPendingImageDetail, "sessionId">) => void;
   getOutputSnapshot: () => Promise<{ data: string; seq: number } | null>;
   getAuxOutputSnapshot: () => Promise<{ data: string; seq: number } | null>;
   getViewportState: () => { viewportY: number; baseY: number; rows: number; cols: number } | null;
+  getBufferSnapshot: () => TerminalBufferSnapshot | null;
   openUrlMenu: (url: string) => void;
   openFileMenu: (rawPath: string) => Promise<void>;
 }
@@ -28,7 +39,8 @@ declare global {
 }
 
 export function isTestBridgeEnabled() {
-  return getBootstrap().testMode;
+  const bootstrap = getBootstrap();
+  return bootstrap.testMode || bootstrap.debugTerminalHooks;
 }
 
 export function getOrCreateTerminalTestHooks() {

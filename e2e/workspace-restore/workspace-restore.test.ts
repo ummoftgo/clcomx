@@ -12,7 +12,7 @@ import {
 } from "../helpers/tauri";
 import { TEST_IDS } from "../../src/lib/testids";
 import { createStepLogger } from "../helpers/log";
-import { getTerminalViewportState } from "../helpers/terminal";
+import { getTerminalBufferSnapshot, getTerminalViewportState } from "../helpers/terminal";
 
 describe.skipIf(process.platform !== "win32")("CLCOMX workspace-restore pack", () => {
   const TEST_DISTRO = process.env.CLCOMX_TEST_DISTRO ?? "clcomx-test";
@@ -217,12 +217,30 @@ describe.skipIf(process.platform !== "win32")("CLCOMX workspace-restore pack", (
       expect(immediateViewport).not.toBeNull();
       expect(immediateViewport?.viewportY).toBe(immediateViewport?.baseY);
 
+      const immediateBuffer = await getTerminalBufferSnapshot(driver, sessionId!);
+      log.step("immediate buffer snapshot", {
+        rows: immediateBuffer?.rows,
+        cols: immediateBuffer?.cols,
+        lineCount: immediateBuffer?.lines.length,
+      });
+      expect(immediateBuffer).not.toBeNull();
+      expect(immediateBuffer?.lines.length).toBe(immediateBuffer?.rows);
+
       await driver.sleep(2400);
 
       const delayedViewport = await getTerminalViewportState(driver, sessionId!);
       log.step("delayed viewport", delayedViewport);
       expect(delayedViewport).not.toBeNull();
       expect(delayedViewport?.viewportY).toBe(delayedViewport?.baseY);
+
+      const delayedBuffer = await getTerminalBufferSnapshot(driver, sessionId!);
+      log.step("delayed buffer snapshot", {
+        rows: delayedBuffer?.rows,
+        cols: delayedBuffer?.cols,
+        lineCount: delayedBuffer?.lines.length,
+      });
+      expect(delayedBuffer).not.toBeNull();
+      expect(delayedBuffer?.lines.length).toBe(delayedBuffer?.rows);
     } finally {
       await longSession.cleanup();
     }
