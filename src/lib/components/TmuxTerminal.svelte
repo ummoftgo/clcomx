@@ -7,6 +7,11 @@
   import { getAgentDefinition, type AgentId } from "../agents";
   import { translate } from "../i18n";
   import { getSettings } from "../stores/settings.svelte";
+  import {
+    applyTmuxSessionSnapshot,
+    clearTmuxSessionSnapshot,
+    getTmuxSessionSnapshot,
+  } from "../stores/tmux-snapshots.svelte";
   import { getThemeById } from "../themes";
   import { buildFontStack, serializeFontFamilyList } from "../font-family";
   import {
@@ -35,6 +40,8 @@
     resumeToken?: string | null;
     tmuxSessionName?: string | null;
     tmuxActivePaneId?: string | null;
+    agentCentric?: boolean;
+    primaryPaneId?: string | null;
     onStateChange?: (state: { tmuxSessionName: string | null; tmuxActivePaneId: string | null }) => void;
   }
 
@@ -63,6 +70,8 @@
     resumeToken = null,
     tmuxSessionName = null,
     tmuxActivePaneId = null,
+    agentCentric = false,
+    primaryPaneId = null,
     onStateChange = () => {},
   }: Props = $props();
 
@@ -87,7 +96,7 @@
   let paneGridEl = $state<HTMLDivElement | null>(null);
   let paneStageEl = $state<HTMLDivElement | null>(null);
   let measureEl = $state<HTMLDivElement | null>(null);
-  let snapshot = $state<TmuxSessionSnapshot | null>(null);
+  const snapshot = $derived(getTmuxSessionSnapshot(sessionId));
   let loadingState = $state<"connecting" | "restoring" | null>(null);
   let error = $state<string | null>(null);
   let liveSessionName = $state<string | null>(null);
@@ -107,6 +116,7 @@
   let measureReady = $state(false);
   let measurementGateOpen = $state(false);
   let lastResizeSyncKey = $state<string | null>(null);
+  let lastRenderablePaneKey = $state<string | null>(null);
   const subscriberId = crypto.randomUUID();
   let measureTerminal: Terminal | null = null;
   let measureFitAddon: FitAddon | null = null;
@@ -134,6 +144,12 @@
   const loadingLabel = $derived(
     loadingState === "restoring" ? $t("terminal.tmux.restoring") : $t("terminal.tmux.connecting"),
   );
+  const activePaneSummary = $derived.by(() => {
+    if (!snapshot || !liveActivePaneId) return null;
+    const pane = snapshot.panes.find((entry) => entry.paneId === liveActivePaneId) ?? null;
+    if (!pane) return null;
+    return pane.currentCommand || pane.currentPath || pane.paneId;
+  });
 
   function buildStartCommand() {
     const agent = getAgentDefinition(agentId);
@@ -237,6 +253,9 @@
   }
 
   function getPaneStyle(pane: TmuxSessionSnapshot["panes"][number]) {
+    if (agentCentric) {
+      return "left:0;top:0;width:100%;height:100%";
+    }
     return [
       `left:${(pane.left / layoutWidth) * 100}%`,
       `top:${(pane.top / layoutHeight) * 100}%`,
@@ -315,7 +334,7 @@
   }
 
   function disposeRemovedPaneTerminals(nextSnapshot: TmuxSessionSnapshot | null) {
-    const paneIds = new Set((nextSnapshot?.panes ?? []).map((pane) => pane.paneId));
+    const paneIds = new Set(getRenderablePanes(nextSnapshot).map((pane) => pane.paneId));
     for (const [paneId, entry] of paneTerminals) {
       if (paneIds.has(paneId)) continue;
       if (entry.flushTimer) {
@@ -550,6 +569,12 @@
   function appendPaneOutput(paneId: string, data: string) {
     outputEventCount += 1;
     lastOutputPaneId = paneId;
+    if (agentCentric) {
+      const displayPaneId = getDisplayPaneId(snapshot);
+      if (displayPaneId && paneId !== displayPaneId) {
+        return;
+      }
+    }
     const entry = paneTerminals.get(paneId);
     if (!entry) {
       const pending = pendingPaneOutput.get(paneId) ?? [];
@@ -670,9 +695,11 @@
     if (!nextSnapshot) return;
     await tick();
     disposeRemovedPaneTerminals(nextSnapshot);
-    const previousPanesById = new Map((previousSnapshot?.panes ?? []).map((pane) => [pane.paneId, pane]));
+    const previousPanesById = new Map(
+      getRenderablePanes(previousSnapshot).map((pane) => [pane.paneId, pane]),
+    );
 
-    for (const pane of nextSnapshot.panes) {
+    for (const pane of getRenderablePanes(nextSnapshot)) {
       const previousPane = previousPanesById.get(pane.paneId) ?? null;
       if (structuralChange || shouldRehydratePane(previousPane, pane)) {
         await syncSinglePaneTerminal(pane, structuralChange);
@@ -697,13 +724,16 @@
   }
 
   async function applySnapshot(nextSnapshot: TmuxSessionSnapshot) {
-    const previousSnapshot = snapshot;
-    const structuralChange = isStructuralSnapshotChange(snapshot, nextSnapshot);
-    snapshot = nextSnapshot;
-    liveSessionName = liveSessionName ?? tmuxSessionName ?? nextSnapshot.sessionName;
-    liveActivePaneId = nextSnapshot.activePaneId;
+    const previousSnapshot = getTmuxSessionSnapshot(sessionId);
+    const effectiveSnapshot =
+      applyTmuxSessionSnapshot(sessionId, nextSnapshot) ??
+      getTmuxSessionSnapshot(sessionId) ??
+      nextSnapshot;
+    const structuralChange = isStructuralSnapshotChange(previousSnapshot, effectiveSnapshot);
+    liveSessionName = liveSessionName ?? tmuxSessionName ?? effectiveSnapshot.sessionName;
+    liveActivePaneId = effectiveSnapshot.activePaneId;
     notifyState();
-    await syncPaneTerminals(previousSnapshot, nextSnapshot, structuralChange);
+    await syncPaneTerminals(previousSnapshot, effectiveSnapshot, structuralChange);
     if (!previousSnapshot) {
       scheduleSessionResize(80);
     }
@@ -777,7 +807,7 @@
     error = null;
     liveSessionName = null;
     liveActivePaneId = null;
-    snapshot = null;
+    clearTmuxSessionSnapshot(sessionId);
     lastResizeSyncKey = null;
     resetResizeRequestState();
     notifyState();
@@ -786,13 +816,6 @@
 
   async function activatePane(paneId: string) {
     liveActivePaneId = paneId;
-    snapshot = snapshot
-      ? {
-          ...snapshot,
-          activePaneId: paneId,
-          panes: snapshot.panes.map((pane) => ({ ...pane, active: pane.paneId === paneId })),
-        }
-      : snapshot;
     notifyState();
     await selectTmuxPane(sessionId, distro, paneId);
     const paneTerminal = paneTerminals.get(paneId);
@@ -1008,6 +1031,46 @@
 
   const layoutWidth = $derived(Math.max(snapshot?.width ?? 0, 1));
   const layoutHeight = $derived(Math.max(snapshot?.height ?? 0, 1));
+
+  function getDisplayPaneId(nextSnapshot: TmuxSessionSnapshot | null) {
+    if (!nextSnapshot) return null;
+    if (primaryPaneId && nextSnapshot.panes.some((pane) => pane.paneId === primaryPaneId)) {
+      return primaryPaneId;
+    }
+    return nextSnapshot.panes[0]?.paneId ?? nextSnapshot.activePaneId ?? null;
+  }
+
+  function getRenderablePanes(nextSnapshot: TmuxSessionSnapshot | null) {
+    if (!nextSnapshot) return [];
+    if (!agentCentric) {
+      return nextSnapshot.panes;
+    }
+    const displayPaneId = getDisplayPaneId(nextSnapshot);
+    return nextSnapshot.panes.filter((pane) => pane.paneId === displayPaneId);
+  }
+
+  $effect(() => {
+    const renderablePaneKey = getRenderablePanes(snapshot)
+      .map((pane) => pane.paneId)
+      .join(",");
+
+    if (!snapshot) {
+      lastRenderablePaneKey = null;
+      return;
+    }
+
+    if (renderablePaneKey === lastRenderablePaneKey) {
+      return;
+    }
+
+    lastRenderablePaneKey = renderablePaneKey;
+    queueMicrotask(() => {
+      disposeRemovedPaneTerminals(snapshot);
+      for (const pane of getRenderablePanes(snapshot)) {
+        void syncSinglePaneTerminal(pane, true);
+      }
+    });
+  });
 </script>
 
 <div
@@ -1020,7 +1083,13 @@
     <div class="tmux-session-label">
       <strong>{$t("terminal.tmux.session")}</strong>
       <span>{liveSessionName ?? "—"}</span>
-      <small class="tmux-debug-meta">out:{outputEventCount} {lastOutputPaneId ?? "-"}</small>
+      <small class="tmux-debug-meta">
+        panes:{snapshot?.panes.length ?? 0}
+        {#if activePaneSummary}
+          · active:{activePaneSummary}
+        {/if}
+        · out:{outputEventCount} {lastOutputPaneId ?? "-"}
+      </small>
     </div>
     <div class="tmux-actions">
       <button class="tmux-action" onclick={() => void handleSplit("horizontal")} disabled={!liveActivePaneId}>
@@ -1056,7 +1125,7 @@
     {:else}
       <div class="tmux-pane-grid" data-testid={TEST_IDS.tmuxPaneGrid} bind:this={paneGridEl}>
         <div class="tmux-pane-stage" bind:this={paneStageEl}>
-          {#each snapshot.panes as pane (pane.paneId)}
+          {#each getRenderablePanes(snapshot) as pane (pane.paneId)}
             <section
               class="tmux-pane"
               class:tmux-pane--active={pane.paneId === liveActivePaneId}

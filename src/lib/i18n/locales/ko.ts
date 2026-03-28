@@ -12,6 +12,34 @@ const ko = {
       closeTabs: "탭 닫기",
     },
   },
+  workspace: {
+    agentTree: {
+      kicker: "에이전트",
+      title: "에이전트 트리",
+    },
+    activity: {
+      kicker: "활동",
+      recent: "최근 활동",
+      output: "최근 출력",
+      status: "상태",
+      emptySelection: "에이전트를 선택하면 최근 출력과 활동을 볼 수 있습니다.",
+      emptyTranscript: "아직 최근 출력이 없습니다.",
+    },
+    status: {
+      running: "실행 중",
+      idle: "대기 중",
+      done: "완료",
+      error: "오류",
+    },
+    events: {
+      sessionStart: "세션 시작",
+      childDetected: "하위 에이전트 감지",
+      agentFinished: "에이전트 종료",
+      output: "실시간 출력",
+      status: "상태 변경",
+      snapshot: "스냅샷",
+    },
+  },
   common: {
     actions: {
       back: "뒤로",
@@ -319,6 +347,29 @@ const ko = {
       copyLink: "링크 복사",
       copySuccess: "링크를 클립보드에 복사했습니다.",
       openFailed: "이 링크를 열지 못했습니다.",
+    },
+  },
+  agentWorkspace: {
+    tree: {
+      eyebrow: "에이전트",
+      title: "하위 에이전트",
+    },
+    timeline: {
+      eyebrow: "활동",
+      title: "최근 활동",
+      empty: "아직 활동 기록이 없습니다.",
+      emptyHint: "실시간 출력과 감지된 런타임 작업이 여기에 표시됩니다.",
+    },
+    status: {
+      running: "실행 중",
+      idle: "대기",
+      done: "완료",
+      error: "오류",
+    },
+    eventKind: {
+      output: "출력",
+      status: "상태",
+      snapshot: "스냅샷",
     },
   },
   themePicker: {

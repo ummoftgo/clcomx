@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
+use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Emitter, State};
@@ -35,6 +36,7 @@ struct TmuxSessionRegistration {
 #[serde(rename_all = "camelCase")]
 pub struct TmuxPaneSnapshot {
     pub pane_id: String,
+    pub window_id: String,
     pub active: bool,
     pub dead: bool,
     pub left: u16,
@@ -51,11 +53,25 @@ pub struct TmuxPaneSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TmuxWindowSnapshot {
+    pub window_id: String,
+    pub window_index: i32,
+    pub window_name: String,
+    pub active: bool,
+    pub pane_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TmuxSessionSnapshot {
     pub session_name: String,
+    pub revision: u64,
+    pub captured_at: u64,
+    pub active_window_id: String,
     pub active_pane_id: String,
     pub width: u16,
     pub height: u16,
+    pub windows: Vec<TmuxWindowSnapshot>,
     pub panes: Vec<TmuxPaneSnapshot>,
 }
 
@@ -202,9 +218,11 @@ fn decode_field(value: &str) -> Result<String, String> {
 
 fn parse_tmux_snapshot(output: &str) -> Result<Option<TmuxSessionSnapshot>, String> {
     let mut session_name = None;
+    let mut active_window_id = None;
     let mut active_pane_id = None;
     let mut width = 0u16;
     let mut height = 0u16;
+    let mut windows = Vec::new();
     let mut panes = Vec::new();
 
     for line in output.lines() {
@@ -215,27 +233,38 @@ fn parse_tmux_snapshot(output: &str) -> Result<Option<TmuxSessionSnapshot>, Stri
         let parts = line.split('\t').collect::<Vec<_>>();
         match parts.first().copied() {
             Some("__CLCOMX_TMUX_MISSING__") => return Ok(None),
-            Some("__CLCOMX_TMUX_SESSION__") if parts.len() >= 5 => {
+            Some("__CLCOMX_TMUX_SESSION__") if parts.len() >= 6 => {
                 session_name = Some(parts[1].to_string());
                 width = parts[2].parse::<u16>().unwrap_or(0);
                 height = parts[3].parse::<u16>().unwrap_or(0);
-                active_pane_id = Some(parts[4].to_string());
+                active_window_id = Some(parts[4].to_string());
+                active_pane_id = Some(parts[5].to_string());
             }
-            Some("__CLCOMX_TMUX_PANE__") if parts.len() >= 14 => {
+            Some("__CLCOMX_TMUX_WINDOW__") if parts.len() >= 5 => {
+                windows.push(TmuxWindowSnapshot {
+                    window_id: parts[1].to_string(),
+                    window_index: parts[2].parse::<i32>().unwrap_or(0),
+                    active: parts[3] == "1",
+                    window_name: decode_field(parts[4])?,
+                    pane_ids: Vec::new(),
+                });
+            }
+            Some("__CLCOMX_TMUX_PANE__") if parts.len() >= 15 => {
                 panes.push(TmuxPaneSnapshot {
                     pane_id: parts[1].to_string(),
-                    active: parts[2] == "1",
-                    dead: parts[3] == "1",
-                    left: parts[4].parse::<u16>().unwrap_or(0),
-                    top: parts[5].parse::<u16>().unwrap_or(0),
-                    width: parts[6].parse::<u16>().unwrap_or(0),
-                    height: parts[7].parse::<u16>().unwrap_or(0),
-                    cursor_x: parts[8].parse::<u16>().unwrap_or(0),
-                    cursor_y: parts[9].parse::<u16>().unwrap_or(0),
-                    current_path: decode_field(parts[10])?,
-                    current_command: decode_field(parts[11])?,
-                    history_text: decode_field(parts[12])?,
-                    screen_text: decode_field(parts[13])?,
+                    window_id: parts[2].to_string(),
+                    active: parts[3] == "1",
+                    dead: parts[4] == "1",
+                    left: parts[5].parse::<u16>().unwrap_or(0),
+                    top: parts[6].parse::<u16>().unwrap_or(0),
+                    width: parts[7].parse::<u16>().unwrap_or(0),
+                    height: parts[8].parse::<u16>().unwrap_or(0),
+                    cursor_x: parts[9].parse::<u16>().unwrap_or(0),
+                    cursor_y: parts[10].parse::<u16>().unwrap_or(0),
+                    current_path: decode_field(parts[11])?,
+                    current_command: decode_field(parts[12])?,
+                    history_text: decode_field(parts[13])?,
+                    screen_text: decode_field(parts[14])?,
                 });
             }
             _ => {}
@@ -246,23 +275,41 @@ fn parse_tmux_snapshot(output: &str) -> Result<Option<TmuxSessionSnapshot>, Stri
         return Err("Tmux snapshot did not include session metadata".into());
     };
 
+    let Some(active_window_id) = active_window_id else {
+        return Err("Tmux snapshot did not include active window metadata".into());
+    };
+
     let Some(active_pane_id) = active_pane_id else {
         return Err("Tmux snapshot did not include active pane metadata".into());
     };
 
+    for pane in &panes {
+        if let Some(window) = windows.iter_mut().find(|entry| entry.window_id == pane.window_id) {
+            window.pane_ids.push(pane.pane_id.clone());
+        }
+    }
+
     Ok(Some(TmuxSessionSnapshot {
         session_name,
+        revision: 0,
+        captured_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0),
+        active_window_id,
         active_pane_id,
         width,
         height,
+        windows,
         panes,
     }))
 }
 
 fn capture_snapshot_script(session_name: &str, history_lines: u32) -> String {
     let session = shell_quote(session_name);
-    let session_format = "#{session_name}\t#{window_width}\t#{window_height}";
-    let pane_format = "#{pane_id}\t#{pane_active}\t#{pane_dead}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{pane_current_path}\t#{pane_current_command}";
+    let session_format = "#{session_name}\t#{window_width}\t#{window_height}\t#{window_id}";
+    let window_format = "#{window_id}\t#{window_index}\t#{window_active}\t#{window_name}";
+    let pane_format = "#{pane_id}\t#{window_id}\t#{pane_active}\t#{pane_dead}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{pane_current_path}\t#{pane_current_command}";
     let capture_start = if history_lines == 0 {
         "-".to_string()
     } else {
@@ -283,19 +330,24 @@ if [ -z \"$active_pane_id\" ]; then
 fi
 printf '__CLCOMX_TMUX_SESSION__\t%s\t%s\n' \"$session_line\" \"$active_pane_id\"
 
-while IFS=$'\t' read -r pane_id pane_active pane_dead pane_left pane_top pane_width pane_height cursor_x cursor_y pane_current_path pane_current_command; do
-  path_b64=$(printf '%s' \"$pane_current_path\" | base64 -w0)
-  command_b64=$(printf '%s' \"$pane_current_command\" | base64 -w0)
-  if [ {history_lines} -gt 0 ]; then
-    history_b64=$(tmux capture-pane -p -N -e -S {capture_start} -E -1 -t \"$pane_id\" | base64 -w0)
-  else
-    history_b64=$(printf '' | base64 -w0)
-  fi
-  screen_b64=$(tmux capture-pane -p -N -e -t \"$pane_id\" | base64 -w0)
-  printf '__CLCOMX_TMUX_PANE__\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    \"$pane_id\" \"$pane_active\" \"$pane_dead\" \"$pane_left\" \"$pane_top\" \"$pane_width\" \"$pane_height\" \
-    \"$cursor_x\" \"$cursor_y\" \"$path_b64\" \"$command_b64\" \"$history_b64\" \"$screen_b64\"
-done < <(tmux list-panes -t \"$session_name\" -F '{pane_format}')
+while IFS=$'\t' read -r window_id window_index window_active window_name; do
+  window_name_b64=$(printf '%s' \"$window_name\" | base64 -w0)
+  printf '__CLCOMX_TMUX_WINDOW__\t%s\t%s\t%s\t%s\n' \
+    \"$window_id\" \"$window_index\" \"$window_active\" \"$window_name_b64\"
+  while IFS=$'\t' read -r pane_id pane_window_id pane_active pane_dead pane_left pane_top pane_width pane_height cursor_x cursor_y pane_current_path pane_current_command; do
+    path_b64=$(printf '%s' \"$pane_current_path\" | base64 -w0)
+    command_b64=$(printf '%s' \"$pane_current_command\" | base64 -w0)
+    if [ {history_lines} -gt 0 ]; then
+      history_b64=$(tmux capture-pane -p -N -e -S {capture_start} -E -1 -t \"$pane_id\" | base64 -w0)
+    else
+      history_b64=$(printf '' | base64 -w0)
+    fi
+    screen_b64=$(tmux capture-pane -p -N -e -t \"$pane_id\" | base64 -w0)
+    printf '__CLCOMX_TMUX_PANE__\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      \"$pane_id\" \"$pane_window_id\" \"$pane_active\" \"$pane_dead\" \"$pane_left\" \"$pane_top\" \"$pane_width\" \"$pane_height\" \
+      \"$cursor_x\" \"$cursor_y\" \"$path_b64\" \"$command_b64\" \"$history_b64\" \"$screen_b64\"
+  done < <(tmux list-panes -t \"$window_id\" -F '{pane_format}')
+done < <(tmux list-windows -t \"$session_name\" -F '{window_format}')
         ",
         history_lines = history_lines,
     )
@@ -1013,7 +1065,6 @@ pub async fn tmux_subscribe_session(
         }
     }
 
-    emit_tmux_state(&app, &session_id, &snapshot)?;
     Ok(snapshot)
 }
 
@@ -1232,7 +1283,6 @@ pub async fn tmux_kill_session(
 
 #[tauri::command]
 pub async fn tmux_resize_session(
-    app: AppHandle,
     state: State<'_, TmuxState>,
     session_id: String,
     distro: String,
@@ -1241,18 +1291,14 @@ pub async fn tmux_resize_session(
     rows: u16,
 ) -> Result<(), String> {
     let controller = get_tmux_controller(state.inner(), &session_id)?;
-    let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut history_lines = 10_000u32;
-        let live_session_name = if let Some((_, live_session_name, stored_history_lines, alive, stdin)) = controller {
-            history_lines = stored_history_lines;
+        if let Some((_, _, _, alive, stdin)) = controller {
             if alive.load(Ordering::SeqCst) {
                 send_tmux_control_command(
                     &stdin,
                     &format!("refresh-client -C {}x{}", cols.max(60), rows.max(16)),
                 )?;
             }
-            live_session_name
         } else {
             let script = format!(
                 "tmux resize-window -t {session} -x {cols} -y {rows}",
@@ -1261,17 +1307,6 @@ pub async fn tmux_resize_session(
                 rows = rows.max(16),
             );
             run_wsl_shell(&distro, &script).map(|_| ())?;
-            session_name.clone()
-        };
-
-        if let Some(snapshot) = collect_tmux_snapshot_with_size_wait(
-            &distro,
-            &live_session_name,
-            history_lines,
-            cols,
-            rows,
-        )? {
-            let _ = emit_tmux_state(&app_handle, &session_id, &snapshot);
         }
 
         Ok(())
@@ -1286,14 +1321,20 @@ mod tests {
 
     #[test]
     fn parses_tmux_snapshot_payload() {
-        let output = "__CLCOMX_TMUX_SESSION__\tclcomx-test\t120\t40\t%1\n\
-__CLCOMX_TMUX_PANE__\t%1\t1\t0\t0\t0\t120\t40\t14\t5\tL2hvbWUvdGVzdGVy\tY2xhdWRl\taGlzdG9yeSBsaW5lCg==\tcHJvbXB0PiA=\n";
+        let output = "__CLCOMX_TMUX_SESSION__\tclcomx-test\t120\t40\t@1\t%1\n\
+__CLCOMX_TMUX_WINDOW__\t@1\t0\t1\tbWFpbg==\n\
+__CLCOMX_TMUX_PANE__\t%1\t@1\t1\t0\t0\t0\t120\t40\t14\t5\tL2hvbWUvdGVzdGVy\tY2xhdWRl\taGlzdG9yeSBsaW5lCg==\tcHJvbXB0PiA=\n";
         let snapshot = parse_tmux_snapshot(output).expect("snapshot parse").expect("snapshot");
         assert_eq!(snapshot.session_name, "clcomx-test");
+        assert_eq!(snapshot.active_window_id, "@1");
         assert_eq!(snapshot.active_pane_id, "%1");
         assert_eq!(snapshot.width, 120);
         assert_eq!(snapshot.height, 40);
+        assert_eq!(snapshot.windows.len(), 1);
+        assert_eq!(snapshot.windows[0].window_name, "main");
+        assert_eq!(snapshot.windows[0].pane_ids, vec!["%1".to_string()]);
         assert_eq!(snapshot.panes.len(), 1);
+        assert_eq!(snapshot.panes[0].window_id, "@1");
         assert_eq!(snapshot.panes[0].cursor_x, 14);
         assert_eq!(snapshot.panes[0].cursor_y, 5);
         assert_eq!(snapshot.panes[0].current_path, "/home/tester");

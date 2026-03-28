@@ -53,7 +53,7 @@ def capture_snapshot(session_name, history_lines):
         return None
 
     session_line = tmux_output(
-        ["display-message", "-p", "-t", session_name, "#{session_name}\t#{window_width}\t#{window_height}"]
+        ["display-message", "-p", "-t", session_name, "#{session_name}\t#{window_width}\t#{window_height}\t#{window_id}"]
     ).strip()
     active_pane_id = (
         tmux_output(["list-panes", "-t", session_name, "-F", "#{?pane_active,#{pane_id},}"])
@@ -64,63 +64,96 @@ def capture_snapshot(session_name, history_lines):
         first = tmux_output(["list-panes", "-t", session_name, "-F", "#{pane_id}"]).splitlines()
         active_pane_id = first[0].strip() if first else ""
 
-    session_name_value, width, height = session_line.split("\t", 2)
+    session_name_value, width, height, active_window_id = session_line.split("\t", 3)
 
+    windows = []
     panes = []
-    pane_lines = tmux_output(
+    window_lines = tmux_output(
         [
-            "list-panes",
+            "list-windows",
             "-t",
             session_name,
             "-F",
-            "#{pane_id}\t#{pane_active}\t#{pane_dead}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{pane_current_path}\t#{pane_current_command}",
+            "#{window_id}\t#{window_index}\t#{window_active}\t#{window_name}",
         ]
     ).splitlines()
 
-    for line in pane_lines:
+    for line in window_lines:
         if not line.strip():
             continue
-        (
-            pane_id,
-            pane_active,
-            pane_dead,
-            pane_left,
-            pane_top,
-            pane_width,
-            pane_height,
-            cursor_x,
-            cursor_y,
-            current_path,
-            current_command,
-        ) = line.split("\t", 10)
-        history_text = ""
-        if history_lines > 0:
-            start = f"-{max(history_lines, 0)}"
-            history_text = tmux_output(["capture-pane", "-p", "-N", "-e", "-S", start, "-E", "-1", "-t", pane_id])
-        screen_text = tmux_output(["capture-pane", "-p", "-N", "-e", "-t", pane_id])
-        panes.append(
+        window_id, window_index, window_active, window_name = line.split("\t", 3)
+        pane_ids = []
+        pane_lines = tmux_output(
+            [
+                "list-panes",
+                "-t",
+                window_id,
+                "-F",
+                "#{pane_id}\t#{window_id}\t#{pane_active}\t#{pane_dead}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{pane_current_path}\t#{pane_current_command}",
+            ]
+        ).splitlines()
+        for pane_line in pane_lines:
+            if not pane_line.strip():
+                continue
+            (
+                pane_id,
+                pane_window_id,
+                pane_active,
+                pane_dead,
+                pane_left,
+                pane_top,
+                pane_width,
+                pane_height,
+                cursor_x,
+                cursor_y,
+                current_path,
+                current_command,
+            ) = pane_line.split("\t", 11)
+            history_text = ""
+            if history_lines > 0:
+                start = f"-{max(history_lines, 0)}"
+                history_text = tmux_output(
+                    ["capture-pane", "-p", "-N", "-e", "-S", start, "-E", "-1", "-t", pane_id]
+                )
+            screen_text = tmux_output(["capture-pane", "-p", "-N", "-e", "-t", pane_id])
+            pane_ids.append(pane_id)
+            panes.append(
+                {
+                    "paneId": pane_id,
+                    "windowId": pane_window_id,
+                    "active": pane_active == "1",
+                    "dead": pane_dead == "1",
+                    "left": int(pane_left or 0),
+                    "top": int(pane_top or 0),
+                    "width": int(pane_width or 0),
+                    "height": int(pane_height or 0),
+                    "cursorX": int(cursor_x or 0),
+                    "cursorY": int(cursor_y or 0),
+                    "currentPath": current_path,
+                    "currentCommand": current_command,
+                    "historyText": history_text,
+                    "screenText": screen_text,
+                }
+            )
+        windows.append(
             {
-                "paneId": pane_id,
-                "active": pane_active == "1",
-                "dead": pane_dead == "1",
-                "left": int(pane_left or 0),
-                "top": int(pane_top or 0),
-                "width": int(pane_width or 0),
-                "height": int(pane_height or 0),
-                "cursorX": int(cursor_x or 0),
-                "cursorY": int(cursor_y or 0),
-                "currentPath": current_path,
-                "currentCommand": current_command,
-                "historyText": history_text,
-                "screenText": screen_text,
+                "windowId": window_id,
+                "windowIndex": int(window_index or 0),
+                "windowName": window_name,
+                "active": window_active == "1",
+                "paneIds": pane_ids,
             }
         )
 
     return {
         "sessionName": session_name_value,
+        "revision": 0,
+        "capturedAt": int(time.time() * 1000),
+        "activeWindowId": active_window_id or "",
         "activePaneId": active_pane_id or "",
         "width": int(width or 0),
         "height": int(height or 0),
+        "windows": windows,
         "panes": panes,
     }
 
@@ -133,6 +166,53 @@ def capture_snapshot_with_size_wait(session_name, history_lines, cols, rows, att
         latest = capture_snapshot(session_name, history_lines)
         if latest and latest.get("width") == target_cols and latest.get("height") == target_rows:
             return latest
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    return latest
+
+
+def snapshot_topology_key(snapshot):
+    if not snapshot:
+        return None
+    return (
+        snapshot.get("sessionName"),
+        snapshot.get("activeWindowId"),
+        snapshot.get("activePaneId"),
+        snapshot.get("width"),
+        snapshot.get("height"),
+        tuple(
+            (
+                window.get("windowId"),
+                window.get("windowIndex"),
+                window.get("active"),
+                tuple(window.get("paneIds", [])),
+            )
+            for window in snapshot.get("windows", [])
+        ),
+        tuple(
+            (
+                pane.get("paneId"),
+                pane.get("windowId"),
+                pane.get("left"),
+                pane.get("top"),
+                pane.get("width"),
+                pane.get("height"),
+                pane.get("dead"),
+            )
+            for pane in snapshot.get("panes", [])
+        ),
+    )
+
+
+def capture_snapshot_with_topology_wait(session_name, history_lines, attempts=8, delay=0.05):
+    latest = None
+    previous_key = None
+    for attempt in range(max(attempts, 1)):
+        latest = capture_snapshot(session_name, history_lines)
+        key = snapshot_topology_key(latest)
+        if latest and key is not None and key == previous_key:
+            return latest
+        previous_key = key
         if attempt < attempts - 1:
             time.sleep(delay)
     return latest
@@ -232,12 +312,6 @@ def is_structural_event(line):
     }
 
 
-def emit_structural_state(session_name, history_lines):
-    snapshot = capture_snapshot(session_name, history_lines)
-    if snapshot:
-        emit({"type": "state", "snapshot": snapshot})
-
-
 def handle_control_line(session_name, line, history_lines):
     if line.startswith("%begin ") or line.startswith("%end ") or line.startswith("%error "):
         return False
@@ -311,8 +385,19 @@ def main():
         args.cols,
         args.rows,
     )
-    if snapshot:
-        emit({"type": "state", "snapshot": snapshot})
+    state_revision = 0
+
+    def emit_state(snapshot):
+        nonlocal state_revision
+        if not snapshot:
+            return
+        state_revision += 1
+        payload = dict(snapshot)
+        payload["revision"] = state_revision
+        payload["capturedAt"] = int(time.time() * 1000)
+        emit({"type": "state", "snapshot": payload})
+
+    emit_state(snapshot)
 
     pending = ""
     pending_structural_emit_at = None
@@ -320,7 +405,7 @@ def main():
         while not stop_event.is_set():
             now = time.monotonic()
             if pending_structural_emit_at is not None and now >= pending_structural_emit_at:
-                emit_structural_state(args.session_name, args.history_lines)
+                emit_state(capture_snapshot_with_topology_wait(args.session_name, args.history_lines))
                 pending_structural_emit_at = None
                 continue
 
@@ -331,7 +416,7 @@ def main():
             ready, _, _ = select.select([master_fd], [], [], timeout)
             if master_fd not in ready:
                 if pending_structural_emit_at is not None and time.monotonic() >= pending_structural_emit_at:
-                    emit_structural_state(args.session_name, args.history_lines)
+                    emit_state(capture_snapshot_with_topology_wait(args.session_name, args.history_lines))
                     pending_structural_emit_at = None
                     continue
                 if proc.poll() is not None:

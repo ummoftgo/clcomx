@@ -34,6 +34,8 @@ export const TEST_IDS = {
   tmuxShell: "tmux-shell",
   tmuxToolbar: "tmux-toolbar",
   tmuxPaneGrid: "tmux-pane-grid",
+  agentTree: "agent-tree",
+  activityTimeline: "activity-timeline",
   draftTextarea: "terminal-draft-textarea",
   draftInsertButton: "terminal-draft-insert",
   draftSendButton: "terminal-draft-send",
@@ -101,4 +103,8 @@ export function editorPickerItemTestId(editorId: string) {
 
 export function tmuxPaneTestId(paneId: string) {
   return `tmux-pane-${toTestIdSegment(paneId)}`;
+}
+
+export function agentTreeNodeTestId(nodeId: string) {
+  return `agent-tree-node-${toTestIdSegment(nodeId)}`;
 }

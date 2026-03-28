@@ -4,6 +4,7 @@ export type TmuxSplitDirection = "horizontal" | "vertical";
 
 export interface TmuxPaneSnapshot {
   paneId: string;
+  windowId: string;
   active: boolean;
   dead: boolean;
   left: number;
@@ -18,11 +19,23 @@ export interface TmuxPaneSnapshot {
   screenText: string;
 }
 
+export interface TmuxWindowSnapshot {
+  windowId: string;
+  windowIndex: number;
+  windowName: string;
+  active: boolean;
+  paneIds: string[];
+}
+
 export interface TmuxSessionSnapshot {
   sessionName: string;
+  revision: number;
+  capturedAt: number;
+  activeWindowId: string;
   activePaneId: string;
   width: number;
   height: number;
+  windows: TmuxWindowSnapshot[];
   panes: TmuxPaneSnapshot[];
 }
 

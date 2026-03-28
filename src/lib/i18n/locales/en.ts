@@ -12,6 +12,34 @@ const en = {
       closeTabs: "Close Tabs",
     },
   },
+  workspace: {
+    agentTree: {
+      kicker: "Agents",
+      title: "Agent Tree",
+    },
+    activity: {
+      kicker: "Activity",
+      recent: "Recent activity",
+      output: "Recent output",
+      status: "Status",
+      emptySelection: "Select an agent to inspect its recent output.",
+      emptyTranscript: "No recent output yet.",
+    },
+    status: {
+      running: "Running",
+      idle: "Idle",
+      done: "Done",
+      error: "Error",
+    },
+    events: {
+      sessionStart: "Session started",
+      childDetected: "Child agent detected",
+      agentFinished: "Agent finished",
+      output: "Live output",
+      status: "Status update",
+      snapshot: "Snapshot",
+    },
+  },
   common: {
     actions: {
       back: "Back",
@@ -319,6 +347,29 @@ const en = {
       copyLink: "Copy Link",
       copySuccess: "Link copied to clipboard.",
       openFailed: "Could not open this link.",
+    },
+  },
+  agentWorkspace: {
+    tree: {
+      eyebrow: "Agents",
+      title: "Subagents",
+    },
+    timeline: {
+      eyebrow: "Activity",
+      title: "Recent activity",
+      empty: "No activity yet.",
+      emptyHint: "Live output and detected runtime work will appear here.",
+    },
+    status: {
+      running: "Running",
+      idle: "Idle",
+      done: "Done",
+      error: "Error",
+    },
+    eventKind: {
+      output: "Output",
+      status: "Status",
+      snapshot: "Snapshot",
     },
   },
   themePicker: {

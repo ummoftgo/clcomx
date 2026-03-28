@@ -34,6 +34,37 @@ export interface Session {
   workDir: string;
 }
 
+export type AgentNodeStatus = "running" | "idle" | "done" | "error";
+
+export interface AgentSurfaceRef {
+  kind: "session-root" | "tmux-pane";
+  id: string;
+}
+
+export interface AgentNode {
+  id: string;
+  sessionId: string;
+  parentId: string | null;
+  agentId: AgentId;
+  label: string;
+  status: AgentNodeStatus;
+  surfaceRef: AgentSurfaceRef;
+  summary: string;
+  currentCommand: string;
+  currentPath: string;
+  startedAt: string;
+  lastActiveAt: string;
+}
+
+export interface ActivityEvent {
+  id: string;
+  sessionId: string;
+  agentNodeId: string;
+  kind: "output" | "status" | "snapshot";
+  text: string;
+  timestamp: string;
+}
+
 export interface WindowPlacement {
   monitor: string | null;
   x: number;

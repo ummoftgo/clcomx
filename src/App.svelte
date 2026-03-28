@@ -5,6 +5,7 @@
   import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
   import TabBar from "./lib/components/TabBar.svelte";
   import SessionLauncher from "./lib/components/SessionLauncher.svelte";
+  import CompactAgentTree from "./lib/components/CompactAgentTree.svelte";
   import {
     addSession,
     areSessionsInitialized,
@@ -24,6 +25,20 @@
     setSessionTitle,
     syncSessionsFromWorkspace,
   } from "./lib/stores/sessions.svelte";
+  import {
+    applyTmuxAgentSnapshot,
+    getSelectedAgentWorkspacePaneId,
+    initializeAgentWorkspaceRuntime,
+    getAgentWorkspaceSession,
+    selectAgentWorkspaceNode,
+    sessionHasChildAgents,
+    syncAgentWorkspaceSessions,
+  } from "./lib/stores/agent-workspace.svelte";
+  import {
+    getTmuxSessionSnapshot,
+    initializeTmuxSnapshotRuntime,
+    syncTmuxSnapshotSessions,
+  } from "./lib/stores/tmux-snapshots.svelte";
   import { getOtherWindows, syncWorkspaceSnapshot } from "./lib/stores/workspace.svelte";
   import { getSettings, updateSettings } from "./lib/stores/settings.svelte";
   import { getTabHistory, recordTabHistory } from "./lib/stores/tab-history.svelte";
@@ -285,8 +300,9 @@
           syncSessionsFromWorkspace(event.payload);
         }),
       ]);
-
       try {
+        await initializeTmuxSnapshotRuntime();
+        await initializeAgentWorkspaceRuntime();
         await notifyWindowReady(currentWindowLabel);
       } catch (error) {
         console.error("Failed to notify window readiness", error);
@@ -345,6 +361,24 @@
     workspaceSaveTimer = setTimeout(() => {
       void persistWorkspace();
     }, 120);
+  });
+
+  $effect(() => {
+    syncAgentWorkspaceSessions(sessions);
+  });
+
+  $effect(() => {
+    syncTmuxSnapshotSessions(sessions);
+  });
+
+  $effect(() => {
+    sessions.map((session) => session.id);
+    for (const session of sessions) {
+      if (session.runtimeMode !== "tmux") continue;
+      const snapshot = getTmuxSessionSnapshot(session.id);
+      if (!snapshot) continue;
+      applyTmuxAgentSnapshot(session.id, snapshot);
+    }
   });
 
   $effect(() => {
@@ -779,6 +813,14 @@
     await ensureSettingsModalComponent();
     showSettings = true;
   }
+
+  function getWorkspaceSessionState(sessionId: string) {
+    return getAgentWorkspaceSession(sessionId);
+  }
+
+  function hasWorkspaceChildAgents(sessionId: string) {
+    return sessionHasChildAgents(sessionId);
+  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -828,49 +870,68 @@
     >
       {#if TerminalComponent}
         {#each sessions as session (session.id)}
-          {#if session.runtimeMode === "tmux"}
-            {#if TmuxTerminalComponent}
-              <TmuxTerminalComponent
-                sessionId={session.id}
-                visible={session.id === activeSessionId}
-                agentId={session.agentId}
-                distro={session.distro}
-                workDir={session.workDir}
-                resumeToken={session.resumeToken}
-                tmuxSessionName={session.tmuxSessionName}
-                tmuxActivePaneId={session.tmuxActivePaneId}
-                onStateChange={(state: { tmuxSessionName: string | null; tmuxActivePaneId: string | null }) =>
-                  handleTmuxState(session.id, state.tmuxSessionName, state.tmuxActivePaneId)}
+          {@const showAgentWorkspaceChrome = session.runtimeMode === "tmux" && hasWorkspaceChildAgents(session.id)}
+          <section
+            class="session-workspace"
+            class:session-workspace--active={session.id === activeSessionId}
+            class:session-workspace--agent-centric={showAgentWorkspaceChrome}
+          >
+            {#if showAgentWorkspaceChrome}
+              <CompactAgentTree
+                state={getWorkspaceSessionState(session.id)}
+                onSelect={(agentNodeId: string) => selectAgentWorkspaceNode(session.id, agentNodeId)}
               />
             {/if}
-          {:else}
-            <TerminalComponent
-              sessionId={session.id}
-              visible={session.id === activeSessionId}
-              agentId={session.agentId}
-              distro={session.distro}
-              workDir={session.workDir}
-              ptyId={session.ptyId}
-              storedAuxPtyId={session.auxPtyId}
-              storedAuxVisible={session.auxVisible}
-              storedAuxHeightPercent={session.auxHeightPercent}
-              resumeToken={session.resumeToken}
-              onPtyId={(ptyId: number) => handlePtyId(session.id, ptyId)}
-              onAuxStateChange={(state: {
-                auxPtyId: number;
-                auxVisible: boolean;
-                auxHeightPercent: number | null;
-              }) =>
-                void handleAuxTerminalState(
-                  session.id,
-                  state.auxPtyId,
-                  state.auxVisible,
-                  state.auxHeightPercent,
-                )}
-              onExit={handleExit}
-              onResumeFallback={() => void handleResumeFallback(session.id)}
-            />
-          {/if}
+
+            <div class="session-runtime">
+              {#if session.runtimeMode === "tmux"}
+                {#if TmuxTerminalComponent}
+                  <TmuxTerminalComponent
+                    sessionId={session.id}
+                    visible={session.id === activeSessionId}
+                    agentId={session.agentId}
+                    distro={session.distro}
+                    workDir={session.workDir}
+                    resumeToken={session.resumeToken}
+                    tmuxSessionName={session.tmuxSessionName}
+                    tmuxActivePaneId={session.tmuxActivePaneId}
+                    agentCentric={showAgentWorkspaceChrome}
+                    primaryPaneId={getSelectedAgentWorkspacePaneId(session.id)}
+                    onStateChange={(state: { tmuxSessionName: string | null; tmuxActivePaneId: string | null }) =>
+                      handleTmuxState(session.id, state.tmuxSessionName, state.tmuxActivePaneId)}
+                  />
+                {/if}
+              {:else}
+                <TerminalComponent
+                  sessionId={session.id}
+                  visible={session.id === activeSessionId}
+                  agentId={session.agentId}
+                  distro={session.distro}
+                  workDir={session.workDir}
+                  ptyId={session.ptyId}
+                  storedAuxPtyId={session.auxPtyId}
+                  storedAuxVisible={session.auxVisible}
+                  storedAuxHeightPercent={session.auxHeightPercent}
+                  resumeToken={session.resumeToken}
+                  onPtyId={(ptyId: number) => handlePtyId(session.id, ptyId)}
+                  onAuxStateChange={(state: {
+                    auxPtyId: number;
+                    auxVisible: boolean;
+                    auxHeightPercent: number | null;
+                  }) =>
+                    void handleAuxTerminalState(
+                      session.id,
+                      state.auxPtyId,
+                      state.auxVisible,
+                      state.auxHeightPercent,
+                    )}
+                  onExit={handleExit}
+                  onResumeFallback={() => void handleResumeFallback(session.id)}
+                />
+              {/if}
+            </div>
+
+          </section>
         {/each}
       {:else}
         <div class="terminal-loading">
@@ -996,6 +1057,36 @@
     height: 100%;
   }
 
+  .session-workspace {
+    display: none;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    background:
+      linear-gradient(180deg, rgba(var(--ui-shadow-rgb), 0.06), transparent 18%),
+      var(--ui-bg-canvas, transparent);
+  }
+
+  .session-workspace--agent-centric {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .session-workspace--active {
+    display: grid;
+  }
+
+  .session-runtime {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    overflow: hidden;
+  }
+
   .terminal-loading {
     width: 100%;
     height: 100%;
@@ -1063,5 +1154,11 @@
     background: color-mix(in srgb, var(--ui-bg-elevated) 90%, transparent);
     color: var(--ui-text-primary);
     font-size: var(--ui-font-size-base);
+  }
+
+  @media (max-width: 1180px) {
+    .session-workspace--agent-centric {
+      grid-template-columns: 168px minmax(0, 1fr);
+    }
   }
 </style>
