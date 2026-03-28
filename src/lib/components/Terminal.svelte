@@ -370,6 +370,18 @@
     };
   }
 
+  async function waitForStableTerminalLayout() {
+    await tick();
+    if (document.fonts?.ready) {
+      await document.fonts.ready.catch(() => {});
+    }
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+  }
+
   function writeTerminalData(term: Terminal, data: string) {
     return new Promise<void>((resolve) => {
       if (!data) {
@@ -425,6 +437,50 @@
     requestAnimationFrame(() => {
       terminal?.scrollToBottom();
     });
+  }
+
+  async function syncMainTerminalLayoutToPty(options?: {
+    stickToBottom?: boolean;
+    refresh?: boolean;
+  }) {
+    if (!terminal || !fitAddon) {
+      return;
+    }
+
+    const term = terminal;
+    const fit = fitAddon;
+    const stickToBottom = options?.stickToBottom ?? (followTail || isBottomLockActive());
+    const refresh = options?.refresh ?? false;
+
+    await waitForStableTerminalLayout();
+
+    if (terminal !== term || fitAddon !== fit) {
+      return;
+    }
+
+    fit.fit();
+
+    if (refresh) {
+      term.refresh(0, Math.max(term.rows - 1, 0));
+    }
+
+    if (livePtyId >= 0) {
+      try {
+        await resizePty(livePtyId, term.cols, term.rows);
+      } catch (error) {
+        console.error("Failed to resize terminal PTY", error);
+      }
+    }
+
+    if (terminal !== term) {
+      return;
+    }
+
+    if (stickToBottom) {
+      term.scrollToBottom();
+    }
+    syncDraftHeight();
+    syncAssistPanelHeight();
   }
 
   function isBottomLockActive() {
@@ -629,24 +685,36 @@
     }
   }
 
-  function settleAuxTerminalLayout() {
+  async function settleAuxTerminalLayout() {
     if (!visible || !auxVisible || !auxTerminal) {
       return;
     }
 
-    auxFitAddon?.fit();
-    if (auxPtyId >= 0 && auxTerminal) {
-      void resizePty(auxPtyId, auxTerminal.cols, auxTerminal.rows);
+    const term = auxTerminal;
+    const fit = auxFitAddon;
+    await waitForStableTerminalLayout();
+
+    if (!fit || auxTerminal !== term || auxFitAddon !== fit) {
+      return;
     }
-    auxTerminal.scrollToBottom();
-    auxTerminal.refresh(0, Math.max(auxTerminal.rows - 1, 0));
+
+    fit.fit();
+    if (auxPtyId >= 0) {
+      try {
+        await resizePty(auxPtyId, term.cols, term.rows);
+      } catch (error) {
+        console.error("Failed to resize auxiliary terminal PTY", error);
+      }
+    }
+    term.scrollToBottom();
+    term.refresh(0, Math.max(term.rows - 1, 0));
   }
 
   function scheduleAuxLayoutSettle(delay = 220) {
     clearAuxLayoutSettleTimer();
     auxLayoutSettleTimer = setTimeout(() => {
       auxLayoutSettleTimer = null;
-      settleAuxTerminalLayout();
+      void settleAuxTerminalLayout();
     }, delay);
   }
 
@@ -1484,6 +1552,8 @@
     replayInProgress = true;
     replayBuffer = [];
 
+    await syncMainTerminalLayoutToPty({ stickToBottom: false });
+
     const snapshot = await getPtyOutputSnapshot(id);
     await writeTerminalData(term, snapshot.data);
 
@@ -1504,6 +1574,8 @@
     ) {
       noteTerminalLoadingActivity();
     }
+
+    await syncMainTerminalLayoutToPty({ refresh: true });
   }
 
   async function attachOrSpawnPty(term: Terminal) {
@@ -1605,10 +1677,6 @@
     syncDraftHeight();
     syncAssistPanelHeight();
 
-    requestAnimationFrame(() => {
-      fit.fit();
-    });
-
     applyCompositionViewTheme();
 
     unlistenOutput = await listen<PtyOutputChunk>("pty-output", (event) => {
@@ -1630,13 +1698,7 @@
       terminal = term;
       fitAddon = fit;
       terminalReady = true;
-
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => {
-          fit.fit();
-          resolve();
-        });
-      });
+      await syncMainTerminalLayoutToPty({ stickToBottom: false });
 
       await attachOrSpawnPty(term);
     } catch (error) {
@@ -1652,12 +1714,7 @@
 
     resizeObserver = new ResizeObserver(() => {
       if (visible && fit) {
-        fit.fit();
-        if (followTail || isBottomLockActive()) {
-          scrollTerminalToBottom();
-        }
-        syncDraftHeight();
-        syncAssistPanelHeight();
+        void syncMainTerminalLayoutToPty();
       }
     });
     resizeObserver.observe(outputEl);
@@ -1724,18 +1781,7 @@
     if (!terminalReady || !visible) return;
 
     armBottomLock();
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        fitAddon?.fit();
-        if (followTail || isBottomLockActive()) {
-          terminal?.scrollToBottom();
-        }
-        if (livePtyId >= 0 && terminal) {
-          void resizePty(livePtyId, terminal.cols, terminal.rows);
-        }
-        syncDraftHeight();
-      });
-    });
+    void syncMainTerminalLayoutToPty();
   });
 
   $effect(() => {
@@ -1743,7 +1789,7 @@
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        settleAuxTerminalLayout();
+        void settleAuxTerminalLayout();
         focusAuxTerminal();
         scheduleAuxLayoutSettle();
       });
@@ -1778,9 +1824,10 @@
       auxTerminal.options.fontFamily = terminalFontFamily;
       auxTerminal.options.scrollback = settings.terminal.scrollback;
     }
-    fitAddon?.fit();
-    auxFitAddon?.fit();
-    tick().then(syncDraftHeight);
+    void syncMainTerminalLayoutToPty();
+    if (auxTerminal) {
+      scheduleAuxLayoutSettle(0);
+    }
   });
 
   $effect(() => {
@@ -1869,6 +1916,8 @@
     disposeAuxTerminalInstance();
     releaseRendererController(mainRendererController);
     terminal?.dispose();
+    fitAddon = null;
+    terminal = null;
   });
 
   $effect(() => {

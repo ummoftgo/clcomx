@@ -1,9 +1,12 @@
 use crate::app_env::is_test_mode;
-use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem, MasterPty};
+use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use tauri::{AppHandle, Emitter};
 
 enum PtyRuntime {
@@ -157,6 +160,52 @@ fn trim_output_log(output: &mut String) {
     output.drain(..trim_at);
 }
 
+fn decode_utf8_stream_chunk(pending: &mut Vec<u8>, chunk: &[u8], flush_incomplete: bool) -> String {
+    pending.extend_from_slice(chunk);
+    let mut output = String::new();
+    let mut consumed = 0usize;
+
+    while consumed < pending.len() {
+        match std::str::from_utf8(&pending[consumed..]) {
+            Ok(valid) => {
+                output.push_str(valid);
+                consumed = pending.len();
+                break;
+            }
+            Err(err) => {
+                let valid_up_to = err.valid_up_to();
+                if valid_up_to > 0 {
+                    let valid_end = consumed + valid_up_to;
+                    let valid = std::str::from_utf8(&pending[consumed..valid_end])
+                        .expect("valid_up_to must point to valid UTF-8");
+                    output.push_str(valid);
+                    consumed = valid_end;
+                }
+
+                match err.error_len() {
+                    Some(error_len) => {
+                        output.push('\u{fffd}');
+                        consumed += error_len;
+                    }
+                    None => {
+                        if flush_incomplete {
+                            output.push_str(&String::from_utf8_lossy(&pending[consumed..]));
+                            consumed = pending.len();
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if consumed > 0 {
+        pending.drain(..consumed);
+    }
+
+    output
+}
+
 pub fn kill_pty_session(state: &PtyState, id: u32) -> Result<(), String> {
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     sessions.remove(&id);
@@ -306,9 +355,15 @@ pub fn pty_spawn(
     mock_resume_token: Option<String>,
 ) -> Result<u32, String> {
     if is_test_mode() {
-        let delayed_long_output = mock_resume_token.as_deref() == Some("__clcomx_test_long_output_stream__");
-        let (id, session) =
-            create_mock_session(state.inner(), mock_agent_id, mock_distro, mock_work_dir, mock_resume_token)?;
+        let delayed_long_output =
+            mock_resume_token.as_deref() == Some("__clcomx_test_long_output_stream__");
+        let (id, session) = create_mock_session(
+            state.inner(),
+            mock_agent_id,
+            mock_distro,
+            mock_work_dir,
+            mock_resume_token,
+        )?;
         let delayed_output_handles = if delayed_long_output {
             Some((
                 session.initial_output.clone(),
@@ -330,12 +385,20 @@ pub fn pty_spawn(
             let app_handle = app.clone();
             std::thread::spawn(move || {
                 let delayed_chunks: Vec<(String, u64)> = vec![
-                    ("\r\n[Claude Code] restored output stream continuing...\r\n".to_string(), 350u64),
                     (
-                        "[Claude Code] wrapped transcript tail ".to_string() + &"y".repeat(260) + "\r\n",
+                        "\r\n[Claude Code] restored output stream continuing...\r\n".to_string(),
+                        350u64,
+                    ),
+                    (
+                        "[Claude Code] wrapped transcript tail ".to_string()
+                            + &"y".repeat(260)
+                            + "\r\n",
                         850u64,
                     ),
-                    ("[Claude Code] final restore flush\r\n> ".to_string(), 1450u64),
+                    (
+                        "[Claude Code] final restore flush\r\n> ".to_string(),
+                        1450u64,
+                    ),
                 ];
 
                 for (chunk, delay_ms) in delayed_chunks {
@@ -414,11 +477,38 @@ pub fn pty_spawn(
     let buffer_initial_output_for_reader = buffer_initial_output.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut pending_utf8 = Vec::new();
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => {
+                    let data = decode_utf8_stream_chunk(&mut pending_utf8, &[], true);
+                    if !data.is_empty() {
+                        if buffer_initial_output_for_reader.load(Ordering::SeqCst) {
+                            if let Ok(mut output) = initial_output_for_reader.lock() {
+                                output.push_str(&data);
+                            }
+                        }
+                        let seq = output_seq_for_reader.fetch_add(1, Ordering::SeqCst) + 1;
+                        if let Ok(mut output) = output_log_for_reader.lock() {
+                            output.push_str(&data);
+                            trim_output_log(&mut output);
+                        }
+                        let _ = app_handle.emit(
+                            "pty-output",
+                            PtyOutput {
+                                id: session_id,
+                                seq,
+                                data,
+                            },
+                        );
+                    }
+                    break;
+                }
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let data = decode_utf8_stream_chunk(&mut pending_utf8, &buf[..n], false);
+                    if data.is_empty() {
+                        continue;
+                    }
                     if buffer_initial_output_for_reader.load(Ordering::SeqCst) {
                         if let Ok(mut output) = initial_output_for_reader.lock() {
                             output.push_str(&data);
@@ -429,7 +519,7 @@ pub fn pty_spawn(
                         output.push_str(&data);
                         trim_output_log(&mut output);
                     }
-                let _ = app_handle.emit(
+                    let _ = app_handle.emit(
                         "pty-output",
                         PtyOutput {
                             id: session_id,
@@ -438,7 +528,30 @@ pub fn pty_spawn(
                         },
                     );
                 }
-                Err(_) => break,
+                Err(_) => {
+                    let data = decode_utf8_stream_chunk(&mut pending_utf8, &[], true);
+                    if !data.is_empty() {
+                        if buffer_initial_output_for_reader.load(Ordering::SeqCst) {
+                            if let Ok(mut output) = initial_output_for_reader.lock() {
+                                output.push_str(&data);
+                            }
+                        }
+                        let seq = output_seq_for_reader.fetch_add(1, Ordering::SeqCst) + 1;
+                        if let Ok(mut output) = output_log_for_reader.lock() {
+                            output.push_str(&data);
+                            trim_output_log(&mut output);
+                        }
+                        let _ = app_handle.emit(
+                            "pty-output",
+                            PtyOutput {
+                                id: session_id,
+                                seq,
+                                data,
+                            },
+                        );
+                    }
+                    break;
+                }
             }
         }
     });
@@ -448,18 +561,18 @@ pub fn pty_spawn(
         sessions.insert(
             id,
             PtySession {
-            runtime: PtyRuntime::Native {
-                master: pair.master,
-                writer,
+                runtime: PtyRuntime::Native {
+                    master: pair.master,
+                    writer,
+                },
+                initial_output,
+                output_log,
+                output_seq,
+                buffer_initial_output,
+                exited,
             },
-            initial_output,
-            output_log,
-            output_seq,
-            buffer_initial_output,
-            exited,
-        },
-    );
-}
+        );
+    }
 
     Ok(id)
 }
@@ -471,9 +584,7 @@ pub fn pty_take_initial_output(
 ) -> Result<String, String> {
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get(&id).ok_or("Session not found")?;
-    session
-        .buffer_initial_output
-        .store(false, Ordering::SeqCst);
+    session.buffer_initial_output.store(false, Ordering::SeqCst);
 
     let mut output = session.initial_output.lock().map_err(|e| e.to_string())?;
     Ok(std::mem::take(&mut *output))
@@ -486,7 +597,11 @@ pub fn pty_get_output_snapshot(
 ) -> Result<PtyOutputSnapshot, String> {
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get(&id).ok_or("Session not found")?;
-    let data = session.output_log.lock().map_err(|e| e.to_string())?.clone();
+    let data = session
+        .output_log
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
     let seq = session.output_seq.load(Ordering::SeqCst);
     Ok(PtyOutputSnapshot { data, seq })
 }
@@ -578,7 +693,11 @@ pub fn pty_close_and_capture_resume(
                 } else {
                     "\r\nResume this session with:\r\nclaude --resume \"mock-claude-session\"\r\n"
                 };
-                session.output_log.lock().map_err(|e| e.to_string())?.push_str(line);
+                session
+                    .output_log
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .push_str(line);
                 session.exited.store(true, Ordering::SeqCst);
             }
         }
@@ -652,12 +771,15 @@ pub fn pty_close_and_capture_resume(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_resume_token, strip_ansi_sequences};
+    use super::{decode_utf8_stream_chunk, extract_resume_token, strip_ansi_sequences};
 
     #[test]
     fn extract_resume_token_matches_claude_forms() {
         assert_eq!(
-            extract_resume_token("Resume this session with:\nclaude --resume \"abc-123\"", "claude"),
+            extract_resume_token(
+                "Resume this session with:\nclaude --resume \"abc-123\"",
+                "claude"
+            ),
             Some("abc-123".into())
         );
         assert_eq!(
@@ -665,7 +787,10 @@ mod tests {
             Some("abc-456".into())
         );
         assert_eq!(
-            extract_resume_token("claude --resume 267c4d37-d196-4f64-a44d-a6dd884645d3", "claude"),
+            extract_resume_token(
+                "claude --resume 267c4d37-d196-4f64-a44d-a6dd884645d3",
+                "claude"
+            ),
             Some("267c4d37-d196-4f64-a44d-a6dd884645d3".into())
         );
     }
@@ -701,5 +826,57 @@ mod tests {
     fn extract_resume_token_matches_codex_forms_with_ansi() {
         let raw = "\u{1b}[32mTo continue this session, run codex resume '스킬연구'\u{1b}[0m";
         assert_eq!(extract_resume_token(raw, "codex"), Some("스킬연구".into()));
+    }
+
+    #[test]
+    fn decode_utf8_stream_chunk_preserves_split_multibyte_codepoints() {
+        let mut pending = Vec::new();
+        let prefix = "• 골드마인 주소를 바로 확인하겠";
+        let split = "습".as_bytes();
+        let suffix = "니다. 응답 헤더만 확인해서 현재 접속 기준 URL을 정리합니다.";
+
+        assert_eq!(
+            decode_utf8_stream_chunk(&mut pending, prefix.as_bytes(), false),
+            prefix
+        );
+        assert_eq!(
+            decode_utf8_stream_chunk(&mut pending, &split[..2], false),
+            ""
+        );
+        assert_eq!(
+            decode_utf8_stream_chunk(&mut pending, &split[2..], false),
+            "습"
+        );
+        assert_eq!(
+            decode_utf8_stream_chunk(&mut pending, suffix.as_bytes(), false),
+            suffix
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_utf8_stream_chunk_replaces_invalid_sequences_and_recovers() {
+        let mut pending = Vec::new();
+        assert_eq!(
+            decode_utf8_stream_chunk(&mut pending, &[b'f', 0x80, b'g'], false),
+            "f\u{fffd}g"
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_utf8_stream_chunk_flushes_incomplete_trailing_bytes_on_stream_end() {
+        let mut pending = Vec::new();
+        let split = "습".as_bytes();
+
+        assert_eq!(
+            decode_utf8_stream_chunk(&mut pending, &split[..2], false),
+            ""
+        );
+        assert_eq!(
+            decode_utf8_stream_chunk(&mut pending, &[], true),
+            "\u{fffd}"
+        );
+        assert!(pending.is_empty());
     }
 }
