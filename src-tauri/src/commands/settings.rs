@@ -1,7 +1,7 @@
 use super::pty::PtyState;
 use crate::app_env::{
-    ensure_parent_dir, is_soft_follow_experiment_enabled, is_terminal_debug_hooks_enabled,
-    is_test_mode, state_path,
+    ensure_parent_dir, is_terminal_debug_hooks_enabled, is_test_mode, soft_follow_experiment_override,
+    state_path,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -76,6 +76,7 @@ const DEFAULT_SCROLLBACK: u32 = 10_000;
 const MIN_SCROLLBACK: u32 = 1_000;
 const MAX_SCROLLBACK: u32 = 200_000;
 const DEFAULT_TERMINAL_RENDERER: &str = "dom";
+const DEFAULT_CLAUDE_FOOTER_GHOSTING_MITIGATION: bool = true;
 const DEFAULT_AUX_TERMINAL_SHORTCUT: &str = "Ctrl+`";
 const DEFAULT_AUX_TERMINAL_HEIGHT: u16 = 28;
 const MIN_AUX_TERMINAL_HEIGHT: u16 = 18;
@@ -191,6 +192,7 @@ pub struct TerminalSettingsPayload {
     pub font_family_fallback: String,
     pub font_size: u16,
     pub renderer: String,
+    pub claude_footer_ghosting_mitigation: bool,
     pub scrollback: u32,
     pub draft_max_rows: u16,
     pub aux_terminal_shortcut: String,
@@ -204,6 +206,7 @@ impl Default for TerminalSettingsPayload {
             font_family_fallback: "Malgun Gothic, NanumGothicCoding, monospace".into(),
             font_size: 14,
             renderer: DEFAULT_TERMINAL_RENDERER.into(),
+            claude_footer_ghosting_mitigation: DEFAULT_CLAUDE_FOOTER_GHOSTING_MITIGATION,
             scrollback: DEFAULT_SCROLLBACK,
             draft_max_rows: DEFAULT_DRAFT_MAX_ROWS,
             aux_terminal_shortcut: DEFAULT_AUX_TERMINAL_SHORTCUT.into(),
@@ -341,7 +344,7 @@ pub struct AppBootstrap {
     pub theme_pack: ThemePackPayload,
     pub test_mode: bool,
     pub debug_terminal_hooks: bool,
-    pub soft_follow_experiment: bool,
+    pub soft_follow_experiment: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -469,6 +472,16 @@ fn u32_from_paths(value: &serde_json::Value, paths: &[&[&str]], fallback: u32) -
     fallback
 }
 
+fn bool_from_paths(value: &serde_json::Value, paths: &[&[&str]], fallback: bool) -> bool {
+    for path in paths {
+        if let Some(found) = lookup_value(value, path).and_then(|entry| entry.as_bool()) {
+            return found;
+        }
+    }
+
+    fallback
+}
+
 fn string_map_from_paths(value: &serde_json::Value, paths: &[&[&str]]) -> BTreeMap<String, String> {
     for path in paths {
         let Some(found) = lookup_value(value, path).and_then(|entry| entry.as_object()) else {
@@ -573,6 +586,11 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         &[&["terminal", "renderer"]],
         &settings.terminal.renderer,
     ));
+    settings.terminal.claude_footer_ghosting_mitigation = bool_from_paths(
+        value,
+        &[&["terminal", "claudeFooterGhostingMitigation"]],
+        settings.terminal.claude_footer_ghosting_mitigation,
+    );
     settings.terminal.scrollback = clamp_scrollback(u32_from_paths(
         value,
         &[&["terminal", "scrollback"]],
@@ -1721,7 +1739,7 @@ pub fn bootstrap_app(state: tauri::State<'_, WorkspaceState>) -> Result<AppBoots
         theme_pack: load_theme_pack_or_default(),
         test_mode: is_test_mode(),
         debug_terminal_hooks: is_terminal_debug_hooks_enabled(),
-        soft_follow_experiment: is_soft_follow_experiment_enabled(),
+        soft_follow_experiment: soft_follow_experiment_override(),
     })
 }
 
@@ -1759,6 +1777,7 @@ mod tests {
         assert_eq!(parsed.terminal.font_family_fallback, "monospace");
         assert_eq!(parsed.terminal.font_size, 16);
         assert_eq!(parsed.terminal.renderer, DEFAULT_TERMINAL_RENDERER);
+        assert!(parsed.terminal.claude_footer_ghosting_mitigation);
         assert_eq!(parsed.terminal.draft_max_rows, 8);
         assert_eq!(parsed.history.tab_limit, 25);
     }
@@ -1782,6 +1801,19 @@ mod tests {
 
         let invalid_parsed = parse_settings_value(&invalid).unwrap();
         assert_eq!(invalid_parsed.terminal.renderer, DEFAULT_TERMINAL_RENDERER);
+    }
+
+    #[test]
+    fn parse_settings_value_reads_claude_footer_ghosting_mitigation() {
+        let raw = json!({
+            "terminal": {
+                "claudeFooterGhostingMitigation": false
+            }
+        });
+
+        let parsed = parse_settings_value(&raw).unwrap();
+
+        assert!(!parsed.terminal.claude_footer_ghosting_mitigation);
     }
 
     #[test]

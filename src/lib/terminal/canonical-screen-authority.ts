@@ -2,10 +2,13 @@ import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Terminal } from "@xterm/xterm";
 import { SerializeAddon } from "@xterm/addon-serialize";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { getBootstrap } from "../bootstrap";
 import { getSettings } from "../stores/settings.svelte";
 import { DEFAULT_SETTINGS } from "../types";
+import {
+  isClaudeFooterGhostingMitigationEnabled,
+  syncTerminalUnicodeWidth,
+} from "./claude-footer-ghosting";
 import {
   getPtyOutputDeltaSince,
   getPtyRuntimeSnapshot,
@@ -61,7 +64,6 @@ interface CanonicalSessionEntry {
   lastChunkAtMs: number;
 }
 
-const bootstrap = getBootstrap();
 const currentWindowLabel = getCurrentWindow().label;
 const sessions = new Map<string, CanonicalSessionEntry>();
 let authorityInstalled = false;
@@ -90,16 +92,22 @@ function resolveCanonicalScrollback() {
     : DEFAULT_SETTINGS.terminal.scrollback;
 }
 
+function resolveCanonicalGhostingMitigation(agentId: string) {
+  const bootstrap = getBootstrap();
+  return isClaudeFooterGhostingMitigationEnabled(
+    agentId,
+    getSettings().terminal.claudeFooterGhostingMitigation,
+    bootstrap.softFollowExperiment,
+  );
+}
+
 function buildCanonicalTerminal(agentId: string) {
   const term = new Terminal({
     allowProposedApi: true,
     disableStdin: true,
     scrollback: resolveCanonicalScrollback(),
   });
-  if (bootstrap.softFollowExperiment && agentId === "claude") {
-    term.loadAddon(new Unicode11Addon());
-    term.unicode.activeVersion = "11";
-  }
+  syncTerminalUnicodeWidth(term, resolveCanonicalGhostingMitigation(agentId));
   const serializer = new SerializeAddon();
   term.loadAddon(serializer);
   return { term, serializer };

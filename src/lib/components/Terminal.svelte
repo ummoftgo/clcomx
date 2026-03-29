@@ -2,7 +2,6 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { Terminal, type IDisposable } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
-  import { Unicode11Addon } from "@xterm/addon-unicode11";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { WebglAddon } from "@xterm/addon-webgl";
   import ImagePasteModal from "./ImagePasteModal.svelte";
@@ -49,6 +48,10 @@
   } from "../editors";
   import { createTerminalFileLinks } from "../terminal/file-links";
   import { consumeAuxShellMetadata } from "../terminal/aux-shell-metadata";
+  import {
+    isClaudeFooterGhostingMitigationEnabled,
+    syncTerminalUnicodeWidth,
+  } from "../terminal/claude-footer-ghosting";
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
   import {
@@ -197,7 +200,13 @@
 
   const settings = getSettings();
   const bootstrap = getBootstrap();
-  const softFollowExperimentEnabled = $derived(bootstrap.softFollowExperiment && agentId === "claude");
+  const softFollowExperimentEnabled = $derived(
+    isClaudeFooterGhostingMitigationEnabled(
+      agentId,
+      settings.terminal.claudeFooterGhostingMitigation,
+      bootstrap.softFollowExperiment,
+    ),
+  );
   const preferredRenderer = $derived(settings.terminal.renderer);
   const terminalFontFamily = $derived(
     buildFontStack(
@@ -274,15 +283,6 @@
       scrollback: settings.terminal.scrollback,
       disableStdin: false,
     };
-  }
-
-  function enableExperimentalUnicodeWidth(term: Terminal) {
-    if (!softFollowExperimentEnabled) {
-      return;
-    }
-
-    term.loadAddon(new Unicode11Addon());
-    term.unicode.activeVersion = "11";
   }
 
   interface RendererController {
@@ -1495,7 +1495,7 @@
     disposeAuxTerminalInstance();
 
     const auxTerm = new Terminal(buildTerminalOptions());
-    enableExperimentalUnicodeWidth(auxTerm);
+    syncTerminalUnicodeWidth(auxTerm, softFollowExperimentEnabled);
     const auxFit = new FitAddon();
     auxTerm.loadAddon(auxFit);
     auxTerm.open(auxOutputEl);
@@ -1855,7 +1855,7 @@
   onMount(async () => {
     const initialTheme = getThemeById(settings.interface.theme)?.theme;
     const term = new Terminal(buildTerminalOptions(initialTheme));
-    enableExperimentalUnicodeWidth(term);
+    syncTerminalUnicodeWidth(term, softFollowExperimentEnabled);
 
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -2059,6 +2059,14 @@
     void syncMainTerminalLayoutToPty();
     if (auxTerminal) {
       scheduleAuxLayoutSettle(0);
+    }
+  });
+
+  $effect(() => {
+    if (!terminalReady || !terminal) return;
+    syncTerminalUnicodeWidth(terminal, softFollowExperimentEnabled);
+    if (auxTerminal) {
+      syncTerminalUnicodeWidth(auxTerminal, softFollowExperimentEnabled);
     }
   });
 

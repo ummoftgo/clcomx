@@ -113,6 +113,28 @@
     <p class="field-message">{$t("settings.fields.terminalRendererHint")}</p>
   </div>
 
+  <div class="field-block">
+    <div class="field-head">
+      <h4>{$t("settings.fields.claudeFooterGhostingMitigation")}</h4>
+      <p>{$t("settings.fields.claudeFooterGhostingMitigationHint")}</p>
+    </div>
+    <label class="toggle-row" for="claude-footer-ghosting-mitigation">
+      <input
+        id="claude-footer-ghosting-mitigation"
+        class="toggle-input"
+        type="checkbox"
+        checked={settings.terminal.claudeFooterGhostingMitigation}
+        onchange={(event) =>
+          updateSettings({
+            terminal: {
+              claudeFooterGhostingMitigation: (event.target as HTMLInputElement).checked,
+            },
+          })}
+      />
+      <span class="toggle-copy">{$t("settings.fields.claudeFooterGhostingMitigationLabel")}</span>
+    </label>
+  </div>
+
   <div class="field">
     <label for="terminal-scrollback">{$t("settings.fields.terminalScrollback")}</label>
     <input
@@ -232,6 +254,27 @@
 </div>
 
 <style>
+  .toggle-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--ui-space-3);
+    color: var(--ui-text);
+    cursor: pointer;
+  }
+
+  .toggle-input {
+    margin: 0;
+    margin-top: calc(var(--ui-scale) * 2px);
+    inline-size: calc(16px * var(--ui-scale));
+    block-size: calc(16px * var(--ui-scale));
+    accent-color: var(--ui-accent);
+    flex: 0 0 auto;
+  }
+
+  .toggle-copy {
+    line-height: 1.45;
+  }
+
   .shortcut-row {
     display: flex;
     gap: var(--ui-space-2);

@@ -55,6 +55,7 @@ export interface TerminalSettings {
   fontFamilyFallback: string;
   fontSize: number;
   renderer: TerminalRendererPreference;
+  claudeFooterGhostingMitigation: boolean;
   scrollback: number;
   draftMaxRows: number;
   auxTerminalShortcut: string;
@@ -130,7 +131,7 @@ export interface AppBootstrap {
   themePack: ThemePack | null;
   testMode: boolean;
   debugTerminalHooks: boolean;
-  softFollowExperiment: boolean;
+  softFollowExperiment: boolean | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -155,6 +156,7 @@ export const DEFAULT_SETTINGS: Settings = {
     fontFamilyFallback: "Malgun Gothic, NanumGothicCoding, monospace",
     fontSize: 14,
     renderer: "dom",
+    claudeFooterGhostingMitigation: true,
     scrollback: 10000,
     draftMaxRows: 5,
     auxTerminalShortcut: "Ctrl+`",

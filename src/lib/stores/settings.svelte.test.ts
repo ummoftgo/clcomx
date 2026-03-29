@@ -35,6 +35,9 @@ describe("settings store", () => {
     expect(settings.workspace.defaultDistro).toBe(EXAMPLE_DISTRO);
     expect(settings.terminal.fontSize).toBe(16);
     expect(settings.terminal.renderer).toBe(DEFAULT_SETTINGS.terminal.renderer);
+    expect(settings.terminal.claudeFooterGhostingMitigation).toBe(
+      DEFAULT_SETTINGS.terminal.claudeFooterGhostingMitigation,
+    );
     expect(settings.history.tabLimit).toBe(DEFAULT_SETTINGS.history.tabLimit);
   });
 
@@ -53,6 +56,7 @@ describe("settings store", () => {
       },
       terminal: {
         renderer: "webgl",
+        claudeFooterGhostingMitigation: false,
       },
     });
 
@@ -75,6 +79,7 @@ describe("settings store", () => {
           }),
           terminal: expect.objectContaining({
             renderer: "webgl",
+            claudeFooterGhostingMitigation: false,
           }),
         }),
       }),
@@ -83,6 +88,7 @@ describe("settings store", () => {
     expect(getSettings().interface.uiScale).toBe(125);
     expect(getSettings().interface.windowDefaultCols).toBe(132);
     expect(getSettings().terminal.renderer).toBe("webgl");
+    expect(getSettings().terminal.claudeFooterGhostingMitigation).toBe(false);
     expect(getSettings().workspace.defaultAgentId).toBe("codex");
     expect(getSettings().workspace.defaultDistro).toBe(EXAMPLE_DISTRO);
   });
