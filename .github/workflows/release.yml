@@ -5,9 +5,6 @@ on:
     tags:
       - "v*"
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 permissions:
   contents: write
 
@@ -42,9 +39,40 @@ jobs:
         shell: pwsh
         run: ./scripts/package-portable-windows.ps1 -ProjectDir $PWD.Path
 
-      - name: Upload release artifacts
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/portable/*.zip
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $tag = $env:TAG_NAME
+          $version = $tag.TrimStart("v")
+          $notesPath = Join-Path $PWD "docs/version/$version.md"
+          $assetPatterns = @(
+            "src-tauri/target/release/bundle/nsis/*.exe"
+            "src-tauri/target/release/bundle/portable/*.zip"
+          )
+
+          $assets = @()
+          foreach ($pattern in $assetPatterns) {
+            $matchedFiles = Get-ChildItem -Path $pattern -File
+            if (-not $matchedFiles) {
+              throw "No release artifacts matched: $pattern"
+            }
+
+            $assets += $matchedFiles.FullName
+          }
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $createArgs = @("release", "create", $tag, "--title", "CLCOMX $version")
+            if (Test-Path $notesPath) {
+              $createArgs += @("--notes-file", $notesPath)
+            } else {
+              $createArgs += "--generate-notes"
+            }
+
+            gh @createArgs
+          }
+
+          gh release upload $tag @assets --clobber
