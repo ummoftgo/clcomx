@@ -13,7 +13,10 @@ function cloneDefaults(): Settings {
       ...DEFAULT_SETTINGS.workspace,
       defaultStartPathsByDistro: { ...DEFAULT_SETTINGS.workspace.defaultStartPathsByDistro },
     },
-    terminal: { ...DEFAULT_SETTINGS.terminal },
+    terminal: {
+      ...DEFAULT_SETTINGS.terminal,
+      claudeCliFlags: { ...DEFAULT_SETTINGS.terminal.claudeCliFlags },
+    },
     history: { ...DEFAULT_SETTINGS.history },
   };
 }
@@ -48,6 +51,10 @@ export function normalizeSettings(partial?: DeepPartial<Settings> | null): Setti
     terminal: {
       ...DEFAULT_SETTINGS.terminal,
       ...(partial?.terminal ?? {}),
+      claudeCliFlags: {
+        ...DEFAULT_SETTINGS.terminal.claudeCliFlags,
+        ...(partial?.terminal?.claudeCliFlags ?? {}),
+      },
     },
     history: {
       ...DEFAULT_SETTINGS.history,
@@ -95,7 +102,11 @@ export function updateSettings(partial: DeepPartial<Settings>) {
   }
 
   if (partial.terminal) {
-    Object.assign(settings.terminal, partial.terminal);
+    const { claudeCliFlags, ...terminalRemainder } = partial.terminal;
+    if (claudeCliFlags) {
+      Object.assign(settings.terminal.claudeCliFlags, claudeCliFlags);
+    }
+    Object.assign(settings.terminal, terminalRemainder);
   }
 
   if (partial.history) {

@@ -115,24 +115,46 @@
 
   <div class="field-block">
     <div class="field-head">
-      <h4>{$t("settings.fields.claudeFooterGhostingMitigation")}</h4>
-      <p>{$t("settings.fields.claudeFooterGhostingMitigationHint")}</p>
+      <h4>{$t("settings.fields.claudeCode")}</h4>
+      <p>{$t("settings.fields.claudeCodeHint")}</p>
     </div>
-    <label class="toggle-row" for="claude-footer-ghosting-mitigation">
-      <input
-        id="claude-footer-ghosting-mitigation"
-        class="toggle-input"
-        type="checkbox"
-        checked={settings.terminal.claudeFooterGhostingMitigation}
-        onchange={(event) =>
-          updateSettings({
-            terminal: {
-              claudeFooterGhostingMitigation: (event.target as HTMLInputElement).checked,
-            },
-          })}
-      />
-      <span class="toggle-copy">{$t("settings.fields.claudeFooterGhostingMitigationLabel")}</span>
-    </label>
+    <div class="toggle-stack">
+      <label class="toggle-row" for="claude-enable-auto-mode">
+        <input
+          id="claude-enable-auto-mode"
+          class="toggle-input"
+          type="checkbox"
+          checked={settings.terminal.claudeCliFlags.enableAutoMode}
+          onchange={(event) =>
+            updateSettings({
+              terminal: {
+                claudeCliFlags: {
+                  enableAutoMode: (event.target as HTMLInputElement).checked,
+                },
+              },
+            })}
+        />
+        <span class="toggle-copy">{$t("settings.fields.claudeEnableAutoModeLabel")}</span>
+      </label>
+      <p class="field-message toggle-message">{$t("settings.fields.claudeEnableAutoModeHint")}</p>
+
+      <label class="toggle-row" for="claude-footer-ghosting-mitigation">
+        <input
+          id="claude-footer-ghosting-mitigation"
+          class="toggle-input"
+          type="checkbox"
+          checked={settings.terminal.claudeFooterGhostingMitigation}
+          onchange={(event) =>
+            updateSettings({
+              terminal: {
+                claudeFooterGhostingMitigation: (event.target as HTMLInputElement).checked,
+              },
+            })}
+        />
+        <span class="toggle-copy">{$t("settings.fields.claudeFooterGhostingMitigationLabel")}</span>
+      </label>
+      <p class="field-message toggle-message">{$t("settings.fields.claudeFooterGhostingMitigationHint")}</p>
+    </div>
   </div>
 
   <div class="field">
@@ -273,6 +295,15 @@
 
   .toggle-copy {
     line-height: 1.45;
+  }
+
+  .toggle-stack {
+    display: grid;
+    gap: var(--ui-space-2);
+  }
+
+  .toggle-message {
+    margin: 0 0 var(--ui-space-2) calc(16px * var(--ui-scale) + var(--ui-space-3));
   }
 
   .shortcut-row {

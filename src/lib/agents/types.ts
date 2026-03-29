@@ -17,6 +17,10 @@ export interface AgentDefinition {
   supportsResume: boolean;
   resumeTokenLabel: string;
   icon: AgentIconConfig;
-  buildStartCommand(): string;
-  buildResumeCommand(token: string): string;
+  buildStartCommand(options?: AgentCommandOptions): string;
+  buildResumeCommand(token: string, options?: AgentCommandOptions): string;
+}
+
+export interface AgentCommandOptions {
+  extraArgs?: readonly string[];
 }

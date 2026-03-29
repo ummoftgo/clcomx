@@ -38,6 +38,9 @@ describe("settings store", () => {
     expect(settings.terminal.claudeFooterGhostingMitigation).toBe(
       DEFAULT_SETTINGS.terminal.claudeFooterGhostingMitigation,
     );
+    expect(settings.terminal.claudeCliFlags.enableAutoMode).toBe(
+      DEFAULT_SETTINGS.terminal.claudeCliFlags.enableAutoMode,
+    );
     expect(settings.history.tabLimit).toBe(DEFAULT_SETTINGS.history.tabLimit);
   });
 
@@ -57,6 +60,9 @@ describe("settings store", () => {
       terminal: {
         renderer: "webgl",
         claudeFooterGhostingMitigation: false,
+        claudeCliFlags: {
+          enableAutoMode: false,
+        },
       },
     });
 
@@ -80,6 +86,9 @@ describe("settings store", () => {
           terminal: expect.objectContaining({
             renderer: "webgl",
             claudeFooterGhostingMitigation: false,
+            claudeCliFlags: expect.objectContaining({
+              enableAutoMode: false,
+            }),
           }),
         }),
       }),
@@ -89,6 +98,7 @@ describe("settings store", () => {
     expect(getSettings().interface.windowDefaultCols).toBe(132);
     expect(getSettings().terminal.renderer).toBe("webgl");
     expect(getSettings().terminal.claudeFooterGhostingMitigation).toBe(false);
+    expect(getSettings().terminal.claudeCliFlags.enableAutoMode).toBe(false);
     expect(getSettings().workspace.defaultAgentId).toBe("codex");
     expect(getSettings().workspace.defaultDistro).toBe(EXAMPLE_DISTRO);
   });

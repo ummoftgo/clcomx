@@ -56,10 +56,15 @@ export interface TerminalSettings {
   fontSize: number;
   renderer: TerminalRendererPreference;
   claudeFooterGhostingMitigation: boolean;
+  claudeCliFlags: ClaudeCliFlagsSettings;
   scrollback: number;
   draftMaxRows: number;
   auxTerminalShortcut: string;
   auxTerminalDefaultHeight: number;
+}
+
+export interface ClaudeCliFlagsSettings {
+  enableAutoMode: boolean;
 }
 
 export type TerminalRendererPreference = "dom" | "webgl";
@@ -157,6 +162,9 @@ export const DEFAULT_SETTINGS: Settings = {
     fontSize: 14,
     renderer: "dom",
     claudeFooterGhostingMitigation: true,
+    claudeCliFlags: {
+      enableAutoMode: true,
+    },
     scrollback: 10000,
     draftMaxRows: 5,
     auxTerminalShortcut: "Ctrl+`",

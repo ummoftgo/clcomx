@@ -1,6 +1,18 @@
 import type { AgentDefinition, AgentId } from "./types";
 import { getBuiltinAgentIcon } from "./icons";
 
+function escapeShellSingleQuoted(value: string) {
+  return value.replace(/'/g, "'\\''");
+}
+
+function shellQuote(value: string) {
+  return `'${escapeShellSingleQuoted(value)}'`;
+}
+
+function joinShellCommand(parts: readonly string[]) {
+  return parts.map(shellQuote).join(" ");
+}
+
 const BUILTIN_AGENTS: AgentDefinition[] = [
   {
     id: "claude",
@@ -9,11 +21,11 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
     supportsResume: true,
     resumeTokenLabel: "Session ID",
     icon: getBuiltinAgentIcon("claude"),
-    buildStartCommand() {
-      return "claude";
+    buildStartCommand(options) {
+      return joinShellCommand(["claude", ...(options?.extraArgs ?? [])]);
     },
-    buildResumeCommand(token: string) {
-      return `claude --resume '${token}'`;
+    buildResumeCommand(token: string, options) {
+      return joinShellCommand(["claude", "--resume", token, ...(options?.extraArgs ?? [])]);
     },
   },
   {
@@ -23,11 +35,11 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
     supportsResume: true,
     resumeTokenLabel: "Session ID",
     icon: getBuiltinAgentIcon("codex"),
-    buildStartCommand() {
-      return "codex";
+    buildStartCommand(options) {
+      return joinShellCommand(["codex", ...(options?.extraArgs ?? [])]);
     },
-    buildResumeCommand(token: string) {
-      return `codex resume '${token}'`;
+    buildResumeCommand(token: string, options) {
+      return joinShellCommand(["codex", "resume", token, ...(options?.extraArgs ?? [])]);
     },
   },
 ];
@@ -60,11 +72,11 @@ export function getAgentDefinition(agentId: AgentId): AgentDefinition {
     supportsResume: false,
     resumeTokenLabel: "Session ID",
     icon: getBuiltinAgentIcon(agentId),
-    buildStartCommand() {
-      return agentId;
+    buildStartCommand(options) {
+      return joinShellCommand([agentId, ...(options?.extraArgs ?? [])]);
     },
-    buildResumeCommand(token: string) {
-      return `${agentId} --resume '${token}'`;
+    buildResumeCommand(token: string, options) {
+      return joinShellCommand([agentId, "--resume", token, ...(options?.extraArgs ?? [])]);
     },
   };
 }

@@ -77,6 +77,7 @@ const MIN_SCROLLBACK: u32 = 1_000;
 const MAX_SCROLLBACK: u32 = 200_000;
 const DEFAULT_TERMINAL_RENDERER: &str = "dom";
 const DEFAULT_CLAUDE_FOOTER_GHOSTING_MITIGATION: bool = true;
+const DEFAULT_CLAUDE_ENABLE_AUTO_MODE: bool = true;
 const DEFAULT_AUX_TERMINAL_SHORTCUT: &str = "Ctrl+`";
 const DEFAULT_AUX_TERMINAL_HEIGHT: u16 = 28;
 const MIN_AUX_TERMINAL_HEIGHT: u16 = 18;
@@ -187,12 +188,27 @@ impl Default for InterfaceSettingsPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+pub struct ClaudeCliFlagsPayload {
+    pub enable_auto_mode: bool,
+}
+
+impl Default for ClaudeCliFlagsPayload {
+    fn default() -> Self {
+        Self {
+            enable_auto_mode: DEFAULT_CLAUDE_ENABLE_AUTO_MODE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TerminalSettingsPayload {
     pub font_family: String,
     pub font_family_fallback: String,
     pub font_size: u16,
     pub renderer: String,
     pub claude_footer_ghosting_mitigation: bool,
+    pub claude_cli_flags: ClaudeCliFlagsPayload,
     pub scrollback: u32,
     pub draft_max_rows: u16,
     pub aux_terminal_shortcut: String,
@@ -207,6 +223,7 @@ impl Default for TerminalSettingsPayload {
             font_size: 14,
             renderer: DEFAULT_TERMINAL_RENDERER.into(),
             claude_footer_ghosting_mitigation: DEFAULT_CLAUDE_FOOTER_GHOSTING_MITIGATION,
+            claude_cli_flags: ClaudeCliFlagsPayload::default(),
             scrollback: DEFAULT_SCROLLBACK,
             draft_max_rows: DEFAULT_DRAFT_MAX_ROWS,
             aux_terminal_shortcut: DEFAULT_AUX_TERMINAL_SHORTCUT.into(),
@@ -590,6 +607,11 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         value,
         &[&["terminal", "claudeFooterGhostingMitigation"]],
         settings.terminal.claude_footer_ghosting_mitigation,
+    );
+    settings.terminal.claude_cli_flags.enable_auto_mode = bool_from_paths(
+        value,
+        &[&["terminal", "claudeCliFlags", "enableAutoMode"]],
+        settings.terminal.claude_cli_flags.enable_auto_mode,
     );
     settings.terminal.scrollback = clamp_scrollback(u32_from_paths(
         value,
@@ -1814,6 +1836,21 @@ mod tests {
         let parsed = parse_settings_value(&raw).unwrap();
 
         assert!(!parsed.terminal.claude_footer_ghosting_mitigation);
+    }
+
+    #[test]
+    fn parse_settings_value_reads_claude_cli_flags() {
+        let raw = json!({
+            "terminal": {
+                "claudeCliFlags": {
+                    "enableAutoMode": false
+                }
+            }
+        });
+
+        let parsed = parse_settings_value(&raw).unwrap();
+
+        assert!(!parsed.terminal.claude_cli_flags.enable_auto_mode);
     }
 
     #[test]

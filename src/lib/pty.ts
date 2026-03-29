@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getAgentDefinition, type AgentId } from "./agents";
+import { buildClaudeCliFlags } from "./agents/claude-cli-flags";
+import type { AgentCommandOptions } from "./agents";
+import { getSettings } from "./stores/settings.svelte";
 
 export interface PtyOutputChunk {
   id: number;
@@ -38,11 +41,11 @@ export async function spawnPty(
   resumeToken?: string | null,
 ): Promise<number> {
   const safeWorkDir = escapeShellSingleQuoted(workDir);
-  const safeResumeToken = resumeToken ? escapeShellSingleQuoted(resumeToken) : null;
   const agent = getAgentDefinition(agentId);
-  const startCommand = safeResumeToken
-    ? `if ! ${agent.buildResumeCommand(safeResumeToken)}; then printf '__CLCOMX_RESUME_FAILED__\\r\\n'; ${agent.buildStartCommand()}; fi`
-    : agent.buildStartCommand();
+  const launchOptions = getAgentCommandOptions(agentId);
+  const startCommand = resumeToken
+    ? `if ! ${agent.buildResumeCommand(resumeToken, launchOptions)}; then printf '__CLCOMX_RESUME_FAILED__\\r\\n'; ${agent.buildStartCommand(launchOptions)}; fi`
+    : agent.buildStartCommand(launchOptions);
 
   return await invoke<number>("pty_spawn", {
     cols,
@@ -55,6 +58,19 @@ export async function spawnPty(
     mockWorkDir: workDir,
     mockResumeToken: resumeToken,
   });
+}
+
+function getAgentCommandOptions(agentId: AgentId): AgentCommandOptions | undefined {
+  if (agentId !== "claude") {
+    return undefined;
+  }
+
+  const flags = buildClaudeCliFlags(getSettings().terminal.claudeCliFlags);
+  if (flags.length === 0) {
+    return undefined;
+  }
+
+  return { extraArgs: flags };
 }
 
 export async function spawnShellPty(
