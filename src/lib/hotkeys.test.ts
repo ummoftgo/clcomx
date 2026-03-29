@@ -43,4 +43,17 @@ describe("hotkey helpers", () => {
     expect(matchesShortcut(event, "control+grave")).toBe(true);
     expect(matchesShortcut(event, "Alt+`")).toBe(false);
   });
+
+  it("treats plus as a dedicated primary key instead of falling back", () => {
+    const event = new KeyboardEvent("keydown", {
+      key: "+",
+      code: "Equal",
+      shiftKey: true,
+      bubbles: true,
+    });
+
+    expect(eventToShortcut(event)).toBe("Shift+Plus");
+    expect(matchesShortcut(event, "Ctrl+`")).toBe(false);
+    expect(normalizeShortcut("Ctrl+Plus")).toBe("Ctrl+Plus");
+  });
 });

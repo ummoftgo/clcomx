@@ -37,7 +37,7 @@
   import { getSettings } from "../stores/settings.svelte";
   import { getThemeById } from "../themes";
   import type { ContextMenuItem } from "../ui/context-menu";
-  import { Button } from "../ui";
+  import { Button, ModalShell } from "../ui";
   import { buildFontStack, serializeFontFamilyList } from "../font-family";
   import { matchesShortcut } from "../hotkeys";
   import type { TerminalRendererPreference } from "../types";
@@ -132,6 +132,7 @@
   let clipboardBusy = $state(false);
   let clipboardError = $state<string | null>(null);
   let clipboardNotice = $state<string | null>(null);
+  let interruptConfirmVisible = $state(false);
   let editorPickerVisible = $state(false);
   let editorPickerPath = $state<ResolvedTerminalPath | null>(null);
   const editorDetection = getEditorDetectionState();
@@ -828,6 +829,69 @@
     event.preventDefault();
     event.stopPropagation();
     void toggleAuxTerminal();
+  }
+
+  function shouldInterceptTerminalCtrlC(event: KeyboardEvent) {
+    return (
+      event.type === "keydown" &&
+      event.key.toLowerCase() === "c" &&
+      event.ctrlKey &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey
+    );
+  }
+
+  async function copyTerminalSelection() {
+    const selection = terminal?.getSelection() ?? "";
+    if (!selection) {
+      return false;
+    }
+
+    await navigator.clipboard.writeText(selection);
+    terminal?.clearSelection();
+    setClipboardNotice($t("terminal.selection.copySuccess"));
+    return true;
+  }
+
+  function closeInterruptConfirm() {
+    interruptConfirmVisible = false;
+    tick().then(focusOutput);
+  }
+
+  async function confirmTerminalInterrupt() {
+    interruptConfirmVisible = false;
+    if (livePtyId < 0) {
+      tick().then(focusOutput);
+      return;
+    }
+
+    try {
+      await writePty(livePtyId, "\u0003");
+    } catch (error) {
+      console.error("Failed to send Ctrl+C to terminal", error);
+    } finally {
+      tick().then(focusOutput);
+    }
+  }
+
+  function handleMainTerminalKey(event: KeyboardEvent) {
+    if (!visible || !shouldInterceptTerminalCtrlC(event)) {
+      return true;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (terminal?.hasSelection()) {
+      void copyTerminalSelection().catch((error) => {
+        console.error("Failed to copy terminal selection", error);
+      });
+      return false;
+    }
+
+    interruptConfirmVisible = true;
+    return false;
   }
 
   function openContextMenu(
@@ -1698,6 +1762,7 @@
     });
 
     term.open(outputEl);
+    term.attachCustomKeyEventHandler(handleMainTerminalKey);
     syncRendererPreference(term, mainRendererController, preferredRenderer, (value) => {
       activeRenderer = value;
     });
@@ -2178,6 +2243,25 @@
   onClose={closeEditorPicker}
 />
 
+<ModalShell
+  open={interruptConfirmVisible}
+  size="sm"
+  onClose={closeInterruptConfirm}
+>
+  <div class="terminal-interrupt-panel">
+    <h2>{$t("terminal.interrupt.title")}</h2>
+    <p>{$t("terminal.interrupt.description")}</p>
+    <div class="terminal-interrupt-actions">
+      <Button variant="danger" onclick={() => void confirmTerminalInterrupt()}>
+        {$t("terminal.interrupt.confirm")}
+      </Button>
+      <Button onclick={closeInterruptConfirm}>
+        {$t("common.actions.cancel")}
+      </Button>
+    </div>
+  </div>
+</ModalShell>
+
 <style>
   .terminal-shell {
     width: 100%;
@@ -2510,6 +2594,34 @@
     display: flex;
     gap: var(--ui-space-2);
     align-items: center;
+  }
+
+  .terminal-interrupt-panel {
+    display: grid;
+    gap: 16px;
+    padding: 24px;
+    color: var(--ui-text-primary, var(--tab-text));
+  }
+
+  .terminal-interrupt-panel h2 {
+    margin: 0;
+    font-size: 19px;
+    line-height: 1.2;
+    color: var(--ui-text-primary, var(--tab-text));
+  }
+
+  .terminal-interrupt-panel p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--ui-text-muted, var(--tab-text));
+  }
+
+  .terminal-interrupt-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
   }
 
   .terminal-error {

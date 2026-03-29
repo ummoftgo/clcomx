@@ -312,6 +312,14 @@ const en = {
       copySuccess: "Link copied to clipboard.",
       openFailed: "Could not open this link.",
     },
+    selection: {
+      copySuccess: "Copied the selected text to the clipboard.",
+    },
+    interrupt: {
+      title: "Send Ctrl+C",
+      description: "There is no active selection, so this will send Ctrl+C to the current terminal instead of copying text. Continue?",
+      confirm: "Send Ctrl+C",
+    },
   },
   themePicker: {
     dark: "Dark ({count})",

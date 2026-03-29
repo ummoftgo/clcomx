@@ -37,6 +37,9 @@ function normalizeKeyLabel(key: string) {
     case "grave":
     case "graveaccent":
       return "`";
+    case "plus":
+    case "plussign":
+      return "Plus";
     case "esc":
       return "Escape";
     case "space":
@@ -97,6 +100,8 @@ export function eventToShortcut(event: KeyboardEvent) {
 
   if (key === " ") {
     key = "Space";
+  } else if (key === "+") {
+    key = "Plus";
   }
 
   if (["Control", "Shift", "Alt", "Meta"].includes(key)) {

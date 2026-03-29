@@ -312,6 +312,14 @@ const ko = {
       copySuccess: "링크를 클립보드에 복사했습니다.",
       openFailed: "이 링크를 열지 못했습니다.",
     },
+    selection: {
+      copySuccess: "선택한 텍스트를 클립보드에 복사했습니다.",
+    },
+    interrupt: {
+      title: "Ctrl+C 보내기",
+      description: "선택한 텍스트가 없어서 복사 대신 현재 터미널에 Ctrl+C 인터럽트를 보냅니다. 계속하시겠습니까?",
+      confirm: "Ctrl+C 보내기",
+    },
   },
   themePicker: {
     dark: "다크 ({count})",
