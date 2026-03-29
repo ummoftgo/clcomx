@@ -53,6 +53,7 @@
   import { killPty } from "./lib/pty";
   import type { Session, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
+  import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
 
   const appWindow = getCurrentWindow();
   const currentWindowLabel = appWindow.label;
@@ -103,6 +104,7 @@
   let SettingsModalComponent = $state<Component<any> | null>(null);
   let terminalLoadPromise: Promise<void> | null = null;
   let settingsLoadPromise: Promise<void> | null = null;
+  let canonicalAuthorityCleanup: (() => void) | null = null;
   const pendingCloseSession = $derived(
     pendingCloseSessionId
       ? sessions.find((session) => session.id === pendingCloseSessionId) ?? null
@@ -264,6 +266,14 @@
         }),
       ]);
 
+      if (isMainWindow) {
+        try {
+          canonicalAuthorityCleanup = await installCanonicalScreenAuthority();
+        } catch (error) {
+          console.error("Failed to install canonical screen authority", error);
+        }
+      }
+
       try {
         await notifyWindowReady(currentWindowLabel);
       } catch (error) {
@@ -289,6 +299,8 @@
       clearTimeout(workspaceSaveTimer);
       void persistWorkspace();
     }
+    canonicalAuthorityCleanup?.();
+    canonicalAuthorityCleanup = null;
     for (const unlisten of windowListeners) {
       unlisten();
     }

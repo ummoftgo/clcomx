@@ -1,7 +1,7 @@
 use crate::app_env::is_test_mode;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -21,6 +21,8 @@ struct PtySession {
     runtime: PtyRuntime,
     initial_output: Arc<Mutex<String>>,
     output_log: Arc<Mutex<String>>,
+    output_chunks: Arc<Mutex<VecDeque<PtyOutputChunkRecord>>>,
+    size: Arc<Mutex<PtyDimensions>>,
     output_seq: Arc<AtomicU64>,
     buffer_initial_output: Arc<AtomicBool>,
     exited: Arc<AtomicBool>,
@@ -39,13 +41,43 @@ struct PtyOutput {
     data: String,
 }
 
+#[derive(Clone)]
+struct PtyOutputChunkRecord {
+    seq: u64,
+    data: String,
+}
+
+#[derive(Clone, Copy)]
+struct PtyDimensions {
+    cols: u16,
+    rows: u16,
+}
+
 #[derive(Clone, Serialize)]
 pub struct PtyOutputSnapshot {
     pub data: String,
     pub seq: u64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyRuntimeSnapshot {
+    pub data: String,
+    pub seq: u64,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyOutputDelta {
+    pub data: String,
+    pub seq: u64,
+    pub complete: bool,
+}
+
 const MAX_OUTPUT_LOG_BYTES: usize = 4 * 1024 * 1024;
+const MAX_OUTPUT_CHUNK_LOG_BYTES: usize = 4 * 1024 * 1024;
 const RESUME_CAPTURE_TIMEOUT_MS: u64 = 2200;
 const RESUME_CAPTURE_EXIT_COMMAND_GRACE_MS: u64 = 1200;
 
@@ -160,6 +192,16 @@ fn trim_output_log(output: &mut String) {
     output.drain(..trim_at);
 }
 
+fn trim_output_chunks(chunks: &mut VecDeque<PtyOutputChunkRecord>) {
+    let mut total_bytes = chunks.iter().map(|chunk| chunk.data.len()).sum::<usize>();
+    while total_bytes > MAX_OUTPUT_CHUNK_LOG_BYTES {
+        let Some(removed) = chunks.pop_front() else {
+            break;
+        };
+        total_bytes = total_bytes.saturating_sub(removed.data.len());
+    }
+}
+
 fn decode_utf8_stream_chunk(pending: &mut Vec<u8>, chunk: &[u8], flush_incomplete: bool) -> String {
     pending.extend_from_slice(chunk);
     let mut output = String::new();
@@ -239,6 +281,14 @@ fn append_output(
         output.push_str(&data);
         trim_output_log(&mut output);
     }
+    {
+        let mut chunks = session.output_chunks.lock().map_err(|e| e.to_string())?;
+        chunks.push_back(PtyOutputChunkRecord {
+            seq,
+            data: data.clone(),
+        });
+        trim_output_chunks(&mut chunks);
+    }
 
     app.emit(
         "pty-output",
@@ -256,6 +306,7 @@ fn append_mock_output(
     session_id: u32,
     initial_output: &Arc<Mutex<String>>,
     output_log: &Arc<Mutex<String>>,
+    output_chunks: &Arc<Mutex<VecDeque<PtyOutputChunkRecord>>>,
     output_seq: &Arc<AtomicU64>,
     buffer_initial_output: &Arc<AtomicBool>,
     data: String,
@@ -273,6 +324,14 @@ fn append_mock_output(
         output.push_str(&data);
         trim_output_log(&mut output);
     }
+    {
+        let mut chunks = output_chunks.lock().map_err(|e| e.to_string())?;
+        chunks.push_back(PtyOutputChunkRecord {
+            seq,
+            data: data.clone(),
+        });
+        trim_output_chunks(&mut chunks);
+    }
 
     app.emit(
         "pty-output",
@@ -287,6 +346,8 @@ fn append_mock_output(
 
 fn create_mock_session(
     state: &PtyState,
+    cols: u16,
+    rows: u16,
     agent_id: Option<String>,
     distro: Option<String>,
     work_dir: Option<String>,
@@ -326,6 +387,8 @@ fn create_mock_session(
     };
     let initial_output = Arc::new(Mutex::new(banner.clone()));
     let output_log = Arc::new(Mutex::new(banner));
+    let output_chunks = Arc::new(Mutex::new(VecDeque::new()));
+    let size = Arc::new(Mutex::new(PtyDimensions { cols, rows }));
 
     Ok((
         id,
@@ -333,6 +396,8 @@ fn create_mock_session(
             runtime: PtyRuntime::Mock,
             initial_output,
             output_log,
+            output_chunks,
+            size,
             output_seq: Arc::new(AtomicU64::new(0)),
             buffer_initial_output: Arc::new(AtomicBool::new(true)),
             exited: Arc::new(AtomicBool::new(false)),
@@ -359,6 +424,8 @@ pub fn pty_spawn(
             mock_resume_token.as_deref() == Some("__clcomx_test_long_output_stream__");
         let (id, session) = create_mock_session(
             state.inner(),
+            cols,
+            rows,
             mock_agent_id,
             mock_distro,
             mock_work_dir,
@@ -368,6 +435,7 @@ pub fn pty_spawn(
             Some((
                 session.initial_output.clone(),
                 session.output_log.clone(),
+                session.output_chunks.clone(),
                 session.output_seq.clone(),
                 session.buffer_initial_output.clone(),
                 session.exited.clone(),
@@ -379,7 +447,14 @@ pub fn pty_spawn(
         sessions.insert(id, session);
         drop(sessions);
 
-        if let Some((initial_output, output_log, output_seq, buffer_initial_output, exited)) =
+        if let Some((
+            initial_output,
+            output_log,
+            output_chunks,
+            output_seq,
+            buffer_initial_output,
+            exited,
+        )) =
             delayed_output_handles
         {
             let app_handle = app.clone();
@@ -411,6 +486,7 @@ pub fn pty_spawn(
                         id,
                         &initial_output,
                         &output_log,
+                        &output_chunks,
                         &output_seq,
                         &buffer_initial_output,
                         chunk,
@@ -453,6 +529,8 @@ pub fn pty_spawn(
     let exited = Arc::new(AtomicBool::new(false));
     let initial_output = Arc::new(Mutex::new(String::new()));
     let output_log = Arc::new(Mutex::new(String::new()));
+    let output_chunks = Arc::new(Mutex::new(VecDeque::new()));
+    let size_state = Arc::new(Mutex::new(PtyDimensions { cols, rows }));
     let output_seq = Arc::new(AtomicU64::new(0));
     let buffer_initial_output = Arc::new(AtomicBool::new(true));
 
@@ -473,6 +551,7 @@ pub fn pty_spawn(
     let app_handle = app.clone();
     let initial_output_for_reader = initial_output.clone();
     let output_log_for_reader = output_log.clone();
+    let output_chunks_for_reader = output_chunks.clone();
     let output_seq_for_reader = output_seq.clone();
     let buffer_initial_output_for_reader = buffer_initial_output.clone();
     std::thread::spawn(move || {
@@ -492,6 +571,13 @@ pub fn pty_spawn(
                         if let Ok(mut output) = output_log_for_reader.lock() {
                             output.push_str(&data);
                             trim_output_log(&mut output);
+                        }
+                        if let Ok(mut chunks) = output_chunks_for_reader.lock() {
+                            chunks.push_back(PtyOutputChunkRecord {
+                                seq,
+                                data: data.clone(),
+                            });
+                            trim_output_chunks(&mut chunks);
                         }
                         let _ = app_handle.emit(
                             "pty-output",
@@ -519,6 +605,13 @@ pub fn pty_spawn(
                         output.push_str(&data);
                         trim_output_log(&mut output);
                     }
+                    if let Ok(mut chunks) = output_chunks_for_reader.lock() {
+                        chunks.push_back(PtyOutputChunkRecord {
+                            seq,
+                            data: data.clone(),
+                        });
+                        trim_output_chunks(&mut chunks);
+                    }
                     let _ = app_handle.emit(
                         "pty-output",
                         PtyOutput {
@@ -540,6 +633,13 @@ pub fn pty_spawn(
                         if let Ok(mut output) = output_log_for_reader.lock() {
                             output.push_str(&data);
                             trim_output_log(&mut output);
+                        }
+                        if let Ok(mut chunks) = output_chunks_for_reader.lock() {
+                            chunks.push_back(PtyOutputChunkRecord {
+                                seq,
+                                data: data.clone(),
+                            });
+                            trim_output_chunks(&mut chunks);
                         }
                         let _ = app_handle.emit(
                             "pty-output",
@@ -567,6 +667,8 @@ pub fn pty_spawn(
                 },
                 initial_output,
                 output_log,
+                output_chunks,
+                size: size_state,
                 output_seq,
                 buffer_initial_output,
                 exited,
@@ -604,6 +706,74 @@ pub fn pty_get_output_snapshot(
         .clone();
     let seq = session.output_seq.load(Ordering::SeqCst);
     Ok(PtyOutputSnapshot { data, seq })
+}
+
+#[tauri::command]
+pub fn pty_get_runtime_snapshot(
+    state: tauri::State<'_, PtyState>,
+    id: u32,
+) -> Result<PtyRuntimeSnapshot, String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions.get(&id).ok_or("Session not found")?;
+    let data = session
+        .output_log
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    let seq = session.output_seq.load(Ordering::SeqCst);
+    let size = *session.size.lock().map_err(|e| e.to_string())?;
+    Ok(PtyRuntimeSnapshot {
+        data,
+        seq,
+        cols: size.cols,
+        rows: size.rows,
+    })
+}
+
+pub fn get_output_delta_since(
+    state: &PtyState,
+    id: u32,
+    after_seq: u64,
+) -> Result<PtyOutputDelta, String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions.get(&id).ok_or("Session not found")?;
+    let current_seq = session.output_seq.load(Ordering::SeqCst);
+    let chunks = session.output_chunks.lock().map_err(|e| e.to_string())?;
+
+    if after_seq >= current_seq {
+        return Ok(PtyOutputDelta {
+            data: String::new(),
+            seq: current_seq,
+            complete: true,
+        });
+    }
+
+    let first_available_seq = chunks.front().map(|chunk| chunk.seq).unwrap_or(current_seq);
+    let complete = after_seq + 1 >= first_available_seq;
+    let data = if complete {
+        chunks
+            .iter()
+            .filter(|chunk| chunk.seq > after_seq)
+            .map(|chunk| chunk.data.as_str())
+            .collect::<String>()
+    } else {
+        String::new()
+    };
+
+    Ok(PtyOutputDelta {
+        data,
+        seq: current_seq,
+        complete,
+    })
+}
+
+#[tauri::command]
+pub fn pty_get_output_delta_since(
+    state: tauri::State<'_, PtyState>,
+    id: u32,
+    after_seq: u64,
+) -> Result<PtyOutputDelta, String> {
+    get_output_delta_since(state.inner(), id, after_seq)
 }
 
 #[tauri::command]
@@ -653,6 +823,11 @@ pub fn pty_resize(
                 pixel_height: 0,
             })
             .map_err(|e| e.to_string())?;
+    }
+    {
+        let mut size = session.size.lock().map_err(|e| e.to_string())?;
+        size.cols = cols;
+        size.rows = rows;
     }
     Ok(())
 }
@@ -771,7 +946,52 @@ pub fn pty_close_and_capture_resume(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_utf8_stream_chunk, extract_resume_token, strip_ansi_sequences};
+    use super::{
+        PtyDimensions, PtyOutputChunkRecord, PtyRuntime, PtySession, PtyState,
+        decode_utf8_stream_chunk, extract_resume_token, get_output_delta_since,
+        strip_ansi_sequences,
+    };
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64},
+    };
+
+    fn state_with_session(
+        id: u32,
+        chunks: &[(u64, &str)],
+        current_seq: u64,
+        cols: u16,
+        rows: u16,
+    ) -> PtyState {
+        let output = chunks.iter().map(|(_, data)| *data).collect::<String>();
+        let session = PtySession {
+            runtime: PtyRuntime::Mock,
+            initial_output: Arc::new(Mutex::new(String::new())),
+            output_log: Arc::new(Mutex::new(output)),
+            output_chunks: Arc::new(Mutex::new(
+                chunks
+                    .iter()
+                    .map(|(seq, data)| PtyOutputChunkRecord {
+                        seq: *seq,
+                        data: (*data).to_string(),
+                    })
+                    .collect::<VecDeque<_>>(),
+            )),
+            size: Arc::new(Mutex::new(PtyDimensions { cols, rows })),
+            output_seq: Arc::new(AtomicU64::new(current_seq)),
+            buffer_initial_output: Arc::new(AtomicBool::new(false)),
+            exited: Arc::new(AtomicBool::new(false)),
+        };
+
+        let mut sessions = HashMap::new();
+        sessions.insert(id, session);
+
+        PtyState {
+            sessions: Mutex::new(sessions),
+            next_id: Mutex::new(id + 1),
+        }
+    }
 
     #[test]
     fn extract_resume_token_matches_claude_forms() {
@@ -878,5 +1098,39 @@ mod tests {
             "\u{fffd}"
         );
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn get_output_delta_since_returns_complete_data_when_requested_seq_is_still_buffered() {
+        let state = state_with_session(
+            7,
+            &[(3, "alpha"), (4, "beta"), (5, "gamma")],
+            5,
+            120,
+            36,
+        );
+
+        let delta = get_output_delta_since(&state, 7, 3).expect("delta lookup should succeed");
+
+        assert!(delta.complete);
+        assert_eq!(delta.seq, 5);
+        assert_eq!(delta.data, "betagamma");
+    }
+
+    #[test]
+    fn get_output_delta_since_marks_gap_when_requested_seq_fell_out_of_chunk_buffer() {
+        let state = state_with_session(
+            9,
+            &[(8, "recent"), (9, "tail")],
+            9,
+            120,
+            36,
+        );
+
+        let delta = get_output_delta_since(&state, 9, 6).expect("delta lookup should succeed");
+
+        assert!(!delta.complete);
+        assert_eq!(delta.seq, 9);
+        assert_eq!(delta.data, "");
     }
 }

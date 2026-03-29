@@ -12,6 +12,19 @@ export interface PtyOutputSnapshot {
   seq: number;
 }
 
+export interface PtyRuntimeSnapshot {
+  data: string;
+  seq: number;
+  cols: number;
+  rows: number;
+}
+
+export interface PtyOutputDelta {
+  data: string;
+  seq: number;
+  complete: boolean;
+}
+
 function escapeShellSingleQuoted(value: string) {
   return value.replace(/'/g, "'\\''");
 }
@@ -103,6 +116,22 @@ export async function getPtyOutputSnapshot(
   id: number,
 ): Promise<PtyOutputSnapshot> {
   return await invoke<PtyOutputSnapshot>("pty_get_output_snapshot", { id });
+}
+
+export async function getPtyRuntimeSnapshot(
+  id: number,
+): Promise<PtyRuntimeSnapshot> {
+  return await invoke<PtyRuntimeSnapshot>("pty_get_runtime_snapshot", { id });
+}
+
+export async function getPtyOutputDeltaSince(
+  id: number,
+  afterSeq: number,
+): Promise<PtyOutputDelta> {
+  return await invoke<PtyOutputDelta>("pty_get_output_delta_since", {
+    id,
+    afterSeq,
+  });
 }
 
 export async function resizePty(

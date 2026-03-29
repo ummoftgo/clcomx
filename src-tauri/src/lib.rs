@@ -8,8 +8,8 @@ use commands::editors::{list_available_editors, open_in_editor, resolve_terminal
 use commands::external::open_external_url;
 use commands::fonts::list_monospace_fonts;
 use commands::pty::{
-    PtyState, pty_close_and_capture_resume, pty_get_output_snapshot, pty_kill, pty_resize,
-    pty_spawn, pty_take_initial_output, pty_write,
+    PtyState, pty_close_and_capture_resume, pty_get_output_delta_since, pty_get_output_snapshot,
+    pty_get_runtime_snapshot, pty_kill, pty_resize, pty_spawn, pty_take_initial_output, pty_write,
 };
 use commands::settings::{
     WindowReadyState, WorkspaceState, bootstrap_app, close_app, close_session, close_session_by_pty,
@@ -67,6 +67,8 @@ pub fn run() {
             pty_spawn,
             pty_take_initial_output,
             pty_get_output_snapshot,
+            pty_get_runtime_snapshot,
+            pty_get_output_delta_since,
             pty_write,
             pty_resize,
             pty_kill,

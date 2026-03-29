@@ -28,6 +28,10 @@
     resizePty,
     takePtyInitialOutput,
   } from "../pty";
+  import {
+    registerCanonicalSession,
+    requestCanonicalScreenSnapshot,
+  } from "../terminal/canonical-screen-authority";
   import { t } from "../i18n";
   import { ensureEditorsDetected, getEditorDetectionState } from "../stores/editors.svelte";
   import { getSettings } from "../stores/settings.svelte";
@@ -1551,14 +1555,35 @@
     livePtyId = id;
     replayInProgress = true;
     replayBuffer = [];
+    void registerCanonicalSession({ sessionId, ptyId: id, agentId });
 
     await syncMainTerminalLayoutToPty({ stickToBottom: false });
 
-    const snapshot = await getPtyOutputSnapshot(id);
-    await writeTerminalData(term, snapshot.data);
+    let appliedSeq = 0;
+    let restored = false;
+    let fallbackSnapshotData = "";
+    const canonicalSnapshot = await requestCanonicalScreenSnapshot({
+      sessionId,
+      ptyId: id,
+      agentId,
+      cols: term.cols,
+      rows: term.rows,
+    });
+
+    if (canonicalSnapshot) {
+      await writeTerminalData(term, canonicalSnapshot.serialized);
+      await writeTerminalData(term, canonicalSnapshot.delta);
+      appliedSeq = canonicalSnapshot.appliedSeq;
+      restored = true;
+    } else {
+      const snapshot = await getPtyOutputSnapshot(id);
+      await writeTerminalData(term, snapshot.data);
+      appliedSeq = snapshot.seq;
+      fallbackSnapshotData = snapshot.data;
+    }
 
     const pendingChunks = replayBuffer
-      .filter((chunk) => chunk.seq > snapshot.seq)
+      .filter((chunk) => chunk.seq > appliedSeq)
       .sort((left, right) => left.seq - right.seq);
 
     replayInProgress = false;
@@ -1569,7 +1594,11 @@
     initialOutputReady = true;
     armBottomLock();
     if (
-      hasRenderableTerminalOutput(snapshot.data) ||
+      (restored && canonicalSnapshot
+        ? hasRenderableTerminalOutput(canonicalSnapshot.serialized) ||
+          hasRenderableTerminalOutput(canonicalSnapshot.delta)
+        : false) ||
+      hasRenderableTerminalOutput(fallbackSnapshotData) ||
       pendingChunks.some((chunk) => hasRenderableTerminalOutput(chunk.data))
     ) {
       noteTerminalLoadingActivity();
@@ -1604,6 +1633,7 @@
   async function spawnNewPty(term: Terminal) {
     const { cols, rows } = getInitialPtySize(term);
     livePtyId = await spawnPty(cols, rows, agentId, distro, workDir, resumeToken);
+    void registerCanonicalSession({ sessionId, ptyId: livePtyId, agentId });
     const initialOutput = await takePtyInitialOutput(livePtyId);
     let sanitizedOutput = initialOutput;
     if (sanitizedOutput.includes(RESUME_FAILED_MARKER)) {

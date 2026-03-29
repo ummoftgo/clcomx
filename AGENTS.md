@@ -17,3 +17,14 @@ When the repeat-failure threshold is hit:
 4. Discuss how those findings apply to this codebase before making more code changes.
 
 Do not continue iterative patching until that review loop is complete.
+
+## Build / Run Gate
+
+- Treat `test build -> app launch` as the start of an explicit verification pass, not as a casual intermediate step.
+- Do not launch the app for verification while any of these are still pending for the current step:
+  - teammate analysis or design discussion that is still expected to affect the implementation,
+  - documentation or architecture write-up that is part of the current change,
+  - local cleanup needed to make the verification target unambiguous.
+- If implementation is likely to continue after discussion or documentation, finish that work first and launch only once the current slice is actually ready for runtime verification.
+- When multiple agents are involved, do not treat one finished code path as permission to launch early; wait until the shared conclusion and required follow-up edits are complete.
+- Before reporting that the app has been launched, verify that the intended build command has fully completed and that the launch corresponds to the final artifact for the current slice.
