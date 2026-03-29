@@ -3,12 +3,15 @@
   import { listWslDistros, listWslDirectories, type WslEntry } from "../wsl";
   import type { TabHistoryEntry } from "../types";
   import { getSettings } from "../stores/settings.svelte";
+  import { removeTabHistoryEntry } from "../stores/tab-history.svelte";
   import { getBuiltinAgents, getAgentDefinition, getAgentLabel, summarizeResumeToken, type AgentId } from "../agents";
+  import { Button, ModalShell } from "../ui";
   import AgentIcon from "./AgentIcon.svelte";
   import {
     TEST_IDS,
     launcherAgentTestId,
     launcherDirectoryTestId,
+    launcherHistoryDeleteButtonTestId,
     launcherDistroTestId,
     launcherHistoryItemTestId,
   } from "../testids";
@@ -53,6 +56,9 @@
   let distroPickerOpen = $state(false);
   let pathInput = $state("/home");
   let error = $state("");
+  let historyDeleteError = $state("");
+  let pendingDeleteEntry = $state<TabHistoryEntry | null>(null);
+  let deletingHistoryEntry = $state(false);
   let navigationHistory = $state<string[]>(["/home"]);
   let navigationIndex = $state(0);
 
@@ -98,6 +104,9 @@
     navigationIndex = 0;
     agentPickerOpen = false;
     distroPickerOpen = false;
+    pendingDeleteEntry = null;
+    historyDeleteError = "";
+    deletingHistoryEntry = false;
     error = "";
     loading = false;
   }
@@ -131,6 +140,34 @@
     onOpenHistory(entry);
     if (!embedded) {
       resetToHome();
+    }
+  }
+
+  function promptDeleteHistory(entry: TabHistoryEntry, event?: MouseEvent) {
+    event?.stopPropagation();
+    pendingDeleteEntry = entry;
+    historyDeleteError = "";
+  }
+
+  function dismissDeleteHistoryDialog() {
+    if (deletingHistoryEntry) return;
+    pendingDeleteEntry = null;
+    historyDeleteError = "";
+  }
+
+  async function confirmDeleteHistory() {
+    if (!pendingDeleteEntry || deletingHistoryEntry) return;
+
+    deletingHistoryEntry = true;
+    historyDeleteError = "";
+
+    try {
+      await removeTabHistoryEntry(pendingDeleteEntry);
+      pendingDeleteEntry = null;
+    } catch (deleteError) {
+      historyDeleteError = `${t("launcher.recent.deleteFailed")}: ${deleteError}`;
+    } finally {
+      deletingHistoryEntry = false;
     }
   }
 
@@ -194,6 +231,11 @@
   function handleKeydown(e: KeyboardEvent) {
     if (!visible) return;
     if (e.key !== "Escape") return;
+
+    if (pendingDeleteEntry) {
+      dismissDeleteHistoryDialog();
+      return;
+    }
 
     if (agentPickerOpen) {
       agentPickerOpen = false;
@@ -284,25 +326,36 @@
           {:else}
             <div class="recent-list" data-testid={TEST_IDS.launcherRecentList}>
               {#each historyEntries as entry, index (((entry.resumeToken ?? "path") + "::" + (entry.agentId ?? "claude") + "::" + entry.distro + "::" + entry.workDir + "::" + entry.lastOpenedAt))}
-                <button
-                  class="recent-item"
-                  data-testid={launcherHistoryItemTestId(index)}
-                  onclick={() => selectHistory(entry)}
-                >
-                  <div class="recent-header">
-                    <span class="recent-title-row">
-                      <AgentIcon agentId={entry.agentId ?? "claude"} />
-                      <span class="recent-title">{entry.title}</span>
-                    </span>
-                    <span class="recent-meta">{getAgentLabel(entry.agentId ?? "claude")} · {entry.distro}</span>
-                  </div>
-                  <span class="recent-path" title={entry.workDir}>{entry.workDir}</span>
-                  {#if entry.resumeToken}
-                    <span class="recent-token" title={entry.resumeToken}>
-                      {getAgentLabel(entry.agentId ?? "claude")} · {getAgentDefinition(entry.agentId ?? "claude").resumeTokenLabel} · {summarizeResumeToken(entry.resumeToken)}
-                    </span>
-                  {/if}
-                </button>
+                <div class="recent-item">
+                  <button
+                    class="recent-item-main"
+                    data-testid={launcherHistoryItemTestId(index)}
+                    onclick={() => selectHistory(entry)}
+                  >
+                    <div class="recent-header">
+                      <span class="recent-title-row">
+                        <AgentIcon agentId={entry.agentId ?? "claude"} />
+                        <span class="recent-title">{entry.title}</span>
+                      </span>
+                      <span class="recent-meta">{getAgentLabel(entry.agentId ?? "claude")} · {entry.distro}</span>
+                    </div>
+                    <span class="recent-path" title={entry.workDir}>{entry.workDir}</span>
+                    {#if entry.resumeToken}
+                      <span class="recent-token" title={entry.resumeToken}>
+                        {getAgentLabel(entry.agentId ?? "claude")} · {getAgentDefinition(entry.agentId ?? "claude").resumeTokenLabel} · {summarizeResumeToken(entry.resumeToken)}
+                      </span>
+                    {/if}
+                  </button>
+                  <Button
+                    class="recent-delete"
+                    variant="danger"
+                    size="sm"
+                    data-testid={launcherHistoryDeleteButtonTestId(index)}
+                    onclick={(event) => promptDeleteHistory(entry, event)}
+                  >
+                    {t("common.actions.delete")}
+                  </Button>
+                </div>
               {/each}
             </div>
           {/if}
@@ -439,6 +492,56 @@
     {/if}
   </div>
 </div>
+
+<ModalShell
+  open={visible && pendingDeleteEntry !== null}
+  size="sm"
+  onClose={dismissDeleteHistoryDialog}
+>
+  <div class="history-delete-dialog" data-testid={TEST_IDS.launcherHistoryDeleteDialog}>
+    <h2>{t("launcher.recent.deleteTitle")}</h2>
+    <p>
+      {t("launcher.recent.deleteDescription", {
+        values: {
+          title: pendingDeleteEntry?.title ?? "",
+        },
+      })}
+    </p>
+
+    {#if pendingDeleteEntry}
+      <div class="history-delete-entry">
+        <span class="history-delete-meta">
+          {getAgentLabel(pendingDeleteEntry.agentId ?? "claude")} · {pendingDeleteEntry.distro}
+        </span>
+        <span class="history-delete-path" title={pendingDeleteEntry.workDir}>
+          {pendingDeleteEntry.workDir}
+        </span>
+      </div>
+    {/if}
+
+    {#if historyDeleteError}
+      <p class="history-delete-error">{historyDeleteError}</p>
+    {/if}
+
+    <div class="history-delete-actions">
+      <Button
+        variant="danger"
+        busy={deletingHistoryEntry}
+        data-testid={TEST_IDS.launcherHistoryDeleteConfirm}
+        onclick={confirmDeleteHistory}
+      >
+        {t("common.actions.delete")}
+      </Button>
+      <Button
+        disabled={deletingHistoryEntry}
+        data-testid={TEST_IDS.launcherHistoryDeleteCancel}
+        onclick={dismissDeleteHistoryDialog}
+      >
+        {t("common.actions.cancel")}
+      </Button>
+    </div>
+  </div>
+</ModalShell>
 
 {#if visible && step === "browser" && agentPickerOpen}
   <div
@@ -968,13 +1071,46 @@
   .recent-item,
   .list-item {
     width: 100%;
-    padding: calc(14px * var(--ui-scale)) calc(16px * var(--ui-scale));
     background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--tab-border);
     text-align: left;
     color: var(--tab-text);
+  }
+
+  .recent-item {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-space-3);
+    padding: calc(14px * var(--ui-scale)) calc(16px * var(--ui-scale));
+    border-bottom: 1px solid var(--tab-border);
+  }
+
+  .recent-item-main,
+  .list-item {
+    border: none;
     cursor: pointer;
+  }
+
+  .recent-item-main {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    gap: 6px;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    font: inherit;
+  }
+
+  .recent-item-main:focus-visible {
+    outline: 2px solid var(--ui-focus-ring, var(--ui-accent-soft, rgba(137, 180, 250, 0.22)));
+    outline-offset: 4px;
+    border-radius: var(--ui-radius-md);
+  }
+
+  .list-item {
+    padding: calc(14px * var(--ui-scale)) calc(16px * var(--ui-scale));
+    border-bottom: 1px solid var(--tab-border);
   }
 
   .list-item.selected {
@@ -993,9 +1129,8 @@
     border-bottom: none;
   }
 
-  .recent-item {
-    display: grid;
-    gap: 6px;
+  :global(.recent-delete) {
+    flex: 0 0 auto;
   }
 
   .recent-title {
@@ -1008,6 +1143,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    min-width: 0;
   }
 
   .recent-meta,
@@ -1022,6 +1158,57 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .history-delete-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ui-space-4);
+    padding: calc(22px * var(--ui-scale));
+  }
+
+  .history-delete-dialog h2 {
+    margin: 0;
+    font-size: var(--ui-font-size-lg);
+  }
+
+  .history-delete-dialog p {
+    margin: 0;
+    color: var(--ui-text-secondary);
+    line-height: 1.5;
+  }
+
+  .history-delete-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: var(--ui-space-3);
+    border: 1px solid var(--ui-border-subtle);
+    border-radius: var(--ui-radius-lg);
+    background: color-mix(in srgb, var(--ui-bg-elevated) 90%, transparent);
+  }
+
+  .history-delete-meta {
+    font-size: var(--ui-font-size-sm);
+    color: var(--ui-text-secondary);
+  }
+
+  .history-delete-path {
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: var(--ui-font-size-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .history-delete-error {
+    color: var(--ui-danger, #ef4444);
+  }
+
+  .history-delete-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--ui-space-2);
   }
 
   .list-item {

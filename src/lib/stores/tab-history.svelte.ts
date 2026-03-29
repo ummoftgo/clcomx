@@ -1,6 +1,10 @@
 import type { TabHistoryEntry } from "../types";
 import type { AgentId } from "../agents";
-import { recordTabHistoryEntry, trimTabHistoryEntries } from "../tab-history";
+import {
+  recordTabHistoryEntry,
+  removeTabHistoryEntry as removeTabHistoryEntryCommand,
+  trimTabHistoryEntries,
+} from "../tab-history";
 
 let tabHistory = $state<TabHistoryEntry[]>([]);
 
@@ -33,5 +37,15 @@ export async function applyTabHistoryLimit(limit: number) {
     tabHistory.splice(0, tabHistory.length, ...entries);
   } catch (error) {
     console.error("Failed to trim tab history", error);
+  }
+}
+
+export async function removeTabHistoryEntry(entry: TabHistoryEntry) {
+  try {
+    const entries = await removeTabHistoryEntryCommand(entry);
+    tabHistory.splice(0, tabHistory.length, ...entries);
+  } catch (error) {
+    console.error("Failed to remove tab history entry", error);
+    throw error;
   }
 }

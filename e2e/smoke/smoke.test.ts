@@ -11,9 +11,38 @@ import {
   waitForTestId,
   type TauriSession,
 } from "../helpers/tauri";
-import { openHistoryEntryByIndex, openMockWorkspaceSession } from "../helpers/launcher";
+import {
+  confirmDeleteHistoryEntry,
+  deleteHistoryEntryByIndex,
+  openHistoryEntryByIndex,
+  openMockWorkspaceSession,
+} from "../helpers/launcher";
 import { createStepLogger } from "../helpers/log";
 import { getTerminalOutputSnapshot } from "../helpers/terminal";
+
+async function waitForHistoryTitles(
+  historyPath: string,
+  predicate: (titles: string[]) => boolean,
+  timeoutMs = 5_000,
+) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (fs.existsSync(historyPath)) {
+      const parsed = JSON.parse(fs.readFileSync(historyPath, "utf8")) as {
+        items?: Array<{ title?: string }>;
+      };
+      const titles = (parsed.items ?? []).map((item) => item.title ?? "");
+      if (predicate(titles)) {
+        return titles;
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  throw new Error(`Timed out waiting for expected history titles in ${historyPath}`);
+}
 
 describe.skipIf(process.platform !== "win32")("CLCOMX smoke", () => {
   let session: TauriSession;
@@ -135,5 +164,65 @@ describe.skipIf(process.platform !== "win32")("CLCOMX smoke", () => {
       10_000,
     );
     log.step("history reopened codex session");
+  });
+
+  it("deletes a single recent history entry and writes the updated file", async () => {
+    await session.cleanup();
+    const seededStateDir = createE2eStateDir("clcomx-e2e-history-delete-");
+    const historyPath = path.join(seededStateDir, "tab_history.json");
+    fs.writeFileSync(
+      historyPath,
+      JSON.stringify(
+        {
+          items: [
+            {
+              agentId: "codex",
+              distro: TEST_DISTRO,
+              workDir: `${TEST_HOME}/projects/keep`,
+              title: "keep history",
+              resumeToken: "resume-keep",
+              lastOpenedAt: new Date("2026-03-22T00:00:00.000Z").toISOString(),
+            },
+            {
+              agentId: "claude",
+              distro: TEST_DISTRO,
+              workDir: `${TEST_HOME}/projects/delete`,
+              title: "delete history",
+              resumeToken: "resume-delete",
+              lastOpenedAt: new Date("2026-03-23T00:00:00.000Z").toISOString(),
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    session = await startTauriSession({ stateDir: seededStateDir });
+    const { driver } = session;
+
+    log.step("waiting for seeded delete history launcher");
+    await waitForTestId(driver, TEST_IDS.appRoot);
+    const recentList = await waitForTestId(driver, TEST_IDS.launcherRecentList);
+    expect(await recentList.getText()).toContain("delete history");
+    expect(await recentList.getText()).toContain("keep history");
+
+    await deleteHistoryEntryByIndex(driver, 1);
+    const deleteDialog = await waitForTestId(driver, TEST_IDS.launcherHistoryDeleteDialog);
+    expect(await deleteDialog.getText()).toContain("delete history");
+
+    await confirmDeleteHistoryEntry(driver);
+
+    const updatedRecentText = await (await waitForTestId(driver, TEST_IDS.launcherRecentList)).getText();
+    expect(updatedRecentText).toContain("keep history");
+    expect(updatedRecentText).not.toContain("delete history");
+
+    const remainingTitles = await waitForHistoryTitles(
+      historyPath,
+      (titles) => titles.length === 1 && titles[0] === "keep history",
+    );
+    expect(remainingTitles).toEqual(["keep history"]);
+    log.step("history delete persisted", { historyPath, remainingTitles });
   });
 });

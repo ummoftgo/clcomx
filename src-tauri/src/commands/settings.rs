@@ -797,6 +797,35 @@ fn normalize_resume_token(resume_token: Option<String>) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+fn normalized_resume_token_ref<'a>(resume_token: Option<&'a str>) -> Option<&'a str> {
+    resume_token.map(|value| value.trim()).filter(|value| !value.is_empty())
+}
+
+fn tab_history_entries_match(left: &TabHistoryEntry, right: &TabHistoryEntry) -> bool {
+    normalize_agent_id(&left.agent_id) == normalize_agent_id(&right.agent_id)
+        && left.distro == right.distro
+        && left.work_dir == right.work_dir
+        && left.title == right.title
+        && normalized_resume_token_ref(left.resume_token.as_deref())
+            == normalized_resume_token_ref(right.resume_token.as_deref())
+        && left.last_opened_at == right.last_opened_at
+}
+
+fn remove_tab_history_entry_from_entries(
+    entries: &mut Vec<TabHistoryEntry>,
+    entry: &TabHistoryEntry,
+) -> bool {
+    let Some(index) = entries
+        .iter()
+        .position(|candidate| tab_history_entries_match(candidate, entry))
+    else {
+        return false;
+    };
+
+    entries.remove(index);
+    true
+}
+
 fn upsert_tab_history_entry(
     entries: &mut Vec<TabHistoryEntry>,
     agent_id: String,
@@ -1168,6 +1197,15 @@ pub fn trim_tab_history(limit: u16) -> Result<Vec<TabHistoryEntry>, String> {
     let mut entries = read_tab_history().unwrap_or_default();
     trim_tab_history_entries(&mut entries, limit);
     write_tab_history(&entries)?;
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn remove_tab_history_entry(entry: TabHistoryEntry) -> Result<Vec<TabHistoryEntry>, String> {
+    let mut entries = read_tab_history().unwrap_or_default();
+    if remove_tab_history_entry_from_entries(&mut entries, &entry) {
+        write_tab_history(&entries)?;
+    }
     Ok(entries)
 }
 
@@ -1920,6 +1958,70 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].agent_id, "codex");
         assert_eq!(entries[1].agent_id, "claude");
+    }
+
+    #[test]
+    fn remove_tab_history_entry_keeps_other_entries_for_same_path() {
+        let target = TabHistoryEntry {
+            agent_id: "claude".into(),
+            distro: EXAMPLE_DISTRO.into(),
+            work_dir: "/same".into(),
+            title: "same".into(),
+            resume_token: Some("resume-a".into()),
+            last_opened_at: "2".into(),
+        };
+        let mut entries = vec![
+            TabHistoryEntry {
+                agent_id: "claude".into(),
+                distro: EXAMPLE_DISTRO.into(),
+                work_dir: "/same".into(),
+                title: "same".into(),
+                resume_token: None,
+                last_opened_at: "1".into(),
+            },
+            target.clone(),
+            TabHistoryEntry {
+                agent_id: "claude".into(),
+                distro: EXAMPLE_DISTRO.into(),
+                work_dir: "/same".into(),
+                title: "same".into(),
+                resume_token: Some("resume-b".into()),
+                last_opened_at: "3".into(),
+            },
+        ];
+
+        let removed = remove_tab_history_entry_from_entries(&mut entries, &target);
+
+        assert!(removed);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].resume_token, None);
+        assert_eq!(entries[1].resume_token.as_deref(), Some("resume-b"));
+    }
+
+    #[test]
+    fn remove_tab_history_entry_requires_exact_timestamp_match() {
+        let target = TabHistoryEntry {
+            agent_id: "claude".into(),
+            distro: EXAMPLE_DISTRO.into(),
+            work_dir: "/same".into(),
+            title: "same".into(),
+            resume_token: Some("resume-a".into()),
+            last_opened_at: "2".into(),
+        };
+        let mut entries = vec![TabHistoryEntry {
+            agent_id: "claude".into(),
+            distro: EXAMPLE_DISTRO.into(),
+            work_dir: "/same".into(),
+            title: "same".into(),
+            resume_token: Some("resume-a".into()),
+            last_opened_at: "1".into(),
+        }];
+
+        let removed = remove_tab_history_entry_from_entries(&mut entries, &target);
+
+        assert!(!removed);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].last_opened_at, "1");
     }
 
     #[test]

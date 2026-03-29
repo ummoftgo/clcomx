@@ -21,3 +21,7 @@ export async function recordTabHistoryEntry(
 export async function trimTabHistoryEntries(limit: number): Promise<TabHistoryEntry[]> {
   return invoke<TabHistoryEntry[]>("trim_tab_history", { limit });
 }
+
+export async function removeTabHistoryEntry(entry: TabHistoryEntry): Promise<TabHistoryEntry[]> {
+  return invoke<TabHistoryEntry[]>("remove_tab_history_entry", { entry });
+}

@@ -2,6 +2,7 @@ import { Key, type WebDriver } from "selenium-webdriver";
 import {
   TEST_IDS,
   launcherAgentTestId,
+  launcherHistoryDeleteButtonTestId,
   launcherHistoryItemTestId,
   launcherDistroTestId,
 } from "../../src/lib/testids";
@@ -54,6 +55,18 @@ async function setInputValue(driver: WebDriver, testId: string, value: string) {
 export async function openHistoryEntryByIndex(driver: WebDriver, index: number) {
   log.step("opening history entry", { index });
   await clickTestId(driver, launcherHistoryItemTestId(index));
+}
+
+export async function deleteHistoryEntryByIndex(driver: WebDriver, index: number) {
+  log.step("opening history delete dialog", { index });
+  await clickTestId(driver, launcherHistoryDeleteButtonTestId(index));
+  await waitForTestId(driver, TEST_IDS.launcherHistoryDeleteDialog);
+}
+
+export async function confirmDeleteHistoryEntry(driver: WebDriver) {
+  log.step("confirming history delete");
+  await clickTestId(driver, TEST_IDS.launcherHistoryDeleteConfirm);
+  await waitForTestIdHidden(driver, TEST_IDS.launcherHistoryDeleteDialog, 5_000);
 }
 
 export async function openMockWorkspaceSession(

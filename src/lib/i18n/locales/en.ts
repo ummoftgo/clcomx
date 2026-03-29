@@ -19,6 +19,7 @@ const en = {
       choose: "Choose",
       close: "Close",
       copy: "Copy",
+      delete: "Delete",
       go: "Go",
       insert: "Insert",
       newSession: "New Session",
@@ -74,6 +75,9 @@ const en = {
     recent: {
       eyebrow: "Recent",
       title: "Recent",
+      deleteTitle: "Delete History Entry",
+      deleteDescription: "Delete \"{title}\" from recent history? This change is written to tab_history.json immediately.",
+      deleteFailed: "Failed to delete the history entry",
       empty: "No recent sessions yet.",
       emptyTitle: "No recent sessions yet.",
       emptyDescription: "Create a new session once and it will appear here for quick access.",

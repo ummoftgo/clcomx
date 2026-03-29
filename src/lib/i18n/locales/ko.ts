@@ -19,6 +19,7 @@ const ko = {
       choose: "선택",
       close: "닫기",
       copy: "복사",
+      delete: "삭제",
       go: "이동",
       insert: "삽입",
       newSession: "새 세션",
@@ -74,6 +75,9 @@ const ko = {
     recent: {
       eyebrow: "최근",
       title: "최근 항목",
+      deleteTitle: "히스토리 항목 삭제",
+      deleteDescription: "\"{title}\" 항목을 최근 히스토리에서 삭제하시겠습니까? 이 변경은 tab_history.json에도 바로 반영됩니다.",
+      deleteFailed: "히스토리 항목을 삭제하지 못했습니다",
       empty: "최근 세션이 없습니다.",
       emptyTitle: "최근 세션이 없습니다.",
       emptyDescription: "새 세션을 한 번 열면 다음부터 여기에서 바로 다시 열 수 있습니다.",

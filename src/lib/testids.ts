@@ -6,6 +6,9 @@ export const TEST_IDS = {
   sessionLauncher: "session-launcher",
   launcherNewSession: "launcher-new-session",
   launcherRecentList: "launcher-recent-list",
+  launcherHistoryDeleteDialog: "launcher-history-delete-dialog",
+  launcherHistoryDeleteConfirm: "launcher-history-delete-confirm",
+  launcherHistoryDeleteCancel: "launcher-history-delete-cancel",
   launcherAgentTrigger: "launcher-agent-trigger",
   launcherAgentPicker: "launcher-agent-picker",
   launcherAgentList: "launcher-agent-list",
@@ -77,6 +80,10 @@ export function launcherDirectoryTestId(path: string) {
 
 export function launcherHistoryItemTestId(index: number) {
   return `launcher-history-item-${index}`;
+}
+
+export function launcherHistoryDeleteButtonTestId(index: number) {
+  return `launcher-history-delete-button-${index}`;
 }
 
 export function settingsNavSectionTestId(sectionId: string) {
