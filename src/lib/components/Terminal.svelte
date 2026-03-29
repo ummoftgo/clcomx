@@ -114,6 +114,7 @@
   let terminalLoadingState = $state<"connecting" | "restoring" | null>(null);
   let terminalLoadingStartedAt = 0;
   let terminalLoadingHasRenderableOutput = false;
+  let terminalLoadingReadySignalSeen = false;
   let terminalLoadingQuietTimer: ReturnType<typeof setTimeout> | null = null;
   let terminalLoadingMaxTimer: ReturnType<typeof setTimeout> | null = null;
   let draftValue = $state("");
@@ -154,6 +155,11 @@
   let auxInitialized = $state(false);
   let auxExited = $state(true);
   let auxBusy = $state(false);
+  let auxLoadingState = $state<"opening" | null>(null);
+  let auxLoadingStartedAt = 0;
+  let auxLoadingHasRenderableOutput = false;
+  let auxLoadingQuietTimer: ReturnType<typeof setTimeout> | null = null;
+  let auxLoadingMaxTimer: ReturnType<typeof setTimeout> | null = null;
   let auxSpawnError = $state<string | null>(null);
   let auxCurrentPath = $state("");
   let auxMetadataRemainder = "";
@@ -248,6 +254,7 @@
       ? $t("terminal.loading.restoring")
       : $t("terminal.loading.connecting"),
   );
+  const auxLoadingLabel = $derived($t("terminal.aux.loadingTitle"));
 
   function clampAuxHeightPercent(value: number) {
     if (!Number.isFinite(value)) {
@@ -407,6 +414,43 @@
     const withoutCsi = withoutOsc.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
     const withoutControl = withoutCsi.replace(/[\u0000-\u001f\u007f]/g, "");
     return withoutControl.trim().length > 0;
+  }
+
+  function extractPrintableTerminalText(data: string) {
+    if (!data) {
+      return "";
+    }
+
+    const withoutOsc = data.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "");
+    const withoutCsi = withoutOsc.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+    return withoutCsi.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+  }
+
+  function requiresAgentReadySignal() {
+    return agentId === "claude" || agentId === "codex";
+  }
+
+  function hasAgentReadySignal(data: string) {
+    const text = extractPrintableTerminalText(data);
+    if (!text) {
+      return false;
+    }
+
+    if (agentId === "codex") {
+      return (
+        text.includes("OpenAI Codex") ||
+        /(?:^|\n)\s*›\s/m.test(text)
+      );
+    }
+
+    if (agentId === "claude") {
+      return (
+        /(?:^|\n)\s*❯[\u00a0 ]?/m.test(text) ||
+        (text.includes("current:") && text.includes("tokens"))
+      );
+    }
+
+    return hasRenderableTerminalOutput(data);
   }
 
   function writeAuxTerminalData(term: Terminal, data: string) {
@@ -747,6 +791,7 @@
     terminalLoadingState = state;
     terminalLoadingStartedAt = performance.now();
     terminalLoadingHasRenderableOutput = false;
+    terminalLoadingReadySignalSeen = !requiresAgentReadySignal();
     terminalLoadingMaxTimer = setTimeout(() => {
       terminalLoadingMaxTimer = null;
       void clearTerminalLoadingState(true);
@@ -773,8 +818,26 @@
     terminalLoadingHasRenderableOutput = true;
   }
 
+  function noteTerminalLoadingOutput(data: string) {
+    if (terminalLoadingState === null) {
+      return;
+    }
+
+    if (hasRenderableTerminalOutput(data)) {
+      noteTerminalLoadingActivity();
+    }
+
+    if (!terminalLoadingReadySignalSeen && hasAgentReadySignal(data)) {
+      terminalLoadingReadySignalSeen = true;
+    }
+  }
+
   function handleTerminalRender() {
     if (terminalLoadingState === null || !terminalLoadingHasRenderableOutput) {
+      return;
+    }
+
+    if (requiresAgentReadySignal() && !terminalLoadingReadySignalSeen) {
       return;
     }
 
@@ -804,7 +867,66 @@
 
     clearTerminalLoadingTimers();
     terminalLoadingHasRenderableOutput = false;
+    terminalLoadingReadySignalSeen = false;
     terminalLoadingState = null;
+  }
+
+  function showAuxLoadingState() {
+    clearAuxLoadingTimers();
+    auxLoadingState = "opening";
+    auxLoadingStartedAt = performance.now();
+    auxLoadingHasRenderableOutput = false;
+    auxLoadingMaxTimer = setTimeout(() => {
+      auxLoadingMaxTimer = null;
+      void clearAuxLoadingState(true);
+    }, TERMINAL_LOADING_MAX_MS);
+  }
+
+  function clearAuxLoadingTimers() {
+    if (auxLoadingQuietTimer) {
+      clearTimeout(auxLoadingQuietTimer);
+      auxLoadingQuietTimer = null;
+    }
+    if (auxLoadingMaxTimer) {
+      clearTimeout(auxLoadingMaxTimer);
+      auxLoadingMaxTimer = null;
+    }
+  }
+
+  function noteAuxLoadingOutput(data: string) {
+    if (auxLoadingState === null || !hasRenderableTerminalOutput(data)) {
+      return;
+    }
+
+    auxLoadingHasRenderableOutput = true;
+
+    if (auxLoadingQuietTimer) {
+      clearTimeout(auxLoadingQuietTimer);
+    }
+    auxLoadingQuietTimer = setTimeout(() => {
+      auxLoadingQuietTimer = null;
+      void clearAuxLoadingState();
+    }, TERMINAL_LOADING_QUIET_MS);
+  }
+
+  async function clearAuxLoadingState(force = false) {
+    if (auxLoadingState === null) {
+      return;
+    }
+
+    if (!force && auxLoadingHasRenderableOutput) {
+      const elapsed = performance.now() - auxLoadingStartedAt;
+      const remaining = MIN_TERMINAL_LOADING_MS - elapsed;
+      if (remaining > 0) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, remaining);
+        });
+      }
+    }
+
+    clearAuxLoadingTimers();
+    auxLoadingState = null;
+    auxLoadingHasRenderableOutput = false;
   }
 
   function handleAuxShortcut(event: KeyboardEvent) {
@@ -1433,6 +1555,7 @@
       auxPtyId = await spawnShellPty(cols, rows, distro, workDir);
       const initialOutput = await takePtyInitialOutput(auxPtyId);
       await writeAuxTerminalData(term, initialOutput);
+      noteAuxLoadingOutput(initialOutput);
       auxExited = false;
       auxFollowTail = true;
       auxAttached = true;
@@ -1441,6 +1564,9 @@
       auxPtyId = -1;
     } finally {
       auxBusy = false;
+      if (auxSpawnError) {
+        void clearAuxLoadingState(true);
+      }
     }
   }
 
@@ -1450,6 +1576,7 @@
     auxMetadataRemainder = "";
     const snapshot = await getPtyOutputSnapshot(id);
     await writeAuxTerminalData(term, snapshot.data);
+    noteAuxLoadingOutput(snapshot.data);
     auxExited = false;
     auxFollowTail = true;
     auxAttached = true;
@@ -1463,6 +1590,10 @@
     auxVisible = true;
     if (!auxInitialized) {
       auxInitialized = true;
+    }
+
+    if (auxLoadingState === null && !auxAttached) {
+      showAuxLoadingState();
     }
 
     await tick();
@@ -1519,6 +1650,9 @@
     auxPtyId = -1;
     auxVisible = false;
     auxBusy = false;
+    clearAuxLoadingTimers();
+    auxLoadingState = null;
+    auxLoadingHasRenderableOutput = false;
     auxMetadataRemainder = "";
     auxAttached = false;
     focusOutput();
@@ -1568,6 +1702,7 @@
     if (event.id === auxPtyId && auxTerminal) {
       const shouldStickToBottom = auxFollowTail;
       void writeAuxTerminalData(auxTerminal, event.data).then(() => {
+        noteAuxLoadingOutput(event.data);
         if (shouldStickToBottom) {
           auxTerminal?.scrollToBottom();
         }
@@ -1597,9 +1732,7 @@
         extendBottomLock();
       }
       terminal.write(data, () => {
-        if (hasRenderableTerminalOutput(data)) {
-          noteTerminalLoadingActivity();
-        }
+        noteTerminalLoadingOutput(data);
         if (!shouldStickToBottom) {
           return;
         }
@@ -1665,7 +1798,11 @@
       hasRenderableTerminalOutput(fallbackSnapshotData) ||
       pendingChunks.some((chunk) => hasRenderableTerminalOutput(chunk.data))
     ) {
-      noteTerminalLoadingActivity();
+      noteTerminalLoadingOutput(
+        restored && canonicalSnapshot
+          ? `${canonicalSnapshot.serialized}${canonicalSnapshot.delta}`
+          : `${fallbackSnapshotData}${pendingChunks.map((chunk) => chunk.data).join("")}`,
+      );
     }
 
     await syncMainTerminalLayoutToPty({ refresh: true });
@@ -1686,6 +1823,8 @@
         initialOutputReady = false;
         terminalLoadingState = "connecting";
         terminalLoadingStartedAt = performance.now();
+        terminalLoadingHasRenderableOutput = false;
+        terminalLoadingReadySignalSeen = !requiresAgentReadySignal();
       }
     } else {
       await showTerminalLoadingState("connecting");
@@ -1709,9 +1848,7 @@
     await writeTerminalData(term, sanitizedOutput);
     initialOutputReady = true;
     armBottomLock();
-    if (hasRenderableTerminalOutput(sanitizedOutput)) {
-      noteTerminalLoadingActivity();
-    }
+    noteTerminalLoadingOutput(sanitizedOutput);
     onPtyId?.(livePtyId);
   }
 
@@ -2122,6 +2259,21 @@
           {/if}
         </div>
       </div>
+
+      {#if auxLoadingState !== null && !auxSpawnError}
+        <div class="terminal-connect-overlay terminal-connect-overlay--subpanel terminal-connect-overlay--aux-panel">
+          <div class="terminal-connect-card terminal-connect-card--compact">
+            <div class="terminal-connect-eyebrow">CLCOMX</div>
+            <div class="terminal-connect-title">{auxLoadingLabel}</div>
+            <div class="terminal-connect-hint">{$t("terminal.aux.loadingHint")}</div>
+            <div class="terminal-connect-dots" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -2313,6 +2465,12 @@
     box-shadow: 0 18px 40px rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.24);
   }
 
+  .terminal-connect-card--compact {
+    min-width: min(280px, 100%);
+    gap: var(--ui-space-2);
+    padding: clamp(16px, 2vw, 20px);
+  }
+
   .terminal-connect-eyebrow {
     font-size: 11px;
     font-weight: 700;
@@ -2376,6 +2534,17 @@
     border-radius: inherit;
     background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ui-accent, var(--tab-accent, #6ea8ff)) 92%, white 8%), transparent);
     animation: terminal-loading-sweep 1.5s ease-in-out infinite;
+  }
+
+  .terminal-connect-overlay--subpanel {
+    inset: 0;
+    padding: var(--ui-space-3);
+    border-radius: var(--ui-radius-md);
+  }
+
+  .terminal-connect-overlay--aux-panel {
+    z-index: 24;
+    border-radius: inherit;
   }
 
   @keyframes terminal-loading-bounce {

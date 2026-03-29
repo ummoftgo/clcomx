@@ -288,6 +288,8 @@ const en = {
       close: "Hide auxiliary terminal",
       startFailed: "Failed to start auxiliary terminal: {message}",
       resizeHint: "Drag to resize",
+      loadingTitle: "Opening auxiliary terminal",
+      loadingHint: "Please wait while the shell is prepared.",
     },
     loading: {
       connecting: "Connecting session",

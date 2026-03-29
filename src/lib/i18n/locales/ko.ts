@@ -288,6 +288,8 @@ const ko = {
       close: "보조 터미널 숨기기",
       startFailed: "보조 터미널 시작 실패: {message}",
       resizeHint: "드래그해서 높이 조절",
+      loadingTitle: "보조 터미널 여는 중",
+      loadingHint: "셸을 준비하는 동안 잠시만 기다려 주세요.",
     },
     loading: {
       connecting: "세션 연결 중",
