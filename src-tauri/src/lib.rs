@@ -13,7 +13,7 @@ use commands::pty::{
 };
 use commands::settings::{
     WindowReadyState, WorkspaceState, bootstrap_app, close_app, close_session, close_session_by_pty,
-    clear_session_pty, close_window_sessions, detach_session_to_new_window, load_settings,
+    clear_session_pty, close_window_sessions, detach_session_to_new_window, load_custom_css, load_settings,
     load_settings_or_default, is_window_ready, load_tab_history, load_workspace,
     load_workspace_or_default, move_session_to_window, move_window_sessions_to_main,
     open_empty_window, record_tab_history, remove_tab_history_entry, remove_window,
@@ -77,6 +77,7 @@ pub fn run() {
             load_settings,
             load_tab_history,
             load_workspace,
+            load_custom_css,
             record_tab_history,
             trim_tab_history,
             remove_tab_history_entry,

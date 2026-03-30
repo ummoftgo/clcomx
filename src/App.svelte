@@ -1,15 +1,17 @@
 <script lang="ts">
   import type { Component } from "svelte";
   import { onMount, onDestroy } from "svelte";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+  import { listen, type UnlistenFn } from "./lib/tauri/event";
+  import { currentMonitor, getCurrentWindow } from "./lib/tauri/window";
   import TabBar from "./lib/components/TabBar.svelte";
   import SessionLauncher from "./lib/components/SessionLauncher.svelte";
+  import PreviewControlPanel from "./lib/components/PreviewControlPanel.svelte";
   import {
     addSession,
     areSessionsInitialized,
     getActiveSessionId,
     getCurrentWindowName,
+    initializeSessionsFromWorkspace,
     getSessions,
     moveSession,
     persistWorkspace,
@@ -23,15 +25,23 @@
     setSessionTitle,
     syncSessionsFromWorkspace,
   } from "./lib/stores/sessions.svelte";
-  import { getOtherWindows, syncWorkspaceSnapshot } from "./lib/stores/workspace.svelte";
-  import { getSettings, updateSettings } from "./lib/stores/settings.svelte";
-  import { getTabHistory, recordTabHistory } from "./lib/stores/tab-history.svelte";
+  import {
+    getOtherWindows,
+    initializeWorkspaceSnapshot,
+    syncWorkspaceSnapshot,
+  } from "./lib/stores/workspace.svelte";
+  import { getSettings, initializeSettings, updateSettings } from "./lib/stores/settings.svelte";
+  import {
+    getTabHistory,
+    initializeTabHistory,
+    recordTabHistory,
+  } from "./lib/stores/tab-history.svelte";
   import { primeEditorsDetection } from "./lib/stores/editors.svelte";
-  import { getBootstrap } from "./lib/bootstrap";
+  import { getBootstrap, setBootstrap } from "./lib/bootstrap";
   import { setLanguagePreference, t } from "./lib/i18n";
   import { TEST_IDS } from "./lib/testids";
   import { getThemeById } from "./lib/themes";
-  import { applyUiPreferenceVariables, applyUiThemeVariables, Button, ModalShell } from "./lib/ui";
+  import { applyRuntimeStyleLayer, Button, ModalShell } from "./lib/ui";
   import {
     closeApp,
     closePtyAndCaptureResume,
@@ -51,27 +61,37 @@
     updateWindowGeometry,
   } from "./lib/workspace";
   import { killPty } from "./lib/pty";
-  import type { Session, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
+  import type { AppBootstrap, Session, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
   import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
+  import {
+    applyPreviewPreset,
+    getActivePreviewPresetId,
+    getAvailablePreviewPresets,
+    isBrowserPreview,
+    type PreviewPresetId,
+  } from "./lib/preview/runtime";
+  import { createRuntimeId } from "./lib/ids";
+
+  type PreviewFrameMode = "fluid" | "desktop" | "narrow";
+
+  const PREVIEW_FRAME_OPTIONS = [
+    { id: "fluid", label: "Fluid" },
+    { id: "desktop", label: "Desktop" },
+    { id: "narrow", label: "Narrow" },
+  ] as const;
 
   const appWindow = getCurrentWindow();
   const currentWindowLabel = appWindow.label;
   const isMainWindow = currentWindowLabel === "main";
+  const browserPreview = isBrowserPreview();
   const settings = getSettings();
-  const bootstrap = getBootstrap();
+  const previewPresetOptions = getAvailablePreviewPresets();
+  let bootstrap = $state(getBootstrap());
 
   $effect(() => {
     const theme = getThemeById(settings.interface.theme)?.theme;
-    const root = document.documentElement;
-    applyUiPreferenceVariables(root, settings);
-    if (!theme) return;
-    root.style.setProperty("--app-bg", theme.background ?? "#1e1e2e");
-    root.style.setProperty("--tab-text", theme.foreground ?? "#cdd6f4");
-    root.style.setProperty("--tab-bg", theme.background ?? "#1e1e2e");
-    root.style.setProperty("--tab-active-bg", theme.selectionBackground ?? "#313244");
-    root.style.setProperty("--tab-border", theme.selectionBackground ?? "#45475a");
-    applyUiThemeVariables(root, theme);
+    applyRuntimeStyleLayer(document, settings, theme);
   });
 
   $effect(() => {
@@ -102,9 +122,19 @@
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let TerminalComponent = $state<Component<any> | null>(null);
   let SettingsModalComponent = $state<Component<any> | null>(null);
+  let previewPresetId = $state<PreviewPresetId>(getActivePreviewPresetId());
+  let previewFrameMode = $state<PreviewFrameMode>(getInitialPreviewFrameMode());
+  let showPreviewControls = $state(getInitialPreviewControlsVisible());
   let terminalLoadPromise: Promise<void> | null = null;
   let settingsLoadPromise: Promise<void> | null = null;
   let canonicalAuthorityCleanup: (() => void) | null = null;
+  const previewFrameWidth = $derived(
+    previewFrameMode === "desktop"
+      ? "1380px"
+      : previewFrameMode === "narrow"
+        ? "1080px"
+        : "100%",
+  );
   const pendingCloseSession = $derived(
     pendingCloseSessionId
       ? sessions.find((session) => session.id === pendingCloseSessionId) ?? null
@@ -127,7 +157,11 @@
       return;
     }
 
-    terminalLoadPromise = import("./lib/components/Terminal.svelte")
+    terminalLoadPromise = (
+      browserPreview
+        ? import("./lib/components/PreviewTerminal.svelte")
+        : import("./lib/components/Terminal.svelte")
+    )
       .then((module) => {
         TerminalComponent = module.default;
       })
@@ -351,6 +385,91 @@
     showSessionLauncher = true;
   }
 
+  function normalizePreviewFrameMode(value: string | null): PreviewFrameMode {
+    return PREVIEW_FRAME_OPTIONS.some((option) => option.id === value)
+      ? (value as PreviewFrameMode)
+      : "desktop";
+  }
+
+  function getInitialPreviewFrameMode(): PreviewFrameMode {
+    if (!browserPreview || typeof window === "undefined") return "desktop";
+    const frame = new URL(window.location.href).searchParams.get("frame");
+    return normalizePreviewFrameMode(frame);
+  }
+
+  function getInitialPreviewControlsVisible() {
+    if (!browserPreview || typeof window === "undefined") return false;
+    return new URL(window.location.href).searchParams.get("controls") !== "hidden";
+  }
+
+  function setPreviewUrlParam(name: string, value: string | null) {
+    if (!browserPreview || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (value && value.length > 0) {
+      url.searchParams.set(name, value);
+    } else {
+      url.searchParams.delete(name);
+    }
+    window.history.replaceState(window.history.state, "", url);
+  }
+
+  function resetPreviewOverlays() {
+    showSessionLauncher = false;
+    showSettings = false;
+    showCloseWindowDialog = false;
+    dismissCloseTabDialog();
+    dismissRenameDialog();
+  }
+
+  function setPreviewControlsVisible(visible: boolean) {
+    showPreviewControls = visible;
+    setPreviewUrlParam("controls", visible ? null : "hidden");
+  }
+
+  function applyPreviewBootstrap(nextBootstrap: AppBootstrap) {
+    setBootstrap(nextBootstrap);
+    bootstrap = nextBootstrap;
+    initializeSettings(nextBootstrap.settings);
+    initializeTabHistory(nextBootstrap.tabHistory);
+    initializeWorkspaceSnapshot(nextBootstrap.workspace, currentWindowLabel);
+    initializeSessionsFromWorkspace(nextBootstrap.workspace, currentWindowLabel);
+    resetPreviewOverlays();
+  }
+
+  function handlePreviewPresetChange(nextPresetId: PreviewPresetId) {
+    if (!browserPreview) return;
+    const nextBootstrap = applyPreviewPreset(nextPresetId);
+    previewPresetId = getActivePreviewPresetId();
+    applyPreviewBootstrap(nextBootstrap);
+  }
+
+  function handlePreviewFrameModeChange(nextFrameMode: string) {
+    previewFrameMode = normalizePreviewFrameMode(nextFrameMode);
+    setPreviewUrlParam(
+      "frame",
+      previewFrameMode === "desktop" ? null : previewFrameMode,
+    );
+  }
+
+  async function togglePreviewSettings() {
+    if (showSettings) {
+      showSettings = false;
+      return;
+    }
+    await openSettingsPanel();
+  }
+
+  function openPreviewRenameDialog() {
+    if (!activeSessionId) return;
+    requestRenameTab(activeSessionId);
+  }
+
+  function openPreviewCloseDialog() {
+    if (!activeSessionId) return;
+    pendingCloseSessionId = activeSessionId;
+    showCloseTabDialog = true;
+  }
+
   function createSession(
     agentId: AgentId,
     distro: string,
@@ -359,7 +478,7 @@
     resumeToken: string | null = null,
   ) {
     const session: Session = {
-      id: crypto.randomUUID(),
+      id: createRuntimeId("session-"),
       ptyId: -1,
       auxPtyId: -1,
       auxVisible: false,
@@ -712,6 +831,8 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div
+  class:app--browser-preview={browserPreview}
+  class:app--preview-controls-hidden={browserPreview && !showPreviewControls}
   class="app"
   data-testid={TEST_IDS.appRoot}
   data-window-label={currentWindowLabel}
@@ -719,76 +840,108 @@
   data-test-mode={bootstrap.testMode ? "true" : "false"}
   data-debug-terminal-hooks={bootstrap.debugTerminalHooks ? "true" : "false"}
 >
-  <TabBar
-    onNewTab={requestNewTab}
-    onSettings={() => { void openSettingsPanel(); }}
-    onCloseTab={requestCloseTab}
-    onRenameTab={requestRenameTab}
-    onRenameWindow={requestRenameWindow}
-    onTogglePinTab={handleTogglePinTab}
-    onToggleLockTab={handleToggleLockTab}
-    onMoveTabLeft={handleMoveTabLeft}
-    onMoveTabRight={handleMoveTabRight}
-    onMoveTabToNewWindow={handleMoveTabToNewWindow}
-    onMoveTabToWindow={handleMoveTabToWindow}
-    availableWindows={otherWindows.map((window) => ({
-      label: window.label,
-      name: window.name,
-    }))}
-  />
-
-  <div class="terminal-area">
-    <div
-      class="welcome-layer"
-      style:display={sessions.length === 0 ? "block" : "none"}
-    >
-      <SessionLauncher
-        visible={sessions.length === 0}
-        embedded={true}
-        historyEntries={historyEntries}
-        onOpenHistory={openHistoryEntry}
-        onConfirm={createSession}
-      />
+  {#if browserPreview && showPreviewControls}
+    <PreviewControlPanel
+      presetId={previewPresetId}
+      presetOptions={previewPresetOptions}
+      frameMode={previewFrameMode}
+      frameOptions={PREVIEW_FRAME_OPTIONS}
+      launcherOpen={showSessionLauncher}
+      settingsOpen={showSettings}
+      hasSessions={sessions.length > 0}
+      onPresetChange={handlePreviewPresetChange}
+      onFrameModeChange={handlePreviewFrameModeChange}
+      onToggleLauncher={() => { showSessionLauncher = !showSessionLauncher; }}
+      onToggleSettings={() => { void togglePreviewSettings(); }}
+      onOpenRename={openPreviewRenameDialog}
+      onOpenCloseDialog={openPreviewCloseDialog}
+      onResetOverlays={resetPreviewOverlays}
+      onToggleVisibility={() => { setPreviewControlsVisible(false); }}
+    />
+  {:else if browserPreview}
+    <div class="preview-control-toggle">
+      <Button size="sm" variant="secondary" onclick={() => { setPreviewControlsVisible(true); }}>
+        Preview Tools
+      </Button>
     </div>
+  {/if}
 
-    <div
-      class="sessions-layer"
-      style:display={sessions.length > 0 ? "block" : "none"}
-    >
-      {#if TerminalComponent}
-        {#each sessions as session (session.id)}
-          <TerminalComponent
-            sessionId={session.id}
-            visible={session.id === activeSessionId}
-            agentId={session.agentId}
-            distro={session.distro}
-            workDir={session.workDir}
-            ptyId={session.ptyId}
-            storedAuxPtyId={session.auxPtyId}
-            storedAuxVisible={session.auxVisible}
-            storedAuxHeightPercent={session.auxHeightPercent}
-            resumeToken={session.resumeToken}
-            onPtyId={(ptyId: number) => handlePtyId(session.id, ptyId)}
-            onAuxStateChange={(state: {
-              auxPtyId: number;
-              auxVisible: boolean;
-              auxHeightPercent: number | null;
-            }) =>
-              void handleAuxTerminalState(
-                session.id,
-                state.auxPtyId,
-                state.auxVisible,
-                state.auxHeightPercent,
-              )}
-            onExit={handleExit}
-            onResumeFallback={() => void handleResumeFallback(session.id)}
-          />
-        {/each}
-      {:else}
-        <div class="terminal-loading">
-          <div class="terminal-loading-card">{$t("common.labels.loading")}</div>
-        </div>
-      {/if}
+  <div
+    class="app-frame"
+    data-preview-frame={browserPreview ? previewFrameMode : undefined}
+    style:--preview-frame-width={browserPreview ? previewFrameWidth : undefined}
+  >
+    <TabBar
+      onNewTab={requestNewTab}
+      onSettings={() => { void openSettingsPanel(); }}
+      onCloseTab={requestCloseTab}
+      onRenameTab={requestRenameTab}
+      onRenameWindow={requestRenameWindow}
+      onTogglePinTab={handleTogglePinTab}
+      onToggleLockTab={handleToggleLockTab}
+      onMoveTabLeft={handleMoveTabLeft}
+      onMoveTabRight={handleMoveTabRight}
+      onMoveTabToNewWindow={handleMoveTabToNewWindow}
+      onMoveTabToWindow={handleMoveTabToWindow}
+      availableWindows={otherWindows.map((window) => ({
+        label: window.label,
+        name: window.name,
+      }))}
+    />
+
+    <div class="terminal-area">
+      <div
+        class="welcome-layer"
+        style:display={sessions.length === 0 ? "block" : "none"}
+      >
+        <SessionLauncher
+          visible={sessions.length === 0}
+          embedded={true}
+          historyEntries={historyEntries}
+          onOpenHistory={openHistoryEntry}
+          onConfirm={createSession}
+        />
+      </div>
+
+      <div
+        class="sessions-layer"
+        style:display={sessions.length > 0 ? "block" : "none"}
+      >
+        {#if TerminalComponent}
+          {#each sessions as session (session.id)}
+            <TerminalComponent
+              sessionId={session.id}
+              visible={session.id === activeSessionId}
+              agentId={session.agentId}
+              distro={session.distro}
+              workDir={session.workDir}
+              ptyId={session.ptyId}
+              storedAuxPtyId={session.auxPtyId}
+              storedAuxVisible={session.auxVisible}
+              storedAuxHeightPercent={session.auxHeightPercent}
+              resumeToken={session.resumeToken}
+              onPtyId={(ptyId: number) => handlePtyId(session.id, ptyId)}
+              onAuxStateChange={(state: {
+                auxPtyId: number;
+                auxVisible: boolean;
+                auxHeightPercent: number | null;
+              }) =>
+                void handleAuxTerminalState(
+                  session.id,
+                  state.auxPtyId,
+                  state.auxVisible,
+                  state.auxHeightPercent,
+                )}
+              onExit={handleExit}
+              onResumeFallback={() => void handleResumeFallback(session.id)}
+            />
+          {/each}
+        {:else}
+          <div class="terminal-loading">
+            <div class="terminal-loading-card">{$t("common.labels.loading")}</div>
+          </div>
+        {/if}
+      </div>
     </div>
   </div>
 
@@ -889,11 +1042,47 @@
 
 <style>
   .app {
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     height: 100vh;
     width: 100vw;
     overflow: hidden;
+  }
+
+  .app--browser-preview {
+    --preview-top-gutter: 86px;
+    padding: var(--preview-top-gutter) 14px 14px;
+    background:
+      radial-gradient(circle at top left, rgba(var(--ui-accent-rgb, 84, 160, 255), 0.14), transparent 28%),
+      linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-app) 86%, black 14%), color-mix(in srgb, var(--ui-bg-app) 92%, black 8%));
+    overflow: auto;
+  }
+
+  .app--preview-controls-hidden {
+    --preview-top-gutter: 68px;
+  }
+
+  .app-frame {
+    width: 100%;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .app--browser-preview .app-frame {
+    width: min(var(--preview-frame-width), 100%);
+    min-height: calc(100vh - 100px);
+    margin: 0 auto;
+    border: 1px solid color-mix(in srgb, var(--ui-border-subtle) 82%, transparent);
+    border-radius: 24px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--ui-bg-app) 94%, #05070d);
+    box-shadow:
+      0 28px 70px rgba(var(--ui-shadow-rgb), 0.24),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
 
   .terminal-area {
@@ -975,5 +1164,34 @@
     background: color-mix(in srgb, var(--ui-bg-elevated) 90%, transparent);
     color: var(--ui-text-primary);
     font-size: var(--ui-font-size-base);
+  }
+
+  @media (max-width: 960px) {
+    .app--browser-preview {
+      --preview-top-gutter: 168px;
+    }
+
+    .app--preview-controls-hidden {
+      --preview-top-gutter: 60px;
+    }
+
+    .app-frame {
+      min-height: calc(100vh - 182px);
+      border-radius: 18px;
+    }
+  }
+
+  .preview-control-toggle {
+    position: fixed;
+    top: 16px;
+    right: 18px;
+    z-index: 50;
+  }
+
+  @media (max-width: 960px) {
+    .preview-control-toggle {
+      top: 12px;
+      right: 12px;
+    }
   }
 </style>

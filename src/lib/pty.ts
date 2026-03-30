@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./tauri/core";
 import { getAgentDefinition, type AgentId } from "./agents";
 import { buildClaudeCliFlags } from "./agents/claude-cli-flags";
 import type { AgentCommandOptions } from "./agents";

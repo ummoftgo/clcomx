@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../tauri/core";
 import { type DeepPartial, type Settings, DEFAULT_SETTINGS } from "../types";
 
 let settings = $state<Settings>(cloneDefaults());

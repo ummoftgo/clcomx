@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
@@ -15,6 +16,10 @@ export default defineConfig(async () => ({
   },
   build: {
     rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        preview: fileURLToPath(new URL("./preview.html", import.meta.url)),
+      },
       output: {
         manualChunks(id) {
           if (id.includes("@xterm/")) return "xterm";

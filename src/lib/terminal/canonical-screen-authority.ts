@@ -1,10 +1,11 @@
-import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emitTo, listen, type UnlistenFn } from "../tauri/event";
+import { getCurrentWindow } from "../tauri/window";
 import { Terminal } from "@xterm/xterm";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { getBootstrap } from "../bootstrap";
 import { getSettings } from "../stores/settings.svelte";
 import { DEFAULT_SETTINGS } from "../types";
+import { createRuntimeId } from "../ids";
 import {
   isClaudeFooterGhostingMitigationEnabled,
   syncTerminalUnicodeWidth,
@@ -333,7 +334,7 @@ export async function requestCanonicalScreenSnapshot(params: {
     );
   }
 
-  const requestId = crypto.randomUUID();
+  const requestId = createRuntimeId("canonical-");
   return await new Promise<CanonicalScreenSnapshot | null>((resolve) => {
     let settled = false;
     let unlistenPromise: Promise<UnlistenFn> | null = null;

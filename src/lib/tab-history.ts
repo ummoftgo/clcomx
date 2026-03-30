@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./tauri/core";
 import type { TabHistoryEntry } from "./types";
 import type { AgentId } from "./agents";
 

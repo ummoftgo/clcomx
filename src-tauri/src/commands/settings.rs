@@ -29,6 +29,10 @@ fn theme_path() -> Result<PathBuf, String> {
     state_path("theme.json")
 }
 
+fn custom_css_path() -> Result<PathBuf, String> {
+    state_path("custom.css")
+}
+
 fn default_agent_id() -> String {
     "claude".into()
 }
@@ -1763,6 +1767,16 @@ pub fn bootstrap_app(state: tauri::State<'_, WorkspaceState>) -> Result<AppBoots
         debug_terminal_hooks: is_terminal_debug_hooks_enabled(),
         soft_follow_experiment: soft_follow_experiment_override(),
     })
+}
+
+#[tauri::command]
+pub fn load_custom_css() -> Result<String, String> {
+    let path = custom_css_path()?;
+    if !path.exists() {
+        return Ok(String::new());
+    }
+
+    fs::read_to_string(&path).map_err(|error| format!("Failed to read {}: {}", path.display(), error))
 }
 
 #[cfg(test)]

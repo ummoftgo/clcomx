@@ -11,5 +11,7 @@ export {
   applyUiThemeVariables,
   createUiThemePalette,
   getThemeTokenStyle,
+  getUiPreferenceTokenStyle,
 } from "./theme-bridge";
+export { applyCustomCssLayer, applyRuntimeStyleLayer, buildRuntimeStyleCss } from "./style-layers";
 export { UI_CSS_VARS, UI_MOTION, UI_RADIUS, UI_SHADOW, UI_SPACING, UI_TYPE_SCALE } from "./tokens";

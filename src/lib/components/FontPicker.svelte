@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "../tauri/core";
   import { _ as t } from "svelte-i18n";
   import Button from "../ui/components/Button.svelte";
   import { buildFontStack, serializeFontFamilyList } from "../font-family";

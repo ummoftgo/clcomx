@@ -140,32 +140,16 @@ export function createUiThemePalette(theme: ITheme | null | undefined): UiThemeP
 }
 
 export function applyUiThemeVariables(root: HTMLElement, theme: ITheme | null | undefined) {
-  const palette = createUiThemePalette(theme);
-  root.style.setProperty(UI_CSS_VARS.appBg, palette.appBg);
-  root.style.setProperty(UI_CSS_VARS.surface, palette.surface);
-  root.style.setProperty(UI_CSS_VARS.elevated, palette.elevated);
-  root.style.setProperty(UI_CSS_VARS.overlay, palette.overlay);
-  root.style.setProperty(UI_CSS_VARS.textPrimary, palette.textPrimary);
-  root.style.setProperty(UI_CSS_VARS.textSecondary, palette.textSecondary);
-  root.style.setProperty(UI_CSS_VARS.textMuted, palette.textMuted);
-  root.style.setProperty(UI_CSS_VARS.borderSubtle, palette.borderSubtle);
-  root.style.setProperty(UI_CSS_VARS.borderStrong, palette.borderStrong);
-  root.style.setProperty(UI_CSS_VARS.accent, palette.accent);
-  root.style.setProperty(UI_CSS_VARS.accentSoft, palette.accentSoft);
-  root.style.setProperty(UI_CSS_VARS.accentText, palette.accentText);
-  root.style.setProperty(UI_CSS_VARS.danger, palette.danger);
-  root.style.setProperty(UI_CSS_VARS.dangerSoft, palette.dangerSoft);
-  root.style.setProperty(UI_CSS_VARS.success, palette.success);
-  root.style.setProperty(UI_CSS_VARS.warning, palette.warning);
-  root.style.setProperty(UI_CSS_VARS.focusRing, palette.focusRing);
-  root.style.setProperty(UI_CSS_VARS.shadowRgb, palette.shadowRgb);
+  for (const [key, value] of Object.entries(getThemeTokenStyle(theme))) {
+    root.style.setProperty(key, value);
+  }
 }
 
 function scaled(px: number, scale: number) {
   return `${Math.round(px * scale * 100) / 100}px`;
 }
 
-export function applyUiPreferenceVariables(root: HTMLElement, settings: Settings) {
+export function getUiPreferenceTokenStyle(settings: Settings) {
   const scale = Math.max(0.8, Math.min(2, settings.interface.uiScale / 100));
   const fontFamily = serializeFontFamilyList(
     settings.interface.uiFontFamily,
@@ -176,30 +160,40 @@ export function applyUiPreferenceVariables(root: HTMLElement, settings: Settings
     "\"Malgun Gothic\", \"Apple SD Gothic Neo\", sans-serif",
   );
 
-  root.style.setProperty(UI_CSS_VARS.scale, String(scale));
-  root.style.setProperty(UI_CSS_VARS.fontFamily, fontFamily);
-  root.style.setProperty(UI_CSS_VARS.fontFallback, fontFallback);
-  root.style.setProperty(
-    UI_CSS_VARS.fontStack,
-    buildFontStack(fontFamily, fontFallback, "system-ui", "-apple-system", "sans-serif"),
-  );
+  return {
+    [UI_CSS_VARS.scale]: String(scale),
+    [UI_CSS_VARS.fontFamily]: fontFamily,
+    [UI_CSS_VARS.fontFallback]: fontFallback,
+    [UI_CSS_VARS.fontStack]: buildFontStack(
+      fontFamily,
+      fontFallback,
+      "system-ui",
+      "-apple-system",
+      "sans-serif",
+    ),
+    [UI_CSS_VARS.fontSizeXs]: scaled(11, scale),
+    [UI_CSS_VARS.fontSizeSm]: scaled(12, scale),
+    [UI_CSS_VARS.fontSizeBase]: scaled(14, scale),
+    [UI_CSS_VARS.fontSizeMd]: scaled(15, scale),
+    [UI_CSS_VARS.fontSizeLg]: scaled(18, scale),
+    [UI_CSS_VARS.fontSizeXl]: scaled(22, scale),
+    [UI_CSS_VARS.space1]: scaled(4, scale),
+    [UI_CSS_VARS.space2]: scaled(8, scale),
+    [UI_CSS_VARS.space3]: scaled(12, scale),
+    [UI_CSS_VARS.space4]: scaled(16, scale),
+    [UI_CSS_VARS.space5]: scaled(20, scale),
+    [UI_CSS_VARS.space6]: scaled(24, scale),
+    [UI_CSS_VARS.radiusSm]: scaled(8, scale),
+    [UI_CSS_VARS.radiusMd]: scaled(12, scale),
+    [UI_CSS_VARS.radiusLg]: scaled(16, scale),
+    [UI_CSS_VARS.radiusXl]: scaled(22, scale),
+  };
+}
 
-  root.style.setProperty(UI_CSS_VARS.fontSizeXs, scaled(11, scale));
-  root.style.setProperty(UI_CSS_VARS.fontSizeSm, scaled(12, scale));
-  root.style.setProperty(UI_CSS_VARS.fontSizeBase, scaled(14, scale));
-  root.style.setProperty(UI_CSS_VARS.fontSizeMd, scaled(15, scale));
-  root.style.setProperty(UI_CSS_VARS.fontSizeLg, scaled(18, scale));
-  root.style.setProperty(UI_CSS_VARS.fontSizeXl, scaled(22, scale));
-  root.style.setProperty(UI_CSS_VARS.space1, scaled(4, scale));
-  root.style.setProperty(UI_CSS_VARS.space2, scaled(8, scale));
-  root.style.setProperty(UI_CSS_VARS.space3, scaled(12, scale));
-  root.style.setProperty(UI_CSS_VARS.space4, scaled(16, scale));
-  root.style.setProperty(UI_CSS_VARS.space5, scaled(20, scale));
-  root.style.setProperty(UI_CSS_VARS.space6, scaled(24, scale));
-  root.style.setProperty(UI_CSS_VARS.radiusSm, scaled(8, scale));
-  root.style.setProperty(UI_CSS_VARS.radiusMd, scaled(12, scale));
-  root.style.setProperty(UI_CSS_VARS.radiusLg, scaled(16, scale));
-  root.style.setProperty(UI_CSS_VARS.radiusXl, scaled(22, scale));
+export function applyUiPreferenceVariables(root: HTMLElement, settings: Settings) {
+  for (const [key, value] of Object.entries(getUiPreferenceTokenStyle(settings))) {
+    root.style.setProperty(key, value);
+  }
 }
 
 export function getThemeTokenStyle(theme: ITheme | null | undefined) {

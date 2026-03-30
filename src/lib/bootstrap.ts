@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./tauri/core";
 import type { AppBootstrap } from "./types";
 
 const DEFAULT_BOOTSTRAP: AppBootstrap = {
@@ -26,4 +26,8 @@ export async function loadBootstrap(): Promise<AppBootstrap> {
 
 export function getBootstrap(): AppBootstrap {
   return bootstrapState;
+}
+
+export function setBootstrap(nextBootstrap: AppBootstrap) {
+  bootstrapState = nextBootstrap;
 }

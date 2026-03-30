@@ -6,8 +6,10 @@
   import { WebglAddon } from "@xterm/addon-webgl";
   import ImagePasteModal from "./ImagePasteModal.svelte";
   import EditorPickerModal from "./EditorPickerModal.svelte";
+  import TerminalAssistPanel from "./TerminalAssistPanel.svelte";
+  import TerminalAuxPanel from "./TerminalAuxPanel.svelte";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { listen, type UnlistenFn } from "../tauri/event";
   import { getBootstrap } from "../bootstrap";
   import {
     createPendingClipboardImage,
@@ -1457,7 +1459,8 @@
     }
   }
 
-  function handleDraftInput() {
+  function handleDraftInput(event: Event) {
+    draftValue = (event.target as HTMLTextAreaElement).value;
     syncDraftHeight();
   }
 
@@ -2223,51 +2226,15 @@
   </div>
 
   {#if auxInitialized}
-    <div
-      class="aux-panel"
-      class:aux-panel--hidden={!auxVisible}
-      style:height={`${auxHeightPercent}%`}
-      aria-hidden={!auxVisible}
-    >
-      <div class="aux-surface">
-        <button
-          type="button"
-          class="aux-resize-handle"
-          tabindex="-1"
-          aria-label={$t("terminal.aux.resizeHint")}
-          title={$t("terminal.aux.resizeHint")}
-          onpointerdown={handleAuxResizeStart}
-        ></button>
-
-        <div class="aux-header">
-          <div class="aux-copy">
-            <span class="aux-title">{$t("terminal.aux.title")}</span>
-            <span class="aux-path">
-              {$t("terminal.aux.currentPath")}: {auxCurrentPath}
-            </span>
-          </div>
-
-          <Button
-            size="sm"
-            variant="ghost"
-            onclick={(event) => {
-              (event.currentTarget as HTMLButtonElement | null)?.blur();
-              hideAuxTerminal();
-            }}
-          >
-            {$t("common.actions.close")}
-          </Button>
+    {#snippet liveAuxBody()}
+      {#if auxSpawnError}
+        <div class="terminal-error">
+          {$t("terminal.aux.startFailed", { values: { message: auxSpawnError } })}
         </div>
+      {/if}
+    {/snippet}
 
-        <div class="aux-output" data-testid={TEST_IDS.auxTerminalShell} bind:this={auxOutputEl}>
-          {#if auxSpawnError}
-            <div class="terminal-error">
-              {$t("terminal.aux.startFailed", { values: { message: auxSpawnError } })}
-            </div>
-          {/if}
-        </div>
-      </div>
-
+    {#snippet liveAuxOverlay()}
       {#if auxLoadingState !== null && !auxSpawnError}
         <div class="terminal-connect-overlay terminal-connect-overlay--subpanel terminal-connect-overlay--aux-panel">
           <div class="terminal-connect-card terminal-connect-card--compact">
@@ -2282,95 +2249,47 @@
           </div>
         </div>
       {/if}
-    </div>
+    {/snippet}
+
+    <TerminalAuxPanel
+      visible={auxVisible}
+      heightPercent={auxHeightPercent}
+      title={$t("terminal.aux.title")}
+      currentPath={auxCurrentPath}
+      pathLabel={$t("terminal.aux.currentPath")}
+      outputTestId={TEST_IDS.auxTerminalShell}
+      resizable={true}
+      onResizeStart={handleAuxResizeStart}
+      onClose={hideAuxTerminal}
+      body={liveAuxBody}
+      overlay={liveAuxOverlay}
+      onOutputElementChange={(element) => {
+        auxOutputEl = element;
+      }}
+    />
   {/if}
 
-  <div class="assist-panel" class:assist-panel--draft-open={draftOpen} bind:this={assistPanelEl}>
-    <div class="assist-header">
-      <div class="assist-copy">
-        <span class="assist-label">{$t("terminal.assist.label")}</span>
-        <span class="assist-hint">{$t("terminal.assist.hint")}</span>
-      </div>
-
-      <div class="assist-actions">
-        <Button size="sm" onclick={handlePasteImageFromClipboard}>
-          {$t("terminal.assist.pasteImage")}
-        </Button>
-        <Button
-          size="sm"
-          data-testid={TEST_IDS.auxTerminalToggle}
-          variant={auxVisible ? "primary" : "secondary"}
-          onclick={(event) => {
-            (event.currentTarget as HTMLButtonElement | null)?.blur();
-            void toggleAuxTerminal();
-          }}
-          disabled={auxBusy}
-        >
-          {#if auxVisible}
-            {$t("terminal.assist.hideTerminal")}
-          {:else}
-            {$t("terminal.assist.openTerminal")}
-          {/if}
-        </Button>
-        <Button
-          size="sm"
-          data-testid={TEST_IDS.draftToggle}
-          variant={draftOpen ? "primary" : "secondary"}
-          onclick={toggleDraft}
-        >
-          {#if draftOpen}
-            {$t("terminal.assist.hideDraft")}
-          {:else if draftValue}
-            {$t("terminal.assist.draftWithCount", { values: { count: draftValue.length } })}
-          {:else}
-            {$t("terminal.assist.openDraft")}
-          {/if}
-        </Button>
-      </div>
-    </div>
-
-    {#if draftOpen}
-      <div class="draft-panel">
-        <textarea
-          bind:this={draftEl}
-          bind:value={draftValue}
-          data-testid={TEST_IDS.draftTextarea}
-          class="draft-textarea"
-          rows="1"
-          spellcheck="false"
-          autocapitalize="off"
-          autocomplete="off"
-          placeholder={$t("terminal.assist.draftPlaceholder")}
-          oninput={handleDraftInput}
-          onkeydown={handleDraftKeydown}
-          onpaste={handleDraftPaste}
-        ></textarea>
-
-        <div class="draft-footer">
-          <span class="draft-hint">{$t("terminal.assist.draftHint")}</span>
-
-          <div class="draft-actions">
-            <Button
-              size="sm"
-              data-testid={TEST_IDS.draftInsertButton}
-              onclick={() => void insertDraftIntoTerminal(false)}
-              disabled={draftValue.length === 0}
-            >
-              {$t("common.actions.insert")}
-            </Button>
-            <Button
-              size="sm"
-              variant="primary"
-              data-testid={TEST_IDS.draftSendButton}
-              onclick={() => void insertDraftIntoTerminal(true)}
-              disabled={draftValue.length === 0}
-            >
-              {$t("common.actions.send")}
-            </Button>
-          </div>
-        </div>
-      </div>
-    {/if}
+  <div bind:this={assistPanelEl}>
+    <TerminalAssistPanel
+      auxVisible={auxVisible}
+      auxBusy={auxBusy}
+      draftOpen={draftOpen}
+      draftValue={draftValue}
+      onPasteImage={handlePasteImageFromClipboard}
+      onToggleAux={() => {
+        document.activeElement instanceof HTMLElement && document.activeElement.blur();
+        void toggleAuxTerminal();
+      }}
+      onToggleDraft={toggleDraft}
+      onDraftInput={handleDraftInput}
+      onDraftKeydown={handleDraftKeydown}
+      onDraftPaste={handleDraftPaste}
+      onInsertDraft={() => void insertDraftIntoTerminal(false)}
+      onSendDraft={() => void insertDraftIntoTerminal(true)}
+      onDraftElementChange={(element) => {
+        draftEl = element;
+      }}
+    />
   </div>
 </div>
 
@@ -2579,200 +2498,6 @@
     cursor: pointer;
   }
 
-  .aux-panel {
-    position: absolute;
-    left: var(--ui-space-1);
-    right: var(--ui-space-1);
-    bottom: calc(var(--assist-panel-height, 0px) + var(--ui-space-1));
-    overflow: hidden;
-    min-height: 0;
-    max-height: calc(100% - var(--assist-panel-height, 0px) - calc(12px * var(--ui-scale)));
-    border: 1px solid color-mix(in srgb, var(--ui-border-strong, var(--tab-border)) 76%, transparent);
-    border-radius: var(--ui-radius-lg);
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-surface, var(--tab-active-bg)) 90%, transparent), transparent),
-      color-mix(in srgb, var(--ui-bg-app, var(--app-bg)) 88%, transparent);
-    box-shadow: 0 -12px 28px rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.22);
-    transition: border-color 160ms ease, opacity 160ms ease, transform 160ms ease, visibility 0s linear;
-    z-index: 15;
-  }
-
-  .aux-panel.aux-panel--hidden {
-    visibility: hidden;
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(calc(100% + var(--ui-space-2)));
-  }
-
-  .aux-surface {
-    height: 100%;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .aux-resize-handle {
-    flex: 0 0 auto;
-    height: calc(14px * var(--ui-scale));
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: none;
-    background: transparent;
-    cursor: ns-resize;
-    color: var(--ui-text-muted, var(--tab-text));
-  }
-
-  .aux-resize-handle::before {
-    content: "";
-    width: calc(56px * var(--ui-scale));
-    height: calc(4px * var(--ui-scale));
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--ui-border-strong, var(--tab-border)) 74%, transparent);
-  }
-
-  .aux-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--ui-space-3);
-    padding: 0 var(--ui-space-4) var(--ui-space-3);
-  }
-
-  .aux-copy {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--ui-space-1);
-  }
-
-  .aux-title {
-    font-size: var(--ui-font-size-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--ui-text-secondary, var(--tab-text));
-  }
-
-  .aux-path {
-    font-size: var(--ui-font-size-sm);
-    line-height: 1.45;
-    color: var(--ui-text-muted, var(--tab-text));
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .aux-output {
-    flex: 1;
-    min-height: 0;
-    position: relative;
-    padding: 0 var(--ui-space-3) var(--ui-space-3);
-  }
-
-  .assist-panel {
-    flex-shrink: 0;
-    padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-4);
-    border-top: 1px solid var(--ui-border-subtle, var(--tab-border));
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--ui-bg-surface, var(--tab-active-bg)) 72%, transparent), transparent),
-      var(--ui-bg-app, var(--app-bg));
-    transition: box-shadow 160ms ease, border-color 160ms ease;
-  }
-
-  .assist-panel.assist-panel--draft-open {
-    border-top-color: color-mix(in srgb, var(--ui-border-strong, var(--tab-border)) 82%, transparent);
-    box-shadow: 0 -16px 26px rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.18);
-  }
-
-  .assist-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--ui-space-3);
-  }
-
-  .assist-copy {
-    display: flex;
-    flex-direction: column;
-    gap: var(--ui-space-1);
-    min-width: 0;
-  }
-
-  .assist-label {
-    font-size: var(--ui-font-size-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--ui-text-secondary, var(--tab-text));
-  }
-
-  .assist-hint {
-    font-size: var(--ui-font-size-sm);
-    line-height: 1.45;
-    color: var(--ui-text-muted, var(--tab-text));
-  }
-
-  .assist-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--ui-space-2);
-    align-items: center;
-    justify-content: flex-end;
-  }
-
-  .draft-panel {
-    margin-top: var(--ui-space-3);
-    padding: var(--ui-space-4);
-    border-radius: var(--ui-radius-lg);
-    border: 1px solid var(--ui-border-subtle, rgba(148, 163, 184, 0.18));
-    background: color-mix(in srgb, var(--ui-bg-surface, var(--tab-active-bg)) 88%, transparent);
-    box-shadow: 0 14px 28px rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.16);
-  }
-
-  .draft-textarea {
-    width: 100%;
-    min-height: calc(42px * var(--ui-scale));
-    max-height: 50vh;
-    resize: none;
-    padding: calc(10px * var(--ui-scale)) var(--ui-space-3);
-    border: 1px solid var(--ui-border-subtle, rgba(148, 163, 184, 0.24));
-    border-radius: var(--ui-radius-md);
-    background: color-mix(in srgb, var(--ui-bg-elevated, var(--tab-bg)) 92%, transparent);
-    color: var(--ui-text-primary, #e2e8f0);
-    font: inherit;
-    line-height: 1.5;
-    outline: none;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
-  }
-
-  .draft-textarea:focus {
-    border-color: var(--ui-accent, rgba(96, 165, 250, 0.65));
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.03),
-      0 0 0 1px var(--ui-focus-ring, rgba(96, 165, 250, 0.12));
-  }
-
-  .draft-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--ui-space-3);
-    margin-top: var(--ui-space-3);
-  }
-
-  .draft-hint {
-    font-size: var(--ui-font-size-sm);
-    line-height: 1.45;
-    color: var(--ui-text-muted, var(--tab-text));
-  }
-
-  .draft-actions {
-    display: flex;
-    gap: var(--ui-space-2);
-    align-items: center;
-  }
-
   .terminal-interrupt-panel {
     display: grid;
     gap: 16px;
@@ -2838,21 +2563,4 @@
     border: none;
   }
 
-  @media (max-width: 900px) {
-    .assist-header,
-    .draft-footer {
-      flex-direction: column;
-      align-items: stretch;
-    }
-
-    .assist-actions,
-    .draft-actions {
-      justify-content: stretch;
-    }
-
-    :global(.assist-actions .ui-button),
-    :global(.draft-actions .ui-button) {
-      flex: 1;
-    }
-  }
 </style>
