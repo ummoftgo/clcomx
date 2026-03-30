@@ -325,14 +325,14 @@ CLCOMX는 종료 시 에이전트 출력에서 resume token을 캡처해 다음 
 
 ## 버전 관리
 
-- 현재 버전: `0.4.0`
+- 현재 버전: `0.5.0`
 - 버전 문서 위치: [`docs/version/`](./docs/version/)
 - 규칙:
   - 기능 추가: `minor` 증가, `patch`는 `0`으로 초기화
   - 수정/안정화: `patch` 증가
   - 메이저 버전 증가는 명시적으로 지시받은 경우에만 수행
 
-이번 변경 내역은 [`docs/version/0.4.0.md`](./docs/version/0.4.0.md)에 정리돼 있습니다.
+이번 변경 내역은 [`docs/version/0.5.0.md`](./docs/version/0.5.0.md)에 정리돼 있습니다.
 
 ## 테스트
 
