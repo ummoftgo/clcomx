@@ -179,7 +179,7 @@ const en = {
       composerMaxRows: "Draft max rows",
       draftMaxRows: "Draft max rows",
       draftMaxRowsHint: "The optional draft area auto-resizes up to this many rows, capped by the current window height.",
-      draftBehaviorHint: "Live typing still happens directly in the terminal. Draft sending is fixed to Ctrl+Enter or the Send button so it does not submit by accident.",
+      draftBehaviorHint: "Draft opens as a resizable overlay. Live typing still happens directly in the terminal, and draft sending is fixed to Ctrl+Enter or the Send button so it does not submit by accident.",
     },
     placeholders: {
       primaryFont: "JetBrains Mono, Cascadia Code, Consolas",
@@ -285,6 +285,7 @@ const en = {
       hideTerminal: "Hide Terminal",
       openDraft: "Open Draft",
       hideDraft: "Hide Draft",
+      draftTitle: "Draft",
       draftWithCount: "Draft ({count})",
       pasteImage: "Paste Image",
       draftPlaceholder: "Keep live typing in the terminal. Use this draft only when you need multiline staging or image paths.",

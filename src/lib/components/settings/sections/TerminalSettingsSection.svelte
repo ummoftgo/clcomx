@@ -8,19 +8,6 @@
 
   const settings = getSettings();
 
-  function getDraftRowsCap() {
-    const approxLineHeight = settings.terminal.fontSize * 1.5;
-    const reservedHeight = 320;
-    return Math.max(1, Math.floor((window.innerHeight - reservedHeight) / approxLineHeight));
-  }
-
-  let draftRowsCap = $state(20);
-
-  function clampDraftRows(value: number) {
-    if (!Number.isFinite(value)) return 5;
-    return Math.min(draftRowsCap, Math.max(1, Math.trunc(value)));
-  }
-
   function clampAuxTerminalHeight(value: number) {
     if (!Number.isFinite(value)) return 28;
     return Math.min(70, Math.max(18, Math.trunc(value)));
@@ -53,16 +40,7 @@
       },
     });
   }
-
-  $effect(() => {
-    draftRowsCap = getDraftRowsCap();
-    if (settings.terminal.draftMaxRows > draftRowsCap) {
-      updateSettings({ terminal: { draftMaxRows: draftRowsCap } });
-    }
-  });
 </script>
-
-<svelte:window onresize={() => { draftRowsCap = getDraftRowsCap(); }} />
 
 <div class="settings-fields">
   <div class="field-stack">
@@ -257,20 +235,6 @@
   </div>
 
   <div class="field">
-    <label for="draft-max-rows">{$t("settings.fields.draftMaxRows")}</label>
-    <input
-      id="draft-max-rows"
-      class="number-input number-wide"
-      type="number"
-      min="1"
-      max={draftRowsCap}
-      value={Math.min(settings.terminal.draftMaxRows, draftRowsCap)}
-      oninput={(event) =>
-        updateSettings({
-          terminal: { draftMaxRows: clampDraftRows(Number((event.target as HTMLInputElement).value)) },
-        })}
-    />
-    <p class="field-message">{$t("settings.fields.draftMaxRowsHint")}</p>
     <p class="field-message">{$t("settings.fields.draftBehaviorHint")}</p>
   </div>
 </div>

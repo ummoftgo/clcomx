@@ -179,7 +179,7 @@ const ko = {
       composerMaxRows: "드래프트 최대 줄 수",
       draftMaxRows: "드래프트 최대 줄 수",
       draftMaxRowsHint: "선택형 드래프트 영역은 현재 창 높이를 넘지 않는 범위에서 이 줄 수까지 자동 확장됩니다.",
-      draftBehaviorHint: "실시간 타이핑은 계속 터미널에 직접 입력됩니다. 드래프트 전송은 실수 방지를 위해 Ctrl+Enter 또는 Send 버튼으로만 동작합니다.",
+      draftBehaviorHint: "드래프트는 리사이즈 가능한 오버레이입니다. 실시간 타이핑은 계속 터미널에 직접 입력되고, 드래프트 전송은 Ctrl+Enter 또는 Send 버튼으로만 동작합니다.",
     },
     placeholders: {
       primaryFont: "JetBrains Mono, Cascadia Code, Consolas",
@@ -285,6 +285,7 @@ const ko = {
       hideTerminal: "터미널 숨기기",
       openDraft: "드래프트 열기",
       hideDraft: "드래프트 숨기기",
+      draftTitle: "드래프트",
       draftWithCount: "드래프트 ({count})",
       pasteImage: "이미지 붙여넣기",
       draftPlaceholder: "기본 입력은 터미널에 직접 하세요. 드래프트는 멀티라인 입력이나 이미지 경로 보관이 필요할 때만 사용하세요.",

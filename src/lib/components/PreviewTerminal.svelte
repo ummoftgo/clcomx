@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { _ as translate } from "svelte-i18n";
   import TerminalAssistPanel from "./TerminalAssistPanel.svelte";
   import TerminalAuxPanel from "./TerminalAuxPanel.svelte";
+  import TerminalDraftPanel from "./TerminalDraftPanel.svelte";
   import { getAgentLabel } from "../agents";
 
   interface Props {
@@ -67,9 +69,16 @@
   let auxVisible = $state(false);
   let draftOpen = $state(false);
   let draftValue = $state("");
+  let draftHeightPx = $state<number | null>(null);
+  let draftNaturalHeightPx = $state<number | null>(null);
   let draftEl = $state<HTMLTextAreaElement | null>(null);
+  let draftPanelEl = $state<HTMLDivElement | null>(null);
   let shellEl = $state<HTMLDivElement | null>(null);
   let assistPanelEl = $state<HTMLDivElement | null>(null);
+  let resizingDraft = false;
+  let draftResizePointerId: number | null = null;
+  let draftResizeStartY = 0;
+  let draftResizeStartHeightPx = 0;
   let initialized = false;
   let transcript = $state<PreviewLine[]>([]);
 
@@ -92,6 +101,7 @@
     initialized = true;
     queueMicrotask(() => {
       syncDraftHeight();
+      rememberDraftNaturalHeight();
       if (draftOpen) {
         focusDraft(true);
       }
@@ -117,6 +127,10 @@
   });
 
   function toggleAuxPanel() {
+    if (!auxVisible && draftOpen) {
+      draftOpen = false;
+    }
+
     auxVisible = !auxVisible;
     onAuxStateChange?.({
       auxPtyId: -1,
@@ -126,9 +140,29 @@
   }
 
   function toggleDraftPanel() {
-    draftOpen = !draftOpen;
+    if (draftOpen) {
+      draftOpen = false;
+      return;
+    }
+
+    if (auxVisible) {
+      auxVisible = false;
+      onAuxStateChange?.({
+        auxPtyId: -1,
+        auxVisible: false,
+        auxHeightPercent: null,
+      });
+    }
+
+    if (draftHeightPx !== null) {
+      draftHeightPx = clampDraftHeightPx(draftHeightPx);
+    }
+
+    draftOpen = true;
+
     queueMicrotask(() => {
       syncDraftHeight();
+      rememberDraftNaturalHeight();
       shellEl?.style.setProperty("--assist-panel-height", `${assistPanelEl?.offsetHeight ?? 0}px`);
       if (draftOpen) {
         focusDraft(true);
@@ -136,28 +170,42 @@
     });
   }
 
-  function getDraftLineHeight() {
-    const style = draftEl ? getComputedStyle(draftEl) : null;
-    const parsed = style ? Number.parseFloat(style.lineHeight) : Number.NaN;
-    return Number.isFinite(parsed) ? parsed : 21;
-  }
-
   function syncDraftHeight() {
     if (!draftEl) return;
 
-    const lineHeight = getDraftLineHeight();
-    const style = getComputedStyle(draftEl);
-    const verticalPadding =
-      Number.parseFloat(style.paddingTop) +
-      Number.parseFloat(style.paddingBottom) +
-      Number.parseFloat(style.borderTopWidth) +
-      Number.parseFloat(style.borderBottomWidth);
-    const maxRows = 5;
-    const maxHeight = lineHeight * maxRows + verticalPadding;
+    draftEl.style.height = "";
+    draftEl.style.overflowY = "auto";
+  }
 
-    draftEl.style.height = "auto";
-    draftEl.style.height = `${Math.min(draftEl.scrollHeight, maxHeight)}px`;
-    draftEl.style.overflowY = draftEl.scrollHeight > maxHeight ? "auto" : "hidden";
+  function measureDraftNaturalHeight() {
+    if (!draftPanelEl) {
+      return null;
+    }
+
+    const rectHeight = Math.round(draftPanelEl.getBoundingClientRect().height);
+    const scrollHeight = Math.round(draftPanelEl.scrollHeight);
+    const measuredHeight = Math.max(rectHeight, scrollHeight);
+    return measuredHeight > 0 ? measuredHeight : null;
+  }
+
+  function rememberDraftNaturalHeight() {
+    if (draftHeightPx !== null) {
+      return;
+    }
+
+    const measuredHeight = measureDraftNaturalHeight();
+    if (measuredHeight !== null) {
+      draftNaturalHeightPx = measuredHeight;
+    }
+  }
+
+  function clampDraftHeightPx(value: number) {
+    const minHeight = draftNaturalHeightPx ?? 128;
+    const maxHeight = Math.max(
+      minHeight,
+      (shellEl?.clientHeight ?? window.innerHeight) - (assistPanelEl?.offsetHeight ?? 0) - 12,
+    );
+    return Math.min(maxHeight, Math.max(minHeight, Math.round(value)));
   }
 
   function focusDraft(moveCaretToEnd = false) {
@@ -220,6 +268,53 @@
       handlePreviewDraftSend();
     }
   }
+
+  function stopDraftResize() {
+    resizingDraft = false;
+    draftResizePointerId = null;
+    window.removeEventListener("pointermove", handleDraftResizeMove, true);
+    window.removeEventListener("pointerup", stopDraftResize, true);
+    window.removeEventListener("pointercancel", stopDraftResize, true);
+    document.body.style.removeProperty("cursor");
+    document.body.style.removeProperty("user-select");
+  }
+
+  function handleDraftResizeMove(event: PointerEvent) {
+    if (!resizingDraft || draftResizePointerId !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    const delta = draftResizeStartY - event.clientY;
+    draftHeightPx = clampDraftHeightPx(draftResizeStartHeightPx + delta);
+  }
+
+  function handleDraftResizeStart(event: PointerEvent) {
+    if (event.button !== 0 || !draftOpen || !draftPanelEl) {
+      return;
+    }
+
+    event.preventDefault();
+    resizingDraft = true;
+    draftResizePointerId = event.pointerId;
+    draftResizeStartY = event.clientY;
+    const measuredNaturalHeight = measureDraftNaturalHeight();
+    if (draftNaturalHeightPx === null && measuredNaturalHeight !== null) {
+      draftNaturalHeightPx = measuredNaturalHeight;
+    }
+
+    draftResizeStartHeightPx = draftHeightPx ?? measuredNaturalHeight ?? clampDraftHeightPx(128);
+    draftHeightPx = draftResizeStartHeightPx;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handleDraftResizeMove, true);
+    window.addEventListener("pointerup", stopDraftResize, true);
+    window.addEventListener("pointercancel", stopDraftResize, true);
+  }
+
+  onDestroy(() => {
+    stopDraftResize();
+  });
 </script>
 
 <div
@@ -250,6 +345,22 @@
     </div>
   </div>
 
+  {#if draftOpen}
+    <TerminalDraftPanel
+      title={$translate("terminal.assist.draftTitle")}
+      draftValue={draftValue}
+      fixedHeightPx={draftHeightPx}
+      bind:draftElement={draftEl}
+      bind:panelElement={draftPanelEl}
+      onResizeStart={handleDraftResizeStart}
+      onClose={toggleDraftPanel}
+      onDraftInput={handlePreviewDraftInput}
+      onDraftKeydown={handlePreviewDraftKeydown}
+      onInsertDraft={handlePreviewDraftInsert}
+      onSendDraft={handlePreviewDraftSend}
+    />
+  {/if}
+
   {#if auxVisible}
     {#snippet previewAuxBody()}
       <div class="preview-subpanel">
@@ -277,14 +388,6 @@
       onPasteImage={() => {}}
       onToggleAux={toggleAuxPanel}
       onToggleDraft={toggleDraftPanel}
-      onDraftInput={handlePreviewDraftInput}
-      onDraftKeydown={handlePreviewDraftKeydown}
-      onInsertDraft={handlePreviewDraftInsert}
-      onSendDraft={handlePreviewDraftSend}
-      onDraftElementChange={(element) => {
-        draftEl = element;
-        syncDraftHeight();
-      }}
     />
   </div>
 </div>

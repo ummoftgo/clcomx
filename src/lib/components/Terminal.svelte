@@ -8,6 +8,7 @@
   import EditorPickerModal from "./EditorPickerModal.svelte";
   import TerminalAssistPanel from "./TerminalAssistPanel.svelte";
   import TerminalAuxPanel from "./TerminalAuxPanel.svelte";
+  import TerminalDraftPanel from "./TerminalDraftPanel.svelte";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
   import { listen, type UnlistenFn } from "../tauri/event";
   import { getBootstrap } from "../bootstrap";
@@ -108,6 +109,7 @@
   let outputEl: HTMLDivElement;
   let auxOutputEl = $state<HTMLDivElement | null>(null);
   let assistPanelEl = $state<HTMLDivElement | null>(null);
+  let draftPanelEl = $state<HTMLDivElement | null>(null);
   let draftEl = $state<HTMLTextAreaElement | null>(null);
   let terminal: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
@@ -175,10 +177,16 @@
   let auxStateHydrated = false;
   let auxLayoutSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let assistPanelHeight = $state(0);
+  let draftHeightPx = $state<number | null>(null);
+  let draftNaturalHeightPx = $state<number | null>(null);
   let resizingAux = false;
   let auxResizePointerId: number | null = null;
   let auxResizeStartY = 0;
   let auxResizeStartPercent = 0;
+  let resizingDraft = false;
+  let draftResizePointerId: number | null = null;
+  let draftResizeStartY = 0;
+  let draftResizeStartHeightPx = 0;
   let replayInProgress = false;
   let replayBuffer: PtyOutputChunk[] = [];
   let testHookRegistered = $state(false);
@@ -629,40 +637,11 @@
     }, DEFERRED_BOTTOM_SCROLL_MS);
   }
 
-  function getDraftLineHeight() {
-    const style = draftEl ? getComputedStyle(draftEl) : null;
-    const parsed = style ? Number.parseFloat(style.lineHeight) : Number.NaN;
-    return Number.isFinite(parsed) ? parsed : settings.terminal.fontSize * 1.5;
-  }
-
-  function getDraftWindowCap(lineHeight = getDraftLineHeight()) {
-    const availableHeight = Math.max(80, (shellEl?.clientHeight ?? window.innerHeight) - 220);
-    return Math.max(1, Math.floor(availableHeight / lineHeight));
-  }
-
-  function getEffectiveDraftMaxRows() {
-    return Math.min(
-      Math.max(1, settings.terminal.draftMaxRows),
-      getDraftWindowCap(),
-    );
-  }
-
   function syncDraftHeight() {
     if (!draftEl) return;
 
-    const lineHeight = getDraftLineHeight();
-    const style = getComputedStyle(draftEl);
-    const verticalPadding =
-      Number.parseFloat(style.paddingTop) +
-      Number.parseFloat(style.paddingBottom) +
-      Number.parseFloat(style.borderTopWidth) +
-      Number.parseFloat(style.borderBottomWidth);
-
-    const maxHeight = lineHeight * getEffectiveDraftMaxRows() + verticalPadding;
-
-    draftEl.style.height = "auto";
-    draftEl.style.height = `${Math.min(draftEl.scrollHeight, maxHeight)}px`;
-    draftEl.style.overflowY = draftEl.scrollHeight > maxHeight ? "auto" : "hidden";
+    draftEl.style.height = "";
+    draftEl.style.overflowY = "auto";
   }
 
   function focusDraft(moveCaretToEnd = false) {
@@ -734,6 +713,112 @@
       clearTimeout(auxLayoutSettleTimer);
       auxLayoutSettleTimer = null;
     }
+  }
+
+  function getDraftMinHeightPx() {
+    return draftNaturalHeightPx ?? Math.max(128 * settings.interface.uiScale, settings.terminal.fontSize * 5.5);
+  }
+
+  function measureDraftNaturalHeight() {
+    if (!draftPanelEl) {
+      return null;
+    }
+
+    const rectHeight = Math.round(draftPanelEl.getBoundingClientRect().height);
+    const scrollHeight = Math.round(draftPanelEl.scrollHeight);
+    const measuredHeight = Math.max(rectHeight, scrollHeight);
+    return measuredHeight > 0 ? measuredHeight : null;
+  }
+
+  function rememberDraftNaturalHeight() {
+    if (draftHeightPx !== null) {
+      return;
+    }
+
+    const measuredHeight = measureDraftNaturalHeight();
+    if (measuredHeight !== null) {
+      draftNaturalHeightPx = measuredHeight;
+    }
+  }
+
+  function clampDraftHeightPx(value: number) {
+    const minHeight = getDraftMinHeightPx();
+    const maxHeight = Math.max(
+      minHeight,
+      (shellEl?.clientHeight ?? window.innerHeight) - assistPanelHeight - 12,
+    );
+    return Math.min(maxHeight, Math.max(minHeight, Math.round(value)));
+  }
+
+  function closeDraft(options?: { restoreFocus?: boolean }) {
+    draftOpen = false;
+
+    if (options?.restoreFocus ?? true) {
+      tick().then(focusOutput);
+    }
+  }
+
+  function openDraft(options?: { preserveFocus?: boolean }) {
+    if (auxVisible) {
+      hideAuxTerminal({ restoreFocus: false });
+    }
+
+    if (draftHeightPx !== null) {
+      draftHeightPx = clampDraftHeightPx(draftHeightPx);
+    }
+
+    draftOpen = true;
+
+    tick().then(() => {
+      syncDraftHeight();
+      rememberDraftNaturalHeight();
+      if (!(options?.preserveFocus ?? false)) {
+        focusDraft(true);
+      }
+    });
+  }
+
+  function stopDraftResize() {
+    resizingDraft = false;
+    draftResizePointerId = null;
+    window.removeEventListener("pointermove", handleDraftResizeMove, true);
+    window.removeEventListener("pointerup", stopDraftResize, true);
+    window.removeEventListener("pointercancel", stopDraftResize, true);
+    document.body.style.removeProperty("cursor");
+    document.body.style.removeProperty("user-select");
+  }
+
+  function handleDraftResizeMove(event: PointerEvent) {
+    if (!resizingDraft || draftResizePointerId !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    const delta = draftResizeStartY - event.clientY;
+    draftHeightPx = clampDraftHeightPx(draftResizeStartHeightPx + delta);
+  }
+
+  function handleDraftResizeStart(event: PointerEvent) {
+    if (event.button !== 0 || !draftOpen || !draftPanelEl) {
+      return;
+    }
+
+    event.preventDefault();
+    resizingDraft = true;
+    draftResizePointerId = event.pointerId;
+    draftResizeStartY = event.clientY;
+    const measuredNaturalHeight = measureDraftNaturalHeight();
+    if (draftNaturalHeightPx === null && measuredNaturalHeight !== null) {
+      draftNaturalHeightPx = measuredNaturalHeight;
+    }
+
+    draftResizeStartHeightPx = draftHeightPx ?? measuredNaturalHeight ?? getDraftMinHeightPx();
+    draftHeightPx = draftResizeStartHeightPx;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handleDraftResizeMove, true);
+    window.addEventListener("pointerup", stopDraftResize, true);
+    window.addEventListener("pointercancel", stopDraftResize, true);
   }
 
   async function settleAuxTerminalLayout() {
@@ -1296,7 +1381,7 @@
   function pasteIntoTerminal(text: string) {
     if (!terminal || livePtyId < 0) {
       if (!draftOpen) {
-        draftOpen = true;
+        openDraft({ preserveFocus: true });
       }
       insertIntoDraft(text, true);
       tick().then(() => {
@@ -1313,7 +1398,7 @@
   function routeInsertedText(text: string) {
     if (draftOpen || draftValue.length > 0) {
       if (!draftOpen) {
-        draftOpen = true;
+        openDraft({ preserveFocus: true });
       }
       insertIntoDraft(text, true);
       tick().then(() => {
@@ -1441,7 +1526,7 @@
 
     if (submit) {
       await writePty(livePtyId, "\r");
-      draftOpen = false;
+      closeDraft({ restoreFocus: false });
     }
 
     if (submit) {
@@ -1465,15 +1550,12 @@
   }
 
   function toggleDraft() {
-    draftOpen = !draftOpen;
-    tick().then(() => {
-      syncDraftHeight();
-      if (draftOpen) {
-        focusDraft(true);
-      } else {
-        focusOutput();
-      }
-    });
+    if (draftOpen) {
+      closeDraft();
+      return;
+    }
+
+    openDraft();
   }
 
   function disposeAuxTerminalInstance() {
@@ -1632,17 +1714,23 @@
     });
   }
 
-  function hideAuxTerminal() {
+  function hideAuxTerminal(options?: { restoreFocus?: boolean }) {
     auxVisible = false;
     resizingAux = false;
     clearAuxLayoutSettleTimer();
-    focusOutput();
+    if (options?.restoreFocus ?? true) {
+      focusOutput();
+    }
   }
 
   async function toggleAuxTerminal() {
     if (auxVisible) {
       hideAuxTerminal();
       return;
+    }
+
+    if (draftOpen) {
+      closeDraft({ restoreFocus: false });
     }
 
     await ensureAuxTerminalVisible();
@@ -2084,11 +2172,6 @@
   });
 
   $effect(() => {
-    settings.terminal.draftMaxRows;
-    tick().then(syncDraftHeight);
-  });
-
-  $effect(() => {
     draftOpen;
     tick().then(syncAssistPanelHeight);
   });
@@ -2140,6 +2223,7 @@
     outputEl?.removeEventListener("wheel", disableAutoFollow, true);
     window.removeEventListener("mouseup", releaseLinkSelectionBlock, true);
     window.removeEventListener("blur", releaseLinkSelectionBlock);
+    stopDraftResize();
     stopAuxResize();
     unlistenOutput?.();
     unlistenExit?.();
@@ -2225,6 +2309,23 @@
     {/if}
   </div>
 
+  {#if draftOpen}
+    <TerminalDraftPanel
+      title={$t("terminal.assist.draftTitle")}
+      draftValue={draftValue}
+      fixedHeightPx={draftHeightPx}
+      bind:draftElement={draftEl}
+      bind:panelElement={draftPanelEl}
+      onResizeStart={handleDraftResizeStart}
+      onClose={toggleDraft}
+      onDraftInput={handleDraftInput}
+      onDraftKeydown={handleDraftKeydown}
+      onDraftPaste={handleDraftPaste}
+      onInsertDraft={() => void insertDraftIntoTerminal(false)}
+      onSendDraft={() => void insertDraftIntoTerminal(true)}
+    />
+  {/if}
+
   {#if auxInitialized}
     {#snippet liveAuxBody()}
       {#if auxSpawnError}
@@ -2281,14 +2382,6 @@
         void toggleAuxTerminal();
       }}
       onToggleDraft={toggleDraft}
-      onDraftInput={handleDraftInput}
-      onDraftKeydown={handleDraftKeydown}
-      onDraftPaste={handleDraftPaste}
-      onInsertDraft={() => void insertDraftIntoTerminal(false)}
-      onSendDraft={() => void insertDraftIntoTerminal(true)}
-      onDraftElementChange={(element) => {
-        draftEl = element;
-      }}
     />
   </div>
 </div>

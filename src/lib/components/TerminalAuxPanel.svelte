@@ -6,6 +6,7 @@
   interface Props {
     visible: boolean;
     heightPercent: number;
+    bottomOffsetPx?: number;
     title: string;
     currentPath: string;
     pathLabel: string;
@@ -21,6 +22,7 @@
   let {
     visible,
     heightPercent,
+    bottomOffsetPx = 0,
     title,
     currentPath,
     pathLabel,
@@ -44,6 +46,7 @@
   class="aux-panel"
   class:aux-panel--hidden={!visible}
   style:height={`${heightPercent}%`}
+  style:--aux-stack-offset={`${Math.max(bottomOffsetPx, 0)}px`}
   aria-hidden={!visible}
 >
   <div class="aux-surface">
@@ -91,10 +94,12 @@
     position: absolute;
     left: var(--ui-space-1);
     right: var(--ui-space-1);
-    bottom: calc(var(--assist-panel-height, 0px) + var(--ui-space-1));
+    bottom: calc(var(--assist-panel-height, 0px) + var(--ui-space-1) + var(--aux-stack-offset, 0px));
     overflow: hidden;
     min-height: 0;
-    max-height: calc(100% - var(--assist-panel-height, 0px) - calc(12px * var(--ui-scale)));
+    max-height: calc(
+      100% - var(--assist-panel-height, 0px) - var(--aux-stack-offset, 0px) - calc(12px * var(--ui-scale))
+    );
     border: 1px solid color-mix(in srgb, var(--ui-border-strong, var(--tab-border)) 76%, transparent);
     border-radius: var(--ui-radius-lg);
     background:
