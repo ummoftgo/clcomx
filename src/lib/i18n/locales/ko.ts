@@ -311,6 +311,7 @@ const ko = {
       openFile: "파일 열기",
       openInOtherEditor: "다른 에디터로 열기",
       copyPath: "경로 복사",
+      candidatesTitle: "일치하는 경로가 여러 개 있습니다.",
       copySuccess: "경로를 클립보드에 복사했습니다.",
       pickerTitle: "에디터로 열기",
       pickerDescription: "이 터미널 경로를 열 에디터를 선택하세요.",

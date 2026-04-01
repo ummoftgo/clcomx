@@ -22,6 +22,8 @@ struct PtySession {
     initial_output: Arc<Mutex<String>>,
     output_log: Arc<Mutex<String>>,
     output_chunks: Arc<Mutex<VecDeque<PtyOutputChunkRecord>>>,
+    home_dir: Arc<Mutex<Option<String>>>,
+    home_dir_osc_remainder: Arc<Mutex<String>>,
     size: Arc<Mutex<PtyDimensions>>,
     output_seq: Arc<AtomicU64>,
     buffer_initial_output: Arc<AtomicBool>,
@@ -57,6 +59,7 @@ struct PtyDimensions {
 pub struct PtyOutputSnapshot {
     pub data: String,
     pub seq: u64,
+    pub home_dir: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -66,6 +69,7 @@ pub struct PtyRuntimeSnapshot {
     pub seq: u64,
     pub cols: u16,
     pub rows: u16,
+    pub home_dir: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -80,6 +84,9 @@ const MAX_OUTPUT_LOG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_OUTPUT_CHUNK_LOG_BYTES: usize = 4 * 1024 * 1024;
 const RESUME_CAPTURE_TIMEOUT_MS: u64 = 2200;
 const RESUME_CAPTURE_EXIT_COMMAND_GRACE_MS: u64 = 1200;
+const HOME_DIR_OSC_PREFIX: &str = "\u{1b}]633;CLCOMX_HOME;";
+const OSC_BEL_TERMINATOR: &str = "\u{7}";
+const OSC_ST_TERMINATOR: &str = "\u{1b}\\";
 
 fn strip_ansi_sequences(input: &str) -> String {
     let bytes = input.as_bytes();
@@ -248,65 +255,151 @@ fn decode_utf8_stream_chunk(pending: &mut Vec<u8>, chunk: &[u8], flush_incomplet
     output
 }
 
-pub fn kill_pty_session(state: &PtyState, id: u32) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    sessions.remove(&id);
+fn decode_base64_utf8(input: &str) -> Option<String> {
+    let mut buffer = Vec::with_capacity(input.len().saturating_mul(3) / 4);
+    let mut quartet = [0u8; 4];
+    let mut quartet_len = 0usize;
+    let mut padding = 0usize;
+
+    for byte in input.trim().bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => {
+                padding += 1;
+                0
+            }
+            b'\r' | b'\n' | b'\t' | b' ' => continue,
+            _ => return None,
+        };
+
+        if padding > 0 && byte != b'=' {
+            return None;
+        }
+
+        quartet[quartet_len] = value;
+        quartet_len += 1;
+
+        if quartet_len == 4 {
+            buffer.push((quartet[0] << 2) | (quartet[1] >> 4));
+            if padding < 2 {
+                buffer.push((quartet[1] << 4) | (quartet[2] >> 2));
+            }
+            if padding == 0 {
+                buffer.push((quartet[2] << 6) | quartet[3]);
+            }
+
+            quartet = [0; 4];
+            quartet_len = 0;
+            padding = 0;
+        }
+    }
+
+    if quartet_len != 0 {
+        return None;
+    }
+
+    String::from_utf8(buffer).ok()
+}
+
+fn find_osc_terminator(source: &str, start: usize) -> Option<(usize, usize)> {
+    let bel_index = source[start..]
+        .find(OSC_BEL_TERMINATOR)
+        .map(|index| start + index);
+    let st_index = source[start..]
+        .find(OSC_ST_TERMINATOR)
+        .map(|index| start + index);
+
+    match (bel_index, st_index) {
+        (None, None) => None,
+        (Some(index), None) => Some((index, OSC_BEL_TERMINATOR.len())),
+        (None, Some(index)) => Some((index, OSC_ST_TERMINATOR.len())),
+        (Some(bel), Some(st)) if bel < st => Some((bel, OSC_BEL_TERMINATOR.len())),
+        (Some(_), Some(st)) => Some((st, OSC_ST_TERMINATOR.len())),
+    }
+}
+
+fn longest_partial_prefix_suffix(source: &str, prefix: &str) -> usize {
+    let max_len = source.len().min(prefix.len());
+    for len in (1..=max_len).rev() {
+        if source.ends_with(&prefix[..len]) {
+            return len;
+        }
+    }
+    0
+}
+
+fn consume_home_dir_osc(source: &str, remainder: &str) -> (Option<String>, String) {
+    let mut buffer = String::with_capacity(remainder.len() + source.len());
+    buffer.push_str(remainder);
+    buffer.push_str(source);
+
+    let mut cursor = 0usize;
+    let mut home_dir = None;
+
+    while cursor < buffer.len() {
+        let Some(offset) = buffer[cursor..].find(HOME_DIR_OSC_PREFIX) else {
+            break;
+        };
+        let start = cursor + offset;
+        let payload_start = start + HOME_DIR_OSC_PREFIX.len();
+
+        let Some((terminator_index, terminator_len)) = find_osc_terminator(&buffer, payload_start)
+        else {
+            return (home_dir, buffer[start..].to_string());
+        };
+
+        if let Some(decoded) = decode_base64_utf8(&buffer[payload_start..terminator_index]) {
+            home_dir = Some(decoded);
+        }
+
+        cursor = terminator_index + terminator_len;
+    }
+
+    let tail = &buffer[cursor..];
+    let suffix_len = longest_partial_prefix_suffix(tail, HOME_DIR_OSC_PREFIX);
+    (
+        home_dir,
+        tail[tail.len().saturating_sub(suffix_len)..].to_string(),
+    )
+}
+
+fn update_home_dir_cache(
+    home_dir_cache: &Arc<Mutex<Option<String>>>,
+    remainder: &Arc<Mutex<String>>,
+    data: &str,
+) -> Result<(), String> {
+    let current_remainder = {
+        let guard = remainder.lock().map_err(|e| e.to_string())?;
+        guard.clone()
+    };
+
+    let (cached_home_dir, new_remainder) = consume_home_dir_osc(data, &current_remainder);
+
+    {
+        let mut guard = remainder.lock().map_err(|e| e.to_string())?;
+        *guard = new_remainder;
+    }
+
+    if let Some(home_dir) = cached_home_dir {
+        let mut guard = home_dir_cache.lock().map_err(|e| e.to_string())?;
+        *guard = Some(home_dir);
+    }
+
     Ok(())
 }
 
-fn next_session_id(state: &PtyState) -> Result<u32, String> {
-    let mut next = state.next_id.lock().map_err(|e| e.to_string())?;
-    let id = *next;
-    *next += 1;
-    Ok(id)
-}
-
-fn append_output(
-    app: &AppHandle,
-    session_id: u32,
-    session: &PtySession,
-    data: String,
-) -> Result<(), String> {
-    if session.buffer_initial_output.load(Ordering::SeqCst) {
-        session
-            .initial_output
-            .lock()
-            .map_err(|e| e.to_string())?
-            .push_str(&data);
-    }
-
-    let seq = session.output_seq.fetch_add(1, Ordering::SeqCst) + 1;
-    {
-        let mut output = session.output_log.lock().map_err(|e| e.to_string())?;
-        output.push_str(&data);
-        trim_output_log(&mut output);
-    }
-    {
-        let mut chunks = session.output_chunks.lock().map_err(|e| e.to_string())?;
-        chunks.push_back(PtyOutputChunkRecord {
-            seq,
-            data: data.clone(),
-        });
-        trim_output_chunks(&mut chunks);
-    }
-
-    app.emit(
-        "pty-output",
-        PtyOutput {
-            id: session_id,
-            seq,
-            data,
-        },
-    )
-    .map_err(|e| e.to_string())
-}
-
-fn append_mock_output(
+fn record_output_chunk(
     app: &AppHandle,
     session_id: u32,
     initial_output: &Arc<Mutex<String>>,
     output_log: &Arc<Mutex<String>>,
     output_chunks: &Arc<Mutex<VecDeque<PtyOutputChunkRecord>>>,
+    home_dir_cache: &Arc<Mutex<Option<String>>>,
+    home_dir_osc_remainder: &Arc<Mutex<String>>,
     output_seq: &Arc<AtomicU64>,
     buffer_initial_output: &Arc<AtomicBool>,
     data: String,
@@ -317,6 +410,8 @@ fn append_mock_output(
             .map_err(|e| e.to_string())?
             .push_str(&data);
     }
+
+    update_home_dir_cache(home_dir_cache, home_dir_osc_remainder, &data)?;
 
     let seq = output_seq.fetch_add(1, Ordering::SeqCst) + 1;
     {
@@ -342,6 +437,65 @@ fn append_mock_output(
         },
     )
     .map_err(|e| e.to_string())
+}
+
+pub fn kill_pty_session(state: &PtyState, id: u32) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    sessions.remove(&id);
+    Ok(())
+}
+
+fn next_session_id(state: &PtyState) -> Result<u32, String> {
+    let mut next = state.next_id.lock().map_err(|e| e.to_string())?;
+    let id = *next;
+    *next += 1;
+    Ok(id)
+}
+
+fn append_output(
+    app: &AppHandle,
+    session_id: u32,
+    session: &PtySession,
+    data: String,
+) -> Result<(), String> {
+    record_output_chunk(
+        app,
+        session_id,
+        &session.initial_output,
+        &session.output_log,
+        &session.output_chunks,
+        &session.home_dir,
+        &session.home_dir_osc_remainder,
+        &session.output_seq,
+        &session.buffer_initial_output,
+        data,
+    )
+}
+
+fn append_mock_output(
+    app: &AppHandle,
+    session_id: u32,
+    initial_output: &Arc<Mutex<String>>,
+    output_log: &Arc<Mutex<String>>,
+    output_chunks: &Arc<Mutex<VecDeque<PtyOutputChunkRecord>>>,
+    home_dir_cache: &Arc<Mutex<Option<String>>>,
+    home_dir_osc_remainder: &Arc<Mutex<String>>,
+    output_seq: &Arc<AtomicU64>,
+    buffer_initial_output: &Arc<AtomicBool>,
+    data: String,
+) -> Result<(), String> {
+    record_output_chunk(
+        app,
+        session_id,
+        initial_output,
+        output_log,
+        output_chunks,
+        home_dir_cache,
+        home_dir_osc_remainder,
+        output_seq,
+        buffer_initial_output,
+        data,
+    )
 }
 
 fn create_mock_session(
@@ -388,6 +542,8 @@ fn create_mock_session(
     let initial_output = Arc::new(Mutex::new(banner.clone()));
     let output_log = Arc::new(Mutex::new(banner));
     let output_chunks = Arc::new(Mutex::new(VecDeque::new()));
+    let home_dir = Arc::new(Mutex::new(None));
+    let home_dir_osc_remainder = Arc::new(Mutex::new(String::new()));
     let size = Arc::new(Mutex::new(PtyDimensions { cols, rows }));
 
     Ok((
@@ -397,6 +553,8 @@ fn create_mock_session(
             initial_output,
             output_log,
             output_chunks,
+            home_dir,
+            home_dir_osc_remainder,
             size,
             output_seq: Arc::new(AtomicU64::new(0)),
             buffer_initial_output: Arc::new(AtomicBool::new(true)),
@@ -436,6 +594,8 @@ pub fn pty_spawn(
                 session.initial_output.clone(),
                 session.output_log.clone(),
                 session.output_chunks.clone(),
+                session.home_dir.clone(),
+                session.home_dir_osc_remainder.clone(),
                 session.output_seq.clone(),
                 session.buffer_initial_output.clone(),
                 session.exited.clone(),
@@ -451,11 +611,12 @@ pub fn pty_spawn(
             initial_output,
             output_log,
             output_chunks,
+            home_dir,
+            home_dir_osc_remainder,
             output_seq,
             buffer_initial_output,
             exited,
-        )) =
-            delayed_output_handles
+        )) = delayed_output_handles
         {
             let app_handle = app.clone();
             std::thread::spawn(move || {
@@ -487,6 +648,8 @@ pub fn pty_spawn(
                         &initial_output,
                         &output_log,
                         &output_chunks,
+                        &home_dir,
+                        &home_dir_osc_remainder,
                         &output_seq,
                         &buffer_initial_output,
                         chunk,
@@ -530,6 +693,8 @@ pub fn pty_spawn(
     let initial_output = Arc::new(Mutex::new(String::new()));
     let output_log = Arc::new(Mutex::new(String::new()));
     let output_chunks = Arc::new(Mutex::new(VecDeque::new()));
+    let home_dir = Arc::new(Mutex::new(None));
+    let home_dir_osc_remainder = Arc::new(Mutex::new(String::new()));
     let size_state = Arc::new(Mutex::new(PtyDimensions { cols, rows }));
     let output_seq = Arc::new(AtomicU64::new(0));
     let buffer_initial_output = Arc::new(AtomicBool::new(true));
@@ -552,40 +717,37 @@ pub fn pty_spawn(
     let initial_output_for_reader = initial_output.clone();
     let output_log_for_reader = output_log.clone();
     let output_chunks_for_reader = output_chunks.clone();
+    let home_dir_for_reader = home_dir.clone();
+    let home_dir_osc_remainder_for_reader = home_dir_osc_remainder.clone();
     let output_seq_for_reader = output_seq.clone();
     let buffer_initial_output_for_reader = buffer_initial_output.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut pending_utf8 = Vec::new();
+        let app_handle_for_output = app_handle.clone();
+        let initial_output_for_output = initial_output_for_reader.clone();
+        let output_log_for_output = output_log_for_reader.clone();
+        let output_chunks_for_output = output_chunks_for_reader.clone();
+        let home_dir_for_output = home_dir_for_reader.clone();
+        let home_dir_osc_remainder_for_output = home_dir_osc_remainder_for_reader.clone();
+        let output_seq_for_output = output_seq_for_reader.clone();
+        let buffer_initial_output_for_output = buffer_initial_output_for_reader.clone();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
                     let data = decode_utf8_stream_chunk(&mut pending_utf8, &[], true);
                     if !data.is_empty() {
-                        if buffer_initial_output_for_reader.load(Ordering::SeqCst) {
-                            if let Ok(mut output) = initial_output_for_reader.lock() {
-                                output.push_str(&data);
-                            }
-                        }
-                        let seq = output_seq_for_reader.fetch_add(1, Ordering::SeqCst) + 1;
-                        if let Ok(mut output) = output_log_for_reader.lock() {
-                            output.push_str(&data);
-                            trim_output_log(&mut output);
-                        }
-                        if let Ok(mut chunks) = output_chunks_for_reader.lock() {
-                            chunks.push_back(PtyOutputChunkRecord {
-                                seq,
-                                data: data.clone(),
-                            });
-                            trim_output_chunks(&mut chunks);
-                        }
-                        let _ = app_handle.emit(
-                            "pty-output",
-                            PtyOutput {
-                                id: session_id,
-                                seq,
-                                data,
-                            },
+                        let _ = record_output_chunk(
+                            &app_handle_for_output,
+                            session_id,
+                            &initial_output_for_output,
+                            &output_log_for_output,
+                            &output_chunks_for_output,
+                            &home_dir_for_output,
+                            &home_dir_osc_remainder_for_output,
+                            &output_seq_for_output,
+                            &buffer_initial_output_for_output,
+                            data,
                         );
                     }
                     break;
@@ -595,59 +757,33 @@ pub fn pty_spawn(
                     if data.is_empty() {
                         continue;
                     }
-                    if buffer_initial_output_for_reader.load(Ordering::SeqCst) {
-                        if let Ok(mut output) = initial_output_for_reader.lock() {
-                            output.push_str(&data);
-                        }
-                    }
-                    let seq = output_seq_for_reader.fetch_add(1, Ordering::SeqCst) + 1;
-                    if let Ok(mut output) = output_log_for_reader.lock() {
-                        output.push_str(&data);
-                        trim_output_log(&mut output);
-                    }
-                    if let Ok(mut chunks) = output_chunks_for_reader.lock() {
-                        chunks.push_back(PtyOutputChunkRecord {
-                            seq,
-                            data: data.clone(),
-                        });
-                        trim_output_chunks(&mut chunks);
-                    }
-                    let _ = app_handle.emit(
-                        "pty-output",
-                        PtyOutput {
-                            id: session_id,
-                            seq,
-                            data,
-                        },
+                    let _ = record_output_chunk(
+                        &app_handle_for_output,
+                        session_id,
+                        &initial_output_for_output,
+                        &output_log_for_output,
+                        &output_chunks_for_output,
+                        &home_dir_for_output,
+                        &home_dir_osc_remainder_for_output,
+                        &output_seq_for_output,
+                        &buffer_initial_output_for_output,
+                        data,
                     );
                 }
                 Err(_) => {
                     let data = decode_utf8_stream_chunk(&mut pending_utf8, &[], true);
                     if !data.is_empty() {
-                        if buffer_initial_output_for_reader.load(Ordering::SeqCst) {
-                            if let Ok(mut output) = initial_output_for_reader.lock() {
-                                output.push_str(&data);
-                            }
-                        }
-                        let seq = output_seq_for_reader.fetch_add(1, Ordering::SeqCst) + 1;
-                        if let Ok(mut output) = output_log_for_reader.lock() {
-                            output.push_str(&data);
-                            trim_output_log(&mut output);
-                        }
-                        if let Ok(mut chunks) = output_chunks_for_reader.lock() {
-                            chunks.push_back(PtyOutputChunkRecord {
-                                seq,
-                                data: data.clone(),
-                            });
-                            trim_output_chunks(&mut chunks);
-                        }
-                        let _ = app_handle.emit(
-                            "pty-output",
-                            PtyOutput {
-                                id: session_id,
-                                seq,
-                                data,
-                            },
+                        let _ = record_output_chunk(
+                            &app_handle_for_output,
+                            session_id,
+                            &initial_output_for_output,
+                            &output_log_for_output,
+                            &output_chunks_for_output,
+                            &home_dir_for_output,
+                            &home_dir_osc_remainder_for_output,
+                            &output_seq_for_output,
+                            &buffer_initial_output_for_output,
+                            data,
                         );
                     }
                     break;
@@ -668,6 +804,8 @@ pub fn pty_spawn(
                 initial_output,
                 output_log,
                 output_chunks,
+                home_dir,
+                home_dir_osc_remainder,
                 size: size_state,
                 output_seq,
                 buffer_initial_output,
@@ -692,11 +830,7 @@ pub fn pty_take_initial_output(
     Ok(std::mem::take(&mut *output))
 }
 
-#[tauri::command]
-pub fn pty_get_output_snapshot(
-    state: tauri::State<'_, PtyState>,
-    id: u32,
-) -> Result<PtyOutputSnapshot, String> {
+pub fn get_output_snapshot(state: &PtyState, id: u32) -> Result<PtyOutputSnapshot, String> {
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get(&id).ok_or("Session not found")?;
     let data = session
@@ -705,14 +839,23 @@ pub fn pty_get_output_snapshot(
         .map_err(|e| e.to_string())?
         .clone();
     let seq = session.output_seq.load(Ordering::SeqCst);
-    Ok(PtyOutputSnapshot { data, seq })
+    let home_dir = session.home_dir.lock().map_err(|e| e.to_string())?.clone();
+    Ok(PtyOutputSnapshot {
+        data,
+        seq,
+        home_dir,
+    })
 }
 
 #[tauri::command]
-pub fn pty_get_runtime_snapshot(
+pub fn pty_get_output_snapshot(
     state: tauri::State<'_, PtyState>,
     id: u32,
-) -> Result<PtyRuntimeSnapshot, String> {
+) -> Result<PtyOutputSnapshot, String> {
+    get_output_snapshot(state.inner(), id)
+}
+
+pub fn get_runtime_snapshot(state: &PtyState, id: u32) -> Result<PtyRuntimeSnapshot, String> {
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get(&id).ok_or("Session not found")?;
     let data = session
@@ -722,12 +865,22 @@ pub fn pty_get_runtime_snapshot(
         .clone();
     let seq = session.output_seq.load(Ordering::SeqCst);
     let size = *session.size.lock().map_err(|e| e.to_string())?;
+    let home_dir = session.home_dir.lock().map_err(|e| e.to_string())?.clone();
     Ok(PtyRuntimeSnapshot {
         data,
         seq,
         cols: size.cols,
         rows: size.rows,
+        home_dir,
     })
+}
+
+#[tauri::command]
+pub fn pty_get_runtime_snapshot(
+    state: tauri::State<'_, PtyState>,
+    id: u32,
+) -> Result<PtyRuntimeSnapshot, String> {
+    get_runtime_snapshot(state.inner(), id)
 }
 
 pub fn get_output_delta_since(
@@ -947,14 +1100,14 @@ pub fn pty_close_and_capture_resume(
 #[cfg(test)]
 mod tests {
     use super::{
+        consume_home_dir_osc, decode_utf8_stream_chunk, extract_resume_token,
+        get_output_delta_since, get_output_snapshot, get_runtime_snapshot, strip_ansi_sequences,
         PtyDimensions, PtyOutputChunkRecord, PtyRuntime, PtySession, PtyState,
-        decode_utf8_stream_chunk, extract_resume_token, get_output_delta_since,
-        strip_ansi_sequences,
     };
     use std::collections::{HashMap, VecDeque};
     use std::sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64},
+        Arc, Mutex,
     };
 
     fn state_with_session(
@@ -963,6 +1116,7 @@ mod tests {
         current_seq: u64,
         cols: u16,
         rows: u16,
+        home_dir: Option<&str>,
     ) -> PtyState {
         let output = chunks.iter().map(|(_, data)| *data).collect::<String>();
         let session = PtySession {
@@ -978,6 +1132,8 @@ mod tests {
                     })
                     .collect::<VecDeque<_>>(),
             )),
+            home_dir: Arc::new(Mutex::new(home_dir.map(|value| value.to_string()))),
+            home_dir_osc_remainder: Arc::new(Mutex::new(String::new())),
             size: Arc::new(Mutex::new(PtyDimensions { cols, rows })),
             output_seq: Arc::new(AtomicU64::new(current_seq)),
             buffer_initial_output: Arc::new(AtomicBool::new(false)),
@@ -1101,6 +1257,36 @@ mod tests {
     }
 
     #[test]
+    fn consume_home_dir_osc_preserves_split_prefix_and_terminator() {
+        let first = "\u{1b}]633;CLCOMX_HO";
+        let second = "ME;L2hvbWUvdGVzdGVy";
+        let third = "\u{7}rest";
+
+        let (home_dir, remainder) = consume_home_dir_osc(first, "");
+        assert_eq!(home_dir, None);
+        assert_eq!(remainder, first);
+
+        let (home_dir, remainder) = consume_home_dir_osc(second, &remainder);
+        assert_eq!(home_dir, None);
+        assert_eq!(remainder, format!("{}{}", first, second));
+
+        let (home_dir, remainder) = consume_home_dir_osc(third, &remainder);
+        assert_eq!(home_dir.as_deref(), Some("/home/tester"));
+        assert_eq!(remainder, "");
+    }
+
+    #[test]
+    fn snapshot_helpers_include_cached_home_directory() {
+        let state = state_with_session(11, &[(1, "alpha")], 1, 120, 36, Some("/home/tester"));
+
+        let output = get_output_snapshot(&state, 11).expect("output snapshot should succeed");
+        assert_eq!(output.home_dir.as_deref(), Some("/home/tester"));
+
+        let runtime = get_runtime_snapshot(&state, 11).expect("runtime snapshot should succeed");
+        assert_eq!(runtime.home_dir.as_deref(), Some("/home/tester"));
+    }
+
+    #[test]
     fn get_output_delta_since_returns_complete_data_when_requested_seq_is_still_buffered() {
         let state = state_with_session(
             7,
@@ -1108,6 +1294,7 @@ mod tests {
             5,
             120,
             36,
+            None,
         );
 
         let delta = get_output_delta_since(&state, 7, 3).expect("delta lookup should succeed");
@@ -1119,13 +1306,7 @@ mod tests {
 
     #[test]
     fn get_output_delta_since_marks_gap_when_requested_seq_fell_out_of_chunk_buffer() {
-        let state = state_with_session(
-            9,
-            &[(8, "recent"), (9, "tail")],
-            9,
-            120,
-            36,
-        );
+        let state = state_with_session(9, &[(8, "recent"), (9, "tail")], 9, 120, 36, None);
 
         let delta = get_output_delta_since(&state, 9, 6).expect("delta lookup should succeed");
 

@@ -80,6 +80,19 @@ const PREVIEW_DISTRO_TREE: Record<string, string[]> = {
   ],
 };
 
+function normalizePreviewHomeDir(homeDir: unknown) {
+  if (typeof homeDir !== "string") {
+    return PREVIEW_USER_HOME;
+  }
+
+  const trimmed = homeDir.trim();
+  return trimmed || PREVIEW_USER_HOME;
+}
+
+function toPreviewWindowsPath(wslPath: string) {
+  return `\\\\wsl.localhost\\Ubuntu-24.04${wslPath.replace(/\//g, "\\")}`;
+}
+
 const previewWindow: PreviewWindowHandle = {
   label: "main",
   async setTitle(title) {
@@ -733,17 +746,69 @@ export async function previewInvoke<T>(command: string, args?: Record<string, un
       ] as T;
     case "list_monospace_fonts":
       return ["JetBrains Mono", "Cascadia Code", "IBM Plex Mono", "Fira Code"] as T;
-    case "resolve_terminal_path":
+    case "resolve_terminal_path": {
+      const raw = String(args?.raw ?? "");
+      const homeDir = normalizePreviewHomeDir(args?.homeDir);
+
+      if (raw === "~" || raw.startsWith("~/")) {
+        const wslPath = raw === "~" ? homeDir : `${homeDir}${raw.slice(1)}`;
+        return {
+          kind: "resolved",
+          path: {
+            raw,
+            wslPath,
+            copyText: wslPath,
+            windowsPath: toPreviewWindowsPath(wslPath),
+            line: null,
+            column: null,
+            isDirectory: raw === "~" || raw.endsWith("/"),
+          },
+        } as T;
+      }
+
+      if (raw === "index.ts") {
+        return {
+          kind: "candidates",
+          raw: "index.ts",
+          candidates: [
+            {
+              raw: "index.ts",
+              wslPath: `${PREVIEW_PROJECT_PATH}/src/front/index.ts`,
+              copyText: `${PREVIEW_PROJECT_PATH}/src/front/index.ts:12:3`,
+              windowsPath:
+                "\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\work\\project\\src\\front\\index.ts",
+              line: 12,
+              column: 3,
+              isDirectory: false,
+            },
+            {
+              raw: "index.ts",
+              wslPath: `${PREVIEW_PROJECT_PATH}/src/shared/index.ts`,
+              copyText: `${PREVIEW_PROJECT_PATH}/src/shared/index.ts:8:1`,
+              windowsPath:
+                "\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\work\\project\\src\\shared\\index.ts",
+              line: 8,
+              column: 1,
+              isDirectory: false,
+            },
+          ],
+        } as T;
+      }
+
       return {
-        raw: String(args?.raw ?? ""),
-        wslPath: PREVIEW_PROJECT_FILE,
-        copyText: `${PREVIEW_PROJECT_FILE}:12:3`,
-        windowsPath:
-          "\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\work\\project\\src\\App.svelte",
-        line: 12,
-        column: 3,
-        isDirectory: false,
+        kind: "resolved",
+        path: {
+          raw,
+          wslPath: PREVIEW_PROJECT_FILE,
+          copyText: `${PREVIEW_PROJECT_FILE}:12:3`,
+          windowsPath:
+            "\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\work\\project\\src\\App.svelte",
+          line: 12,
+          column: 3,
+          isDirectory: false,
+        },
       } as T;
+    }
     case "open_in_editor":
     case "set_session_pty":
     case "set_session_aux_terminal_state":

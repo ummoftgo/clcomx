@@ -24,6 +24,8 @@
   import {
     type PtyOutputChunk,
     getPtyOutputSnapshot,
+    getPtyRuntimeSnapshot,
+    resolvePtyHomeDir,
     spawnShellPty,
     spawnPty,
     writePty,
@@ -46,6 +48,7 @@
   import {
     openInEditor,
     resolveTerminalPath,
+    type TerminalPathResolution,
     type DetectedEditor,
     type ResolvedTerminalPath,
   } from "../editors";
@@ -133,6 +136,7 @@
   let linkMenuTarget = $state<
     | { kind: "url"; url: string }
     | { kind: "file"; path: ResolvedTerminalPath }
+    | { kind: "file-candidates"; raw: string; candidates: ResolvedTerminalPath[] }
     | null
   >(null);
   let linkHovering = $state(false);
@@ -170,6 +174,8 @@
   let auxSpawnError = $state<string | null>(null);
   let auxCurrentPath = $state("");
   let auxMetadataRemainder = "";
+  let mainMetadataRemainder = "";
+  let shellHomeDir = $state<string | null>(null);
   let auxHeightPercent = $state(28);
   let auxHeightCustomized = false;
   let auxFollowTail = true;
@@ -253,20 +259,22 @@
             icon: "copy",
           },
         ]
-      : [
-          {
-            id: "open-link-in-browser",
-            kind: "item",
-            label: $t("terminal.links.openInBrowser"),
-            icon: "external-link",
-          },
-          {
-            id: "copy-link",
-            kind: "item",
-            label: $t("terminal.links.copyLink"),
-            icon: "copy",
-          },
-      ],
+      : linkMenuTarget?.kind === "file-candidates"
+        ? buildCandidateFileLinkMenuItems(linkMenuTarget.raw, linkMenuTarget.candidates)
+        : [
+            {
+              id: "open-link-in-browser",
+              kind: "item",
+              label: $t("terminal.links.openInBrowser"),
+              icon: "external-link",
+            },
+            {
+              id: "copy-link",
+              kind: "item",
+              label: $t("terminal.links.copyLink"),
+              icon: "copy",
+            },
+        ],
   );
   const terminalLoadingLabel = $derived(
     terminalLoadingState === "restoring"
@@ -413,6 +421,63 @@
 
       term.write(data, () => resolve());
     });
+  }
+
+  function consumeMainTerminalMetadata(data: string) {
+    const parsed = consumeAuxShellMetadata(data, mainMetadataRemainder);
+    mainMetadataRemainder = parsed.remainder;
+    const parsedHomeDir = resolvePtyHomeDir(parsed.homeDir, null);
+    if (parsedHomeDir) {
+      shellHomeDir = parsedHomeDir;
+    }
+    return parsed;
+  }
+
+  function getActivePtyId() {
+    return livePtyId >= 0 ? livePtyId : ptyId;
+  }
+
+  async function seedShellHomeDirFromRuntimeSnapshot() {
+    const currentHomeDir = resolvePtyHomeDir(shellHomeDir, null);
+    if (currentHomeDir) {
+      shellHomeDir = currentHomeDir;
+      return currentHomeDir;
+    }
+
+    const activePtyId = getActivePtyId();
+    if (activePtyId < 0) {
+      return null;
+    }
+
+    try {
+      const snapshot = await getPtyRuntimeSnapshot(activePtyId);
+      const resolvedHomeDir = resolvePtyHomeDir(shellHomeDir, snapshot.homeDir);
+      if (resolvedHomeDir) {
+        shellHomeDir = resolvedHomeDir;
+      }
+      return resolvedHomeDir;
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveShellHomeDirForPath(rawPath: string) {
+    const currentHomeDir = resolvePtyHomeDir(shellHomeDir, null);
+    if (currentHomeDir) {
+      shellHomeDir = currentHomeDir;
+      return currentHomeDir;
+    }
+
+    if (rawPath !== "~" && !rawPath.startsWith("~/")) {
+      return null;
+    }
+
+    return await seedShellHomeDirFromRuntimeSnapshot();
+  }
+
+  function writeMainTerminalData(term: Terminal, data: string) {
+    const parsed = consumeMainTerminalMetadata(data);
+    return writeTerminalData(term, parsed.text);
   }
 
   function hasRenderableTerminalOutput(data: string) {
@@ -1104,7 +1169,10 @@
   }
 
   function openContextMenu(
-    target: { kind: "url"; url: string } | { kind: "file"; path: ResolvedTerminalPath },
+    target:
+      | { kind: "url"; url: string }
+      | { kind: "file"; path: ResolvedTerminalPath }
+      | { kind: "file-candidates"; raw: string; candidates: ResolvedTerminalPath[] },
     x: number,
     y: number,
   ) {
@@ -1175,6 +1243,91 @@
     await openInEditor(preferredEditor.id, path);
   }
 
+  function getCandidateLinkLabel(path: ResolvedTerminalPath) {
+    const displayPath = (path.wslPath || path.raw).replace(/\\/g, "/");
+    const normalizedWorkDir = workDir.replace(/\\/g, "/");
+    let shortPath = displayPath;
+
+    if (normalizedWorkDir && displayPath.startsWith(`${normalizedWorkDir}/`)) {
+      shortPath = displayPath.slice(normalizedWorkDir.length + 1);
+    } else if (displayPath === normalizedWorkDir) {
+      shortPath = ".";
+    } else {
+      const lastSlash = displayPath.lastIndexOf("/");
+      if (lastSlash >= 0) {
+        shortPath = displayPath.slice(lastSlash + 1);
+      }
+    }
+
+    const positionSuffix =
+      path.line === null
+        ? ""
+        : path.column === null
+          ? `:${path.line}`
+          : `:${path.line}:${path.column}`;
+    return `${shortPath}${positionSuffix}`;
+  }
+
+  function buildCandidateMenuActionId(
+    index: number,
+    action: "open-file" | "open-in-other-editor" | "copy-path",
+  ) {
+    return `candidate-${index}-${action}`;
+  }
+
+  function parseCandidateMenuActionId(value: string) {
+    const match = /^candidate-(\d+)-(open-file|open-in-other-editor|copy-path)$/.exec(value);
+    if (!match) return null;
+    return {
+      index: Number(match[1]),
+      action: match[2] as "open-file" | "open-in-other-editor" | "copy-path",
+    };
+  }
+
+  function buildCandidateFileLinkMenuItems(raw: string, candidates: ResolvedTerminalPath[]) {
+    const items: ContextMenuItem[] = [
+      {
+        id: `candidate-list-title:${raw}`,
+        kind: "header",
+        label: $t("terminal.filePaths.candidatesTitle"),
+      },
+    ];
+
+    candidates.forEach((candidate, index) => {
+      if (index > 0) {
+        items.push({ id: `candidate-${index}-separator`, kind: "separator" });
+      }
+
+      items.push({
+        id: `candidate-${index}-header`,
+        kind: "header",
+        label: getCandidateLinkLabel(candidate),
+      });
+      items.push(
+        {
+          id: buildCandidateMenuActionId(index, "open-file"),
+          kind: "item",
+          label: $t("terminal.filePaths.openFile"),
+          icon: "file",
+        },
+        {
+          id: buildCandidateMenuActionId(index, "open-in-other-editor"),
+          kind: "item",
+          label: $t("terminal.filePaths.openInOtherEditor"),
+          icon: "open-with",
+        },
+        {
+          id: buildCandidateMenuActionId(index, "copy-path"),
+          kind: "item",
+          label: $t("terminal.filePaths.copyPath"),
+          icon: "copy",
+        },
+      );
+    });
+
+    return items;
+  }
+
   async function handleEditorSelect(editor: DetectedEditor) {
     if (!editorPickerPath) {
       return;
@@ -1194,8 +1347,23 @@
     terminal?.clearSelection();
 
     try {
-      const path = await resolveTerminalPath(rawPath, distro, workDir);
-      openContextMenu({ kind: "file", path }, event.clientX, event.clientY);
+      const homeDir = await resolveShellHomeDirForPath(rawPath);
+      const pathResolution: TerminalPathResolution = await resolveTerminalPath(rawPath, distro, workDir, homeDir);
+      if (pathResolution.kind === "resolved") {
+        openContextMenu({ kind: "file", path: pathResolution.path }, event.clientX, event.clientY);
+        return;
+      }
+
+      if (pathResolution.candidates.length === 0) {
+        setClipboardNotice(getFilePathNotice(undefined, "terminal.filePaths.resolveFailed"));
+        return;
+      }
+
+      openContextMenu(
+        { kind: "file-candidates", raw: pathResolution.raw, candidates: pathResolution.candidates },
+        event.clientX,
+        event.clientY,
+      );
     } catch (error) {
       console.warn("Failed to resolve terminal file path", error);
       setClipboardNotice(getFilePathNotice(error, "terminal.filePaths.resolveFailed"));
@@ -1206,8 +1374,23 @@
     suppressSelectionUntilMouseUp = true;
     terminal?.clearSelection();
 
-    const path = await resolveTerminalPath(rawPath, distro, workDir);
-    openContextMenu({ kind: "file", path }, 160, 160);
+    const homeDir = await resolveShellHomeDirForPath(rawPath);
+    const pathResolution: TerminalPathResolution = await resolveTerminalPath(rawPath, distro, workDir, homeDir);
+    if (pathResolution.kind === "resolved") {
+      openContextMenu({ kind: "file", path: pathResolution.path }, 160, 160);
+      return;
+    }
+
+    if (pathResolution.candidates.length === 0) {
+      setClipboardNotice(getFilePathNotice(undefined, "terminal.filePaths.resolveFailed"));
+      return;
+    }
+
+    openContextMenu(
+      { kind: "file-candidates", raw: pathResolution.raw, candidates: pathResolution.candidates },
+      160,
+      160,
+    );
   }
 
   function openUrlLinkMenuForTest(url: string) {
@@ -1232,6 +1415,34 @@
         return;
       }
 
+      if (linkMenuTarget.kind === "file-candidates") {
+        const candidateAction = parseCandidateMenuActionId(item.id);
+        if (!candidateAction) {
+          return;
+        }
+
+        const candidate = linkMenuTarget.candidates[candidateAction.index];
+        if (!candidate) {
+          return;
+        }
+
+        if (candidateAction.action === "open-file") {
+          await openPathInEditor(candidate);
+          return;
+        }
+
+        if (candidateAction.action === "open-in-other-editor") {
+          await showEditorPicker(candidate);
+          return;
+        }
+
+        if (candidateAction.action === "copy-path") {
+          await navigator.clipboard.writeText(candidate.copyText);
+          setClipboardNotice($t("terminal.filePaths.copySuccess"));
+        }
+        return;
+      }
+
       if (item.id === "open-file") {
         await openPathInEditor(linkMenuTarget.path);
         return;
@@ -1249,9 +1460,9 @@
     } catch (error) {
       console.error("Failed to handle link menu action", error);
       setClipboardNotice(
-        linkMenuTarget.kind === "file"
-          ? getFilePathNotice(error, "terminal.filePaths.openFailed")
-          : $t("terminal.links.openFailed"),
+        linkMenuTarget.kind === "url"
+          ? $t("terminal.links.openFailed")
+          : getFilePathNotice(error, "terminal.filePaths.openFailed"),
       );
     }
   }
@@ -1806,6 +2017,9 @@
     }
 
     let data = event.data;
+    const parsedMetadata = consumeMainTerminalMetadata(data);
+    data = parsedMetadata.text;
+
     if (data.includes(RESUME_FAILED_MARKER)) {
       data = data.replaceAll(`${RESUME_FAILED_MARKER}\r\n`, "").replaceAll(RESUME_FAILED_MARKER, "");
       onResumeFallback?.();
@@ -1843,6 +2057,7 @@
     livePtyId = id;
     replayInProgress = true;
     replayBuffer = [];
+    mainMetadataRemainder = "";
     void registerCanonicalSession({ sessionId, ptyId: id, agentId });
 
     await syncMainTerminalLayoutToPty({ stickToBottom: false });
@@ -1859,13 +2074,13 @@
     });
 
     if (canonicalSnapshot) {
-      await writeTerminalData(term, canonicalSnapshot.serialized);
-      await writeTerminalData(term, canonicalSnapshot.delta);
+      await writeMainTerminalData(term, canonicalSnapshot.serialized);
+      await writeMainTerminalData(term, canonicalSnapshot.delta);
       appliedSeq = canonicalSnapshot.appliedSeq;
       restored = true;
     } else {
       const snapshot = await getPtyOutputSnapshot(id);
-      await writeTerminalData(term, snapshot.data);
+      await writeMainTerminalData(term, snapshot.data);
       appliedSeq = snapshot.seq;
       fallbackSnapshotData = snapshot.data;
     }
@@ -1876,7 +2091,7 @@
 
     replayInProgress = false;
     for (const chunk of pendingChunks) {
-      await writeTerminalData(term, chunk.data);
+      await writeMainTerminalData(term, chunk.data);
     }
 
     initialOutputReady = true;
@@ -1896,6 +2111,7 @@
       );
     }
 
+    await seedShellHomeDirFromRuntimeSnapshot();
     await syncMainTerminalLayoutToPty({ refresh: true });
   }
 
@@ -1926,6 +2142,7 @@
 
   async function spawnNewPty(term: Terminal) {
     const { cols, rows } = getInitialPtySize(term);
+    mainMetadataRemainder = "";
     livePtyId = await spawnPty(cols, rows, agentId, distro, workDir, resumeToken);
     void registerCanonicalSession({ sessionId, ptyId: livePtyId, agentId });
     const initialOutput = await takePtyInitialOutput(livePtyId);
@@ -1936,7 +2153,7 @@
         .replaceAll(RESUME_FAILED_MARKER, "");
       onResumeFallback?.();
     }
-    await writeTerminalData(term, sanitizedOutput);
+    await writeMainTerminalData(term, sanitizedOutput);
     initialOutputReady = true;
     armBottomLock();
     noteTerminalLoadingOutput(sanitizedOutput);

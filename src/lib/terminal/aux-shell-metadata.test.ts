@@ -31,6 +31,16 @@ describe("consumeAuxShellMetadata", () => {
     expect(second.remainder).toBe("");
   });
 
+  it("extracts home metadata and keeps cwd separate", () => {
+    const homeDir = "/home/tester";
+    const marker = `\u001b]633;CLCOMX_HOME;${encodeBase64(homeDir)}\u0007`;
+    const result = consumeAuxShellMetadata(marker);
+
+    expect(result.homeDir).toBe(homeDir);
+    expect(result.cwd).toBeNull();
+    expect(result.text).toBe("");
+  });
+
   it("supports ST-terminated OSC sequences", () => {
     const cwd = "/mnt/c/workspace";
     const marker = `\u001b]633;CLCOMX_CWD;${encodeBase64(cwd)}\u001b\\`;

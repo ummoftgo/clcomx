@@ -20,6 +20,7 @@ export interface PtyRuntimeSnapshot {
   seq: number;
   cols: number;
   rows: number;
+  homeDir: string | null;
 }
 
 export interface PtyOutputDelta {
@@ -30,6 +31,22 @@ export interface PtyOutputDelta {
 
 function escapeShellSingleQuoted(value: string) {
   return value.replace(/'/g, "'\\''");
+}
+
+function normalizeHomeDir(homeDir: string | null | undefined): string | null {
+  if (typeof homeDir !== "string") {
+    return null;
+  }
+
+  const trimmed = homeDir.trim();
+  return trimmed ? trimmed : null;
+}
+
+export function resolvePtyHomeDir(
+  shellHomeDir: string | null | undefined,
+  snapshotHomeDir: string | null | undefined,
+): string | null {
+  return normalizeHomeDir(shellHomeDir) ?? normalizeHomeDir(snapshotHomeDir);
 }
 
 export async function spawnPty(
@@ -46,12 +63,24 @@ export async function spawnPty(
   const startCommand = resumeToken
     ? `if ! ${agent.buildResumeCommand(resumeToken, launchOptions)}; then printf '__CLCOMX_RESUME_FAILED__\\r\\n'; ${agent.buildStartCommand(launchOptions)}; fi`
     : agent.buildStartCommand(launchOptions);
+  const homeMetadataCommand = [
+    '__clcomx_home_b64=$(printf \'%s\' "$HOME" | base64 | tr -d \'\\r\\n\')',
+    'printf \'\\033]633;CLCOMX_HOME;%s\\007\' "$__clcomx_home_b64"',
+  ].join("\n");
 
   return await invoke<number>("pty_spawn", {
     cols,
     rows,
     command: "wsl.exe",
-    args: ["-d", distro, "-e", "bash", "-li", "-c", `cd '${safeWorkDir}' && ${startCommand}`],
+    args: [
+      "-d",
+      distro,
+      "-e",
+      "bash",
+      "-li",
+      "-c",
+      `${homeMetadataCommand}\ncd '${safeWorkDir}' && ${startCommand}`,
+    ],
     cwd: null,
     mockAgentId: agentId,
     mockDistro: distro,

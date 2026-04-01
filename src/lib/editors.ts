@@ -15,6 +15,17 @@ export interface ResolvedTerminalPath {
   isDirectory: boolean;
 }
 
+export type TerminalPathResolution =
+  | {
+      kind: "resolved";
+      path: ResolvedTerminalPath;
+    }
+  | {
+      kind: "candidates";
+      raw: string;
+      candidates: ResolvedTerminalPath[];
+    };
+
 export async function listAvailableEditors(): Promise<DetectedEditor[]> {
   return invoke("list_available_editors");
 }
@@ -23,8 +34,14 @@ export async function resolveTerminalPath(
   raw: string,
   distro: string,
   workDir: string,
-): Promise<ResolvedTerminalPath> {
-  return invoke("resolve_terminal_path", { raw, distro, workDir });
+  homeDir?: string | null,
+): Promise<TerminalPathResolution> {
+  const args: Record<string, unknown> = { raw, distro, workDir };
+  if (homeDir !== undefined && homeDir !== null && homeDir.trim() !== "") {
+    args.homeDir = homeDir.trim();
+  }
+
+  return invoke("resolve_terminal_path", args);
 }
 
 export async function openInEditor(

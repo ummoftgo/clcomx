@@ -311,6 +311,7 @@ const en = {
       openFile: "Open File",
       openInOtherEditor: "Open In Another Editor",
       copyPath: "Copy Path",
+      candidatesTitle: "Multiple matching paths found.",
       copySuccess: "Path copied to clipboard.",
       pickerTitle: "Open In Editor",
       pickerDescription: "Choose an installed editor for this terminal path.",
