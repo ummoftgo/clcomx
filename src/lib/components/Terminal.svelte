@@ -176,6 +176,7 @@
   let auxMetadataRemainder = "";
   let mainMetadataRemainder = "";
   let shellHomeDir = $state<string | null>(null);
+  let shellHomeDirSessionId = $state<string | null>(null);
   let auxHeightPercent = $state(28);
   let auxHeightCustomized = false;
   let auxFollowTail = true;
@@ -437,13 +438,15 @@
     return livePtyId >= 0 ? livePtyId : ptyId;
   }
 
-  async function seedShellHomeDirFromRuntimeSnapshot() {
-    const currentHomeDir = resolvePtyHomeDir(shellHomeDir, null);
-    if (currentHomeDir) {
-      shellHomeDir = currentHomeDir;
-      return currentHomeDir;
-    }
+  function clearShellHomeDirCache() {
+    shellHomeDir = null;
+  }
 
+  function getShellHomeDirHint() {
+    return resolvePtyHomeDir(shellHomeDir, null);
+  }
+
+  async function rehydrateShellHomeDirFromRuntimeSnapshot() {
     const activePtyId = getActivePtyId();
     if (activePtyId < 0) {
       return null;
@@ -451,7 +454,7 @@
 
     try {
       const snapshot = await getPtyRuntimeSnapshot(activePtyId);
-      const resolvedHomeDir = resolvePtyHomeDir(shellHomeDir, snapshot.homeDir);
+      const resolvedHomeDir = resolvePtyHomeDir(null, snapshot.homeDir);
       if (resolvedHomeDir) {
         shellHomeDir = resolvedHomeDir;
       }
@@ -459,20 +462,6 @@
     } catch {
       return null;
     }
-  }
-
-  async function resolveShellHomeDirForPath(rawPath: string) {
-    const currentHomeDir = resolvePtyHomeDir(shellHomeDir, null);
-    if (currentHomeDir) {
-      shellHomeDir = currentHomeDir;
-      return currentHomeDir;
-    }
-
-    if (rawPath !== "~" && !rawPath.startsWith("~/")) {
-      return null;
-    }
-
-    return await seedShellHomeDirFromRuntimeSnapshot();
   }
 
   function writeMainTerminalData(term: Terminal, data: string) {
@@ -1347,8 +1336,13 @@
     terminal?.clearSelection();
 
     try {
-      const homeDir = await resolveShellHomeDirForPath(rawPath);
-      const pathResolution: TerminalPathResolution = await resolveTerminalPath(rawPath, distro, workDir, homeDir);
+      const pathResolution: TerminalPathResolution = await resolveTerminalPath(
+        rawPath,
+        distro,
+        workDir,
+        sessionId,
+        getShellHomeDirHint(),
+      );
       if (pathResolution.kind === "resolved") {
         openContextMenu({ kind: "file", path: pathResolution.path }, event.clientX, event.clientY);
         return;
@@ -1374,8 +1368,13 @@
     suppressSelectionUntilMouseUp = true;
     terminal?.clearSelection();
 
-    const homeDir = await resolveShellHomeDirForPath(rawPath);
-    const pathResolution: TerminalPathResolution = await resolveTerminalPath(rawPath, distro, workDir, homeDir);
+    const pathResolution: TerminalPathResolution = await resolveTerminalPath(
+      rawPath,
+      distro,
+      workDir,
+      sessionId,
+      getShellHomeDirHint(),
+    );
     if (pathResolution.kind === "resolved") {
       openContextMenu({ kind: "file", path: pathResolution.path }, 160, 160);
       return;
@@ -2058,6 +2057,7 @@
     replayInProgress = true;
     replayBuffer = [];
     mainMetadataRemainder = "";
+    clearShellHomeDirCache();
     void registerCanonicalSession({ sessionId, ptyId: id, agentId });
 
     await syncMainTerminalLayoutToPty({ stickToBottom: false });
@@ -2111,7 +2111,7 @@
       );
     }
 
-    await seedShellHomeDirFromRuntimeSnapshot();
+    await rehydrateShellHomeDirFromRuntimeSnapshot();
     await syncMainTerminalLayoutToPty({ refresh: true });
   }
 
@@ -2132,6 +2132,7 @@
         terminalLoadingStartedAt = performance.now();
         terminalLoadingHasRenderableOutput = false;
         terminalLoadingReadySignalSeen = !requiresAgentReadySignal();
+        clearShellHomeDirCache();
       }
     } else {
       await showTerminalLoadingState("connecting");
@@ -2143,6 +2144,7 @@
   async function spawnNewPty(term: Terminal) {
     const { cols, rows } = getInitialPtySize(term);
     mainMetadataRemainder = "";
+    clearShellHomeDirCache();
     livePtyId = await spawnPty(cols, rows, agentId, distro, workDir, resumeToken);
     void registerCanonicalSession({ sessionId, ptyId: livePtyId, agentId });
     const initialOutput = await takePtyInitialOutput(livePtyId);
@@ -2425,6 +2427,21 @@
     if (auxPtyId < 0) {
       auxCurrentPath = workDir;
     }
+  });
+
+  $effect(() => {
+    if (shellHomeDirSessionId === null) {
+      shellHomeDirSessionId = sessionId;
+      return;
+    }
+
+    if (shellHomeDirSessionId === sessionId) {
+      return;
+    }
+
+    shellHomeDirSessionId = sessionId;
+    clearShellHomeDirCache();
+    mainMetadataRemainder = "";
   });
 
   onDestroy(() => {

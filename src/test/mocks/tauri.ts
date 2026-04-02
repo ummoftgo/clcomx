@@ -26,7 +26,7 @@ function createDefaultInvokeImplementation() {
         ];
       case "resolve_terminal_path": {
         const raw = String(args?.raw ?? "src/App.svelte:12:3");
-        const homeDir = normalizeMockHomeDir(args?.homeDir);
+        const homeDir = normalizeMockHomeDir(args?.homeDirHint ?? args?.homeDir);
 
         if (raw === "~" || raw.startsWith("~/")) {
           const wslPath = raw === "~" ? homeDir : `${homeDir}${raw.slice(1)}`;

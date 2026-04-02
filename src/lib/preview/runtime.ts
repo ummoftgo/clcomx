@@ -748,7 +748,7 @@ export async function previewInvoke<T>(command: string, args?: Record<string, un
       return ["JetBrains Mono", "Cascadia Code", "IBM Plex Mono", "Fira Code"] as T;
     case "resolve_terminal_path": {
       const raw = String(args?.raw ?? "");
-      const homeDir = normalizePreviewHomeDir(args?.homeDir);
+      const homeDir = normalizePreviewHomeDir(args?.homeDirHint ?? args?.homeDir);
 
       if (raw === "~" || raw.startsWith("~/")) {
         const wslPath = raw === "~" ? homeDir : `${homeDir}${raw.slice(1)}`;

@@ -36,6 +36,46 @@ pub struct PtyState {
     next_id: Mutex<u32>,
 }
 
+#[cfg(test)]
+pub(crate) fn test_state_with_session(
+    id: u32,
+    chunks: &[(u64, &str)],
+    current_seq: u64,
+    cols: u16,
+    rows: u16,
+    home_dir: Option<&str>,
+) -> PtyState {
+    let output = chunks.iter().map(|(_, data)| *data).collect::<String>();
+    let session = PtySession {
+        runtime: PtyRuntime::Mock,
+        initial_output: Arc::new(Mutex::new(String::new())),
+        output_log: Arc::new(Mutex::new(output)),
+        output_chunks: Arc::new(Mutex::new(
+            chunks
+                .iter()
+                .map(|(seq, data)| PtyOutputChunkRecord {
+                    seq: *seq,
+                    data: (*data).to_string(),
+                })
+                .collect::<VecDeque<_>>(),
+        )),
+        home_dir: Arc::new(Mutex::new(home_dir.map(|value| value.to_string()))),
+        home_dir_osc_remainder: Arc::new(Mutex::new(String::new())),
+        size: Arc::new(Mutex::new(PtyDimensions { cols, rows })),
+        output_seq: Arc::new(AtomicU64::new(current_seq)),
+        buffer_initial_output: Arc::new(AtomicBool::new(false)),
+        exited: Arc::new(AtomicBool::new(false)),
+    };
+
+    let mut sessions = HashMap::new();
+    sessions.insert(id, session);
+
+    PtyState {
+        sessions: Mutex::new(sessions),
+        next_id: Mutex::new(id + 1),
+    }
+}
+
 #[derive(Clone, Serialize)]
 struct PtyOutput {
     id: u32,
@@ -1102,52 +1142,8 @@ mod tests {
     use super::{
         consume_home_dir_osc, decode_utf8_stream_chunk, extract_resume_token,
         get_output_delta_since, get_output_snapshot, get_runtime_snapshot, strip_ansi_sequences,
-        PtyDimensions, PtyOutputChunkRecord, PtyRuntime, PtySession, PtyState,
+        test_state_with_session,
     };
-    use std::collections::{HashMap, VecDeque};
-    use std::sync::{
-        atomic::{AtomicBool, AtomicU64},
-        Arc, Mutex,
-    };
-
-    fn state_with_session(
-        id: u32,
-        chunks: &[(u64, &str)],
-        current_seq: u64,
-        cols: u16,
-        rows: u16,
-        home_dir: Option<&str>,
-    ) -> PtyState {
-        let output = chunks.iter().map(|(_, data)| *data).collect::<String>();
-        let session = PtySession {
-            runtime: PtyRuntime::Mock,
-            initial_output: Arc::new(Mutex::new(String::new())),
-            output_log: Arc::new(Mutex::new(output)),
-            output_chunks: Arc::new(Mutex::new(
-                chunks
-                    .iter()
-                    .map(|(seq, data)| PtyOutputChunkRecord {
-                        seq: *seq,
-                        data: (*data).to_string(),
-                    })
-                    .collect::<VecDeque<_>>(),
-            )),
-            home_dir: Arc::new(Mutex::new(home_dir.map(|value| value.to_string()))),
-            home_dir_osc_remainder: Arc::new(Mutex::new(String::new())),
-            size: Arc::new(Mutex::new(PtyDimensions { cols, rows })),
-            output_seq: Arc::new(AtomicU64::new(current_seq)),
-            buffer_initial_output: Arc::new(AtomicBool::new(false)),
-            exited: Arc::new(AtomicBool::new(false)),
-        };
-
-        let mut sessions = HashMap::new();
-        sessions.insert(id, session);
-
-        PtyState {
-            sessions: Mutex::new(sessions),
-            next_id: Mutex::new(id + 1),
-        }
-    }
 
     #[test]
     fn extract_resume_token_matches_claude_forms() {
@@ -1277,7 +1273,7 @@ mod tests {
 
     #[test]
     fn snapshot_helpers_include_cached_home_directory() {
-        let state = state_with_session(11, &[(1, "alpha")], 1, 120, 36, Some("/home/tester"));
+        let state = test_state_with_session(11, &[(1, "alpha")], 1, 120, 36, Some("/home/tester"));
 
         let output = get_output_snapshot(&state, 11).expect("output snapshot should succeed");
         assert_eq!(output.home_dir.as_deref(), Some("/home/tester"));
@@ -1288,7 +1284,7 @@ mod tests {
 
     #[test]
     fn get_output_delta_since_returns_complete_data_when_requested_seq_is_still_buffered() {
-        let state = state_with_session(
+        let state = test_state_with_session(
             7,
             &[(3, "alpha"), (4, "beta"), (5, "gamma")],
             5,
@@ -1306,7 +1302,7 @@ mod tests {
 
     #[test]
     fn get_output_delta_since_marks_gap_when_requested_seq_fell_out_of_chunk_buffer() {
-        let state = state_with_session(9, &[(8, "recent"), (9, "tail")], 9, 120, 36, None);
+        let state = test_state_with_session(9, &[(8, "recent"), (9, "tail")], 9, 120, 36, None);
 
         let delta = get_output_delta_since(&state, 9, 6).expect("delta lookup should succeed");
 

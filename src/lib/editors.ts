@@ -34,11 +34,16 @@ export async function resolveTerminalPath(
   raw: string,
   distro: string,
   workDir: string,
-  homeDir?: string | null,
+  sessionId?: string | null,
+  homeDirHint?: string | null,
 ): Promise<TerminalPathResolution> {
   const args: Record<string, unknown> = { raw, distro, workDir };
-  if (homeDir !== undefined && homeDir !== null && homeDir.trim() !== "") {
-    args.homeDir = homeDir.trim();
+  if (sessionId !== undefined && sessionId !== null && sessionId.trim() !== "") {
+    args.sessionId = sessionId.trim();
+  }
+
+  if (homeDirHint !== undefined && homeDirHint !== null && homeDirHint.trim() !== "") {
+    args.homeDirHint = homeDirHint.trim();
   }
 
   return invoke("resolve_terminal_path", args);

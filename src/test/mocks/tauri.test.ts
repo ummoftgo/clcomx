@@ -4,7 +4,10 @@ import { invokeMock, resetTauriMocks } from "./tauri";
 describe("tauri invoke mock resolve_terminal_path", () => {
   it("returns candidates for bare filenames", async () => {
     resetTauriMocks();
-    const result = await invokeMock("resolve_terminal_path", { raw: "index.ts" });
+    const result = await invokeMock("resolve_terminal_path", {
+      raw: "index.ts",
+      sessionId: "session-a",
+    });
 
     expect(result).toMatchObject({
       kind: "candidates",
@@ -13,11 +16,12 @@ describe("tauri invoke mock resolve_terminal_path", () => {
     expect((result as { candidates: unknown[] }).candidates).toHaveLength(2);
   });
 
-  it("resolves home-relative paths using the supplied homeDir", async () => {
+  it("resolves home-relative paths using the supplied homeDirHint", async () => {
     resetTauriMocks();
     const result = await invokeMock("resolve_terminal_path", {
       raw: "~/.claude/skills/code-quality-review/SKILL.md",
-      homeDir: "/home/tester",
+      sessionId: "session-b",
+      homeDirHint: "/home/tester",
     });
 
     expect(result).toMatchObject({

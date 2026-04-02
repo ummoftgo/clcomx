@@ -1,7 +1,7 @@
 use super::pty::PtyState;
 use crate::app_env::{
-    ensure_parent_dir, is_terminal_debug_hooks_enabled, is_test_mode, soft_follow_experiment_override,
-    state_path,
+    ensure_parent_dir, is_terminal_debug_hooks_enabled, is_test_mode,
+    soft_follow_experiment_override, state_path,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -395,6 +395,18 @@ impl WorkspaceState {
             snapshot: Mutex::new(initial),
         }
     }
+}
+
+pub fn find_session_tab_snapshot(
+    state: &WorkspaceState,
+    session_id: &str,
+) -> Result<Option<WorkspaceTabSnapshot>, String> {
+    let snapshot = snapshot_from_state(state)?;
+    Ok(snapshot
+        .windows
+        .into_iter()
+        .flat_map(|window| window.tabs.into_iter())
+        .find(|tab| tab.session_id == session_id))
 }
 
 #[derive(Default)]
@@ -842,7 +854,9 @@ fn normalize_resume_token(resume_token: Option<String>) -> Option<String> {
 }
 
 fn normalized_resume_token_ref<'a>(resume_token: Option<&'a str>) -> Option<&'a str> {
-    resume_token.map(|value| value.trim()).filter(|value| !value.is_empty())
+    resume_token
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
 }
 
 fn tab_history_entries_match(left: &TabHistoryEntry, right: &TabHistoryEntry) -> bool {
@@ -1776,7 +1790,8 @@ pub fn load_custom_css() -> Result<String, String> {
         return Ok(String::new());
     }
 
-    fs::read_to_string(&path).map_err(|error| format!("Failed to read {}: {}", path.display(), error))
+    fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read {}: {}", path.display(), error))
 }
 
 #[cfg(test)]

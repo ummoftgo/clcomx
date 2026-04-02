@@ -1,4 +1,6 @@
 use crate::app_env::is_test_mode;
+use crate::commands::pty::{get_runtime_snapshot, PtyState};
+use crate::commands::settings::{find_session_tab_snapshot, WorkspaceState, WorkspaceTabSnapshot};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::env;
@@ -672,6 +674,73 @@ fn resolve_home_dir_from(home_dir: Option<&str>, work_dir: &str) -> Option<Strin
     derive_home_dir(work_dir)
 }
 
+fn workspace_context_matches(tab: &WorkspaceTabSnapshot, distro: &str, work_dir: &str) -> bool {
+    let requested_distro = distro.trim();
+    if !requested_distro.is_empty() && !tab.distro.trim().eq_ignore_ascii_case(requested_distro) {
+        return false;
+    }
+
+    let requested_work_dir = work_dir.trim();
+    if !requested_work_dir.is_empty()
+        && normalize_posix_path(&tab.work_dir) != normalize_posix_path(requested_work_dir)
+    {
+        return false;
+    }
+
+    true
+}
+
+fn session_home_dir(
+    workspace_state: Option<&WorkspaceState>,
+    pty_state: Option<&PtyState>,
+    session_id: Option<&str>,
+    distro: &str,
+    work_dir: &str,
+) -> Option<String> {
+    let session_id = session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let workspace_state = workspace_state?;
+    let pty_state = pty_state?;
+    let tab = find_session_tab_snapshot(workspace_state, session_id)
+        .ok()
+        .flatten()?;
+
+    if !workspace_context_matches(&tab, distro, work_dir) {
+        return None;
+    }
+
+    let pty_id = tab.pty_id?;
+    get_runtime_snapshot(pty_state, pty_id)
+        .ok()
+        .and_then(|snapshot| snapshot.home_dir)
+}
+
+fn resolve_effective_home_dir(
+    workspace_state: Option<&WorkspaceState>,
+    pty_state: Option<&PtyState>,
+    session_id: Option<&str>,
+    home_dir_hint: Option<&str>,
+    distro: &str,
+    work_dir: &str,
+) -> Option<String> {
+    if let Some(home_dir) =
+        session_home_dir(workspace_state, pty_state, session_id, distro, work_dir)
+    {
+        return Some(home_dir);
+    }
+
+    if let Some(home_dir) = resolve_home_dir_from(home_dir_hint, work_dir) {
+        return Some(home_dir);
+    }
+
+    if is_test_mode() {
+        return env::var_os("HOME").and_then(|value| value.into_string().ok());
+    }
+
+    None
+}
+
 fn resolve_wsl_path_from(
     home_dir: Option<&str>,
     raw_path: &str,
@@ -700,7 +769,11 @@ fn resolve_wsl_path_from(
         work_dir.trim().to_string()
     };
 
-    Ok(normalize_posix_path(&format!("{}/{}", base.trim_end_matches('/'), trimmed)))
+    Ok(normalize_posix_path(&format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        trimmed
+    )))
 }
 
 fn wsl_path_to_windows(path: &str, distro: &str) -> Result<String, String> {
@@ -732,6 +805,81 @@ fn wsl_path_to_windows(path: &str, distro: &str) -> Result<String, String> {
     } else {
         format!(r"\\wsl.localhost\{distro}\{}", rest.replace('/', "\\"))
     })
+}
+
+#[cfg(not(windows))]
+fn canonicalize_wsl_path_for_access(path: &str, _distro: &str) -> Option<String> {
+    fs::canonicalize(path)
+        .ok()
+        .map(|resolved| normalize_posix_path(&resolved.to_string_lossy()))
+}
+
+#[cfg(windows)]
+fn canonicalize_wsl_path_for_access(path: &str, distro: &str) -> Option<String> {
+    if path.trim().is_empty() || distro.trim().is_empty() {
+        return None;
+    }
+
+    let mut command = Command::new("wsl.exe");
+    command.args([
+        "-d",
+        distro.trim(),
+        "-e",
+        "sh",
+        "-lc",
+        "if command -v realpath >/dev/null 2>&1; then realpath -e -- \"$1\"; else readlink -f -- \"$1\"; fi",
+        "clcomx-path-canonicalize",
+        path,
+    ]);
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    output
+        .stdout
+        .split(|byte| *byte == b'\n' || *byte == b'\r')
+        .find_map(|line| {
+            let value = String::from_utf8_lossy(line).trim().to_string();
+            if value.is_empty() {
+                None
+            } else {
+                Some(normalize_posix_path(&value))
+            }
+        })
+}
+
+fn resolve_existing_windows_path(
+    wsl_path: &str,
+    distro: &str,
+) -> Result<(String, fs::Metadata), String> {
+    let windows_path = wsl_path_to_windows(wsl_path, distro)?;
+    if let Ok(metadata) = std::fs::metadata(&windows_path) {
+        return Ok((windows_path, metadata));
+    }
+
+    if let Some(canonical_wsl_path) =
+        canonicalize_wsl_path_for_access(wsl_path, distro).filter(|value| value != wsl_path)
+    {
+        let canonical_windows_path = wsl_path_to_windows(&canonical_wsl_path, distro)?;
+        if let Ok(metadata) = std::fs::metadata(&canonical_windows_path) {
+            return Ok((canonical_windows_path, metadata));
+        }
+
+        #[cfg(not(windows))]
+        if let Ok(metadata) = std::fs::metadata(&canonical_wsl_path) {
+            return Ok((canonical_windows_path, metadata));
+        }
+    }
+
+    #[cfg(not(windows))]
+    if let Ok(metadata) = std::fs::metadata(wsl_path) {
+        return Ok((windows_path, metadata));
+    }
+
+    Err(format!("Path does not exist: {wsl_path}"))
 }
 
 fn trim_terminal_token(value: &str) -> String {
@@ -896,19 +1044,7 @@ fn resolve_terminal_path_record(
     column: Option<u32>,
     distro: &str,
 ) -> Result<ResolvedTerminalPath, String> {
-    let windows_path = wsl_path_to_windows(&wsl_path, distro)?;
-    let metadata = std::fs::metadata(&windows_path)
-        .or_else(|_| {
-            if Path::new(&wsl_path).exists() {
-                std::fs::metadata(&wsl_path)
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Path does not exist: {wsl_path}"),
-                ))
-            }
-        })
-        .map_err(|_| format!("Path does not exist: {wsl_path}"))?;
+    let (windows_path, metadata) = resolve_existing_windows_path(&wsl_path, distro)?;
 
     Ok(ResolvedTerminalPath {
         raw: raw.to_string(),
@@ -991,12 +1127,14 @@ pub async fn list_available_editors() -> Result<Vec<DetectedEditor>, String> {
         .map_err(|error| format!("Editor detection task failed: {error}"))
 }
 
-#[tauri::command]
-pub fn resolve_terminal_path(
+fn resolve_terminal_path_with_state(
+    workspace_state: Option<&WorkspaceState>,
+    pty_state: Option<&PtyState>,
     raw: String,
     distro: String,
     work_dir: String,
-    home_dir: Option<String>,
+    session_id: Option<String>,
+    home_dir_hint: Option<String>,
 ) -> Result<TerminalPathResolution, String> {
     let cleaned = trim_terminal_token(&raw);
     if cleaned.is_empty() {
@@ -1004,9 +1142,14 @@ pub fn resolve_terminal_path(
     }
 
     let (raw_path, line, column) = parse_line_and_column(&cleaned);
-    let effective_home_dir = home_dir.or_else(|| {
-        env::var_os("HOME").and_then(|value| value.into_string().ok())
-    });
+    let effective_home_dir = resolve_effective_home_dir(
+        workspace_state,
+        pty_state,
+        session_id.as_deref(),
+        home_dir_hint.as_deref(),
+        &distro,
+        &work_dir,
+    );
     let direct_wsl_path =
         resolve_wsl_path_from(effective_home_dir.as_deref(), &raw_path, &work_dir)?;
 
@@ -1057,6 +1200,27 @@ pub fn resolve_terminal_path(
 }
 
 #[tauri::command]
+pub fn resolve_terminal_path(
+    workspace_state: tauri::State<'_, WorkspaceState>,
+    pty_state: tauri::State<'_, PtyState>,
+    raw: String,
+    distro: String,
+    work_dir: String,
+    session_id: Option<String>,
+    home_dir_hint: Option<String>,
+) -> Result<TerminalPathResolution, String> {
+    resolve_terminal_path_with_state(
+        Some(workspace_state.inner()),
+        Some(pty_state.inner()),
+        raw,
+        distro,
+        work_dir,
+        session_id,
+        home_dir_hint,
+    )
+}
+
+#[tauri::command]
 pub fn open_in_editor(
     editor_id: String,
     windows_path: String,
@@ -1096,6 +1260,45 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn workspace_state_with_session(
+        session_id: &str,
+        distro: &str,
+        work_dir: &str,
+        pty_id: Option<u32>,
+    ) -> WorkspaceState {
+        let tab = crate::commands::settings::WorkspaceTabSnapshot {
+            session_id: session_id.to_string(),
+            agent_id: "claude".into(),
+            distro: distro.to_string(),
+            work_dir: work_dir.to_string(),
+            title: "session".into(),
+            pinned: false,
+            locked: false,
+            resume_token: None,
+            pty_id,
+            aux_pty_id: None,
+            aux_visible: false,
+            aux_height_percent: None,
+        };
+
+        let window = crate::commands::settings::WindowSnapshot {
+            label: "main".into(),
+            name: "main".into(),
+            role: "main".into(),
+            tabs: vec![tab],
+            active_session_id: Some(session_id.to_string()),
+            x: 0,
+            y: 0,
+            width: 1024,
+            height: 720,
+            maximized: false,
+        };
+
+        WorkspaceState::new(crate::commands::settings::WorkspaceSnapshot {
+            windows: vec![window],
+        })
+    }
 
     #[test]
     fn parses_line_and_column_suffixes() {
@@ -1197,10 +1400,13 @@ mod tests {
         fs::write(root.join("alpha/settings.toml"), "alpha").unwrap();
         fs::write(root.join("beta/nested/settings.toml"), "beta").unwrap();
 
-        let result = resolve_terminal_path(
+        let result = resolve_terminal_path_with_state(
+            None,
+            None,
             "settings.toml".into(),
             "Ubuntu-20.04".into(),
             root.to_str().unwrap().into(),
+            None,
             None,
         )
         .expect("resolution should succeed");
@@ -1260,8 +1466,12 @@ mod tests {
             resolve_home_dir_from(None, "/mnt/c/Users/tester/project"),
             None
         );
-        assert!(resolve_wsl_path_from(None, "~/.claude/settings.json", "/mnt/c/Users/tester/project")
-            .is_err());
+        assert!(resolve_wsl_path_from(
+            None,
+            "~/.claude/settings.json",
+            "/mnt/c/Users/tester/project"
+        )
+        .is_err());
     }
 
     #[test]
@@ -1275,10 +1485,13 @@ mod tests {
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), "skill").unwrap();
 
-        let result = resolve_terminal_path(
+        let result = resolve_terminal_path_with_state(
+            None,
+            None,
             "~/.claude/skills/code-quality-review/SKILL.md".into(),
             "Ubuntu-20.04".into(),
             "/mnt/c/Users/tester/project".into(),
+            None,
             Some(home.to_string_lossy().to_string()),
         )
         .expect("resolution should succeed");
@@ -1290,12 +1503,128 @@ mod tests {
                     home.to_string_lossy()
                 ));
                 assert_eq!(path.wsl_path, expected);
-                assert!(path.copy_text.ends_with(".claude/skills/code-quality-review/SKILL.md"));
+                assert!(path
+                    .copy_text
+                    .ends_with(".claude/skills/code-quality-review/SKILL.md"));
             }
             other => panic!("expected resolved path, got {other:?}"),
         }
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn prefers_session_cached_home_directory_over_stale_hint() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time went backwards")
+            .as_nanos();
+        let session_home = env::temp_dir().join(format!("clcomx-session-home-{unique}"));
+        let hinted_home = env::temp_dir().join(format!("clcomx-stale-home-{unique}"));
+        let skill_dir = session_home.join(".claude/skills/code-quality-review");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "skill").unwrap();
+
+        let workspace_state = workspace_state_with_session(
+            "session-1",
+            "Ubuntu-20.04",
+            "/mnt/c/Users/tester/project",
+            Some(41),
+        );
+        let pty_state = crate::commands::pty::test_state_with_session(
+            41,
+            &[(1, "alpha")],
+            1,
+            120,
+            36,
+            Some(&session_home.to_string_lossy()),
+        );
+
+        let result = resolve_terminal_path_with_state(
+            Some(&workspace_state),
+            Some(&pty_state),
+            "~/.claude/skills/code-quality-review/SKILL.md".into(),
+            "Ubuntu-20.04".into(),
+            "/mnt/c/Users/tester/project".into(),
+            Some("session-1".into()),
+            Some(hinted_home.to_string_lossy().to_string()),
+        )
+        .expect("resolution should succeed");
+
+        match result {
+            TerminalPathResolution::Resolved { path } => {
+                let expected = normalize_posix_path(&format!(
+                    "{}/.claude/skills/code-quality-review/SKILL.md",
+                    session_home.to_string_lossy()
+                ));
+                assert_eq!(path.wsl_path, expected);
+                assert!(path
+                    .copy_text
+                    .ends_with(".claude/skills/code-quality-review/SKILL.md"));
+            }
+            other => panic!("expected resolved path, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&session_home);
+    }
+
+    #[test]
+    fn ignores_session_cached_home_directory_when_workspace_context_mismatches() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time went backwards")
+            .as_nanos();
+        let session_home = env::temp_dir().join(format!("clcomx-mismatch-session-home-{unique}"));
+        let hinted_home = env::temp_dir().join(format!("clcomx-mismatch-hint-home-{unique}"));
+        let session_skill_dir = session_home.join(".claude/skills/code-quality-review");
+        let hinted_skill_dir = hinted_home.join(".claude/skills/code-quality-review");
+        fs::create_dir_all(&session_skill_dir).unwrap();
+        fs::create_dir_all(&hinted_skill_dir).unwrap();
+        fs::write(session_skill_dir.join("SKILL.md"), "session").unwrap();
+        fs::write(hinted_skill_dir.join("SKILL.md"), "hint").unwrap();
+
+        let workspace_state = workspace_state_with_session(
+            "session-2",
+            "Ubuntu-22.04",
+            "/mnt/c/Users/tester/other-project",
+            Some(42),
+        );
+        let pty_state = crate::commands::pty::test_state_with_session(
+            42,
+            &[(1, "alpha")],
+            1,
+            120,
+            36,
+            Some(&session_home.to_string_lossy()),
+        );
+
+        let result = resolve_terminal_path_with_state(
+            Some(&workspace_state),
+            Some(&pty_state),
+            "~/.claude/skills/code-quality-review/SKILL.md".into(),
+            "Ubuntu-20.04".into(),
+            "/mnt/c/Users/tester/project".into(),
+            Some("session-2".into()),
+            Some(hinted_home.to_string_lossy().to_string()),
+        )
+        .expect("resolution should succeed");
+
+        match result {
+            TerminalPathResolution::Resolved { path } => {
+                let expected = normalize_posix_path(&format!(
+                    "{}/.claude/skills/code-quality-review/SKILL.md",
+                    hinted_home.to_string_lossy()
+                ));
+                assert_eq!(path.wsl_path, expected);
+                assert!(path
+                    .copy_text
+                    .ends_with(".claude/skills/code-quality-review/SKILL.md"));
+            }
+            other => panic!("expected resolved path, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&session_home);
+        let _ = fs::remove_dir_all(&hinted_home);
     }
 
     #[test]
@@ -1308,6 +1637,48 @@ mod tests {
             wsl_path_to_windows("/home/tester/work/file.ts", "Ubuntu-22.04").unwrap(),
             r"\\wsl.localhost\Ubuntu-22.04\home\tester\work\file.ts"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonicalizes_symlinked_wsl_paths_before_windows_lookup() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time went backwards")
+            .as_nanos();
+        let root = env::temp_dir().join(format!("clcomx-symlink-resolution-{unique}"));
+        let real_dir = root.join("work/skills/skills/code-quality-review");
+        let home_dir = root.join("home/tester/.claude");
+        let skills_link = home_dir.join("skills");
+        let nested_link = skills_link.join("code-quality-review");
+
+        fs::create_dir_all(&real_dir).unwrap();
+        fs::create_dir_all(&home_dir).unwrap();
+        fs::write(real_dir.join("SKILL.md"), "skill").unwrap();
+        std::os::unix::fs::symlink(root.join("work/skills"), &skills_link).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &nested_link).unwrap();
+
+        let symlinked = normalize_posix_path(&format!(
+            "{}/home/tester/.claude/skills/code-quality-review/SKILL.md",
+            root.to_string_lossy()
+        ));
+        let canonical = normalize_posix_path(&real_dir.join("SKILL.md").to_string_lossy());
+        let resolved = resolve_terminal_path_record(
+            "~/.claude/skills/code-quality-review/SKILL.md",
+            symlinked.clone(),
+            None,
+            None,
+            "Ubuntu-20.04",
+        )
+        .expect("resolution should succeed");
+
+        assert_eq!(resolved.wsl_path, symlinked);
+        assert_eq!(
+            resolved.windows_path,
+            wsl_path_to_windows(&canonical, "Ubuntu-20.04").unwrap()
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
