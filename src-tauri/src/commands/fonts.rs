@@ -7,7 +7,8 @@ use windows::{
     Win32::{
         Globalization::GetUserDefaultLocaleName,
         Graphics::DirectWrite::{
-            DWriteCreateFactory, IDWriteFactory, IDWriteLocalizedStrings, DWRITE_FACTORY_TYPE_SHARED,
+            DWriteCreateFactory, IDWriteFactory, IDWriteLocalizedStrings,
+            DWRITE_FACTORY_TYPE_SHARED,
         },
     },
 };
@@ -26,7 +27,8 @@ fn query_system_fonts() -> Result<Vec<String>, String> {
         factory
             .GetSystemFontCollection(&mut collection, false)
             .map_err(|e| e.to_string())?;
-        let collection = collection.ok_or_else(|| "Failed to access system font collection".to_string())?;
+        let collection =
+            collection.ok_or_else(|| "Failed to access system font collection".to_string())?;
         let locale = get_preferred_locale_name();
 
         let mut seen = HashSet::new();
@@ -77,7 +79,11 @@ unsafe fn get_best_localized_string(
     let locale_wide = encode_wide(locale_name);
 
     strings
-        .FindLocaleName(PCWSTR::from_raw(locale_wide.as_ptr()), &mut index, &mut exists)
+        .FindLocaleName(
+            PCWSTR::from_raw(locale_wide.as_ptr()),
+            &mut index,
+            &mut exists,
+        )
         .ok()?;
 
     if !exists.as_bool() {
@@ -91,9 +97,7 @@ unsafe fn get_best_localized_string(
 unsafe fn get_string_by_index(strings: &IDWriteLocalizedStrings, index: u32) -> Option<String> {
     let length = strings.GetStringLength(index).ok()? as usize;
     let mut buffer = vec![0u16; length + 1];
-    strings
-        .GetString(index, &mut buffer)
-        .ok()?;
+    strings.GetString(index, &mut buffer).ok()?;
 
     Some(String::from_utf16_lossy(&buffer[..length]))
 }

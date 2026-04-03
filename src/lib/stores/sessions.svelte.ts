@@ -36,6 +36,15 @@ function createRuntimeSession(tab: WorkspaceTabSnapshot): Session {
     element: null,
     distro: tab.distro,
     workDir: tab.workDir,
+    viewMode: tab.viewMode ?? "terminal",
+    editorRootDir: tab.editorRootDir || tab.workDir,
+    openEditorTabs: (tab.openEditorTabs ?? []).map((entry) => ({
+      wslPath: entry.wslPath,
+      line: entry.line ?? null,
+      column: entry.column ?? null,
+    })),
+    activeEditorPath: tab.activeEditorPath ?? null,
+    dirtyPaths: [],
   };
 }
 
@@ -57,6 +66,14 @@ function createWindowSnapshot(label = currentWindowLabel): WorkspaceWindowSnapsh
         auxPtyId: session.auxPtyId >= 0 ? session.auxPtyId : null,
         auxVisible: session.auxVisible,
         auxHeightPercent: session.auxHeightPercent,
+        viewMode: session.viewMode,
+        editorRootDir: session.editorRootDir,
+        openEditorTabs: session.openEditorTabs.map((entry) => ({
+          wslPath: entry.wslPath,
+          line: entry.line ?? null,
+          column: entry.column ?? null,
+        })),
+        activeEditorPath: session.activeEditorPath,
       })),
     activeSessionId,
   };
@@ -68,6 +85,12 @@ function applyWindowSnapshot(windowSnapshot?: WorkspaceWindowSnapshot, preserveP
     .map((tab) => {
       const existing = sessions.find((session) => session.id === tab.sessionId);
       if (existing) {
+        const nextOpenEditorTabs = (tab.openEditorTabs ?? []).map((entry) => ({
+          wslPath: entry.wslPath,
+          line: entry.line ?? null,
+          column: entry.column ?? null,
+        }));
+        const nextOpenEditorPathSet = new Set(nextOpenEditorTabs.map((entry) => entry.wslPath));
         existing.title = tab.title || getDefaultTitle(tab.workDir);
         existing.pinned = tab.pinned ?? false;
         existing.locked = tab.locked ?? false;
@@ -77,6 +100,13 @@ function applyWindowSnapshot(windowSnapshot?: WorkspaceWindowSnapshot, preserveP
         existing.workDir = tab.workDir;
         existing.auxVisible = tab.auxVisible ?? false;
         existing.auxHeightPercent = tab.auxHeightPercent ?? null;
+        existing.viewMode = tab.viewMode ?? "terminal";
+        existing.editorRootDir = tab.editorRootDir || tab.workDir;
+        existing.openEditorTabs = nextOpenEditorTabs;
+        existing.activeEditorPath = tab.activeEditorPath ?? null;
+        existing.dirtyPaths = existing.dirtyPaths.filter((wslPath) =>
+          nextOpenEditorPathSet.has(wslPath),
+        );
         if (preservePtyIds && typeof tab.ptyId === "number") {
           existing.ptyId = tab.ptyId;
         } else if (!preservePtyIds) {
@@ -200,6 +230,40 @@ export function setSessionTitle(id: string, title: string) {
   const session = sessions.find((entry) => entry.id === id);
   if (!session) return;
   session.title = title;
+}
+
+export function setSessionViewMode(id: string, viewMode: Session["viewMode"]) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (!session) return;
+  session.viewMode = viewMode;
+}
+
+export function setSessionEditorRootDir(id: string, rootDir: string) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (!session) return;
+  session.editorRootDir = rootDir || session.workDir;
+}
+
+export function setSessionOpenEditorTabs(id: string, openEditorTabs: Session["openEditorTabs"]) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (!session) return;
+  session.openEditorTabs = openEditorTabs.map((entry) => ({
+    wslPath: entry.wslPath,
+    line: entry.line ?? null,
+    column: entry.column ?? null,
+  }));
+}
+
+export function setSessionActiveEditorPath(id: string, activeEditorPath: string | null) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (!session) return;
+  session.activeEditorPath = activeEditorPath;
+}
+
+export function setSessionDirtyPaths(id: string, dirtyPaths: string[]) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (!session) return;
+  session.dirtyPaths = [...dirtyPaths];
 }
 
 function firstUnpinnedIndex() {

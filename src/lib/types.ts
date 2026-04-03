@@ -5,6 +5,8 @@ import type { ThemePack } from "./themes";
 export type SupportedLocale = "en" | "ko";
 export type LanguagePreference = "system" | SupportedLocale;
 export type FileOpenMode = "default" | "picker";
+export type FileOpenTarget = "internal" | "external";
+export type SessionViewMode = "terminal" | "editor";
 export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends object
     ? T[K] extends Date | RegExp | Array<unknown> | Function
@@ -12,6 +14,12 @@ export type DeepPartial<T> = {
       : DeepPartial<T[K]>
     : T[K];
 };
+
+export interface EditorTabRef {
+  wslPath: string;
+  line?: number | null;
+  column?: number | null;
+}
 
 export interface Session {
   id: string;
@@ -28,6 +36,11 @@ export interface Session {
   element: HTMLDivElement | null;
   distro: string;
   workDir: string;
+  viewMode: SessionViewMode;
+  editorRootDir: string;
+  openEditorTabs: EditorTabRef[];
+  activeEditorPath: string | null;
+  dirtyPaths: string[];
 }
 
 export interface WindowPlacement {
@@ -47,6 +60,7 @@ export interface InterfaceSettings {
   windowDefaultCols: number;
   windowDefaultRows: number;
   fileOpenMode: FileOpenMode;
+  fileOpenTarget: FileOpenTarget;
   defaultEditorId: string;
 }
 
@@ -110,6 +124,10 @@ export interface WorkspaceTabSnapshot {
   auxPtyId?: number | null;
   auxVisible?: boolean;
   auxHeightPercent?: number | null;
+  viewMode?: SessionViewMode;
+  editorRootDir?: string;
+  openEditorTabs?: EditorTabRef[];
+  activeEditorPath?: string | null;
 }
 
 export interface WorkspaceWindowSnapshot {
@@ -149,6 +167,7 @@ export const DEFAULT_SETTINGS: Settings = {
     windowDefaultCols: 120,
     windowDefaultRows: 36,
     fileOpenMode: "picker",
+    fileOpenTarget: "external",
     defaultEditorId: "",
   },
   workspace: {

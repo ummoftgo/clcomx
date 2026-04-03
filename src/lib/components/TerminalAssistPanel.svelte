@@ -8,8 +8,11 @@
     auxBusy?: boolean;
     draftOpen: boolean;
     draftValue: string;
+    showEditorActions?: boolean;
     showPasteImageButton?: boolean;
     onPasteImage?: () => void;
+    onOpenFile?: () => void;
+    onOpenEditor?: () => void;
     onToggleAux: () => void;
     onToggleDraft: () => void;
   }
@@ -19,8 +22,11 @@
     auxBusy = false,
     draftOpen,
     draftValue,
+    showEditorActions = false,
     showPasteImageButton = true,
     onPasteImage = () => {},
+    onOpenFile = () => {},
+    onOpenEditor = () => {},
     onToggleAux,
     onToggleDraft,
   }: Props = $props();
@@ -34,6 +40,14 @@
     </div>
 
     <div class="assist-actions">
+      {#if showEditorActions}
+        <Button size="sm" onclick={onOpenFile}>
+          {$t("terminal.editor.openFile")}
+        </Button>
+        <Button size="sm" variant="secondary" onclick={onOpenEditor}>
+          {$t("terminal.editor.openEditor")}
+        </Button>
+      {/if}
       {#if showPasteImageButton}
         <Button size="sm" onclick={onPasteImage}>
           {$t("terminal.assist.pasteImage")}

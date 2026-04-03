@@ -6,7 +6,7 @@
   import { ensureEditorsDetected, getEditorDetectionState } from "../../../stores/editors.svelte";
   import { getSettings, updateSettings } from "../../../stores/settings.svelte";
   import { TEST_IDS } from "../../../testids";
-  import type { FileOpenMode, LanguagePreference } from "../../../types";
+  import type { FileOpenMode, FileOpenTarget, LanguagePreference } from "../../../types";
 
   const settings = getSettings();
   const editorDetection = getEditorDetectionState();
@@ -47,6 +47,14 @@
     updateSettings({
       interface: {
         fileOpenMode: (event.target as HTMLSelectElement).value as FileOpenMode,
+      },
+    });
+  }
+
+  function handleFileOpenTargetInput(event: Event) {
+    updateSettings({
+      interface: {
+        fileOpenTarget: (event.target as HTMLSelectElement).value as FileOpenTarget,
       },
     });
   }
@@ -147,6 +155,20 @@
 
     <div class="field-grid">
       <div class="field">
+        <label for="file-open-target">{$t("settings.fields.fileOpenTarget")}</label>
+        <select
+          id="file-open-target"
+          class="number-input"
+          value={settings.interface.fileOpenTarget}
+          onchange={handleFileOpenTargetInput}
+        >
+          <option value="internal">{$t("settings.fileOpen.targets.internal")}</option>
+          <option value="external">{$t("settings.fileOpen.targets.external")}</option>
+        </select>
+        <p class="field-message">{$t("settings.fields.fileOpenTargetHint")}</p>
+      </div>
+
+      <div class="field">
         <label for="file-open-mode">{$t("settings.fields.fileOpenMode")}</label>
         <select
           id="file-open-mode"
@@ -157,6 +179,7 @@
           <option value="default">{$t("settings.fileOpen.modes.default")}</option>
           <option value="picker">{$t("settings.fileOpen.modes.picker")}</option>
         </select>
+        <p class="field-message">{$t("settings.fields.fileOpenModeHint")}</p>
       </div>
 
       <div class="field">

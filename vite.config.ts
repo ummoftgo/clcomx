@@ -8,6 +8,9 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [svelte(), svelteTesting({ autoCleanup: false })],
   clearScreen: false,
+  worker: {
+    format: "es",
+  },
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
@@ -22,6 +25,7 @@ export default defineConfig(async () => ({
       },
       output: {
         manualChunks(id) {
+          if (id.includes("monaco-editor")) return "monaco";
           if (id.includes("@xterm/")) return "xterm";
           if (id.includes("@tauri-apps/api")) return "tauri";
           if (id.includes("svelte-i18n")) return "i18n";

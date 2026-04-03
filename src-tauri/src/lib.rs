@@ -4,24 +4,28 @@ mod commands;
 use commands::clipboard::{
     clear_image_cache, get_image_cache_stats, open_image_cache_folder, save_clipboard_image,
 };
-use commands::editors::{list_available_editors, open_in_editor, resolve_terminal_path};
+use commands::editors::{
+    list_available_editors, list_session_files, open_in_editor, read_session_file, resolve_terminal_path,
+    search_session_files, write_session_file,
+};
 use commands::external::open_external_url;
 use commands::fonts::list_monospace_fonts;
 use commands::pty::{
-    PtyState, pty_close_and_capture_resume, pty_get_output_delta_since, pty_get_output_snapshot,
+    pty_close_and_capture_resume, pty_get_output_delta_since, pty_get_output_snapshot,
     pty_get_runtime_snapshot, pty_kill, pty_resize, pty_spawn, pty_take_initial_output, pty_write,
+    PtyState,
 };
 use commands::settings::{
-    WindowReadyState, WorkspaceState, bootstrap_app, close_app, close_session, close_session_by_pty,
-    clear_session_pty, close_window_sessions, detach_session_to_new_window, load_custom_css, load_settings,
-    load_settings_or_default, is_window_ready, load_tab_history, load_workspace,
+    bootstrap_app, clear_session_pty, close_app, close_session, close_session_by_pty,
+    close_window_sessions, detach_session_to_new_window, is_window_ready, load_custom_css,
+    load_settings, load_settings_or_default, load_tab_history, load_workspace,
     load_workspace_or_default, move_session_to_window, move_window_sessions_to_main,
     open_empty_window, record_tab_history, remove_tab_history_entry, remove_window,
     restore_secondary_windows, save_settings, save_workspace, set_session_aux_terminal_state,
     set_session_pty, set_session_resume_token, trim_tab_history, update_window_geometry,
-    window_ready,
+    window_ready, WindowReadyState, WorkspaceState,
 };
-use commands::wsl::{WslState, list_wsl_distros, list_wsl_directories};
+use commands::wsl::{list_wsl_directories, list_wsl_distros, WslState};
 use tauri::{Manager, PhysicalPosition, PhysicalSize};
 
 fn restore_main_window(app: &tauri::AppHandle) {
@@ -104,6 +108,10 @@ pub fn run() {
             open_external_url,
             list_available_editors,
             resolve_terminal_path,
+            list_session_files,
+            search_session_files,
+            read_session_file,
+            write_session_file,
             open_in_editor,
             list_wsl_distros,
             list_wsl_directories,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { previewInvoke } from "./runtime";
+import { applyPreviewPreset, getAvailablePreviewPresets, previewInvoke } from "./runtime";
 
 describe("previewInvoke resolve_terminal_path", () => {
   it("returns candidates for bare filenames", async () => {
@@ -38,5 +38,270 @@ describe("previewInvoke resolve_terminal_path", () => {
     expect(result.kind).toBe("resolved");
     expect(result.path?.wslPath).toBe("/home/user/.claude/skills/code-quality-review/SKILL.md");
     expect(result.path?.copyText).toBe("/home/user/.claude/skills/code-quality-review/SKILL.md");
+  });
+});
+
+describe("previewInvoke editor commands", () => {
+  it("includes an editor-focused preset", () => {
+    expect(getAvailablePreviewPresets().map((preset) => preset.id)).toContain("editor");
+  });
+
+  it("returns editor-first workspace data for the editor preset", async () => {
+    const presetBootstrap = applyPreviewPreset("editor");
+
+    const bootstrap = await previewInvoke<{
+      settings: {
+        interface: {
+          fileOpenTarget?: string;
+        };
+      };
+      workspace: {
+        windows: Array<{
+          activeSessionId: string | null;
+          tabs: Array<{
+            sessionId: string;
+            viewMode?: string;
+            activeEditorPath?: string | null;
+            openEditorTabs?: Array<{ wslPath: string }>;
+          }>;
+        }>;
+      };
+    }>("bootstrap_app");
+
+    const mainWindow = bootstrap.workspace.windows[0];
+    const activeTab = mainWindow.tabs.find((tab) => tab.sessionId === mainWindow.activeSessionId);
+
+    expect(presetBootstrap.settings?.interface?.fileOpenTarget).toBe("internal");
+    expect(bootstrap.settings.interface.fileOpenTarget).toBe("internal");
+    expect(activeTab?.viewMode).toBe("editor");
+    expect(activeTab?.activeEditorPath).toContain("/src/App.svelte");
+    expect(activeTab?.openEditorTabs).toHaveLength(2);
+  });
+
+  it("searches preview editor files with basename-ranked results", async () => {
+    applyPreviewPreset("editor");
+
+    const result = await previewInvoke<{
+      rootDir: string;
+      results: Array<{ basename: string; relativePath: string }>;
+    }>("search_session_files", {
+      sessionId: "preview-editor",
+      rootDir: "/home/user/work/project",
+      query: "editor",
+      limit: 10,
+    });
+
+    expect(result.rootDir).toBe("/home/user/work/project");
+    expect(result.results[0]).toMatchObject({
+      basename: "EditorQuickOpenModal.svelte",
+      relativePath: "src/lib/components/EditorQuickOpenModal.svelte",
+    });
+    expect(result.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          basename: "InternalEditor.svelte",
+          relativePath: "src/lib/components/InternalEditor.svelte",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps prefix matches ahead of substring matches in preview editor search", async () => {
+    applyPreviewPreset("editor");
+
+    const result = await previewInvoke<{
+      results: Array<{ basename: string; relativePath: string }>;
+    }>("search_session_files", {
+      sessionId: "preview-editor",
+      rootDir: "/home/user/work/project",
+      query: "editor",
+      limit: 10,
+    });
+
+    expect(result.results[0]).toMatchObject({
+      basename: "EditorQuickOpenModal.svelte",
+      relativePath: "src/lib/components/EditorQuickOpenModal.svelte",
+    });
+    expect(result.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          basename: "InternalEditor.svelte",
+          relativePath: "src/lib/components/InternalEditor.svelte",
+        }),
+      ]),
+    );
+  });
+
+  it("returns no preview editor results for an empty query", async () => {
+    applyPreviewPreset("editor");
+
+    const result = await previewInvoke<{
+      rootDir: string;
+      results: Array<{ basename: string }>;
+    }>("search_session_files", {
+      sessionId: "preview-editor",
+      rootDir: "/home/user/work/project",
+      query: "",
+      limit: 10,
+    });
+
+    expect(result.rootDir).toBe("/home/user/work/project");
+    expect(result.results).toEqual([]);
+  });
+
+  it("returns no results for empty quick-open queries", async () => {
+    applyPreviewPreset("editor");
+
+    const result = await previewInvoke<{
+      rootDir: string;
+      results: Array<{ basename: string }>;
+    }>("search_session_files", {
+      sessionId: "preview-editor",
+      rootDir: "/home/user/work/project",
+      query: "",
+      limit: 10,
+    });
+
+    expect(result.rootDir).toBe("/home/user/work/project");
+    expect(result.results).toEqual([]);
+  });
+
+  it("returns cached list_session_files results until forceRefresh", async () => {
+    applyPreviewPreset("editor");
+
+    const first = await previewInvoke<{
+      rootDir: string;
+      results: Array<{ wslPath: string; relativePath: string; basename: string }>;
+      lastUpdatedMs: number;
+    }>("list_session_files", {
+      sessionId: "preview-editor",
+      rootDir: "/home/user/work/project",
+    });
+
+    const second = await previewInvoke<{
+      rootDir: string;
+      results: Array<{ wslPath: string; relativePath: string; basename: string }>;
+      lastUpdatedMs: number;
+    }>("list_session_files", {
+      sessionId: "preview-editor",
+      rootDir: "/home/user/work/project",
+    });
+
+    expect(first.rootDir).toBe("/home/user/work/project");
+    expect(first.results.length).toBeGreaterThan(0);
+    expect(second.lastUpdatedMs).toBe(first.lastUpdatedMs);
+    expect(second.results).toEqual(first.results);
+
+    const refreshed = await previewInvoke<{
+      rootDir: string;
+      results: Array<{ wslPath: string; relativePath: string; basename: string }>;
+      lastUpdatedMs: number;
+    }>("list_session_files", {
+      sessionId: "preview-editor",
+      rootDir: "/home/user/work/project",
+      forceRefresh: true,
+    });
+
+    expect(refreshed.lastUpdatedMs).toBeGreaterThan(first.lastUpdatedMs);
+    expect(refreshed.results).toEqual(first.results);
+  });
+
+  it("reads and writes preview editor files", async () => {
+    applyPreviewPreset("editor");
+
+    const before = await previewInvoke<{
+      content: string;
+      mtimeMs: number;
+      languageId: string;
+    }>("read_session_file", {
+      sessionId: "preview-editor",
+      wslPath: "/home/user/work/project/src/App.svelte",
+    });
+
+    expect(before.languageId).toBe("svelte");
+    expect(before.content).toContain("CLCOMX");
+
+    const written = await previewInvoke<{ mtimeMs: number; sizeBytes: number }>("write_session_file", {
+      sessionId: "preview-editor",
+      wslPath: "/home/user/work/project/src/App.svelte",
+      content: `${before.content}\n<!-- changed -->\n`,
+      expectedMtimeMs: before.mtimeMs,
+    });
+
+    expect(written.mtimeMs).toBeGreaterThan(before.mtimeMs);
+    expect(written.sizeBytes).toBeGreaterThan(before.content.length);
+
+    const after = await previewInvoke<{ content: string }>("read_session_file", {
+      sessionId: "preview-editor",
+      wslPath: "/home/user/work/project/src/App.svelte",
+    });
+
+    expect(after.content).toContain("changed");
+  });
+
+  it("rejects preview writes when the file mtime is stale", async () => {
+    applyPreviewPreset("editor");
+
+    const before = await previewInvoke<{
+      mtimeMs: number;
+    }>("read_session_file", {
+      sessionId: "preview-editor",
+      wslPath: "/home/user/work/project/src/App.svelte",
+    });
+
+    await expect(
+      previewInvoke("write_session_file", {
+        sessionId: "preview-editor",
+        wslPath: "/home/user/work/project/src/App.svelte",
+        content: "<!-- stale -->\n",
+        expectedMtimeMs: before.mtimeMs - 1,
+      }),
+    ).rejects.toThrow("FileModifiedOnDisk");
+  });
+
+  it("refreshes cached list_session_files metadata after write", async () => {
+    applyPreviewPreset("editor");
+
+    const beforeList = await previewInvoke<{
+      rootDir: string;
+      results: Array<{ wslPath: string }>;
+      lastUpdatedMs: number;
+    }>("list_session_files", {
+      sessionId: "preview-editor",
+      rootDir: "/home/user/work/project",
+    });
+
+    const beforeFile = await previewInvoke<{
+      content: string;
+      mtimeMs: number;
+    }>("read_session_file", {
+      sessionId: "preview-editor",
+      wslPath: "/home/user/work/project/src/App.svelte",
+    });
+
+    await previewInvoke("write_session_file", {
+      sessionId: "preview-editor",
+      wslPath: "/home/user/work/project/src/App.svelte",
+      content: `${beforeFile.content}\n<!-- list cache update -->\n`,
+      expectedMtimeMs: beforeFile.mtimeMs,
+    });
+
+    const afterList = await previewInvoke<{
+      rootDir: string;
+      results: Array<{ wslPath: string }>;
+      lastUpdatedMs: number;
+    }>("list_session_files", {
+      sessionId: "preview-editor",
+      rootDir: "/home/user/work/project",
+    });
+
+    expect(afterList.lastUpdatedMs).toBeGreaterThan(beforeList.lastUpdatedMs);
+    expect(afterList.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          wslPath: "/home/user/work/project/src/App.svelte",
+        }),
+      ]),
+    );
   });
 });

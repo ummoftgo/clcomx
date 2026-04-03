@@ -33,3 +33,101 @@ describe("tauri invoke mock resolve_terminal_path", () => {
     });
   });
 });
+
+describe("tauri invoke mock editor commands", () => {
+  it("returns basename-ranked search results rooted to the requested directory", async () => {
+    resetTauriMocks();
+    const result = await invokeMock("search_session_files", {
+      sessionId: "session-editor",
+      rootDir: "/home/tester/workspace",
+      query: "editor",
+      limit: 10,
+    });
+
+    expect(result).toMatchObject({
+      rootDir: "/home/tester/workspace",
+    });
+    expect((result as { results: Array<{ basename: string }> }).results).toMatchObject([
+      { basename: "EditorQuickOpenModal.svelte" },
+      { basename: "InternalEditor.svelte" },
+    ]);
+  });
+
+  it("returns no mock editor results for an empty query", async () => {
+    resetTauriMocks();
+    const result = await invokeMock("search_session_files", {
+      sessionId: "session-editor",
+      rootDir: "/home/tester/workspace",
+      query: "",
+      limit: 10,
+    });
+
+    expect(result).toMatchObject({
+      rootDir: "/home/tester/workspace",
+      results: [],
+    });
+  });
+
+  it("returns no quick-open results for an empty query", async () => {
+    resetTauriMocks();
+    const result = await invokeMock("search_session_files", {
+      sessionId: "session-editor",
+      rootDir: "/home/tester/workspace",
+      query: "",
+      limit: 10,
+    });
+
+    expect(result).toMatchObject({
+      rootDir: "/home/tester/workspace",
+      results: [],
+    });
+  });
+
+  it("reads and writes mock editor files", async () => {
+    resetTauriMocks();
+    const before = await invokeMock("read_session_file", {
+      sessionId: "session-editor",
+      wslPath: "/home/tester/workspace/src/App.svelte",
+    });
+
+    expect(before).toMatchObject({
+      languageId: "svelte",
+      wslPath: "/home/tester/workspace/src/App.svelte",
+    });
+
+    const written = await invokeMock("write_session_file", {
+      sessionId: "session-editor",
+      wslPath: "/home/tester/workspace/src/App.svelte",
+      content: "<!-- saved -->\n",
+      expectedMtimeMs: (before as { mtimeMs: number }).mtimeMs,
+    });
+
+    expect((written as { mtimeMs: number }).mtimeMs).toBeGreaterThan(
+      (before as { mtimeMs: number }).mtimeMs,
+    );
+
+    const after = await invokeMock("read_session_file", {
+      sessionId: "session-editor",
+      wslPath: "/home/tester/workspace/src/App.svelte",
+    });
+
+    expect((after as { content: string }).content).toContain("saved");
+  });
+
+  it("rejects stale mock file writes", async () => {
+    resetTauriMocks();
+    const before = await invokeMock("read_session_file", {
+      sessionId: "session-editor",
+      wslPath: "/home/user/work/project/src/App.svelte",
+    });
+
+    await expect(
+      invokeMock("write_session_file", {
+        sessionId: "session-editor",
+        wslPath: "/home/user/work/project/src/App.svelte",
+        content: "<!-- stale -->\n",
+        expectedMtimeMs: (before as { mtimeMs: number }).mtimeMs - 1,
+      }),
+    ).rejects.toThrow("FileModifiedOnDisk");
+  });
+});

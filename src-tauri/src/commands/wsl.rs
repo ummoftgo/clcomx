@@ -15,6 +15,17 @@ struct WslShell {
     stdout: BufReader<std::process::ChildStdout>,
 }
 
+const SEARCH_EXCLUDED_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "coverage",
+    ".next",
+    ".svelte-kit",
+];
+
 impl WslShell {
     fn spawn(distro: &str) -> Result<Self, String> {
         let mut cmd = Command::new("wsl.exe");
@@ -35,7 +46,6 @@ impl WslShell {
     }
 
     fn exec(&mut self, cmd: &str) -> Result<Vec<String>, String> {
-        // Use a unique marker to know when output ends
         let marker = format!("__CLCOMX_END_{}__", std::process::id());
         let full_cmd = format!("{}\necho '{}'\n", cmd, marker);
 
@@ -48,7 +58,7 @@ impl WslShell {
         loop {
             let mut line = String::new();
             match self.stdout.read_line(&mut line) {
-                Ok(0) => break, // EOF
+                Ok(0) => break,
                 Ok(_) => {
                     let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
                     if trimmed == marker {
@@ -81,6 +91,124 @@ impl WslState {
         }
         Ok(shells)
     }
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn build_rg_globs() -> String {
+    SEARCH_EXCLUDED_DIRS
+        .iter()
+        .map(|dir| format!("--glob {}", shell_single_quote(&format!("!**/{dir}/**"))))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn build_find_prune_clause() -> String {
+    SEARCH_EXCLUDED_DIRS
+        .iter()
+        .map(|dir| format!("-name {}", shell_single_quote(dir)))
+        .collect::<Vec<_>>()
+        .join(" -o ")
+}
+
+fn build_list_files_command(root_dir: &str) -> String {
+    let root = shell_single_quote(root_dir);
+    let rg_globs = build_rg_globs();
+    let prune_clause = build_find_prune_clause();
+
+    format!(
+        "cd {root} 2>/dev/null || exit 0\n\
+if command -v rg >/dev/null 2>&1; then\n\
+  rg --files --hidden {rg_globs} 2>/dev/null\n\
+else\n\
+  find . \\( -type d \\( {prune_clause} \\) \\) -prune -o -type f -print 2>/dev/null | sed 's#^\\./##'\n\
+fi"
+    )
+}
+
+fn build_search_command(root_dir: &str, query: &str, limit: usize) -> String {
+    let root = shell_single_quote(root_dir);
+    let query = shell_single_quote(&query.to_ascii_lowercase());
+    let rg_globs = build_rg_globs();
+    let prune_clause = build_find_prune_clause();
+
+    format!(
+        "cd {root} 2>/dev/null || exit 0\n\
+if command -v rg >/dev/null 2>&1; then\n\
+  rg --files --hidden {rg_globs} 2>/dev/null\n\
+else\n\
+  find . \\( -type d \\( {prune_clause} \\) \\) -prune -o -type f -print 2>/dev/null | sed 's#^\\./##'\n\
+fi | awk -v q={query} '\n\
+{{\n\
+  path=$0;\n\
+  lower=tolower(path);\n\
+  n=split(path, parts, \"/\");\n\
+  base=tolower(parts[n]);\n\
+  if (base == q) bucket=0;\n\
+  else if (index(base, q) == 1) bucket=1;\n\
+  else if (index(base, q) > 0) bucket=2;\n\
+  else if (index(lower, q) > 0) bucket=3;\n\
+  else next;\n\
+  depth=n-1;\n\
+  printf \"%d\\t%06d\\t%06d\\t%06d\\t%s\\t%s\\n\", bucket, depth, length(path), length(parts[n]), lower, path;\n\
+}}' | sort -t $'\\t' -k1,1n -k2,2n -k3,3n -k4,4n -k5,5 | cut -f6- | head -n {limit}"
+    )
+}
+
+pub fn search_wsl_files(
+    state: &WslState,
+    distro: &str,
+    root_dir: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if is_test_mode() {
+        if distro != test_distro_name() {
+            return Ok(Vec::new());
+        }
+        return Ok(mock_search_wsl_files(root_dir, trimmed_query, limit));
+    }
+
+    let bounded_limit = limit.clamp(1, 400);
+    let mut shells = state.get_or_spawn_shell(distro)?;
+    let shell = shells.get_mut(distro).ok_or("Shell not found")?;
+    let lines = shell.exec(&build_search_command(root_dir, trimmed_query, bounded_limit))?;
+
+    Ok(lines
+        .into_iter()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty() && line != ".")
+        .collect())
+}
+
+pub fn list_wsl_files(
+    state: &WslState,
+    distro: &str,
+    root_dir: &str,
+) -> Result<Vec<String>, String> {
+    if cfg!(test) || is_test_mode() {
+        if distro != test_distro_name() {
+            return Ok(Vec::new());
+        }
+        return Ok(mock_list_wsl_files(root_dir));
+    }
+
+    let mut shells = state.get_or_spawn_shell(distro)?;
+    let shell = shells.get_mut(distro).ok_or("Shell not found")?;
+    let lines = shell.exec(&build_list_files_command(root_dir))?;
+
+    Ok(lines
+        .into_iter()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty() && line != ".")
+        .collect())
 }
 
 fn mock_directory_entries(path: &str) -> Vec<WslEntry> {
@@ -122,13 +250,52 @@ fn mock_directory_entries(path: &str) -> Vec<WslEntry> {
     }
 }
 
+fn mock_search_wsl_files(path: &str, query: &str, limit: usize) -> Vec<String> {
+    let home = test_home_path();
+    let root = path.trim_end_matches('/');
+    let mut candidates = match root {
+        p if p == format!("{home}/workspace/clcomx") => vec![
+            "src/App.svelte".to_string(),
+            "src/lib/components/InternalEditor.svelte".to_string(),
+            "src/lib/components/EditorQuickOpenModal.svelte".to_string(),
+            "src/lib/editor/model-store.ts".to_string(),
+            ".claude/settings.json".to_string(),
+        ],
+        p if p == format!("{home}/workspace/demo") => vec!["README.md".to_string()],
+        _ => Vec::new(),
+    };
+
+    let normalized_query = query.trim().to_ascii_lowercase();
+    if normalized_query.is_empty() {
+        return Vec::new();
+    }
+
+    candidates.retain(|candidate| candidate.to_ascii_lowercase().contains(&normalized_query));
+    candidates.truncate(limit);
+    candidates
+}
+
+fn mock_list_wsl_files(path: &str) -> Vec<String> {
+    let home = test_home_path();
+    match path.trim_end_matches('/') {
+        p if p == format!("{home}/workspace/clcomx") => vec![
+            "src/App.svelte".to_string(),
+            "src/lib/components/InternalEditor.svelte".to_string(),
+            "src/lib/components/EditorQuickOpenModal.svelte".to_string(),
+            "src/lib/editor/model-store.ts".to_string(),
+            ".claude/settings.json".to_string(),
+        ],
+        p if p == format!("{home}/workspace/demo") => vec!["README.md".to_string()],
+        _ => Vec::new(),
+    }
+}
+
 #[tauri::command]
 pub fn list_wsl_distros(state: tauri::State<'_, WslState>) -> Result<Vec<String>, String> {
     if is_test_mode() {
         return Ok(vec![test_distro_name()]);
     }
 
-    // Check cache first
     {
         let cache = state.distro_cache.lock().map_err(|e| e.to_string())?;
         if let Some(ref distros) = *cache {
@@ -140,7 +307,7 @@ pub fn list_wsl_distros(state: tauri::State<'_, WslState>) -> Result<Vec<String>
     cmd.args(["-l", "-q"]);
 
     #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.creation_flags(0x08000000);
 
     let output = cmd.output().map_err(|e| e.to_string())?;
 
@@ -148,7 +315,6 @@ pub fn list_wsl_distros(state: tauri::State<'_, WslState>) -> Result<Vec<String>
         return Err("Failed to list WSL distributions".to_string());
     }
 
-    // wsl.exe -l -q outputs UTF-16LE on Windows
     let raw = &output.stdout;
     let text = if raw.len() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
         let u16s: Vec<u16> = raw[2..]
@@ -173,7 +339,6 @@ pub fn list_wsl_distros(state: tauri::State<'_, WslState>) -> Result<Vec<String>
         .map(|l| l.to_string())
         .collect();
 
-    // Cache result
     {
         let mut cache = state.distro_cache.lock().map_err(|e| e.to_string())?;
         *cache = Some(distros.clone());
@@ -211,10 +376,7 @@ pub fn list_wsl_directories(
         .filter(|l| !l.is_empty())
         .map(|l| {
             let name = l.rsplit('/').next().unwrap_or(&l).to_string();
-            WslEntry {
-                name,
-                path: l,
-            }
+            WslEntry { name, path: l }
         })
         .collect();
 
@@ -225,4 +387,52 @@ pub fn list_wsl_directories(
 pub struct WslEntry {
     pub name: String,
     pub path: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_list_files_command, build_search_command, list_wsl_files, search_wsl_files, WslState};
+
+    #[test]
+    fn search_wsl_files_returns_empty_without_spawning_for_empty_query() {
+        let state = WslState::default();
+        let result = search_wsl_files(&state, "ignored", "/home/tester/workspace", "", 120)
+            .expect("empty query should short-circuit");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn build_search_command_is_bounded_and_has_rg_find_paths() {
+        let command = build_search_command("/home/tester/workspace", "editor", 120);
+
+        assert!(command.contains("command -v rg >/dev/null 2>&1"));
+        assert!(command.contains("rg --files --hidden"));
+        assert!(command.contains("find ."));
+        assert!(command.contains("head -n 120"));
+        assert!(command.contains("node_modules"));
+        assert!(command.contains(".svelte-kit"));
+    }
+
+    #[test]
+    fn build_list_files_command_has_rg_and_find_paths() {
+        let command = build_list_files_command("/home/tester/workspace");
+
+        assert!(command.contains("command -v rg >/dev/null 2>&1"));
+        assert!(command.contains("rg --files --hidden"));
+        assert!(command.contains("find ."));
+        assert!(command.contains("node_modules"));
+        assert!(command.contains(".svelte-kit"));
+        assert!(!command.contains("awk -v q="));
+    }
+
+    #[test]
+    fn list_wsl_files_uses_mock_data_in_test_mode() {
+        let state = WslState::default();
+        let files =
+            list_wsl_files(&state, "clcomx-test", "/home/tester/workspace/clcomx").expect("list should succeed");
+
+        assert!(files.iter().any(|value| value == "src/App.svelte"));
+        assert!(files.iter().any(|value| value == ".claude/settings.json"));
+    }
 }

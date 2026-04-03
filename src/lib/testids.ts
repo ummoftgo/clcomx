@@ -44,6 +44,11 @@ export const TEST_IDS = {
   contextMenu: "context-menu",
   editorPickerModal: "editor-picker-modal",
   editorPickerList: "editor-picker-list",
+  internalEditorShell: "internal-editor-shell",
+  internalEditorTabBar: "internal-editor-tab-bar",
+  internalEditorQuickOpenModal: "internal-editor-quick-open-modal",
+  internalEditorQuickOpenInput: "internal-editor-quick-open-input",
+  internalEditorQuickOpenList: "internal-editor-quick-open-list",
 } as const;
 
 export function toTestIdSegment(value: string) {

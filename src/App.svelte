@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Component } from "svelte";
   import { onMount, onDestroy } from "svelte";
-  import { listen, type UnlistenFn } from "./lib/tauri/event";
+  import { emitTo, listen, type UnlistenFn } from "./lib/tauri/event";
   import { currentMonitor, getCurrentWindow } from "./lib/tauri/window";
   import TabBar from "./lib/components/TabBar.svelte";
   import SessionLauncher from "./lib/components/SessionLauncher.svelte";
@@ -80,6 +80,19 @@
     { id: "desktop", label: "Desktop" },
     { id: "narrow", label: "Narrow" },
   ] as const;
+  const DIRTY_STATE_QUERY_EVENT = "clcomx:dirty-state-query";
+  const DIRTY_STATE_RESPONSE_EVENT = "clcomx:dirty-state-response";
+
+  interface DirtyStateQueryPayload {
+    requestId: string;
+    replyLabel: string;
+  }
+
+  interface DirtyStateResponsePayload {
+    requestId: string;
+    windowLabel: string;
+    dirtyCount: number;
+  }
 
   const appWindow = getCurrentWindow();
   const currentWindowLabel = appWindow.label;
@@ -108,6 +121,10 @@
   let showSettings = $state(false);
   let showCloseWindowDialog = $state(false);
   let showCloseTabDialog = $state(false);
+  let showDirtyTabDialog = $state(false);
+  let showDirtyAppDialog = $state(false);
+  let showDirtyWindowCloseDialog = $state(false);
+  let dirtyAppCloseCount = $state(0);
   let pendingCloseSessionId = $state<string | null>(null);
   let renameDialogKind = $state<"tab" | "window" | null>(null);
   let renameDialogValue = $state("");
@@ -140,6 +157,73 @@
       ? sessions.find((session) => session.id === pendingCloseSessionId) ?? null
       : null,
   );
+  const dirtySessions = $derived(sessions.filter((session) => session.dirtyPaths.length > 0));
+
+  function getLocalDirtySessionCount() {
+    return dirtySessions.length;
+  }
+
+  async function queryOtherWindowDirtySessionCount(timeoutMs = 700) {
+    const targetLabels = otherWindows.map((window) => window.label).filter(Boolean);
+    if (targetLabels.length === 0) {
+      return { dirtyCount: 0, incomplete: false };
+    }
+
+    const requestId = createRuntimeId();
+    const responded = new Set<string>();
+    let dirtyCount = 0;
+    let resolveWait: (() => void) | null = null;
+    const done = new Promise<void>((resolve) => {
+      resolveWait = resolve;
+    });
+
+    const unlisten = await listen<DirtyStateResponsePayload>(DIRTY_STATE_RESPONSE_EVENT, (event) => {
+      const payload = event.payload;
+      if (!payload || payload.requestId !== requestId || responded.has(payload.windowLabel)) {
+        return;
+      }
+
+      responded.add(payload.windowLabel);
+      dirtyCount += Math.max(0, payload.dirtyCount);
+      if (responded.size >= targetLabels.length) {
+        resolveWait?.();
+      }
+    });
+
+    try {
+      await Promise.all(
+        targetLabels.map((label) =>
+          emitTo<DirtyStateQueryPayload>(label, DIRTY_STATE_QUERY_EVENT, {
+            requestId,
+            replyLabel: currentWindowLabel,
+          }).catch(() => {}),
+        ),
+      );
+
+      await Promise.race([
+        done,
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } finally {
+      unlisten();
+    }
+
+    return {
+      dirtyCount,
+      incomplete: responded.size < targetLabels.length,
+    };
+  }
+
+  async function getAppCloseDirtySessionCount() {
+    const localDirtyCount = getLocalDirtySessionCount();
+    const otherWindowState = await queryOtherWindowDirtySessionCount();
+    if (otherWindowState.incomplete) {
+      return Math.max(1, localDirtyCount + otherWindowState.dirtyCount);
+    }
+    return localDirtyCount + otherWindowState.dirtyCount;
+  }
 
   $effect(() => {
     const normalizedName = currentWindowName.trim();
@@ -249,6 +333,80 @@
     await closeCurrentWindow();
   }
 
+  function sessionHasDirtyEditorState(session: Session | null | undefined) {
+    return Boolean(session && session.dirtyPaths.length > 0);
+  }
+
+  function canCloseSessionWithoutDirtyWarning(session: Session | null | undefined) {
+    return !sessionHasDirtyEditorState(session);
+  }
+
+  function usesKoreanCopy() {
+    if (settings.language === "ko") return true;
+    if (settings.language === "en") return false;
+    return typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("ko");
+  }
+
+  function getDirtyCloseDialogCopy(
+    kind: "tab" | "app" | "window",
+    options: { title?: string; count?: number } = {},
+  ) {
+    const isKo = usesKoreanCopy();
+    const count = Math.max(0, options.count ?? 0);
+
+    if (kind === "tab") {
+      return isKo
+        ? {
+            title: "저장되지 않은 변경 사항",
+            description: `"${options.title || "이 탭"}"에 저장되지 않은 편집 내용이 있습니다. 닫으면 변경 사항이 버려집니다.`,
+            confirm: "그대로 닫기",
+          }
+        : {
+            title: "Unsaved Changes",
+            description: `"${options.title || "This tab"}" has unsaved editor changes. Closing it will discard them.`,
+            confirm: "Close Anyway",
+          };
+    }
+
+    if (kind === "window") {
+      return isKo
+        ? {
+            title: "저장되지 않은 변경 사항",
+            description: `이 창에는 저장되지 않은 편집 내용이 있는 세션이 ${count}개 있습니다. 닫으면 모두 버려집니다.`,
+            confirm: "그대로 닫기",
+          }
+        : {
+            title: "Unsaved Changes",
+            description: `This window has ${count} session${count === 1 ? "" : "s"} with unsaved editor changes. Closing it will discard them.`,
+            confirm: "Close Anyway",
+          };
+    }
+
+    return isKo
+      ? {
+          title: "저장되지 않은 변경 사항",
+          description: `저장되지 않은 편집 내용이 있는 세션이 ${count}개 있습니다. 앱을 닫으면 모두 버려집니다.`,
+          confirm: "그대로 종료",
+        }
+      : {
+          title: "Unsaved Changes",
+          description: `There ${count === 1 ? "is" : "are"} ${count} dirty editor session${count === 1 ? "" : "s"}. Closing the app will discard them.`,
+          confirm: "Quit Anyway",
+        };
+  }
+
+  async function performAppClose() {
+    if (appCloseRequested) return;
+    appCloseRequested = true;
+    try {
+      await captureResumeIdsBeforeAppClose();
+      await closeApp();
+    } catch (error) {
+      appCloseRequested = false;
+      console.error("Failed to close app", error);
+    }
+  }
+
   async function waitForWindowReady(targetLabel: string, timeoutMs = 8000): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -278,15 +436,19 @@
           event.preventDefault();
 
           if (isMainWindow) {
-            if (appCloseRequested) return;
-            appCloseRequested = true;
-            try {
-              await captureResumeIdsBeforeAppClose();
-              await closeApp();
-            } catch (error) {
-              appCloseRequested = false;
-              console.error("Failed to close app", error);
+            const totalDirtyCount = await getAppCloseDirtySessionCount();
+            if (totalDirtyCount > 0) {
+              dirtyAppCloseCount = totalDirtyCount;
+              showCloseTabDialog = false;
+              showDirtyTabDialog = false;
+              showCloseWindowDialog = false;
+              showDirtyWindowCloseDialog = false;
+              pendingCloseSessionId = null;
+              showDirtyAppDialog = true;
+              return;
             }
+
+            await performAppClose();
             return;
           }
 
@@ -297,6 +459,18 @@
         listen<WorkspaceSnapshot>("workspace-updated", (event) => {
           syncWorkspaceSnapshot(event.payload);
           syncSessionsFromWorkspace(event.payload);
+        }),
+        listen<DirtyStateQueryPayload>(DIRTY_STATE_QUERY_EVENT, (event) => {
+          const payload = event.payload;
+          if (!payload?.requestId || !payload.replyLabel) {
+            return;
+          }
+
+          void emitTo<DirtyStateResponsePayload>(payload.replyLabel, DIRTY_STATE_RESPONSE_EVENT, {
+            requestId: payload.requestId,
+            windowLabel: currentWindowLabel,
+            dirtyCount: getLocalDirtySessionCount(),
+          }).catch(() => {});
         }),
       ]);
 
@@ -352,6 +526,10 @@
       resumeToken: session.resumeToken,
       distro: session.distro,
       workDir: session.workDir,
+      viewMode: session.viewMode,
+      editorRootDir: session.editorRootDir,
+      openEditorTabs: session.openEditorTabs,
+      activeEditorPath: session.activeEditorPath,
       ptyId: session.ptyId,
       auxPtyId: session.auxPtyId,
       auxVisible: session.auxVisible,
@@ -492,6 +670,11 @@
       element: null,
       distro,
       workDir,
+      viewMode: "terminal",
+      editorRootDir: workDir,
+      openEditorTabs: [],
+      activeEditorPath: null,
+      dirtyPaths: [],
     };
     addSession(session);
     showSessionLauncher = false;
@@ -642,10 +825,21 @@
     pendingCloseSessionId = null;
   }
 
+  function dismissDirtyTabDialog() {
+    showDirtyTabDialog = false;
+    pendingCloseSessionId = null;
+  }
+
   function requestCloseTab(sessionId: string) {
     const session = sessions.find((entry) => entry.id === sessionId);
     if (!session) return;
     if (session.locked) return;
+
+    if (!canCloseSessionWithoutDirtyWarning(session)) {
+      pendingCloseSessionId = sessionId;
+      showDirtyTabDialog = true;
+      return;
+    }
 
     if (session.ptyId >= 0) {
       pendingCloseSessionId = sessionId;
@@ -661,6 +855,51 @@
     const sessionId = pendingCloseSessionId;
     dismissCloseTabDialog();
     await handleCloseTab(sessionId);
+  }
+
+  function continueCloseTabAfterDirtyWarning() {
+    if (!pendingCloseSessionId) return;
+    const sessionId = pendingCloseSessionId;
+    showDirtyTabDialog = false;
+    const session = sessions.find((entry) => entry.id === sessionId);
+    if (!session) {
+      pendingCloseSessionId = null;
+      return;
+    }
+
+    if (session.ptyId >= 0) {
+      showCloseTabDialog = true;
+      return;
+    }
+
+    pendingCloseSessionId = null;
+    void handleCloseTab(sessionId);
+  }
+
+  function dismissDirtyAppDialog() {
+    showDirtyAppDialog = false;
+    dirtyAppCloseCount = 0;
+  }
+
+  function confirmDirtyAppClose() {
+    showDirtyAppDialog = false;
+    dirtyAppCloseCount = 0;
+    void performAppClose();
+  }
+
+  function dismissDirtyWindowCloseDialog() {
+    showDirtyWindowCloseDialog = false;
+  }
+
+  async function confirmDirtyWindowCloseDialog() {
+    showDirtyWindowCloseDialog = false;
+    showCloseWindowDialog = false;
+    try {
+      await closeWindowSessions(currentWindowLabel);
+      await closeCurrentWindow();
+    } catch (error) {
+      console.error("Failed to close secondary window sessions", error);
+    }
   }
 
   async function handleMoveTabToNewWindow(sessionId: string) {
@@ -799,6 +1038,11 @@
   }
 
   async function handleCloseWindowSessions() {
+    if (dirtySessions.length > 0) {
+      showDirtyWindowCloseDialog = true;
+      return;
+    }
+
     try {
       await closeWindowSessions(currentWindowLabel);
       await closeCurrentWindow();
@@ -961,6 +1205,25 @@
   {/if}
 
   <ModalShell
+    open={showDirtyTabDialog && pendingCloseSession !== null}
+    size="sm"
+    onClose={dismissDirtyTabDialog}
+  >
+    <div class="window-close-panel" data-testid={TEST_IDS.closeTabDialog}>
+      <h2>{getDirtyCloseDialogCopy("tab", { title: pendingCloseSession?.title ?? "" }).title}</h2>
+      <p>{getDirtyCloseDialogCopy("tab", { title: pendingCloseSession?.title ?? "" }).description}</p>
+      <div class="window-close-actions">
+        <Button variant="danger" onclick={continueCloseTabAfterDirtyWarning}>
+          {getDirtyCloseDialogCopy("tab", { title: pendingCloseSession?.title ?? "" }).confirm}
+        </Button>
+        <Button onclick={dismissDirtyTabDialog}>
+          {$t("common.actions.cancel")}
+        </Button>
+      </div>
+    </div>
+  </ModalShell>
+
+  <ModalShell
     open={showCloseTabDialog && pendingCloseSession !== null}
     size="sm"
     onClose={dismissCloseTabDialog}
@@ -982,7 +1245,45 @@
   </ModalShell>
 
   <ModalShell
-    open={showCloseWindowDialog}
+    open={showDirtyAppDialog}
+    size="sm"
+    onClose={dismissDirtyAppDialog}
+  >
+    <div class="window-close-panel" data-testid={TEST_IDS.closeWindowDialog}>
+      <h2>{getDirtyCloseDialogCopy("app", { count: dirtyAppCloseCount }).title}</h2>
+      <p>{getDirtyCloseDialogCopy("app", { count: dirtyAppCloseCount }).description}</p>
+      <div class="window-close-actions">
+        <Button variant="danger" onclick={confirmDirtyAppClose}>
+          {getDirtyCloseDialogCopy("app", { count: dirtyAppCloseCount }).confirm}
+        </Button>
+        <Button onclick={dismissDirtyAppDialog}>
+          {$t("common.actions.cancel")}
+        </Button>
+      </div>
+    </div>
+  </ModalShell>
+
+  <ModalShell
+    open={showDirtyWindowCloseDialog && showCloseWindowDialog}
+    size="sm"
+    onClose={dismissDirtyWindowCloseDialog}
+  >
+    <div class="window-close-panel" data-testid={TEST_IDS.closeWindowDialog}>
+      <h2>{getDirtyCloseDialogCopy("window", { count: dirtySessions.length }).title}</h2>
+      <p>{getDirtyCloseDialogCopy("window", { count: dirtySessions.length }).description}</p>
+      <div class="window-close-actions">
+        <Button variant="danger" onclick={confirmDirtyWindowCloseDialog}>
+          {getDirtyCloseDialogCopy("window", { count: dirtySessions.length }).confirm}
+        </Button>
+        <Button onclick={dismissDirtyWindowCloseDialog}>
+          {$t("common.actions.cancel")}
+        </Button>
+      </div>
+    </div>
+  </ModalShell>
+
+  <ModalShell
+    open={showCloseWindowDialog && !showDirtyWindowCloseDialog}
     size="sm"
     onClose={() => { showCloseWindowDialog = false; }}
   >

@@ -236,10 +236,7 @@ mod tests {
     const OTHER_DISTRO: &str = "OtherDistro";
 
     fn example_wsl_file() -> String {
-        format!(
-            "/home/tester/{}/temp/image.png",
-            env!("CARGO_PKG_NAME")
-        )
+        format!("/home/tester/{}/temp/image.png", env!("CARGO_PKG_NAME"))
     }
 
     fn example_unc_wsl_file() -> String {

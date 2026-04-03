@@ -4,6 +4,8 @@
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { WebglAddon } from "@xterm/addon-webgl";
+  import InternalEditor from "./InternalEditor.svelte";
+  import EditorQuickOpenModal from "./EditorQuickOpenModal.svelte";
   import ImagePasteModal from "./ImagePasteModal.svelte";
   import EditorPickerModal from "./EditorPickerModal.svelte";
   import TerminalAssistPanel from "./TerminalAssistPanel.svelte";
@@ -38,6 +40,14 @@
   } from "../terminal/canonical-screen-authority";
   import { t } from "../i18n";
   import { ensureEditorsDetected, getEditorDetectionState } from "../stores/editors.svelte";
+  import {
+    getSessions,
+    setSessionActiveEditorPath,
+    setSessionDirtyPaths,
+    setSessionEditorRootDir,
+    setSessionOpenEditorTabs,
+    setSessionViewMode,
+  } from "../stores/sessions.svelte";
   import { getSettings } from "../stores/settings.svelte";
   import { getThemeById } from "../themes";
   import type { ContextMenuItem } from "../ui/context-menu";
@@ -46,12 +56,17 @@
   import { matchesShortcut } from "../hotkeys";
   import type { TerminalRendererPreference } from "../types";
   import {
+    listSessionFiles,
     openInEditor,
+    readSessionFile,
     resolveTerminalPath,
+    writeSessionFile,
+    type EditorSearchResult,
     type TerminalPathResolution,
     type DetectedEditor,
     type ResolvedTerminalPath,
   } from "../editors";
+  import type { InternalEditorTab } from "../editor/contracts";
   import { createTerminalFileLinks } from "../terminal/file-links";
   import { consumeAuxShellMetadata } from "../terminal/aux-shell-metadata";
   import {
@@ -120,6 +135,7 @@
   let livePtyId = $state(-1);
   let initialOutputReady = false;
   let terminalReady = $state(false);
+  let terminalStartupSettled = $state(false);
   let spawnError = $state<string | null>(null);
   let terminalLoadingState = $state<"connecting" | "restoring" | null>(null);
   let terminalLoadingStartedAt = 0;
@@ -204,6 +220,29 @@
   let pendingPostWriteScroll = false;
   let deferredBottomScrollTimer: ReturnType<typeof setTimeout> | null = null;
   let writeParsedDisposable: IDisposable | null = null;
+  let editorViewMode = $state<"terminal" | "editor">("terminal");
+  let editorRootDir = $state("");
+  let editorTabs = $state<InternalEditorTab[]>([]);
+  let editorActivePath = $state<string | null>(null);
+  let editorSavedContentByPath = $state<Record<string, string>>({});
+  let editorMtimeByPath = $state<Record<string, number>>({});
+  let editorStatusText = $state<string | null>(null);
+  let editorQuickOpenVisible = $state(false);
+  let editorQuickOpenQuery = $state("");
+  let editorQuickOpenRootDir = $state("");
+  let editorQuickOpenEntries = $state<EditorSearchResult[]>([]);
+  let editorQuickOpenLastUpdatedMs = $state(0);
+  let editorQuickOpenBusy = $state(false);
+  let editorQuickOpenOpenKey = $state(0);
+  let editorHydratedSessionId = $state<string | null>(null);
+  let editorHydrationToken = 0;
+  let editorQuickOpenRequestToken = 0;
+  let editorQuickOpenPrewarmHandle: ReturnType<typeof setTimeout> | number | null = null;
+  let editorQuickOpenPrewarmToken = 0;
+  let editorQuickOpenPrewarmRequestedRootDir = "";
+  let editorQuickOpenPrewarmInFlightRootDir = "";
+  let editorCloseConfirmVisible = $state(false);
+  let editorCloseConfirmPath = $state<string | null>(null);
   const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
   const BOTTOM_LOCK_MAX_MS = 12000;
   const BOTTOM_LOCK_QUIET_MS = 1400;
@@ -211,6 +250,7 @@
   const TERMINAL_LOADING_QUIET_MS = 1300;
   const TERMINAL_LOADING_MAX_MS = 8000;
   const DEFERRED_BOTTOM_SCROLL_MS = 60;
+  const QUICK_OPEN_CACHE_STALE_MS = 20_000;
   const WEB_LINK_REGEX = /(?:https?|ftp):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/i;
   const SYNC_OUTPUT_MODE_SEQUENCE = /\u001b\[\?2026[hl]/;
   const ABSOLUTE_CURSOR_POSITION_SEQUENCE = /\u001b\[\d+(?:;\d+)?[Hf]/;
@@ -225,6 +265,10 @@
     ),
   );
   const preferredRenderer = $derived(settings.terminal.renderer);
+  const editorBusy = $derived(editorTabs.some((tab) => tab.loading || tab.saving));
+  const editorCloseConfirmLabel = $derived(
+    editorCloseConfirmPath ? editorCloseConfirmPath.split("/").pop() || editorCloseConfirmPath : "",
+  );
   const terminalFontFamily = $derived(
     buildFontStack(
       serializeFontFamilyList(
@@ -245,6 +289,12 @@
             id: "open-file",
             kind: "item",
             label: $t("terminal.filePaths.openFile"),
+            icon: "file",
+          },
+          {
+            id: "open-in-internal-editor",
+            kind: "item",
+            label: $t("terminal.filePaths.openInInternalEditor"),
             icon: "file",
           },
           {
@@ -556,7 +606,7 @@
     stickToBottom?: boolean;
     refresh?: boolean;
   }) {
-    if (!terminal || !fitAddon) {
+    if (!terminal || !fitAddon || editorViewMode !== "terminal") {
       return;
     }
 
@@ -724,7 +774,7 @@
   }
 
   function focusOutput() {
-    if (!terminalReady || !visible) return;
+    if (!terminalReady || !visible || editorViewMode !== "terminal") return;
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -1094,6 +1144,44 @@
     void toggleAuxTerminal();
   }
 
+  function isInsideInternalEditor(target: EventTarget | null) {
+    if (!(target instanceof Element)) {
+      return false;
+    }
+
+    return Boolean(
+      target.closest(`[data-testid="${TEST_IDS.internalEditorShell}"]`) ||
+        target.closest(`[data-testid="${TEST_IDS.internalEditorQuickOpenModal}"]`),
+    );
+  }
+
+  function handleEditorShortcut(event: KeyboardEvent) {
+    if (!visible || !matchesShortcut(event, "Ctrl+P")) {
+      return;
+    }
+
+    const targetNode = event.target instanceof Node ? event.target : null;
+    const insideTerminalShell = targetNode !== null && shellEl.contains(targetNode);
+    const insideEditorSurface = isInsideInternalEditor(targetNode);
+
+    if (targetNode !== null && !insideTerminalShell && !insideEditorSurface) {
+      return;
+    }
+
+    if (isEditableTarget(event.target) && !insideTerminalShell && !insideEditorSurface) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (editorQuickOpenVisible) {
+      return;
+    }
+
+    void openEditorQuickOpen(editorRootDir);
+  }
+
   function shouldInterceptTerminalCtrlC(event: KeyboardEvent) {
     return (
       event.type === "keydown" &&
@@ -1200,6 +1288,670 @@
     editorPickerVisible = true;
   }
 
+  function getCurrentEditorSessionState() {
+    return getSessions().find((entry) => entry.id === sessionId) ?? null;
+  }
+
+  function syncEditorSessionState() {
+    setSessionViewMode(sessionId, editorViewMode);
+    setSessionEditorRootDir(sessionId, editorRootDir);
+    setSessionOpenEditorTabs(sessionId, getEditorOpenRefTabs());
+    setSessionActiveEditorPath(sessionId, editorActivePath);
+    setSessionDirtyPaths(
+      sessionId,
+      editorTabs.filter((tab) => tab.dirty).map((tab) => tab.wslPath),
+    );
+  }
+
+  function setEditorStatus(message: string | null) {
+    editorStatusText = message;
+  }
+
+  function setEditorTabs(nextTabs: InternalEditorTab[]) {
+    editorTabs = nextTabs;
+    syncEditorSessionState();
+  }
+
+  function patchEditorTab(wslPath: string, updates: Partial<InternalEditorTab>) {
+    let changed = false;
+    editorTabs = editorTabs.map((tab) => {
+      if (tab.wslPath !== wslPath) {
+        return tab;
+      }
+
+      changed = true;
+      return {
+        ...tab,
+        ...updates,
+      };
+    });
+
+    if (changed) {
+      syncEditorSessionState();
+    }
+  }
+
+  function removeEditorTab(wslPath: string) {
+    const nextTabs = editorTabs.filter((tab) => tab.wslPath !== wslPath);
+    if (nextTabs.length === editorTabs.length) {
+      return false;
+    }
+
+    delete editorSavedContentByPath[wslPath];
+    delete editorMtimeByPath[wslPath];
+    editorTabs = nextTabs;
+
+    if (editorActivePath === wslPath) {
+      const nextActive = nextTabs[nextTabs.length - 1]?.wslPath ?? null;
+      editorActivePath = nextActive;
+    }
+
+    syncEditorSessionState();
+    return true;
+  }
+
+  function setEditorTabLoaded(
+    wslPath: string,
+    detail: {
+      content: string;
+      languageId: string;
+      mtimeMs: number;
+      line?: number | null;
+      column?: number | null;
+    },
+  ) {
+    editorSavedContentByPath = {
+      ...editorSavedContentByPath,
+      [wslPath]: detail.content,
+    };
+    editorMtimeByPath = {
+      ...editorMtimeByPath,
+      [wslPath]: detail.mtimeMs,
+    };
+    patchEditorTab(wslPath, {
+      content: detail.content,
+      languageId: detail.languageId,
+      dirty: false,
+      loading: false,
+      saving: false,
+      error: null,
+      line: detail.line ?? null,
+      column: detail.column ?? null,
+    });
+  }
+
+  function setEditorTabError(wslPath: string, message: string) {
+    patchEditorTab(wslPath, {
+      loading: false,
+      saving: false,
+      error: message,
+    });
+  }
+
+  function setEditorTabSaving(wslPath: string, saving: boolean) {
+    patchEditorTab(wslPath, {
+      saving,
+      error: saving ? null : undefined,
+    });
+  }
+
+  function getEditorOpenRefTabs() {
+    return editorTabs.map((tab) => ({
+      wslPath: tab.wslPath,
+      line: tab.line ?? null,
+      column: tab.column ?? null,
+    }));
+  }
+
+  function ensureEditorViewMode() {
+    if (editorViewMode === "editor") {
+      return;
+    }
+
+    if (auxVisible) {
+      hideAuxTerminal({ restoreFocus: false });
+    }
+    if (draftOpen) {
+      closeDraft({ restoreFocus: false });
+    }
+    editorViewMode = "editor";
+    setSessionViewMode(sessionId, editorViewMode);
+  }
+
+  function switchToTerminalView() {
+    editorViewMode = "terminal";
+    closeEditorQuickOpen();
+    editorCloseConfirmVisible = false;
+    editorCloseConfirmPath = null;
+    setSessionViewMode(sessionId, editorViewMode);
+    tick().then(focusOutput);
+  }
+
+  async function initializeEditorRuntimeFromSession() {
+    const session = getCurrentEditorSessionState();
+    editorHydratedSessionId = sessionId;
+    editorViewMode = session?.viewMode ?? "terminal";
+    editorRootDir = session?.editorRootDir || workDir;
+    editorQuickOpenRootDir = editorRootDir;
+    editorActivePath = session?.activeEditorPath ?? null;
+    editorSavedContentByPath = {};
+    editorMtimeByPath = {};
+
+    const refs = session?.openEditorTabs ?? [];
+    if (refs.length === 0) {
+      setEditorTabs([]);
+      return;
+    }
+
+    const token = ++editorHydrationToken;
+    setEditorTabs(
+      refs.map((ref) => ({
+        wslPath: ref.wslPath,
+        content: "",
+        languageId: "plaintext",
+        dirty: false,
+        line: ref.line ?? null,
+        column: ref.column ?? null,
+        loading: true,
+        saving: false,
+        error: null,
+      })),
+    );
+
+    const loadedTabs = await Promise.all(
+      refs.map(async (ref) => {
+        try {
+          const file = await readSessionFile(sessionId, ref.wslPath);
+          return {
+            wslPath: ref.wslPath,
+            content: file.content,
+            languageId: file.languageId || "plaintext",
+            dirty: false,
+            line: ref.line ?? null,
+            column: ref.column ?? null,
+            loading: false,
+            saving: false,
+            error: null,
+            mtimeMs: file.mtimeMs,
+          };
+        } catch (error) {
+          return {
+            wslPath: ref.wslPath,
+            content: "",
+            languageId: "plaintext",
+            dirty: false,
+            line: ref.line ?? null,
+            column: ref.column ?? null,
+            loading: false,
+            saving: false,
+            error: error instanceof Error ? error.message : String(error),
+            mtimeMs: 0,
+          };
+        }
+      }),
+    );
+
+    if (token !== editorHydrationToken) {
+      return;
+    }
+
+    for (const tab of loadedTabs) {
+      if (tab.mtimeMs > 0) {
+        editorSavedContentByPath = {
+          ...editorSavedContentByPath,
+          [tab.wslPath]: tab.content,
+        };
+        editorMtimeByPath = {
+          ...editorMtimeByPath,
+          [tab.wslPath]: tab.mtimeMs,
+        };
+      }
+    }
+
+    editorTabs = loadedTabs.map(({ mtimeMs, ...tab }) => tab);
+
+    if (!editorActivePath || !editorTabs.some((tab) => tab.wslPath === editorActivePath)) {
+      editorActivePath = editorTabs[0]?.wslPath ?? null;
+    }
+
+    syncEditorSessionState();
+  }
+
+  async function ensureEditorRuntimeReady() {
+    if (editorHydratedSessionId === sessionId) {
+      return;
+    }
+
+    await initializeEditorRuntimeFromSession();
+  }
+
+  function invalidateEditorQuickOpenRequest() {
+    editorQuickOpenRequestToken += 1;
+  }
+
+  function resetEditorQuickOpenState({
+    resetRootDir = false,
+    clearEntries = false,
+  }: { resetRootDir?: boolean; clearEntries?: boolean } = {}) {
+    invalidateEditorQuickOpenRequest();
+    editorQuickOpenBusy = false;
+    if (clearEntries) {
+      editorQuickOpenEntries = [];
+      editorQuickOpenLastUpdatedMs = 0;
+    }
+    if (resetRootDir) {
+      editorQuickOpenRootDir = "";
+    }
+  }
+
+  function closeEditorQuickOpen() {
+    editorQuickOpenVisible = false;
+    resetEditorQuickOpenState();
+  }
+
+  function clearEditorQuickOpenPrewarmHandle() {
+    if (editorQuickOpenPrewarmHandle === null) {
+      return;
+    }
+
+    const idleWindow = window as Window & {
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (
+      typeof editorQuickOpenPrewarmHandle === "number" &&
+      typeof idleWindow.cancelIdleCallback === "function"
+    ) {
+      idleWindow.cancelIdleCallback(editorQuickOpenPrewarmHandle);
+    } else {
+      clearTimeout(editorQuickOpenPrewarmHandle);
+    }
+    editorQuickOpenPrewarmHandle = null;
+  }
+
+  function cancelEditorQuickOpenPrewarm() {
+    editorQuickOpenPrewarmToken += 1;
+    editorQuickOpenPrewarmRequestedRootDir = "";
+    clearEditorQuickOpenPrewarmHandle();
+  }
+
+  function isEditorQuickOpenCacheStale() {
+    if (!editorQuickOpenLastUpdatedMs) {
+      return true;
+    }
+    return Date.now() - editorQuickOpenLastUpdatedMs > QUICK_OPEN_CACHE_STALE_MS;
+  }
+
+  async function refreshEditorQuickOpenEntries(
+    forceRefresh = false,
+    rootDir = editorQuickOpenRootDir || workDir,
+    options?: { background?: boolean },
+  ) {
+    const requestToken = ++editorQuickOpenRequestToken;
+    const normalizedRootDir = rootDir || workDir;
+    const background = options?.background ?? false;
+    if (!background) {
+      editorQuickOpenBusy = true;
+    }
+    try {
+      const result = await listSessionFiles(sessionId, normalizedRootDir, forceRefresh);
+      if (requestToken !== editorQuickOpenRequestToken) {
+        return;
+      }
+      editorQuickOpenRootDir = result.rootDir;
+      editorQuickOpenEntries = result.results;
+      editorQuickOpenLastUpdatedMs = result.lastUpdatedMs;
+    } catch (error) {
+      if (requestToken !== editorQuickOpenRequestToken) {
+        return;
+      }
+
+      if (!background) {
+        setClipboardNotice(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (!background && requestToken === editorQuickOpenRequestToken) {
+        editorQuickOpenBusy = false;
+      }
+    }
+  }
+
+  function scheduleEditorQuickOpenPrewarm(rootDir = editorRootDir || workDir) {
+    const normalizedRootDir = rootDir || workDir;
+    if (!terminalReady || !terminalStartupSettled || !visible || editorQuickOpenVisible) {
+      return;
+    }
+
+    if (!normalizedRootDir) {
+      return;
+    }
+
+    if (
+      editorQuickOpenRootDir === normalizedRootDir &&
+      editorQuickOpenLastUpdatedMs > 0 &&
+      !isEditorQuickOpenCacheStale()
+    ) {
+      return;
+    }
+
+    if (
+      editorQuickOpenPrewarmRequestedRootDir === normalizedRootDir ||
+      editorQuickOpenPrewarmInFlightRootDir === normalizedRootDir
+    ) {
+      return;
+    }
+
+    clearEditorQuickOpenPrewarmHandle();
+    const prewarmToken = ++editorQuickOpenPrewarmToken;
+    editorQuickOpenPrewarmRequestedRootDir = normalizedRootDir;
+
+    const runPrewarm = () => {
+      if (prewarmToken !== editorQuickOpenPrewarmToken) {
+        return;
+      }
+
+      editorQuickOpenPrewarmHandle = null;
+      editorQuickOpenPrewarmRequestedRootDir = "";
+      if (!terminalReady || !terminalStartupSettled || !visible || editorQuickOpenVisible) {
+        return;
+      }
+
+      editorQuickOpenPrewarmInFlightRootDir = normalizedRootDir;
+      void refreshEditorQuickOpenEntries(false, normalizedRootDir, { background: true }).finally(
+        () => {
+          if (editorQuickOpenPrewarmInFlightRootDir === normalizedRootDir) {
+            editorQuickOpenPrewarmInFlightRootDir = "";
+          }
+        },
+      );
+    };
+
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (
+        callback: IdleRequestCallback,
+        options?: IdleRequestOptions,
+      ) => number;
+    };
+
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      editorQuickOpenPrewarmHandle = idleWindow.requestIdleCallback(runPrewarm, { timeout: 1200 });
+      return;
+    }
+
+    editorQuickOpenPrewarmHandle = window.setTimeout(runPrewarm, 250);
+  }
+
+  function computeQuickOpenEntryForRoot(
+    wslPath: string,
+    rootDir = editorQuickOpenRootDir || editorRootDir || workDir,
+  ): EditorSearchResult | null {
+    const normalizedRoot = rootDir.replace(/\/+$/, "") || "/";
+    if (wslPath !== normalizedRoot && !wslPath.startsWith(`${normalizedRoot}/`)) {
+      return null;
+    }
+
+    const basename = wslPath.split("/").pop() || wslPath;
+    const relativePath =
+      wslPath === normalizedRoot ? basename : wslPath.slice(normalizedRoot.length + 1);
+
+    return {
+      wslPath,
+      relativePath,
+      basename,
+    };
+  }
+
+  function upsertEditorQuickOpenEntry(wslPath: string) {
+    const entry = computeQuickOpenEntryForRoot(wslPath);
+    if (!entry) {
+      return;
+    }
+
+    const index = editorQuickOpenEntries.findIndex((candidate) => candidate.wslPath === wslPath);
+    if (index < 0) {
+      editorQuickOpenEntries = [...editorQuickOpenEntries, entry];
+    } else {
+      editorQuickOpenEntries = editorQuickOpenEntries.map((candidate) =>
+        candidate.wslPath === wslPath ? entry : candidate,
+      );
+    }
+    editorQuickOpenLastUpdatedMs = Date.now();
+  }
+
+  function openEditorQuickOpen(rootDir = editorRootDir, query = "") {
+    const normalizedRoot = rootDir || workDir;
+    const rootChanged = editorQuickOpenRootDir !== normalizedRoot;
+    if (rootChanged) {
+      resetEditorQuickOpenState({ clearEntries: true });
+    }
+    editorQuickOpenRootDir = normalizedRoot;
+    editorQuickOpenQuery = query;
+    editorQuickOpenVisible = true;
+    editorQuickOpenOpenKey += 1;
+
+    if (isEditorQuickOpenCacheStale()) {
+      void refreshEditorQuickOpenEntries(false, normalizedRoot);
+    }
+  }
+
+  async function openEditorDirectory(rootDir: string) {
+    editorRootDir = rootDir || workDir;
+    syncEditorSessionState();
+    openEditorQuickOpen(editorRootDir, "");
+  }
+
+  async function openEditorPath(
+    path: ResolvedTerminalPath | EditorSearchResult,
+    options?: { rootDir?: string; focusExisting?: boolean },
+  ) {
+    ensureEditorViewMode();
+
+    if (draftOpen) {
+      closeDraft({ restoreFocus: false });
+    }
+
+    if ("isDirectory" in path && path.isDirectory) {
+      await openEditorDirectory(path.wslPath);
+      return;
+    }
+
+    const wslPath = path.wslPath;
+    const existingTabIndex = editorTabs.findIndex((tab) => tab.wslPath === wslPath);
+    const nextLine = "line" in path ? path.line ?? null : null;
+    const nextColumn = "column" in path ? path.column ?? null : null;
+
+    if (existingTabIndex >= 0) {
+      const currentTab = editorTabs[existingTabIndex];
+      editorTabs = editorTabs.map((tab) =>
+        tab.wslPath !== wslPath
+          ? tab
+          : {
+              ...tab,
+              line: nextLine ?? tab.line ?? null,
+              column: nextColumn ?? tab.column ?? null,
+              error: null,
+            },
+      );
+      editorActivePath = wslPath;
+      if (options?.rootDir) {
+        editorRootDir = options.rootDir;
+      }
+      closeEditorQuickOpen();
+      syncEditorSessionState();
+      tick().then(() => {
+        if (editorViewMode === "editor" && !currentTab.loading) {
+          editorStatusText = null;
+        }
+      });
+      return;
+    }
+
+    const newTab: InternalEditorTab = {
+      wslPath,
+      content: "",
+      languageId: "plaintext",
+      dirty: false,
+      line: nextLine,
+      column: nextColumn,
+      loading: true,
+      saving: false,
+      error: null,
+    };
+
+    editorTabs = [...editorTabs, newTab];
+    editorActivePath = wslPath;
+    if (options?.rootDir) {
+      editorRootDir = options.rootDir;
+    }
+    syncEditorSessionState();
+    setEditorStatus($t("common.labels.loading"));
+
+    try {
+      const file = await readSessionFile(sessionId, wslPath);
+      if (!editorTabs.some((tab) => tab.wslPath === wslPath)) {
+        return;
+      }
+
+      setEditorTabLoaded(wslPath, {
+        content: file.content,
+        languageId: file.languageId || "plaintext",
+        mtimeMs: file.mtimeMs,
+        line: nextLine,
+        column: nextColumn,
+      });
+      editorStatusText = null;
+      closeEditorQuickOpen();
+    } catch (error) {
+      setEditorTabError(wslPath, error instanceof Error ? error.message : String(error));
+      editorStatusText = error instanceof Error ? error.message : String(error);
+    }
+
+    syncEditorSessionState();
+  }
+
+  function openEditorPathFromQuickResult(result: EditorSearchResult) {
+    void openEditorPath(result, { rootDir: editorQuickOpenRootDir, focusExisting: true });
+  }
+
+  function openResolvedPathInInternalEditor(path: ResolvedTerminalPath) {
+    void openEditorPath(path, { rootDir: editorRootDir });
+  }
+
+  function openResolvedDirectoryInInternalEditor(path: ResolvedTerminalPath) {
+    void openEditorDirectory(path.wslPath);
+  }
+
+  function openInternalEditorForLinkPath(path: ResolvedTerminalPath) {
+    if (path.isDirectory) {
+      openResolvedDirectoryInInternalEditor(path);
+      return;
+    }
+
+    openResolvedPathInInternalEditor(path);
+  }
+
+  function requestSwitchToEditorMode() {
+    ensureEditorViewMode();
+    editorStatusText = null;
+    if (!editorQuickOpenVisible && editorTabs.length === 0) {
+      void openEditorQuickOpen(editorRootDir);
+      return;
+    }
+  }
+
+  function requestSwitchToTerminalMode() {
+    switchToTerminalView();
+  }
+
+  function closeEditorTab(wslPath: string, force = false) {
+    const tab = editorTabs.find((entry) => entry.wslPath === wslPath);
+    if (!tab) {
+      return;
+    }
+
+    if (tab.dirty && !force) {
+      editorCloseConfirmPath = wslPath;
+      editorCloseConfirmVisible = true;
+      return;
+    }
+
+    if (!removeEditorTab(wslPath)) {
+      return;
+    }
+  }
+
+  function confirmCloseEditorTab() {
+    if (!editorCloseConfirmPath) {
+      editorCloseConfirmVisible = false;
+      return;
+    }
+
+    const path = editorCloseConfirmPath;
+    editorCloseConfirmVisible = false;
+    editorCloseConfirmPath = null;
+    closeEditorTab(path, true);
+  }
+
+  function cancelCloseEditorTab() {
+    editorCloseConfirmVisible = false;
+    editorCloseConfirmPath = null;
+  }
+
+  async function saveEditorTab(wslPath: string) {
+    const tab = editorTabs.find((entry) => entry.wslPath === wslPath);
+    if (!tab) {
+      return;
+    }
+
+    const contentToSave = tab.content;
+    const expectedMtimeMs = editorMtimeByPath[wslPath] ?? 0;
+    setEditorTabSaving(wslPath, true);
+    setEditorStatus($t("common.actions.save"));
+
+    try {
+      const result = await writeSessionFile(sessionId, wslPath, contentToSave, expectedMtimeMs);
+      const latestTab = editorTabs.find((entry) => entry.wslPath === wslPath);
+      if (!latestTab) {
+        return;
+      }
+
+      editorSavedContentByPath = {
+        ...editorSavedContentByPath,
+        [wslPath]: contentToSave,
+      };
+      editorMtimeByPath = {
+        ...editorMtimeByPath,
+        [wslPath]: result.mtimeMs,
+      };
+      patchEditorTab(wslPath, {
+        dirty: latestTab.content !== contentToSave,
+        saving: false,
+        error: null,
+      });
+      upsertEditorQuickOpenEntry(wslPath);
+      editorStatusText = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setEditorTabError(wslPath, message);
+      editorStatusText = message;
+    } finally {
+      syncEditorSessionState();
+    }
+  }
+
+  function handleEditorContentChange(detail: { wslPath: string; content: string }) {
+    patchEditorTab(detail.wslPath, {
+      content: detail.content,
+      dirty: detail.content !== (editorSavedContentByPath[detail.wslPath] ?? ""),
+      error: null,
+    });
+  }
+
+  function handleEditorActivePathChange(wslPath: string) {
+    editorActivePath = wslPath;
+    editorViewMode = "editor";
+    syncEditorSessionState();
+  }
+
   function closeEditorPicker() {
     editorPickerVisible = false;
     editorPickerPath = null;
@@ -1210,6 +1962,11 @@
     preferredEditorId?: string | null,
     forcePicker = false,
   ) {
+    if (!forcePicker && settings.interface.fileOpenTarget === "internal") {
+      openInternalEditorForLinkPath(path);
+      return;
+    }
+
     const editors = await ensureEditorsLoaded();
 
     if (editors.length === 0) {
@@ -1259,17 +2016,22 @@
 
   function buildCandidateMenuActionId(
     index: number,
-    action: "open-file" | "open-in-other-editor" | "copy-path",
+    action: "open-file" | "open-in-internal-editor" | "open-in-other-editor" | "copy-path",
   ) {
     return `candidate-${index}-${action}`;
   }
 
   function parseCandidateMenuActionId(value: string) {
-    const match = /^candidate-(\d+)-(open-file|open-in-other-editor|copy-path)$/.exec(value);
+    const match =
+      /^candidate-(\d+)-(open-file|open-in-internal-editor|open-in-other-editor|copy-path)$/.exec(value);
     if (!match) return null;
     return {
       index: Number(match[1]),
-      action: match[2] as "open-file" | "open-in-other-editor" | "copy-path",
+      action: match[2] as
+        | "open-file"
+        | "open-in-internal-editor"
+        | "open-in-other-editor"
+        | "copy-path",
     };
   }
 
@@ -1297,6 +2059,12 @@
           id: buildCandidateMenuActionId(index, "open-file"),
           kind: "item",
           label: $t("terminal.filePaths.openFile"),
+          icon: "file",
+        },
+        {
+          id: buildCandidateMenuActionId(index, "open-in-internal-editor"),
+          kind: "item",
+          label: $t("terminal.filePaths.openInInternalEditor"),
           icon: "file",
         },
         {
@@ -1430,6 +2198,11 @@
           return;
         }
 
+        if (candidateAction.action === "open-in-internal-editor") {
+          openInternalEditorForLinkPath(candidate);
+          return;
+        }
+
         if (candidateAction.action === "open-in-other-editor") {
           await showEditorPicker(candidate);
           return;
@@ -1444,6 +2217,11 @@
 
       if (item.id === "open-file") {
         await openPathInEditor(linkMenuTarget.path);
+        return;
+      }
+
+      if (item.id === "open-in-internal-editor") {
+        openInternalEditorForLinkPath(linkMenuTarget.path);
         return;
       }
 
@@ -2243,6 +3021,8 @@
       await syncMainTerminalLayoutToPty({ stickToBottom: false });
 
       await attachOrSpawnPty(term);
+      terminalStartupSettled = true;
+      scheduleEditorQuickOpenPrewarm();
     } catch (error) {
       spawnError = error instanceof Error ? error.message : String(error);
       await clearTerminalLoadingState();
@@ -2255,7 +3035,7 @@
     });
 
     resizeObserver = new ResizeObserver(() => {
-      if (visible && fit) {
+      if (visible && fit && editorViewMode === "terminal") {
         void syncMainTerminalLayoutToPty();
       }
     });
@@ -2272,7 +3052,7 @@
       if (livePtyId >= 0) {
         void resizePty(livePtyId, cols, rows);
       }
-      if (followTail || isBottomLockActive()) {
+      if (editorViewMode === "terminal" && (followTail || isBottomLockActive())) {
         scrollTerminalToBottom();
       }
     });
@@ -2303,6 +3083,7 @@
     window.addEventListener("mouseup", releaseLinkSelectionBlock, true);
     window.addEventListener("blur", releaseLinkSelectionBlock);
     window.addEventListener("keydown", handleAuxShortcut, true);
+    window.addEventListener("keydown", handleEditorShortcut, true);
     window.addEventListener("clcomx:focus-active-terminal", handleFocusRequest);
     window.addEventListener(TEST_BRIDGE_EVENTS.openPendingImage, handleTestPendingImage as EventListener);
     if (isTestBridgeEnabled()) {
@@ -2320,10 +3101,31 @@
   });
 
   $effect(() => {
-    if (!terminalReady || !visible) return;
+    if (!terminalReady || !visible || editorViewMode !== "terminal") return;
 
     armBottomLock();
     void syncMainTerminalLayoutToPty();
+  });
+
+  $effect(() => {
+    terminalReady;
+    terminalStartupSettled;
+    visible;
+    editorQuickOpenVisible;
+    editorQuickOpenBusy;
+    editorQuickOpenRootDir;
+    editorQuickOpenLastUpdatedMs;
+    editorRootDir;
+    editorQuickOpenEntries.length;
+    editorQuickOpenPrewarmRequestedRootDir;
+    editorQuickOpenPrewarmInFlightRootDir;
+
+    if (!visible) {
+      cancelEditorQuickOpenPrewarm();
+      return;
+    }
+
+    scheduleEditorQuickOpenPrewarm(editorRootDir || workDir);
   });
 
   $effect(() => {
@@ -2342,6 +3144,8 @@
     if (visible) return;
     closeLinkMenu();
     closeEditorPicker();
+    closeEditorQuickOpen();
+    cancelCloseEditorTab();
   });
 
   $effect(() => {
@@ -2373,7 +3177,7 @@
   });
 
   $effect(() => {
-    if (!terminalReady || !terminal) return;
+    if (!terminalReady || !terminal || editorViewMode !== "terminal") return;
     syncTerminalUnicodeWidth(terminal, softFollowExperimentEnabled);
     if (auxTerminal) {
       syncTerminalUnicodeWidth(auxTerminal, softFollowExperimentEnabled);
@@ -2381,7 +3185,7 @@
   });
 
   $effect(() => {
-    if (!terminalReady || !terminal) return;
+    if (!terminalReady || !terminal || editorViewMode !== "terminal") return;
     syncRendererPreference(terminal, mainRendererController, preferredRenderer, (value) => {
       activeRenderer = value;
     });
@@ -2444,10 +3248,19 @@
     mainMetadataRemainder = "";
   });
 
+  $effect(() => {
+    if (editorHydratedSessionId === sessionId) {
+      return;
+    }
+
+    void ensureEditorRuntimeReady();
+  });
+
   onDestroy(() => {
     window.removeEventListener("clcomx:focus-active-terminal", handleFocusRequest);
     window.removeEventListener(TEST_BRIDGE_EVENTS.openPendingImage, handleTestPendingImage as EventListener);
     window.removeEventListener("keydown", handleAuxShortcut, true);
+    window.removeEventListener("keydown", handleEditorShortcut, true);
     if (isTestBridgeEnabled()) {
       delete getOrCreateTerminalTestHooks()[sessionId];
       testHookRegistered = false;
@@ -2469,8 +3282,10 @@
     clearTerminalLoadingTimers();
     clearAuxLayoutSettleTimer();
     clearDeferredBottomScrollTimer();
+    cancelEditorQuickOpenPrewarm();
     releaseBottomLock();
     pendingPostWriteScroll = false;
+    invalidateEditorQuickOpenRequest();
     revokePendingClipboardImage(pendingClipboardImage);
     fileLinkProviderDisposable?.dispose();
     writeParsedDisposable?.dispose();
@@ -2506,6 +3321,32 @@
   class:hidden={!visible}
   bind:this={shellEl}
 >
+  {#if editorViewMode === "editor"}
+    <InternalEditor
+      tabs={editorTabs}
+      activePath={editorActivePath}
+      busy={editorBusy}
+      statusText={editorStatusText}
+      title={$t("terminal.editor.title")}
+      emptyTitle={$t("terminal.editor.emptyTitle")}
+      emptyDescription={$t("terminal.editor.emptyDescription")}
+      saveLabel={$t("common.actions.save")}
+      openFileLabel={$t("terminal.editor.openFile")}
+      switchToTerminalLabel={$t("terminal.editor.switchToTerminal")}
+      onActivePathChange={handleEditorActivePathChange}
+      onCloseTab={closeEditorTab}
+      onContentChange={handleEditorContentChange}
+      onSaveRequest={(wslPath) => void saveEditorTab(wslPath)}
+      onOpenFile={() => void openEditorQuickOpen(editorRootDir || workDir)}
+      onSwitchToTerminal={requestSwitchToTerminalMode}
+    />
+  {/if}
+
+  <div
+    class="terminal-runtime"
+    class:terminal-runtime--hidden={editorViewMode !== "terminal"}
+    aria-hidden={editorViewMode === "terminal" ? undefined : "true"}
+  >
   <div
     class="terminal-output"
     class:terminal-output--link-hover={linkHovering}
@@ -2610,13 +3451,17 @@
       auxBusy={auxBusy}
       draftOpen={draftOpen}
       draftValue={draftValue}
+      showEditorActions={true}
       onPasteImage={handlePasteImageFromClipboard}
+      onOpenFile={() => void openEditorQuickOpen(editorRootDir || workDir)}
+      onOpenEditor={requestSwitchToEditorMode}
       onToggleAux={() => {
         document.activeElement instanceof HTMLElement && document.activeElement.blur();
         void toggleAuxTerminal();
       }}
       onToggleDraft={toggleDraft}
     />
+  </div>
   </div>
 </div>
 
@@ -2649,6 +3494,46 @@
   onClose={closeEditorPicker}
 />
 
+<EditorQuickOpenModal
+  visible={editorQuickOpenVisible}
+  openKey={editorQuickOpenOpenKey}
+  initialQuery={editorQuickOpenQuery}
+  rootDir={editorQuickOpenRootDir || editorRootDir || workDir}
+  entries={editorQuickOpenEntries}
+  title={$t("terminal.editor.quickOpenTitle")}
+  description={$t("terminal.editor.quickOpenDescription")}
+  placeholder={$t("terminal.editor.quickOpenPlaceholder")}
+  idleLabel={$t("terminal.editor.quickOpenIdle")}
+  emptyLabel={$t("terminal.editor.quickOpenEmpty")}
+  loadingLabel={$t("terminal.editor.quickOpenLoading")}
+  refreshLabel={$t("common.actions.refresh")}
+  closeLabel={$t("common.actions.close")}
+  keyboardHintLabel={$t("terminal.editor.quickOpenKeyboardHint")}
+  busy={editorQuickOpenBusy}
+  onRefresh={() => void refreshEditorQuickOpenEntries(true)}
+  onSelect={openEditorPathFromQuickResult}
+  onClose={closeEditorQuickOpen}
+/>
+
+<ModalShell
+  open={editorCloseConfirmVisible}
+  size="sm"
+  onClose={cancelCloseEditorTab}
+>
+  <div class="terminal-interrupt-panel">
+    <h2>{$t("terminal.editor.closeDirtyTitle")}</h2>
+    <p>{$t("terminal.editor.closeDirtyDescription", { values: { title: editorCloseConfirmLabel } })}</p>
+    <div class="terminal-interrupt-actions">
+      <Button variant="danger" onclick={confirmCloseEditorTab}>
+        {$t("terminal.editor.closeDirtyConfirm")}
+      </Button>
+      <Button onclick={cancelCloseEditorTab}>
+        {$t("common.actions.cancel")}
+      </Button>
+    </div>
+  </div>
+</ModalShell>
+
 <ModalShell
   open={interruptConfirmVisible}
   size="sm"
@@ -2676,6 +3561,17 @@
     flex-direction: column;
     position: relative;
     background: var(--ui-bg-app, var(--app-bg));
+  }
+
+  .terminal-runtime {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .terminal-runtime.terminal-runtime--hidden {
+    display: none;
   }
 
   .terminal-shell.hidden {

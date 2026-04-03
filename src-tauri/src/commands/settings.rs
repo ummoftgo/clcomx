@@ -99,6 +99,7 @@ const DEFAULT_WINDOW_WIDTH: u32 = 1024;
 const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 const DEFAULT_LANGUAGE: &str = "system";
 const DEFAULT_FILE_OPEN_MODE: &str = "picker";
+const DEFAULT_FILE_OPEN_TARGET: &str = "external";
 
 fn clamp_tab_history_limit(limit: u16) -> u16 {
     limit.clamp(MIN_TAB_HISTORY_LIMIT, MAX_TAB_HISTORY_LIMIT)
@@ -153,6 +154,13 @@ fn normalize_file_open_mode(value: &str) -> String {
     }
 }
 
+fn normalize_file_open_target(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "internal" => "internal".into(),
+        _ => DEFAULT_FILE_OPEN_TARGET.into(),
+    }
+}
+
 fn normalize_aux_terminal_shortcut(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -172,6 +180,7 @@ pub struct InterfaceSettingsPayload {
     pub window_default_cols: u16,
     pub window_default_rows: u16,
     pub file_open_mode: String,
+    pub file_open_target: String,
     pub default_editor_id: String,
 }
 
@@ -185,9 +194,18 @@ impl Default for InterfaceSettingsPayload {
             window_default_cols: DEFAULT_WINDOW_COLS,
             window_default_rows: DEFAULT_WINDOW_ROWS,
             file_open_mode: DEFAULT_FILE_OPEN_MODE.into(),
+            file_open_target: DEFAULT_FILE_OPEN_TARGET.into(),
             default_editor_id: String::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct EditorTabRef {
+    pub wsl_path: String,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -333,6 +351,18 @@ pub struct WorkspaceTabSnapshot {
     pub aux_visible: bool,
     #[serde(default)]
     pub aux_height_percent: Option<u16>,
+    #[serde(default = "default_view_mode")]
+    pub view_mode: String,
+    #[serde(default)]
+    pub editor_root_dir: String,
+    #[serde(default)]
+    pub open_editor_tabs: Vec<EditorTabRef>,
+    #[serde(default)]
+    pub active_editor_path: Option<String>,
+}
+
+fn default_view_mode() -> String {
+    "terminal".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -580,6 +610,11 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         &[&["interface", "fileOpenMode"]],
         &settings.interface.file_open_mode,
     ));
+    settings.interface.file_open_target = normalize_file_open_target(&string_from_paths(
+        value,
+        &[&["interface", "fileOpenTarget"]],
+        &settings.interface.file_open_target,
+    ));
     settings.interface.default_editor_id = string_from_paths(
         value,
         &[&["interface", "defaultEditorId"]],
@@ -682,6 +717,8 @@ pub fn load_settings_or_default() -> SettingsPayload {
         clamp_window_rows(settings.interface.window_default_rows);
     settings.interface.file_open_mode =
         normalize_file_open_mode(&settings.interface.file_open_mode);
+    settings.interface.file_open_target =
+        normalize_file_open_target(&settings.interface.file_open_target);
     settings.interface.default_editor_id = settings.interface.default_editor_id.trim().to_string();
     settings.workspace.default_agent_id = normalize_agent_id(&settings.workspace.default_agent_id);
     settings.workspace.default_distro = settings.workspace.default_distro.trim().to_string();
@@ -751,6 +788,36 @@ fn normalize_window_snapshot(window: &mut WindowSnapshot) {
         }
         tab.agent_id = normalize_agent_id(&tab.agent_id);
         tab.resume_token = normalize_resume_token(tab.resume_token.clone());
+        if tab.view_mode.trim().to_ascii_lowercase() != "editor" {
+            tab.view_mode = default_view_mode();
+        } else {
+            tab.view_mode = "editor".into();
+        }
+        tab.editor_root_dir = tab.editor_root_dir.trim().to_string();
+        if tab.editor_root_dir.is_empty() {
+            tab.editor_root_dir = tab.work_dir.trim().to_string();
+        }
+        tab.open_editor_tabs = tab
+            .open_editor_tabs
+            .iter()
+            .filter_map(|entry| {
+                let wsl_path = entry.wsl_path.trim().to_string();
+                if wsl_path.is_empty() {
+                    None
+                } else {
+                    Some(EditorTabRef {
+                        wsl_path,
+                        line: entry.line,
+                        column: entry.column,
+                    })
+                }
+            })
+            .collect();
+        tab.active_editor_path = tab
+            .active_editor_path
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
     }
 }
 
@@ -1191,6 +1258,8 @@ pub fn save_settings(mut settings: SettingsPayload) -> Result<(), String> {
         clamp_window_rows(settings.interface.window_default_rows);
     settings.interface.file_open_mode =
         normalize_file_open_mode(&settings.interface.file_open_mode);
+    settings.interface.file_open_target =
+        normalize_file_open_target(&settings.interface.file_open_target);
     settings.interface.default_editor_id = settings.interface.default_editor_id.trim().to_string();
     settings.workspace.default_agent_id = normalize_agent_id(&settings.workspace.default_agent_id);
     settings.workspace.default_distro = settings.workspace.default_distro.trim().to_string();

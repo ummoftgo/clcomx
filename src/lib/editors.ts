@@ -15,6 +15,39 @@ export interface ResolvedTerminalPath {
   isDirectory: boolean;
 }
 
+export interface SearchSessionFilesResult {
+  rootDir: string;
+  results: EditorSearchResult[];
+}
+
+export interface ListSessionFilesResult {
+  rootDir: string;
+  results: EditorSearchResult[];
+  lastUpdatedMs: number;
+}
+
+export interface EditorSearchResult {
+  wslPath: string;
+  relativePath: string;
+  basename: string;
+  line?: number | null;
+  column?: number | null;
+}
+
+export interface ReadSessionFileResult {
+  wslPath: string;
+  content: string;
+  languageId: string;
+  sizeBytes: number;
+  mtimeMs: number;
+}
+
+export interface WriteSessionFileResult {
+  wslPath: string;
+  sizeBytes: number;
+  mtimeMs: number;
+}
+
 export type TerminalPathResolution =
   | {
       kind: "resolved";
@@ -59,5 +92,55 @@ export async function openInEditor(
     line: path.line,
     column: path.column,
     isDirectory: path.isDirectory,
+  });
+}
+
+export async function searchSessionFiles(
+  sessionId: string,
+  rootDir: string,
+  query: string,
+  limit = 50,
+): Promise<SearchSessionFilesResult> {
+  return invoke("search_session_files", {
+    sessionId,
+    rootDir,
+    query,
+    limit,
+  });
+}
+
+export async function listSessionFiles(
+  sessionId: string,
+  rootDir: string,
+  forceRefresh = false,
+): Promise<ListSessionFilesResult> {
+  return invoke("list_session_files", {
+    sessionId,
+    rootDir,
+    forceRefresh,
+  });
+}
+
+export async function readSessionFile(
+  sessionId: string,
+  wslPath: string,
+): Promise<ReadSessionFileResult> {
+  return invoke("read_session_file", {
+    sessionId,
+    wslPath,
+  });
+}
+
+export async function writeSessionFile(
+  sessionId: string,
+  wslPath: string,
+  content: string,
+  expectedMtimeMs: number,
+): Promise<WriteSessionFileResult> {
+  return invoke("write_session_file", {
+    sessionId,
+    wslPath,
+    content,
+    expectedMtimeMs,
   });
 }
