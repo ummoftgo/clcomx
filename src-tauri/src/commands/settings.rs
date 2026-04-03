@@ -1820,20 +1820,38 @@ pub fn close_app(app: AppHandle) -> Result<(), String> {
 }
 
 fn bundled_theme_pack() -> Result<ThemePackPayload, String> {
-    let mut pack: ThemePackPayload = serde_json::from_str(include_str!(
+    let mut base_pack: ThemePackPayload = serde_json::from_str(include_str!(
         "../../../src/lib/themes/default-theme-pack.json"
     ))
     .map_err(|error| format!("Invalid bundled theme pack: {error}"))?;
-    if pack.format_version == 0 {
-        pack.format_version = THEME_PACK_FORMAT_VERSION;
+    let mut monaco_pack: ThemePackPayload = serde_json::from_str(include_str!(
+        "../../../src/lib/themes/default-monaco-pack.json"
+    ))
+    .map_err(|error| format!("Invalid bundled monaco theme pack: {error}"))?;
+    if base_pack.format_version == 0 {
+        base_pack.format_version = THEME_PACK_FORMAT_VERSION;
     }
-    Ok(pack)
+    if monaco_pack.format_version == 0 {
+        monaco_pack.format_version = THEME_PACK_FORMAT_VERSION;
+    }
+    Ok(merge_theme_pack_payloads(base_pack, monaco_pack))
 }
 
 fn empty_overlay_theme_pack() -> ThemePackPayload {
     ThemePackPayload {
         format_version: THEME_PACK_FORMAT_VERSION,
         themes: Vec::new(),
+    }
+}
+
+fn merge_theme_pack_payloads(base: ThemePackPayload, overlay: ThemePackPayload) -> ThemePackPayload {
+    ThemePackPayload {
+        format_version: base.format_version.max(overlay.format_version),
+        themes: base
+            .themes
+            .into_iter()
+            .chain(overlay.themes.into_iter())
+            .collect(),
     }
 }
 
@@ -2398,6 +2416,52 @@ mod tests {
         let bundled = bundled_theme_pack().unwrap();
         assert_eq!(bundled.format_version, THEME_PACK_FORMAT_VERSION);
         assert!(!bundled.themes.is_empty());
+    }
+
+    #[test]
+    fn merge_theme_pack_payloads_keeps_overlay_entries_after_base_entries() {
+        let merged = merge_theme_pack_payloads(
+            ThemePackPayload {
+                format_version: 1,
+                themes: vec![ThemeSourceEntryPayload {
+                    id: "base".into(),
+                    name: "Base".into(),
+                    dark: true,
+                    extends: None,
+                    theme: BTreeMap::from([("background".into(), "#111111".into())]),
+                    monaco: None,
+                }],
+            },
+            ThemePackPayload {
+                format_version: 2,
+                themes: vec![ThemeSourceEntryPayload {
+                    id: "base".into(),
+                    name: "Base Monaco".into(),
+                    dark: true,
+                    extends: Some("base".into()),
+                    theme: BTreeMap::new(),
+                    monaco: Some(MonacoThemePayload {
+                        source: Some("builtin-vscode".into()),
+                        base: Some("vs-dark".into()),
+                        inherit: Some(true),
+                        colors: BTreeMap::from([("editor.background".into(), "#111111".into())]),
+                        rules: vec![],
+                    }),
+                }],
+            },
+        );
+
+        assert_eq!(merged.format_version, 2);
+        assert_eq!(merged.themes.len(), 2);
+        assert_eq!(merged.themes[0].id, "base");
+        assert_eq!(merged.themes[1].extends.as_deref(), Some("base"));
+        assert_eq!(
+            merged.themes[1]
+                .monaco
+                .as_ref()
+                .and_then(|monaco| monaco.colors.get("editor.background")),
+            Some(&"#111111".to_string())
+        );
     }
 
     #[test]

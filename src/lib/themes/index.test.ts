@@ -4,6 +4,7 @@ import {
   LIGHT_THEMES,
   getThemeById,
   initializeThemes,
+  mergeThemePacks,
   normalizeThemePack,
   resolveThemePack,
   type ThemePack,
@@ -159,5 +160,48 @@ describe("theme registry", () => {
     expect(child?.monaco?.colors["editor.background"]).toBe("#111111");
     expect(child?.monaco?.colors["editor.selectionBackground"]).toBe("#333333");
     expect(child?.monaco?.rules.map((rule) => rule.token)).toEqual(["keyword", "string"]);
+  });
+
+  it("merges multiple theme packs in order", () => {
+    const merged = mergeThemePacks(
+      {
+        formatVersion: 1,
+        themes: [
+          {
+            id: "base",
+            name: "Base",
+            dark: true,
+            theme: { background: "#111111" },
+          },
+        ],
+      },
+      {
+        formatVersion: 2,
+        themes: [
+          {
+            id: "base",
+            name: "Base Monaco",
+            dark: true,
+            extends: "base",
+            theme: {},
+            monaco: {
+              base: "vs-dark",
+              colors: {
+                "editor.background": "#111111",
+              },
+              rules: [{ token: "keyword", foreground: "#89b4fa" }],
+            },
+          },
+        ],
+      },
+    );
+
+    expect(merged.formatVersion).toBe(2);
+    expect(merged.themes).toHaveLength(2);
+    const resolved = resolveThemePack(merged);
+    const base = resolved.find((theme) => theme.id === "base");
+    expect(base?.theme.background).toBe("#111111");
+    expect(base?.monaco?.colors["editor.background"]).toBe("#111111");
+    expect(base?.monaco?.rules[0]?.token).toBe("keyword");
   });
 });

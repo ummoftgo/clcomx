@@ -1,5 +1,6 @@
 import type { ITheme } from "@xterm/xterm";
 import defaultThemePackJson from "./default-theme-pack.json";
+import defaultMonacoPackJson from "./default-monaco-pack.json";
 
 type ThemeThemePatch = Partial<Record<keyof ITheme, string>> & Record<string, string>;
 
@@ -41,7 +42,10 @@ export interface ThemeDef {
 }
 
 const DEFAULT_THEME_ID = "dracula";
-const BUILTIN_THEME_PACK = normalizeThemePack(defaultThemePackJson);
+const BUILTIN_THEME_PACK = mergeThemePacks(
+  normalizeThemePack(defaultThemePackJson),
+  normalizeThemePack(defaultMonacoPackJson),
+);
 
 let themeIndex = new Map<string, ThemeDef>();
 export let DARK_THEMES: ThemeDef[] = [];
@@ -202,6 +206,21 @@ export function normalizeThemePack(value: unknown): ThemePack {
   };
 }
 
+export function mergeThemePacks(...packs: Array<ThemePack | null | undefined>): ThemePack {
+  return {
+    formatVersion: packs.reduce<number | undefined>((version, pack) => {
+      if (!pack?.formatVersion) {
+        return version;
+      }
+      if (!version) {
+        return pack.formatVersion;
+      }
+      return Math.max(version, pack.formatVersion);
+    }, undefined),
+    themes: packs.flatMap((pack) => pack?.themes ?? []),
+  };
+}
+
 export function resolveThemePack(pack: ThemePack): ThemeDef[] {
   const resolved = new Map<string, ThemeDef>();
   const orderedIds: string[] = [];
@@ -244,11 +263,7 @@ function applyResolvedThemes(themes: ThemeDef[]) {
 }
 
 function resolveMergedThemePack(runtimePack?: ThemePack | null): ThemeDef[] {
-  const runtimeThemes = normalizeThemePack(runtimePack).themes;
-  const mergedPack: ThemePack = {
-    formatVersion: runtimePack?.formatVersion,
-    themes: [...BUILTIN_THEME_PACK.themes, ...runtimeThemes],
-  };
+  const mergedPack = mergeThemePacks(BUILTIN_THEME_PACK, normalizeThemePack(runtimePack));
 
   const resolvedThemes = resolveThemePack(mergedPack);
   return resolvedThemes.length > 0 ? resolvedThemes : resolveThemePack(BUILTIN_THEME_PACK);
