@@ -2,10 +2,17 @@ import type { Component } from "svelte";
 import InterfaceSettingsSection from "./sections/InterfaceSettingsSection.svelte";
 import WorkspaceSettingsSection from "./sections/WorkspaceSettingsSection.svelte";
 import TerminalSettingsSection from "./sections/TerminalSettingsSection.svelte";
+import EditorSettingsSection from "./sections/EditorSettingsSection.svelte";
 import StorageSettingsSection from "./sections/StorageSettingsSection.svelte";
 import HistorySettingsSection from "./sections/HistorySettingsSection.svelte";
 
-export type SettingsSectionId = "interface" | "workspace" | "terminal" | "storage" | "history";
+export type SettingsSectionId =
+  | "interface"
+  | "workspace"
+  | "terminal"
+  | "editor"
+  | "storage"
+  | "history";
 
 export interface SettingsSectionDefinition {
   id: SettingsSectionId;
@@ -32,6 +39,12 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     titleKey: "settings.sections.terminal",
     descriptionKey: "settings.sections.terminalHint",
     component: TerminalSettingsSection,
+  },
+  {
+    id: "editor",
+    titleKey: "settings.sections.editor",
+    descriptionKey: "settings.sections.editorHint",
+    component: EditorSettingsSection,
   },
   {
     id: "storage",

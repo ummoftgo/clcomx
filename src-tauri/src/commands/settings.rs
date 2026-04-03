@@ -79,6 +79,9 @@ const MAX_DRAFT_MAX_ROWS: u16 = 999;
 const DEFAULT_SCROLLBACK: u32 = 10_000;
 const MIN_SCROLLBACK: u32 = 1_000;
 const MAX_SCROLLBACK: u32 = 200_000;
+const DEFAULT_EDITOR_FONT_SIZE: u16 = 14;
+const MIN_EDITOR_FONT_SIZE: u16 = 10;
+const MAX_EDITOR_FONT_SIZE: u16 = 24;
 const DEFAULT_TERMINAL_RENDERER: &str = "dom";
 const DEFAULT_CLAUDE_FOOTER_GHOSTING_MITIGATION: bool = true;
 const DEFAULT_CLAUDE_ENABLE_AUTO_MODE: bool = true;
@@ -112,6 +115,19 @@ fn clamp_draft_max_rows(rows: u16) -> u16 {
 
 fn clamp_scrollback(value: u32) -> u32 {
     value.clamp(MIN_SCROLLBACK, MAX_SCROLLBACK)
+}
+
+fn clamp_editor_font_size(value: u16) -> u16 {
+    value.clamp(MIN_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE)
+}
+
+fn normalize_font_family(value: &str, default: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default.into()
+    } else {
+        trimmed.into()
+    }
 }
 
 fn normalize_terminal_renderer(value: &str) -> String {
@@ -257,6 +273,24 @@ impl Default for TerminalSettingsPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+pub struct EditorSettingsPayload {
+    pub font_family: String,
+    pub font_family_fallback: String,
+    pub font_size: u16,
+}
+
+impl Default for EditorSettingsPayload {
+    fn default() -> Self {
+        Self {
+            font_family: "JetBrains Mono, Cascadia Code, Consolas".into(),
+            font_family_fallback: "Malgun Gothic, NanumGothicCoding, monospace".into(),
+            font_size: DEFAULT_EDITOR_FONT_SIZE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct WorkspaceSettingsPayload {
     pub default_agent_id: String,
     pub default_distro: String,
@@ -294,6 +328,7 @@ pub struct SettingsPayload {
     pub interface: InterfaceSettingsPayload,
     pub workspace: WorkspaceSettingsPayload,
     pub terminal: TerminalSettingsPayload,
+    pub editor: EditorSettingsPayload,
     pub history: HistorySettingsPayload,
     pub main_window: Option<WindowPlacement>,
 }
@@ -305,6 +340,7 @@ impl Default for SettingsPayload {
             interface: InterfaceSettingsPayload::default(),
             workspace: WorkspaceSettingsPayload::default(),
             terminal: TerminalSettingsPayload::default(),
+            editor: EditorSettingsPayload::default(),
             history: HistorySettingsPayload::default(),
             main_window: None,
         }
@@ -683,6 +719,12 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         &[&["terminal", "fontSize"], &["fontSize"]],
         settings.terminal.font_size,
     );
+    settings.terminal.font_family =
+        normalize_font_family(&settings.terminal.font_family, "JetBrains Mono, Cascadia Code, Consolas");
+    settings.terminal.font_family_fallback = normalize_font_family(
+        &settings.terminal.font_family_fallback,
+        "Malgun Gothic, NanumGothicCoding, monospace",
+    );
     settings.terminal.renderer = normalize_terminal_renderer(&string_from_paths(
         value,
         &[&["terminal", "renderer"]],
@@ -717,6 +759,31 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         value,
         &[&["terminal", "auxTerminalDefaultHeight"]],
         settings.terminal.aux_terminal_default_height,
+    ));
+    settings.editor.font_family = string_from_paths(
+        value,
+        &[&["editor", "fontFamily"]],
+        &settings.terminal.font_family,
+    )
+    .trim()
+    .to_string();
+    settings.editor.font_family =
+        normalize_font_family(&settings.editor.font_family, &settings.terminal.font_family);
+    settings.editor.font_family_fallback = string_from_paths(
+        value,
+        &[&["editor", "fontFamilyFallback"]],
+        &settings.terminal.font_family_fallback,
+    )
+    .trim()
+    .to_string();
+    settings.editor.font_family_fallback = normalize_font_family(
+        &settings.editor.font_family_fallback,
+        &settings.terminal.font_family_fallback,
+    );
+    settings.editor.font_size = clamp_editor_font_size(u16_from_paths(
+        value,
+        &[&["editor", "fontSize"]],
+        settings.terminal.font_size,
     ));
 
     settings.history.tab_limit = clamp_tab_history_limit(u16_from_paths(
@@ -770,6 +837,12 @@ pub fn load_settings_or_default() -> SettingsPayload {
             }
         })
         .collect();
+    settings.terminal.font_family =
+        normalize_font_family(&settings.terminal.font_family, "JetBrains Mono, Cascadia Code, Consolas");
+    settings.terminal.font_family_fallback = normalize_font_family(
+        &settings.terminal.font_family_fallback,
+        "Malgun Gothic, NanumGothicCoding, monospace",
+    );
     settings.terminal.draft_max_rows = clamp_draft_max_rows(settings.terminal.draft_max_rows);
     settings.terminal.renderer = normalize_terminal_renderer(&settings.terminal.renderer);
     settings.terminal.scrollback = clamp_scrollback(settings.terminal.scrollback);
@@ -777,6 +850,15 @@ pub fn load_settings_or_default() -> SettingsPayload {
         normalize_aux_terminal_shortcut(&settings.terminal.aux_terminal_shortcut);
     settings.terminal.aux_terminal_default_height =
         clamp_aux_terminal_height(settings.terminal.aux_terminal_default_height);
+    settings.editor.font_family = settings.editor.font_family.trim().to_string();
+    if settings.editor.font_family.is_empty() {
+        settings.editor.font_family = settings.terminal.font_family.clone();
+    }
+    settings.editor.font_family_fallback = settings.editor.font_family_fallback.trim().to_string();
+    if settings.editor.font_family_fallback.is_empty() {
+        settings.editor.font_family_fallback = settings.terminal.font_family_fallback.clone();
+    }
+    settings.editor.font_size = clamp_editor_font_size(settings.editor.font_size);
     settings.history.tab_limit = clamp_tab_history_limit(settings.history.tab_limit);
     settings
 }
@@ -1311,6 +1393,12 @@ pub fn save_settings(mut settings: SettingsPayload) -> Result<(), String> {
             }
         })
         .collect();
+    settings.terminal.font_family =
+        normalize_font_family(&settings.terminal.font_family, "JetBrains Mono, Cascadia Code, Consolas");
+    settings.terminal.font_family_fallback = normalize_font_family(
+        &settings.terminal.font_family_fallback,
+        "Malgun Gothic, NanumGothicCoding, monospace",
+    );
     settings.terminal.draft_max_rows = clamp_draft_max_rows(settings.terminal.draft_max_rows);
     settings.terminal.renderer = normalize_terminal_renderer(&settings.terminal.renderer);
     settings.terminal.scrollback = clamp_scrollback(settings.terminal.scrollback);
@@ -1318,6 +1406,15 @@ pub fn save_settings(mut settings: SettingsPayload) -> Result<(), String> {
         normalize_aux_terminal_shortcut(&settings.terminal.aux_terminal_shortcut);
     settings.terminal.aux_terminal_default_height =
         clamp_aux_terminal_height(settings.terminal.aux_terminal_default_height);
+    settings.editor.font_family = settings.editor.font_family.trim().to_string();
+    if settings.editor.font_family.is_empty() {
+        settings.editor.font_family = settings.terminal.font_family.clone();
+    }
+    settings.editor.font_family_fallback = settings.editor.font_family_fallback.trim().to_string();
+    if settings.editor.font_family_fallback.is_empty() {
+        settings.editor.font_family_fallback = settings.terminal.font_family_fallback.clone();
+    }
+    settings.editor.font_size = clamp_editor_font_size(settings.editor.font_size);
     settings.history.tab_limit = clamp_tab_history_limit(settings.history.tab_limit);
     let path = settings_path()?;
     ensure_parent_dir(&path)?;
@@ -1855,6 +1952,79 @@ fn merge_theme_pack_payloads(base: ThemePackPayload, overlay: ThemePackPayload) 
     }
 }
 
+fn merge_monaco_theme_payloads(
+    base: Option<&MonacoThemePayload>,
+    overlay: Option<&MonacoThemePayload>,
+) -> Option<MonacoThemePayload> {
+    if base.is_none() && overlay.is_none() {
+        return None;
+    }
+
+    let mut colors = base.map(|entry| entry.colors.clone()).unwrap_or_default();
+    if let Some(overlay_entry) = overlay {
+        colors.extend(overlay_entry.colors.clone());
+    }
+
+    let mut rules = base.map(|entry| entry.rules.clone()).unwrap_or_default();
+    if let Some(overlay_entry) = overlay {
+        rules.extend(overlay_entry.rules.clone());
+    }
+
+    Some(MonacoThemePayload {
+        source: overlay
+            .and_then(|entry| entry.source.clone())
+            .or_else(|| base.and_then(|entry| entry.source.clone())),
+        base: overlay
+            .and_then(|entry| entry.base.clone())
+            .or_else(|| base.and_then(|entry| entry.base.clone())),
+        inherit: overlay
+            .and_then(|entry| entry.inherit)
+            .or_else(|| base.and_then(|entry| entry.inherit)),
+        colors,
+        rules,
+    })
+}
+
+fn resolve_theme_pack_payload(pack: &ThemePackPayload) -> BTreeMap<String, ThemeSourceEntryPayload> {
+    let mut resolved: BTreeMap<String, ThemeSourceEntryPayload> = BTreeMap::new();
+
+    for source_theme in &pack.themes {
+        let base_theme = source_theme.extends.as_ref().and_then(|extends| {
+            if extends.as_str() == source_theme.id {
+                resolved.get(source_theme.id.as_str())
+            } else {
+                resolved.get(extends.as_str())
+            }
+        });
+
+        let mut theme = base_theme.map(|theme| theme.theme.clone()).unwrap_or_default();
+        theme.extend(source_theme.theme.clone());
+
+        let monaco = merge_monaco_theme_payloads(
+            base_theme.and_then(|theme| theme.monaco.as_ref()),
+            source_theme.monaco.as_ref(),
+        );
+
+        resolved.insert(
+            source_theme.id.clone(),
+            ThemeSourceEntryPayload {
+                id: source_theme.id.clone(),
+                name: source_theme.name.clone(),
+                dark: source_theme.dark,
+                extends: source_theme
+                    .extends
+                    .as_ref()
+                    .filter(|extends| extends.as_str() != source_theme.id)
+                    .cloned(),
+                theme,
+                monaco,
+            },
+        );
+    }
+
+    resolved
+}
+
 fn trim_theme_pack_for_storage(pack: &ThemePackPayload) -> ThemePackPayload {
     ThemePackPayload {
         format_version: THEME_PACK_FORMAT_VERSION,
@@ -1887,11 +2057,7 @@ fn migrate_legacy_theme_pack_to_overlay(
     legacy: ThemePackPayload,
     bundled: &ThemePackPayload,
 ) -> ThemePackPayload {
-    let bundled_by_id = bundled
-        .themes
-        .iter()
-        .map(|theme| (theme.id.as_str(), theme))
-        .collect::<BTreeMap<_, _>>();
+    let bundled_by_id = resolve_theme_pack_payload(bundled);
 
     let mut overlay = empty_overlay_theme_pack();
 
@@ -1914,13 +2080,24 @@ fn migrate_legacy_theme_pack_to_overlay(
         let theme_diff = theme_entry_theme_diff(&legacy_theme.theme, &bundled_theme.theme);
         let monaco_override = if bundled_theme.monaco == legacy_theme.monaco {
             None
+        } else if legacy_theme.monaco.is_none() && bundled_theme.monaco.is_some() {
+            None
         } else {
             legacy_theme.monaco.clone()
         };
 
+        let normalized_legacy_extends = legacy_theme
+            .extends
+            .as_deref()
+            .filter(|extends| *extends != legacy_theme.id.as_str());
+        let normalized_bundled_extends = bundled_theme
+            .extends
+            .as_deref()
+            .filter(|extends| *extends != legacy_theme.id.as_str());
+
         let has_metadata_override = legacy_theme.name != bundled_theme.name
             || legacy_theme.dark != bundled_theme.dark
-            || legacy_theme.extends.as_deref() != Some(legacy_theme.id.as_str());
+            || normalized_legacy_extends != normalized_bundled_extends;
 
         if theme_diff.is_empty() && monaco_override.is_none() && !has_metadata_override {
             continue;
@@ -2088,10 +2265,62 @@ mod tests {
         assert_eq!(parsed.terminal.font_family, "Fira Code");
         assert_eq!(parsed.terminal.font_family_fallback, "monospace");
         assert_eq!(parsed.terminal.font_size, 16);
+        assert_eq!(parsed.editor.font_family, "Fira Code");
+        assert_eq!(parsed.editor.font_family_fallback, "monospace");
+        assert_eq!(parsed.editor.font_size, 16);
         assert_eq!(parsed.terminal.renderer, DEFAULT_TERMINAL_RENDERER);
         assert!(parsed.terminal.claude_footer_ghosting_mitigation);
         assert_eq!(parsed.terminal.draft_max_rows, 8);
         assert_eq!(parsed.history.tab_limit, 25);
+    }
+
+    #[test]
+    fn parse_settings_value_reads_explicit_editor_settings() {
+        let raw = json!({
+            "terminal": {
+                "fontFamily": "JetBrains Mono",
+                "fontFamilyFallback": "NanumGothicCoding",
+                "fontSize": 14
+            },
+            "editor": {
+                "fontFamily": "Fira Code",
+                "fontFamilyFallback": "monospace",
+                "fontSize": 18
+            }
+        });
+
+        let parsed = parse_settings_value(&raw).unwrap();
+
+        assert_eq!(parsed.editor.font_family, "Fira Code");
+        assert_eq!(parsed.editor.font_family_fallback, "monospace");
+        assert_eq!(parsed.editor.font_size, 18);
+        assert_eq!(parsed.terminal.font_family, "JetBrains Mono");
+        assert_eq!(parsed.terminal.font_size, 14);
+    }
+
+    #[test]
+    fn parse_settings_value_trims_editor_font_settings_without_clamping_terminal_font_size() {
+        let raw = json!({
+            "terminal": {
+                "fontFamily": " JetBrains Mono ",
+                "fontFamilyFallback": " NanumGothicCoding ",
+                "fontSize": 99
+            },
+            "editor": {
+                "fontFamily": "  ",
+                "fontFamilyFallback": "  IBM Plex Sans KR, monospace  ",
+                "fontSize": 1
+            }
+        });
+
+        let parsed = parse_settings_value(&raw).unwrap();
+
+        assert_eq!(parsed.terminal.font_family, "JetBrains Mono");
+        assert_eq!(parsed.terminal.font_family_fallback, "NanumGothicCoding");
+        assert_eq!(parsed.terminal.font_size, 99);
+        assert_eq!(parsed.editor.font_family, "JetBrains Mono");
+        assert_eq!(parsed.editor.font_family_fallback, "IBM Plex Sans KR, monospace");
+        assert_eq!(parsed.editor.font_size, MIN_EDITOR_FONT_SIZE);
     }
 
     #[test]
@@ -2467,7 +2696,11 @@ mod tests {
     #[test]
     fn migrate_legacy_theme_pack_drops_unchanged_builtin_entries() {
         let bundled = bundled_theme_pack().unwrap();
-        let migrated = migrate_legacy_theme_pack_to_overlay(bundled.clone(), &bundled);
+        let legacy: ThemePackPayload = serde_json::from_str(include_str!(
+            "../../../src/lib/themes/default-theme-pack.json"
+        ))
+        .unwrap();
+        let migrated = migrate_legacy_theme_pack_to_overlay(legacy, &bundled);
 
         assert_eq!(migrated.format_version, THEME_PACK_FORMAT_VERSION);
         assert!(migrated.themes.is_empty());

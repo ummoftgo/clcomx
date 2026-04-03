@@ -4,12 +4,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import InternalEditor from "./InternalEditor.svelte";
 import { TEST_IDS } from "../testids";
 import type { InternalEditorTab } from "../editor/contracts";
+import { DEFAULT_SETTINGS } from "../types";
+import { initializeSettings, updateSettings } from "../stores/settings.svelte";
 
 const hostMock = vi.hoisted(() => {
   const instance = {
     syncTabs: vi.fn(),
     setActivePath: vi.fn(),
     setTheme: vi.fn(),
+    setPresentation: vi.fn(),
     focus: vi.fn(),
     dispose: vi.fn(),
   };
@@ -21,6 +24,7 @@ const hostMock = vi.hoisted(() => {
       instance.syncTabs.mockReset();
       instance.setActivePath.mockReset();
       instance.setTheme.mockReset();
+      instance.setPresentation.mockReset();
       instance.focus.mockReset();
       instance.dispose.mockReset();
       this.createMonacoEditorHost.mockReset();
@@ -78,6 +82,7 @@ function createProps(overrides: Partial<InternalEditorProps> = {}) {
 describe("InternalEditor", () => {
   beforeEach(() => {
     hostMock.reset();
+    initializeSettings(DEFAULT_SETTINGS);
   });
 
   it("creates and syncs the Monaco host around the active tab state", async () => {
@@ -91,6 +96,10 @@ describe("InternalEditor", () => {
           tabs: props.tabs,
           activePath: props.activePath,
           theme: expect.objectContaining({ id: "dracula" }),
+          presentation: expect.objectContaining({
+            fontSize: DEFAULT_SETTINGS.editor.fontSize,
+            fontFamily: expect.stringContaining("JetBrains Mono"),
+          }),
           onChange: props.onContentChange,
           onSaveRequest: props.onSaveRequest,
         }),
@@ -101,6 +110,7 @@ describe("InternalEditor", () => {
       expect(hostMock.instance.syncTabs).toHaveBeenLastCalledWith(props.tabs);
       expect(hostMock.instance.setActivePath).toHaveBeenLastCalledWith(props.activePath);
       expect(hostMock.instance.setTheme).toHaveBeenCalled();
+      expect(hostMock.instance.setPresentation).toHaveBeenCalled();
       expect(hostMock.instance.focus).toHaveBeenCalled();
     });
 
@@ -180,5 +190,31 @@ describe("InternalEditor", () => {
 
     await fireEvent.click(screen.getAllByRole("button", { name: "Open File" })[0]);
     expect(props.onOpenFile).toHaveBeenCalled();
+  });
+
+  it("updates Monaco presentation when editor font settings change", async () => {
+    const props = createProps();
+    render(InternalEditor, props);
+
+    await waitFor(() => {
+      expect(hostMock.createMonacoEditorHost).toHaveBeenCalled();
+    });
+
+    updateSettings({
+      editor: {
+        fontFamily: "Fira Code",
+        fontFamilyFallback: "IBM Plex Sans KR, monospace",
+        fontSize: 16,
+      },
+    });
+
+    await waitFor(() => {
+      expect(hostMock.instance.setPresentation).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          fontSize: 16,
+          fontFamily: expect.stringContaining("Fira Code"),
+        }),
+      );
+    });
   });
 });

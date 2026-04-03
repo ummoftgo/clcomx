@@ -17,6 +17,9 @@ function cloneDefaults(): Settings {
       ...DEFAULT_SETTINGS.terminal,
       claudeCliFlags: { ...DEFAULT_SETTINGS.terminal.claudeCliFlags },
     },
+    editor: {
+      ...DEFAULT_SETTINGS.editor,
+    },
     history: { ...DEFAULT_SETTINGS.history },
   };
 }
@@ -34,6 +37,15 @@ function normalizeStringRecord(
 }
 
 export function normalizeSettings(partial?: DeepPartial<Settings> | null): Settings {
+  const terminal = {
+    ...DEFAULT_SETTINGS.terminal,
+    ...(partial?.terminal ?? {}),
+    claudeCliFlags: {
+      ...DEFAULT_SETTINGS.terminal.claudeCliFlags,
+      ...(partial?.terminal?.claudeCliFlags ?? {}),
+    },
+  };
+
   return {
     ...cloneDefaults(),
     ...(partial ?? {}),
@@ -48,13 +60,11 @@ export function normalizeSettings(partial?: DeepPartial<Settings> | null): Setti
         partial?.workspace?.defaultStartPathsByDistro,
       ),
     },
-    terminal: {
-      ...DEFAULT_SETTINGS.terminal,
-      ...(partial?.terminal ?? {}),
-      claudeCliFlags: {
-        ...DEFAULT_SETTINGS.terminal.claudeCliFlags,
-        ...(partial?.terminal?.claudeCliFlags ?? {}),
-      },
+    terminal,
+    editor: {
+      fontFamily: partial?.editor?.fontFamily ?? terminal.fontFamily,
+      fontFamilyFallback: partial?.editor?.fontFamilyFallback ?? terminal.fontFamilyFallback,
+      fontSize: partial?.editor?.fontSize ?? terminal.fontSize,
     },
     history: {
       ...DEFAULT_SETTINGS.history,
@@ -109,6 +119,10 @@ export function updateSettings(partial: DeepPartial<Settings>) {
     Object.assign(settings.terminal, terminalRemainder);
   }
 
+  if (partial.editor) {
+    Object.assign(settings.editor, partial.editor);
+  }
+
   if (partial.history) {
     Object.assign(settings.history, partial.history);
   }
@@ -117,6 +131,7 @@ export function updateSettings(partial: DeepPartial<Settings>) {
   delete remainder.interface;
   delete remainder.workspace;
   delete remainder.terminal;
+  delete remainder.editor;
   delete remainder.history;
   Object.assign(settings, remainder);
 

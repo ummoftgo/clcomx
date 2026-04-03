@@ -41,6 +41,9 @@ describe("settings store", () => {
     expect(settings.terminal.claudeCliFlags.enableAutoMode).toBe(
       DEFAULT_SETTINGS.terminal.claudeCliFlags.enableAutoMode,
     );
+    expect(settings.editor.fontFamily).toBe(DEFAULT_SETTINGS.terminal.fontFamily);
+    expect(settings.editor.fontFamilyFallback).toBe(DEFAULT_SETTINGS.terminal.fontFamilyFallback);
+    expect(settings.editor.fontSize).toBe(16);
     expect(settings.history.tabLimit).toBe(DEFAULT_SETTINGS.history.tabLimit);
   });
 
@@ -63,6 +66,11 @@ describe("settings store", () => {
         claudeCliFlags: {
           enableAutoMode: false,
         },
+      },
+      editor: {
+        fontFamily: "Fira Code",
+        fontFamilyFallback: "monospace",
+        fontSize: 15,
       },
     });
 
@@ -90,6 +98,11 @@ describe("settings store", () => {
               enableAutoMode: false,
             }),
           }),
+          editor: expect.objectContaining({
+            fontFamily: "Fira Code",
+            fontFamilyFallback: "monospace",
+            fontSize: 15,
+          }),
         }),
       }),
     );
@@ -99,7 +112,38 @@ describe("settings store", () => {
     expect(getSettings().terminal.renderer).toBe("webgl");
     expect(getSettings().terminal.claudeFooterGhostingMitigation).toBe(false);
     expect(getSettings().terminal.claudeCliFlags.enableAutoMode).toBe(false);
+    expect(getSettings().editor.fontFamily).toBe("Fira Code");
+    expect(getSettings().editor.fontFamilyFallback).toBe("monospace");
+    expect(getSettings().editor.fontSize).toBe(15);
     expect(getSettings().workspace.defaultAgentId).toBe("codex");
     expect(getSettings().workspace.defaultDistro).toBe(EXAMPLE_DISTRO);
+  });
+
+  it("keeps editor settings independent after initialization", () => {
+    initializeSettings({
+      terminal: {
+        fontFamily: "JetBrains Mono",
+        fontFamilyFallback: "monospace",
+        fontSize: 15,
+      },
+    });
+
+    updateSettings({
+      editor: {
+        fontFamily: "Fira Code",
+        fontSize: 17,
+      },
+    });
+
+    updateSettings({
+      terminal: {
+        fontFamily: "Cascadia Code",
+        fontSize: 13,
+      },
+    });
+
+    expect(getSettings().editor.fontFamily).toBe("Fira Code");
+    expect(getSettings().editor.fontFamilyFallback).toBe("monospace");
+    expect(getSettings().editor.fontSize).toBe(17);
   });
 });

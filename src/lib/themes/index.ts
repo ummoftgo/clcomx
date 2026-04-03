@@ -66,6 +66,21 @@ function normalizeThemePatch(value: unknown): ThemeThemePatch {
   return patch;
 }
 
+function normalizeMonacoFontStyle(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+
+  const tokens = value
+    .trim()
+    .split(/\s+/)
+    .filter((token) =>
+      ["italic", "bold", "underline", "strikethrough"].includes(token),
+    );
+
+  return tokens.length > 0 ? tokens.join(" ") : undefined;
+}
+
 function normalizeMonacoTokenRule(value: unknown): MonacoThemeTokenRuleDef | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -85,10 +100,7 @@ function normalizeMonacoTokenRule(value: unknown): MonacoThemeTokenRuleDef | nul
     typeof entry.background === "string" && entry.background.trim()
       ? entry.background.trim()
       : undefined;
-  const fontStyle =
-    typeof entry.fontStyle === "string" && entry.fontStyle.trim()
-      ? entry.fontStyle.trim()
-      : undefined;
+  const fontStyle = normalizeMonacoFontStyle(entry.fontStyle);
 
   return {
     token,

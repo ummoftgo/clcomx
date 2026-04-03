@@ -8,8 +8,10 @@
   } from "../editor/monaco-host";
   import type { InternalEditorTab } from "../editor/contracts";
   import { basenameFromPath, directoryFromPath } from "../editor/path";
+  import { buildFontStack, serializeFontFamilyList } from "../font-family";
   import { getThemeById } from "../themes";
   import { getSettings } from "../stores/settings.svelte";
+  import { DEFAULT_SETTINGS } from "../types";
 
   interface Props {
     tabs: InternalEditorTab[];
@@ -55,6 +57,16 @@
 
   const activeTab = $derived(tabs.find((tab) => tab.wslPath === activePath) ?? null);
   const activeTheme = $derived(getThemeById(settings.interface.theme) ?? null);
+  const editorPresentation = $derived({
+    fontFamily: buildFontStack(
+      serializeFontFamilyList(settings.editor.fontFamily, DEFAULT_SETTINGS.editor.fontFamily),
+      serializeFontFamilyList(
+        settings.editor.fontFamilyFallback,
+        DEFAULT_SETTINGS.editor.fontFamilyFallback,
+      ),
+    ),
+    fontSize: settings.editor.fontSize,
+  });
 
   $effect(() => {
     if (!editorSurfaceEl || host || tabs.length === 0) {
@@ -66,6 +78,7 @@
       tabs,
       activePath,
       theme: activeTheme,
+      presentation: editorPresentation,
       onChange: onContentChange,
       onSaveRequest,
     });
@@ -83,6 +96,12 @@
     activeTheme;
     if (!host) return;
     host.setTheme(activeTheme);
+  });
+
+  $effect(() => {
+    editorPresentation;
+    if (!host) return;
+    host.setPresentation(editorPresentation);
   });
 
   $effect(() => {

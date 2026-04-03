@@ -204,4 +204,68 @@ describe("theme registry", () => {
     expect(base?.monaco?.colors["editor.background"]).toBe("#111111");
     expect(base?.monaco?.rules[0]?.token).toBe("keyword");
   });
+
+  it("normalizes Monaco token font styles to supported values", () => {
+    const pack = normalizeThemePack({
+      themes: [
+        {
+          id: "mono",
+          name: "Mono",
+          dark: true,
+          theme: {},
+          monaco: {
+            rules: [
+              {
+                token: "comment",
+                foreground: "#888888",
+                fontStyle: "regular italic sparkle",
+              },
+              {
+                token: "keyword",
+                foreground: "#ff00ff",
+                fontStyle: "regular",
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(pack.themes[0]?.monaco?.rules).toEqual([
+      {
+        token: "comment",
+        foreground: "#888888",
+        fontStyle: "italic",
+      },
+      {
+        token: "keyword",
+        foreground: "#ff00ff",
+      },
+    ]);
+  });
+
+  it("ships built-in Monaco presets for official source-backed themes", () => {
+    initializeThemes(null);
+
+    const tokyoNightStorm = getThemeById("tokyo-night-storm");
+    const ayuLight = getThemeById("ayu-light");
+    const dracula = getThemeById("dracula");
+
+    expect(tokyoNightStorm?.monaco?.source).toContain("tokyo-night-vscode-theme");
+    expect(tokyoNightStorm?.monaco?.colors["editor.background"]).toBe("#24283b");
+    expect(
+      tokyoNightStorm?.monaco?.rules.some(
+        (rule) => rule.token === "keyword" && rule.foreground === "#bb9af7",
+      ),
+    ).toBe(true);
+
+    expect(ayuLight?.monaco?.source).toContain("vscode-ayu");
+    expect(
+      ayuLight?.monaco?.rules.some(
+        (rule) => rule.token === "string" && rule.foreground === "#86b300",
+      ),
+    ).toBe(true);
+
+    expect(dracula?.monaco).toBeUndefined();
+  });
 });

@@ -77,6 +77,12 @@ export interface TerminalSettings {
   auxTerminalDefaultHeight: number;
 }
 
+export interface EditorSettings {
+  fontFamily: string;
+  fontFamilyFallback: string;
+  fontSize: number;
+}
+
 export interface ClaudeCliFlagsSettings {
   enableAutoMode: boolean;
 }
@@ -98,6 +104,7 @@ export interface Settings {
   interface: InterfaceSettings;
   workspace: WorkspaceSettings;
   terminal: TerminalSettings;
+  editor: EditorSettings;
   history: HistorySettings;
   mainWindow: WindowPlacement | null;
 }
@@ -188,6 +195,11 @@ export const DEFAULT_SETTINGS: Settings = {
     draftMaxRows: 5,
     auxTerminalShortcut: "Ctrl+`",
     auxTerminalDefaultHeight: 28,
+  },
+  editor: {
+    fontFamily: "JetBrains Mono, Cascadia Code, Consolas",
+    fontFamilyFallback: "Malgun Gothic, NanumGothicCoding, monospace",
+    fontSize: 14,
   },
   history: {
     tabLimit: 10,

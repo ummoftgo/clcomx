@@ -9,11 +9,17 @@ import {
   buildMonacoThemeName,
 } from "./monaco-theme";
 
+export interface MonacoEditorPresentationOptions {
+  fontFamily: string;
+  fontSize: number;
+}
+
 export interface MonacoEditorHostOptions {
   target: HTMLElement;
   tabs: InternalEditorTab[];
   activePath: string | null;
   theme: ThemeDef | null;
+  presentation: MonacoEditorPresentationOptions;
   onChange: (event: InternalEditorChangeEvent) => void;
   onSaveRequest?: (wslPath: string) => void;
 }
@@ -22,6 +28,7 @@ export interface MonacoEditorHost {
   syncTabs: (tabs: InternalEditorTab[]) => void;
   setActivePath: (wslPath: string | null) => void;
   setTheme: (theme: ThemeDef | null) => void;
+  setPresentation: (presentation: MonacoEditorPresentationOptions) => void;
   focus: () => void;
   dispose: () => void;
 }
@@ -56,7 +63,8 @@ export function createMonacoEditorHost(options: MonacoEditorHostOptions): Monaco
   const editor = monaco.editor.create(options.target, {
     automaticLayout: true,
     minimap: { enabled: false },
-    fontSize: 13,
+    fontSize: options.presentation.fontSize,
+    fontFamily: options.presentation.fontFamily,
     roundedSelection: false,
     scrollBeyondLastLine: false,
     padding: { top: 16, bottom: 16 },
@@ -182,6 +190,13 @@ export function createMonacoEditorHost(options: MonacoEditorHostOptions): Monaco
     setTheme(theme) {
       options.theme = theme;
       applyEditorTheme(theme);
+    },
+    setPresentation(presentation) {
+      options.presentation = presentation;
+      editor.updateOptions({
+        fontFamily: presentation.fontFamily,
+        fontSize: presentation.fontSize,
+      });
     },
     focus() {
       editor.focus();

@@ -1,4 +1,643 @@
 {
   "formatVersion": 2,
-  "themes": []
+  "themes": [
+    {
+      "id": "nord",
+      "name": "Nord",
+      "dark": true,
+      "extends": "nord",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/nordtheme/visual-studio-code/blob/develop/themes/nord-color-theme.json",
+        "base": "vs-dark",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#2e3440",
+          "editor.foreground": "#d8dee9",
+          "editorCursor.foreground": "#d8dee9",
+          "editor.selectionBackground": "#434c5ecc",
+          "editor.lineHighlightBackground": "#3b4252",
+          "editorLineNumber.foreground": "#4c566a",
+          "editorLineNumber.activeForeground": "#d8dee9",
+          "editorWhitespace.foreground": "#4c566ab3"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#616E88"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#81A1C1"
+          },
+          {
+            "token": "string",
+            "foreground": "#A3BE8C"
+          },
+          {
+            "token": "number",
+            "foreground": "#B48EAD"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#EBCB8B"
+          },
+          {
+            "token": "type",
+            "foreground": "#8FBCBB"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#ECEFF4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "tokyo-night-storm",
+      "name": "Tokyo Night Storm",
+      "dark": true,
+      "extends": "tokyo-night-storm",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/tokyo-night/tokyo-night-vscode-theme/blob/master/themes/tokyo-night-storm-color-theme.json",
+        "base": "vs-dark",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#24283b",
+          "editor.foreground": "#a9b1d6",
+          "editorCursor.foreground": "#c0caf5",
+          "editor.selectionBackground": "#6f7bb640",
+          "editor.lineHighlightBackground": "#292e42",
+          "editorLineNumber.foreground": "#3b4261",
+          "editorLineNumber.activeForeground": "#8089b3",
+          "editorWhitespace.foreground": "#3b4261",
+          "editorIndentGuide.background1": "#2d324a"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#5f6996"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#bb9af7"
+          },
+          {
+            "token": "string",
+            "foreground": "#9ece6a"
+          },
+          {
+            "token": "number",
+            "foreground": "#ff9e64"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#b4f9f8"
+          },
+          {
+            "token": "type",
+            "foreground": "#bb9af7"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#89ddff"
+          }
+        ]
+      }
+    },
+    {
+      "id": "tokyo-night-day",
+      "name": "Tokyo Night Day",
+      "dark": false,
+      "extends": "tokyo-night-day",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/tokyo-night/tokyo-night-vscode-theme/blob/master/themes/tokyo-night-light-color-theme.json",
+        "base": "vs",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#e6e7ed",
+          "editor.foreground": "#343b59",
+          "editorCursor.foreground": "#363c4d",
+          "editor.selectionBackground": "#acb0bf40",
+          "editor.lineHighlightBackground": "#dcdee3",
+          "editorLineNumber.foreground": "#9da0ab",
+          "editorLineNumber.activeForeground": "#363c4d",
+          "editorWhitespace.foreground": "#e6e7ed",
+          "editorIndentGuide.background1": "#d0d4e3"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#888b94"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#65359d"
+          },
+          {
+            "token": "string",
+            "foreground": "#385f0d"
+          },
+          {
+            "token": "number",
+            "foreground": "#965027"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#3e6968"
+          },
+          {
+            "token": "type",
+            "foreground": "#65359d"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#006C86"
+          }
+        ]
+      }
+    },
+    {
+      "id": "everforest-dark",
+      "name": "Everforest Dark",
+      "dark": true,
+      "extends": "everforest-dark",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/sainnhe/everforest-vscode/blob/master/themes/everforest-dark.json",
+        "base": "vs-dark",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#2d353b",
+          "editor.foreground": "#d3c6aa",
+          "editorCursor.foreground": "#d3c6aa",
+          "editor.selectionBackground": "#475258c0",
+          "editor.lineHighlightBackground": "#3d484d90",
+          "editorLineNumber.foreground": "#7f897da0",
+          "editorLineNumber.activeForeground": "#9aa79de0",
+          "editorWhitespace.foreground": "#475258"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#859289",
+            "fontStyle": "italic"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#e69875"
+          },
+          {
+            "token": "string",
+            "foreground": "#d699b6"
+          },
+          {
+            "token": "number",
+            "foreground": "#d699b6"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#dbbc7f"
+          },
+          {
+            "token": "type",
+            "foreground": "#83c092"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#e69875",
+            "fontStyle": "bold"
+          }
+        ]
+      }
+    },
+    {
+      "id": "everforest-light",
+      "name": "Everforest Light",
+      "dark": false,
+      "extends": "everforest-light",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/sainnhe/everforest-vscode/blob/master/themes/everforest-light.json",
+        "base": "vs",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#fdf6e3",
+          "editor.foreground": "#5c6a72",
+          "editorCursor.foreground": "#5c6a72",
+          "editor.selectionBackground": "#e6e2cca0",
+          "editor.lineHighlightBackground": "#efebd470",
+          "editorLineNumber.foreground": "#a4ad9ea0",
+          "editorLineNumber.activeForeground": "#879686e0",
+          "editorWhitespace.foreground": "#e6e2cc"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#939f91",
+            "fontStyle": "italic"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#f57d26"
+          },
+          {
+            "token": "string",
+            "foreground": "#df69ba"
+          },
+          {
+            "token": "number",
+            "foreground": "#df69ba"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#dfa000"
+          },
+          {
+            "token": "type",
+            "foreground": "#35a77c"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#f57d26",
+            "fontStyle": "bold"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ayu-dark",
+      "name": "Ayu Dark",
+      "dark": true,
+      "extends": "ayu-dark",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/ayu-theme/vscode-ayu/blob/master/ayu-dark.json",
+        "base": "vs-dark",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#10141c",
+          "editor.foreground": "#bfbdb6",
+          "editorCursor.foreground": "#e6b450",
+          "editor.selectionBackground": "#3388ff40",
+          "editor.lineHighlightBackground": "#161a24",
+          "editorLineNumber.foreground": "#5a6378a6",
+          "editorLineNumber.activeForeground": "#5a6378",
+          "editorWhitespace.foreground": "#5a6378a6"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#5a6673",
+            "fontStyle": "italic"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#ff8f40"
+          },
+          {
+            "token": "string",
+            "foreground": "#aad94c"
+          },
+          {
+            "token": "number",
+            "foreground": "#d2a6ff"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#95e6cb"
+          },
+          {
+            "token": "type",
+            "foreground": "#39bae6"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#bfbdb6b3"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ayu-light",
+      "name": "Ayu Light",
+      "dark": false,
+      "extends": "ayu-light",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/ayu-theme/vscode-ayu/blob/master/ayu-light.json",
+        "base": "vs",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#fcfcfc",
+          "editor.foreground": "#5c6166",
+          "editorCursor.foreground": "#f29718",
+          "editor.selectionBackground": "#035bd626",
+          "editor.lineHighlightBackground": "#828e9f1a",
+          "editorLineNumber.foreground": "#828e9f66",
+          "editorLineNumber.activeForeground": "#828e9fcc",
+          "editorWhitespace.foreground": "#828e9f66"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#adaeb1",
+            "fontStyle": "italic"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#fa8532"
+          },
+          {
+            "token": "string",
+            "foreground": "#86b300"
+          },
+          {
+            "token": "number",
+            "foreground": "#a37acc"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#4cbf99"
+          },
+          {
+            "token": "type",
+            "foreground": "#55b4d4"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#5c6166b3"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rose-pine",
+      "name": "Rosé Pine",
+      "dark": true,
+      "extends": "rose-pine",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/rose-pine/vscode/blob/main/themes/rose-pine-color-theme.json",
+        "base": "vs-dark",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#191724",
+          "editor.foreground": "#e0def4",
+          "editorCursor.foreground": "#6e6a86",
+          "editor.selectionBackground": "#6e6a8633",
+          "editor.lineHighlightBackground": "#6e6a861a",
+          "editorLineNumber.foreground": "#908caa",
+          "editorLineNumber.activeForeground": "#e0def4",
+          "editorWhitespace.foreground": "#6e6a8680",
+          "editorIndentGuide.background1": "#6e6a8666"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#6e6a86",
+            "fontStyle": "italic"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#31748f"
+          },
+          {
+            "token": "string",
+            "foreground": "#f6c177"
+          },
+          {
+            "token": "number",
+            "foreground": "#ebbcba"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#f6c177"
+          },
+          {
+            "token": "type",
+            "foreground": "#9ccfd8"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#e0def4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rose-pine-dawn",
+      "name": "Rosé Pine Dawn",
+      "dark": false,
+      "extends": "rose-pine-dawn",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/rose-pine/vscode/blob/main/themes/rose-pine-dawn-color-theme.json",
+        "base": "vs",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#faf4ed",
+          "editor.foreground": "#575279",
+          "editorCursor.foreground": "#9893a5",
+          "editor.selectionBackground": "#6e6a8614",
+          "editor.lineHighlightBackground": "#6e6a860d",
+          "editorLineNumber.foreground": "#797593",
+          "editorLineNumber.activeForeground": "#575279",
+          "editorWhitespace.foreground": "#9893a580",
+          "editorIndentGuide.background1": "#6e6a8626"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#9893a5",
+            "fontStyle": "italic"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#286983"
+          },
+          {
+            "token": "string",
+            "foreground": "#ea9d34"
+          },
+          {
+            "token": "number",
+            "foreground": "#d7827e"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#ea9d34"
+          },
+          {
+            "token": "type",
+            "foreground": "#56949f"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#575279"
+          }
+        ]
+      }
+    },
+    {
+      "id": "night-owl-light",
+      "name": "Night Owl Light",
+      "dark": false,
+      "extends": "night-owl-light",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/sdras/night-owl-vscode-theme/blob/main/themes/Night Owl-Light-color-theme.json",
+        "base": "vs",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#FBFBFB",
+          "editor.foreground": "#403f53",
+          "editorCursor.foreground": "#90A7B2",
+          "editor.selectionBackground": "#E0E0E0",
+          "editor.lineHighlightBackground": "#F0F0F0",
+          "editorLineNumber.foreground": "#90A7B2",
+          "editorLineNumber.activeForeground": "#403f53",
+          "editorWhitespace.foreground": "#d9d9d9"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#989fb1",
+            "fontStyle": "italic"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#994cc3",
+            "fontStyle": "italic"
+          },
+          {
+            "token": "string",
+            "foreground": "#4876d6"
+          },
+          {
+            "token": "number",
+            "foreground": "#aa0982"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#5ca7e4"
+          },
+          {
+            "token": "type",
+            "foreground": "#994cc3"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#403f53"
+          }
+        ]
+      }
+    },
+    {
+      "id": "noctis-lux",
+      "name": "Noctis Lux",
+      "dark": false,
+      "extends": "noctis-lux",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/liviuschera/noctis/blob/master/themes/lux.json",
+        "base": "vs",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#fef8ec",
+          "editor.foreground": "#005661",
+          "editorCursor.foreground": "#0092a8",
+          "editor.selectionBackground": "#ade2eb77",
+          "editor.lineHighlightBackground": "#d1ebefcc",
+          "editorLineNumber.foreground": "#a0abac",
+          "editorLineNumber.activeForeground": "#0099ad",
+          "editorWhitespace.foreground": "#d3cec5bb"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#8ca6a6"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#ff5792"
+          },
+          {
+            "token": "string",
+            "foreground": "#00b368"
+          },
+          {
+            "token": "number",
+            "foreground": "#5842ff"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#009456"
+          },
+          {
+            "token": "type",
+            "foreground": "#b3694d"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#8ca6a6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "noctis-lilac",
+      "name": "Noctis Lilac",
+      "dark": false,
+      "extends": "noctis-lilac",
+      "theme": {},
+      "monaco": {
+        "source": "https://github.com/liviuschera/noctis/blob/master/themes/lilac.json",
+        "base": "vs",
+        "inherit": true,
+        "colors": {
+          "editor.background": "#f2f1f8",
+          "editor.foreground": "#0c006b",
+          "editorCursor.foreground": "#5c49e9",
+          "editor.selectionBackground": "#b4adeb77",
+          "editor.lineHighlightBackground": "#d5d2ef99",
+          "editorLineNumber.foreground": "#9d9ab1",
+          "editorLineNumber.activeForeground": "#7060eb",
+          "editorWhitespace.foreground": "#c3c1d7bb"
+        },
+        "rules": [
+          {
+            "token": "comment",
+            "foreground": "#9995b7"
+          },
+          {
+            "token": "keyword",
+            "foreground": "#ff5792"
+          },
+          {
+            "token": "string",
+            "foreground": "#00b368"
+          },
+          {
+            "token": "number",
+            "foreground": "#5842ff"
+          },
+          {
+            "token": "regexp",
+            "foreground": "#009456"
+          },
+          {
+            "token": "type",
+            "foreground": "#b3694d"
+          },
+          {
+            "token": "delimiter",
+            "foreground": "#9995b7"
+          }
+        ]
+      }
+    }
+  ]
 }
