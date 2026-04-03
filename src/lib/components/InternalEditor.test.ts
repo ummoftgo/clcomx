@@ -9,6 +9,7 @@ const hostMock = vi.hoisted(() => {
   const instance = {
     syncTabs: vi.fn(),
     setActivePath: vi.fn(),
+    setTheme: vi.fn(),
     focus: vi.fn(),
     dispose: vi.fn(),
   };
@@ -19,6 +20,7 @@ const hostMock = vi.hoisted(() => {
     reset() {
       instance.syncTabs.mockReset();
       instance.setActivePath.mockReset();
+      instance.setTheme.mockReset();
       instance.focus.mockReset();
       instance.dispose.mockReset();
       this.createMonacoEditorHost.mockReset();
@@ -88,6 +90,7 @@ describe("InternalEditor", () => {
           target: expect.any(HTMLDivElement),
           tabs: props.tabs,
           activePath: props.activePath,
+          theme: expect.objectContaining({ id: "dracula" }),
           onChange: props.onContentChange,
           onSaveRequest: props.onSaveRequest,
         }),
@@ -97,6 +100,7 @@ describe("InternalEditor", () => {
     await waitFor(() => {
       expect(hostMock.instance.syncTabs).toHaveBeenLastCalledWith(props.tabs);
       expect(hostMock.instance.setActivePath).toHaveBeenLastCalledWith(props.activePath);
+      expect(hostMock.instance.setTheme).toHaveBeenCalled();
       expect(hostMock.instance.focus).toHaveBeenCalled();
     });
 
@@ -142,6 +146,23 @@ describe("InternalEditor", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(props.onSaveRequest).toHaveBeenCalledWith("/home/user/work/project/src/App.svelte");
+  });
+
+  it("enables save only when the active tab is dirty", async () => {
+    const props = createProps({
+      activePath: "/home/user/work/project/src/routes.ts",
+    });
+    const view = render(InternalEditor, props);
+
+    const saveButton = screen.getByRole("button", { name: "Save" });
+    expect(saveButton).toBeDisabled();
+
+    await view.rerender({
+      ...props,
+      activePath: "/home/user/work/project/src/App.svelte",
+    });
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   });
 
   it("shows the empty state without creating a Monaco host", async () => {

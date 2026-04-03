@@ -8,6 +8,8 @@
   } from "../editor/monaco-host";
   import type { InternalEditorTab } from "../editor/contracts";
   import { basenameFromPath, directoryFromPath } from "../editor/path";
+  import { getThemeById } from "../themes";
+  import { getSettings } from "../stores/settings.svelte";
 
   interface Props {
     tabs: InternalEditorTab[];
@@ -49,8 +51,10 @@
 
   let editorSurfaceEl = $state<HTMLDivElement | undefined>(undefined);
   let host: MonacoEditorHost | null = null;
+  const settings = getSettings();
 
   const activeTab = $derived(tabs.find((tab) => tab.wslPath === activePath) ?? null);
+  const activeTheme = $derived(getThemeById(settings.interface.theme) ?? null);
 
   $effect(() => {
     if (!editorSurfaceEl || host || tabs.length === 0) {
@@ -61,6 +65,7 @@
       target: editorSurfaceEl,
       tabs,
       activePath,
+      theme: activeTheme,
       onChange: onContentChange,
       onSaveRequest,
     });
@@ -72,6 +77,12 @@
     if (!host) return;
     host.syncTabs(tabs);
     host.setActivePath(activePath);
+  });
+
+  $effect(() => {
+    activeTheme;
+    if (!host) return;
+    host.setTheme(activeTheme);
   });
 
   $effect(() => {
@@ -145,7 +156,7 @@
         size="sm"
         variant="primary"
         busy={busy || activeTab?.saving}
-        disabled={!activeTab || activeTab.loading}
+        disabled={!activeTab || !activeTab.dirty || !!activeTab.loading || !!activeTab.saving}
         onclick={requestSave}
       >
         {saveLabel}

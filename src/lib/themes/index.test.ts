@@ -97,4 +97,67 @@ describe("theme registry", () => {
     expect(DARK_THEMES.length).toBeGreaterThan(0);
     expect(LIGHT_THEMES.some((theme) => theme.id === "custom-light")).toBe(true);
   });
+
+  it("normalizes monaco theme payload and preserves formatVersion", () => {
+    const pack = normalizeThemePack({
+      formatVersion: 2,
+      themes: [
+        {
+          id: "mono",
+          name: "Mono",
+          dark: true,
+          theme: { background: "#111111" },
+          monaco: {
+            base: "vs-dark",
+            inherit: true,
+            colors: {
+              "editor.background": "#111111",
+            },
+            rules: [{ token: "keyword", foreground: "#89b4fa" }],
+          },
+        },
+      ],
+    });
+
+    expect(pack.formatVersion).toBe(2);
+    expect(pack.themes[0]?.monaco?.base).toBe("vs-dark");
+    expect(pack.themes[0]?.monaco?.colors["editor.background"]).toBe("#111111");
+    expect(pack.themes[0]?.monaco?.rules[0]?.token).toBe("keyword");
+  });
+
+  it("merges monaco overrides through extends", () => {
+    const resolved = resolveThemePack({
+      themes: [
+        {
+          id: "base",
+          name: "Base",
+          dark: true,
+          theme: { background: "#111111", foreground: "#eeeeee" },
+          monaco: {
+            base: "vs-dark",
+            inherit: true,
+            colors: { "editor.background": "#111111" },
+            rules: [{ token: "keyword", foreground: "#89b4fa" }],
+          },
+        },
+        {
+          id: "child",
+          name: "Child",
+          dark: true,
+          extends: "base",
+          theme: { foreground: "#f5f5f5" },
+          monaco: {
+            colors: { "editor.selectionBackground": "#333333" },
+            rules: [{ token: "string", foreground: "#a6e3a1" }],
+          },
+        },
+      ],
+    });
+
+    const child = resolved.find((theme) => theme.id === "child");
+    expect(child?.monaco?.base).toBe("vs-dark");
+    expect(child?.monaco?.colors["editor.background"]).toBe("#111111");
+    expect(child?.monaco?.colors["editor.selectionBackground"]).toBe("#333333");
+    expect(child?.monaco?.rules.map((rule) => rule.token)).toEqual(["keyword", "string"]);
+  });
 });

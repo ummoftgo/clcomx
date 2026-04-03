@@ -3,11 +3,17 @@ import * as monaco from "monaco-editor";
 import { ensureMonacoEnvironment } from "./monaco-environment";
 import type { InternalEditorChangeEvent, InternalEditorTab } from "./contracts";
 import { toMonacoFileUriString } from "./path";
+import type { ThemeDef } from "../themes";
+import {
+  buildMonacoStandaloneThemeData,
+  buildMonacoThemeName,
+} from "./monaco-theme";
 
 export interface MonacoEditorHostOptions {
   target: HTMLElement;
   tabs: InternalEditorTab[];
   activePath: string | null;
+  theme: ThemeDef | null;
   onChange: (event: InternalEditorChangeEvent) => void;
   onSaveRequest?: (wslPath: string) => void;
 }
@@ -15,6 +21,7 @@ export interface MonacoEditorHostOptions {
 export interface MonacoEditorHost {
   syncTabs: (tabs: InternalEditorTab[]) => void;
   setActivePath: (wslPath: string | null) => void;
+  setTheme: (theme: ThemeDef | null) => void;
   focus: () => void;
   dispose: () => void;
 }
@@ -29,6 +36,22 @@ export function createMonacoEditorHost(options: MonacoEditorHostOptions): Monaco
 
   const managedModels = new Map<string, ManagedModel>();
   const syncingPaths = new Set<string>();
+  let activeThemeName: string | null = null;
+
+  function applyEditorTheme(theme: ThemeDef | null) {
+    if (!theme) {
+      monaco.editor.setTheme("vs-dark");
+      activeThemeName = "vs-dark";
+      return;
+    }
+
+    const themeName = buildMonacoThemeName(theme.id);
+    monaco.editor.defineTheme(themeName, buildMonacoStandaloneThemeData(theme));
+    monaco.editor.setTheme(themeName);
+    activeThemeName = themeName;
+  }
+
+  applyEditorTheme(options.theme);
 
   const editor = monaco.editor.create(options.target, {
     automaticLayout: true,
@@ -43,6 +66,7 @@ export function createMonacoEditorHost(options: MonacoEditorHostOptions): Monaco
     smoothScrolling: true,
     wordWrap: "on",
     stickyScroll: { enabled: false },
+    theme: activeThemeName ?? undefined,
   });
 
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
@@ -154,6 +178,10 @@ export function createMonacoEditorHost(options: MonacoEditorHostOptions): Monaco
     setActivePath(wslPath) {
       options.activePath = wslPath;
       setActivePath(wslPath);
+    },
+    setTheme(theme) {
+      options.theme = theme;
+      applyEditorTheme(theme);
     },
     focus() {
       editor.focus();
