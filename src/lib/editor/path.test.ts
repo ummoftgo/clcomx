@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { basenameFromPath, directoryFromPath, toMonacoFileUriString } from "./path";
+import {
+  basenameFromPath,
+  directoryFromPath,
+  fromMonacoFileUriString,
+  toMonacoFileUriString,
+} from "./path";
 
 describe("editor path helpers", () => {
   it("extracts basename and directory labels from WSL paths", () => {
@@ -16,5 +21,15 @@ describe("editor path helpers", () => {
     expect(toMonacoFileUriString("/home/user/work/project/My File.svelte")).toBe(
       "file:///home/user/work/project/My%20File.svelte",
     );
+  });
+
+  it("parses file:// URIs back into WSL paths", () => {
+    expect(fromMonacoFileUriString("file:///home/user/work/project/src/App.svelte")).toBe(
+      "/home/user/work/project/src/App.svelte",
+    );
+    expect(fromMonacoFileUriString("file:///home/user/work/project/My%20File.svelte")).toBe(
+      "/home/user/work/project/My File.svelte",
+    );
+    expect(fromMonacoFileUriString("https://example.com")).toBeNull();
   });
 });

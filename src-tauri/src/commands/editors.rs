@@ -1538,6 +1538,9 @@ fn infer_language_id(wsl_path: &str) -> String {
     if basename.eq_ignore_ascii_case("Dockerfile") {
         return "dockerfile".into();
     }
+    if basename.to_ascii_lowercase().ends_with(".blade.php") {
+        return "php".into();
+    }
 
     match Path::new(&basename)
         .extension()
@@ -1550,6 +1553,7 @@ fn infer_language_id(wsl_path: &str) -> String {
         "tsx" => "typescriptreact".into(),
         "js" => "javascript".into(),
         "jsx" => "javascriptreact".into(),
+        "php" | "phtml" => "php".into(),
         "json" => "json".into(),
         "rs" => "rust".into(),
         "md" => "markdown".into(),
@@ -3018,6 +3022,16 @@ mod tests {
         assert!(response.mtime_ms > 0);
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn infer_language_id_detects_php_family_files() {
+        assert_eq!(infer_language_id("/home/user/work/project/app/Controller.php"), "php");
+        assert_eq!(infer_language_id("/home/user/work/project/views/index.phtml"), "php");
+        assert_eq!(
+            infer_language_id("/home/user/work/project/resources/views/welcome.blade.php"),
+            "php"
+        );
     }
 
     #[test]

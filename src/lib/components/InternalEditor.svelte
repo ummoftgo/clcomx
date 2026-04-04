@@ -7,6 +7,8 @@
     type MonacoEditorHost,
   } from "../editor/monaco-host";
   import type { InternalEditorTab } from "../editor/contracts";
+  import type { NavigationFileSnapshot } from "../editor/navigation";
+  import type { EditorSearchResult, ReadSessionFileResult } from "../editors";
   import { basenameFromPath, directoryFromPath } from "../editor/path";
   import { buildFontStack, serializeFontFamilyList } from "../font-family";
   import { getThemeById } from "../themes";
@@ -16,6 +18,7 @@
   interface Props {
     tabs: InternalEditorTab[];
     activePath: string | null;
+    rootDir: string;
     busy?: boolean;
     statusText?: string | null;
     title?: string;
@@ -30,11 +33,23 @@
     onSaveRequest: (wslPath: string) => void;
     onOpenFile: () => void;
     onSwitchToTerminal: () => void;
+    onListWorkspaceFiles: (rootDir: string) => Promise<EditorSearchResult[]>;
+    onReadWorkspaceFile: (
+      wslPath: string,
+    ) => Promise<Pick<ReadSessionFileResult, "wslPath" | "content" | "languageId">>;
+    onOpenLocation: (detail: {
+      wslPath: string;
+      line?: number | null;
+      column?: number | null;
+      rootDir?: string;
+      snapshot?: NavigationFileSnapshot;
+    }) => void | Promise<void>;
   }
 
   let {
     tabs,
     activePath,
+    rootDir,
     busy = false,
     statusText = null,
     title = "Internal Editor",
@@ -49,6 +64,9 @@
     onSaveRequest,
     onOpenFile,
     onSwitchToTerminal,
+    onListWorkspaceFiles,
+    onReadWorkspaceFile,
+    onOpenLocation,
   }: Props = $props();
 
   let editorSurfaceEl = $state<HTMLDivElement | undefined>(undefined);
@@ -81,6 +99,12 @@
       presentation: editorPresentation,
       onChange: onContentChange,
       onSaveRequest,
+      navigation: {
+        workspaceRoot: rootDir,
+        listWorkspaceFiles: onListWorkspaceFiles,
+        readWorkspaceFile: onReadWorkspaceFile,
+        openLocation: onOpenLocation,
+      },
     });
   });
 
@@ -102,6 +126,12 @@
     editorPresentation;
     if (!host) return;
     host.setPresentation(editorPresentation);
+  });
+
+  $effect(() => {
+    rootDir;
+    if (!host) return;
+    host.setNavigationWorkspaceRoot(rootDir);
   });
 
   $effect(() => {

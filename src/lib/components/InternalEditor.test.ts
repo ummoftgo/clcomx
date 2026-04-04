@@ -13,6 +13,7 @@ const hostMock = vi.hoisted(() => {
     setActivePath: vi.fn(),
     setTheme: vi.fn(),
     setPresentation: vi.fn(),
+    setNavigationWorkspaceRoot: vi.fn(),
     focus: vi.fn(),
     dispose: vi.fn(),
   };
@@ -25,6 +26,7 @@ const hostMock = vi.hoisted(() => {
       instance.setActivePath.mockReset();
       instance.setTheme.mockReset();
       instance.setPresentation.mockReset();
+      instance.setNavigationWorkspaceRoot.mockReset();
       instance.focus.mockReset();
       instance.dispose.mockReset();
       this.createMonacoEditorHost.mockReset();
@@ -62,6 +64,7 @@ function createProps(overrides: Partial<InternalEditorProps> = {}) {
   return {
     tabs: createTabs(),
     activePath: "/home/user/work/project/src/App.svelte",
+    rootDir: "/home/user/work/project",
     busy: false,
     statusText: "Unsaved changes",
     emptyTitle: "No file open",
@@ -75,6 +78,13 @@ function createProps(overrides: Partial<InternalEditorProps> = {}) {
     onSaveRequest: vi.fn(),
     onOpenFile: vi.fn(),
     onSwitchToTerminal: vi.fn(),
+    onListWorkspaceFiles: vi.fn(async () => []),
+    onReadWorkspaceFile: vi.fn(async (wslPath: string) => ({
+      wslPath,
+      content: "",
+      languageId: "plaintext",
+    })),
+    onOpenLocation: vi.fn(),
     ...overrides,
   };
 }
@@ -102,6 +112,12 @@ describe("InternalEditor", () => {
           }),
           onChange: props.onContentChange,
           onSaveRequest: props.onSaveRequest,
+          navigation: expect.objectContaining({
+            workspaceRoot: props.rootDir,
+            listWorkspaceFiles: props.onListWorkspaceFiles,
+            readWorkspaceFile: props.onReadWorkspaceFile,
+            openLocation: props.onOpenLocation,
+          }),
         }),
       );
     });
@@ -111,6 +127,7 @@ describe("InternalEditor", () => {
       expect(hostMock.instance.setActivePath).toHaveBeenLastCalledWith(props.activePath);
       expect(hostMock.instance.setTheme).toHaveBeenCalled();
       expect(hostMock.instance.setPresentation).toHaveBeenCalled();
+      expect(hostMock.instance.setNavigationWorkspaceRoot).toHaveBeenCalledWith(props.rootDir);
       expect(hostMock.instance.focus).toHaveBeenCalled();
     });
 

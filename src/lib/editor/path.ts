@@ -21,3 +21,16 @@ export function toMonacoFileUriString(wslPath: string) {
   });
   return `file://${segments.join("/")}`;
 }
+
+export function fromMonacoFileUriString(value: string) {
+  try {
+    const uri = new URL(value);
+    if (uri.protocol !== "file:") {
+      return null;
+    }
+
+    return decodeURIComponent(uri.pathname || "/");
+  } catch {
+    return null;
+  }
+}

@@ -67,6 +67,8 @@
     type ResolvedTerminalPath,
   } from "../editors";
   import type { InternalEditorTab } from "../editor/contracts";
+  import type { NavigationFileSnapshot } from "../editor/navigation";
+  import { warmMonacoEditorRuntime } from "../editor/monaco-host";
   import { createTerminalFileLinks } from "../terminal/file-links";
   import { consumeAuxShellMetadata } from "../terminal/aux-shell-metadata";
   import {
@@ -241,6 +243,10 @@
   let editorQuickOpenPrewarmToken = 0;
   let editorQuickOpenPrewarmRequestedRootDir = "";
   let editorQuickOpenPrewarmInFlightRootDir = "";
+  let editorMonacoPrewarmHandle: ReturnType<typeof setTimeout> | number | null = null;
+  let editorMonacoPrewarmToken = 0;
+  let editorMonacoPrewarming = false;
+  let editorMonacoPrewarmed = false;
   let editorCloseConfirmVisible = $state(false);
   let editorCloseConfirmPath = $state<string | null>(null);
   const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
@@ -250,7 +256,7 @@
   const TERMINAL_LOADING_QUIET_MS = 1300;
   const TERMINAL_LOADING_MAX_MS = 8000;
   const DEFERRED_BOTTOM_SCROLL_MS = 60;
-  const QUICK_OPEN_CACHE_STALE_MS = 20_000;
+  const QUICK_OPEN_CACHE_STALE_MS = 30_000;
   const WEB_LINK_REGEX = /(?:https?|ftp):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/i;
   const SYNC_OUTPUT_MODE_SEQUENCE = /\u001b\[\?2026[hl]/;
   const ABSOLUTE_CURSOR_POSITION_SEQUENCE = /\u001b\[\d+(?:;\d+)?[Hf]/;
@@ -1574,6 +1580,30 @@
     clearEditorQuickOpenPrewarmHandle();
   }
 
+  function clearEditorMonacoPrewarmHandle() {
+    if (editorMonacoPrewarmHandle === null) {
+      return;
+    }
+
+    const idleWindow = window as Window & {
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (
+      typeof editorMonacoPrewarmHandle === "number" &&
+      typeof idleWindow.cancelIdleCallback === "function"
+    ) {
+      idleWindow.cancelIdleCallback(editorMonacoPrewarmHandle);
+    } else {
+      clearTimeout(editorMonacoPrewarmHandle);
+    }
+    editorMonacoPrewarmHandle = null;
+  }
+
+  function cancelEditorMonacoPrewarm() {
+    editorMonacoPrewarmToken += 1;
+    clearEditorMonacoPrewarmHandle();
+  }
+
   function isEditorQuickOpenCacheStale() {
     if (!editorQuickOpenLastUpdatedMs) {
       return true;
@@ -1613,6 +1643,124 @@
         editorQuickOpenBusy = false;
       }
     }
+  }
+
+  async function listEditorWorkspaceFiles(rootDir: string) {
+    const normalizedRootDir = rootDir || editorRootDir || workDir;
+    if (editorQuickOpenRootDir === normalizedRootDir && editorQuickOpenEntries.length > 0) {
+      if (!isEditorQuickOpenCacheStale()) {
+        return editorQuickOpenEntries;
+      }
+
+      void refreshEditorQuickOpenEntries(false, normalizedRootDir, { background: true });
+      return editorQuickOpenEntries;
+    }
+
+    const result = await listSessionFiles(sessionId, normalizedRootDir, false);
+    if (editorQuickOpenRootDir === normalizedRootDir || !editorQuickOpenVisible) {
+      editorQuickOpenRootDir = result.rootDir;
+      editorQuickOpenEntries = result.results;
+      editorQuickOpenLastUpdatedMs = result.lastUpdatedMs;
+    }
+    return result.results;
+  }
+
+  async function readEditorNavigationFile(wslPath: string) {
+    const existingTab = editorTabs.find(
+      (tab) => tab.wslPath === wslPath && !tab.loading && !tab.error,
+    );
+    if (existingTab) {
+      return {
+        wslPath,
+        content: existingTab.content,
+        languageId: existingTab.languageId,
+      };
+    }
+
+    const file = await readSessionFile(sessionId, wslPath);
+    return {
+      wslPath: file.wslPath,
+      content: file.content,
+      languageId: file.languageId,
+    };
+  }
+
+  function openEditorNavigationLocation(detail: {
+    wslPath: string;
+    line?: number | null;
+    column?: number | null;
+    rootDir?: string;
+    snapshot?: NavigationFileSnapshot;
+  }) {
+    const rootDir = detail.rootDir || editorRootDir || workDir;
+    const quickOpenEntry = computeQuickOpenEntryForRoot(detail.wslPath, rootDir);
+    void openEditorPath(
+      {
+        wslPath: detail.wslPath,
+        relativePath: quickOpenEntry?.relativePath || detail.wslPath,
+        basename: quickOpenEntry?.basename || detail.wslPath.split("/").pop() || detail.wslPath,
+        line: detail.line ?? null,
+        column: detail.column ?? null,
+      },
+      { rootDir, focusExisting: true, prefetchedFile: detail.snapshot },
+    );
+  }
+
+  function primeEditorWorkspaceFiles(rootDir = editorRootDir || workDir) {
+    const normalizedRootDir = rootDir || workDir;
+    if (!normalizedRootDir) {
+      return;
+    }
+
+    if (
+      editorQuickOpenRootDir === normalizedRootDir &&
+      editorQuickOpenEntries.length > 0 &&
+      !isEditorQuickOpenCacheStale()
+    ) {
+      return;
+    }
+
+    if (
+      editorQuickOpenPrewarmRequestedRootDir === normalizedRootDir ||
+      editorQuickOpenPrewarmInFlightRootDir === normalizedRootDir
+    ) {
+      return;
+    }
+
+    editorQuickOpenPrewarmInFlightRootDir = normalizedRootDir;
+    void refreshEditorQuickOpenEntries(false, normalizedRootDir, { background: true }).finally(() => {
+      if (editorQuickOpenPrewarmInFlightRootDir === normalizedRootDir) {
+        editorQuickOpenPrewarmInFlightRootDir = "";
+      }
+    });
+  }
+
+  function primeEditorMonacoRuntime() {
+    if (editorMonacoPrewarmed || editorMonacoPrewarming) {
+      return;
+    }
+
+    clearEditorMonacoPrewarmHandle();
+    const prewarmToken = ++editorMonacoPrewarmToken;
+    requestAnimationFrame(() => {
+      if (
+        prewarmToken !== editorMonacoPrewarmToken ||
+        editorMonacoPrewarmed ||
+        editorMonacoPrewarming
+      ) {
+        return;
+      }
+
+      editorMonacoPrewarming = true;
+      const themeDef = getThemeById(settings.interface.theme) ?? null;
+      void warmMonacoEditorRuntime(themeDef)
+        .then(() => {
+          editorMonacoPrewarmed = true;
+        })
+        .finally(() => {
+          editorMonacoPrewarming = false;
+        });
+    });
   }
 
   function scheduleEditorQuickOpenPrewarm(rootDir = editorRootDir || workDir) {
@@ -1680,6 +1828,61 @@
     editorQuickOpenPrewarmHandle = window.setTimeout(runPrewarm, 250);
   }
 
+  function scheduleEditorMonacoPrewarm() {
+    if (
+      editorMonacoPrewarmed ||
+      editorMonacoPrewarming ||
+      !terminalReady ||
+      !terminalStartupSettled ||
+      !visible
+    ) {
+      return;
+    }
+
+    clearEditorMonacoPrewarmHandle();
+    const prewarmToken = ++editorMonacoPrewarmToken;
+    const runPrewarm = () => {
+      if (prewarmToken !== editorMonacoPrewarmToken) {
+        return;
+      }
+
+      editorMonacoPrewarmHandle = null;
+      if (
+        editorMonacoPrewarmed ||
+        editorMonacoPrewarming ||
+        !terminalReady ||
+        !terminalStartupSettled ||
+        !visible
+      ) {
+        return;
+      }
+
+      editorMonacoPrewarming = true;
+      const themeDef = getThemeById(settings.interface.theme) ?? null;
+      void warmMonacoEditorRuntime(themeDef)
+        .then(() => {
+          editorMonacoPrewarmed = true;
+        })
+        .finally(() => {
+          editorMonacoPrewarming = false;
+        });
+    };
+
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (
+        callback: IdleRequestCallback,
+        options?: IdleRequestOptions,
+      ) => number;
+    };
+
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      editorMonacoPrewarmHandle = idleWindow.requestIdleCallback(runPrewarm, { timeout: 1500 });
+      return;
+    }
+
+    editorMonacoPrewarmHandle = window.setTimeout(runPrewarm, 350);
+  }
+
   function computeQuickOpenEntryForRoot(
     wslPath: string,
     rootDir = editorQuickOpenRootDir || editorRootDir || workDir,
@@ -1719,6 +1922,8 @@
 
   function openEditorQuickOpen(rootDir = editorRootDir, query = "") {
     const normalizedRoot = rootDir || workDir;
+    primeEditorMonacoRuntime();
+    primeEditorWorkspaceFiles(normalizedRoot);
     const rootChanged = editorQuickOpenRootDir !== normalizedRoot;
     if (rootChanged) {
       resetEditorQuickOpenState({ clearEntries: true });
@@ -1736,14 +1941,21 @@
   async function openEditorDirectory(rootDir: string) {
     editorRootDir = rootDir || workDir;
     syncEditorSessionState();
+    primeEditorMonacoRuntime();
+    primeEditorWorkspaceFiles(editorRootDir);
     openEditorQuickOpen(editorRootDir, "");
   }
 
   async function openEditorPath(
     path: ResolvedTerminalPath | EditorSearchResult,
-    options?: { rootDir?: string; focusExisting?: boolean },
+    options?: {
+      rootDir?: string;
+      focusExisting?: boolean;
+      prefetchedFile?: NavigationFileSnapshot;
+    },
   ) {
     ensureEditorViewMode();
+    primeEditorMonacoRuntime();
 
     if (draftOpen) {
       closeDraft({ restoreFocus: false });
@@ -1755,6 +1967,8 @@
     }
 
     const wslPath = path.wslPath;
+    const nextRootDir = options?.rootDir || editorRootDir || workDir;
+    primeEditorWorkspaceFiles(nextRootDir);
     const existingTabIndex = editorTabs.findIndex((tab) => tab.wslPath === wslPath);
     const nextLine = "line" in path ? path.line ?? null : null;
     const nextColumn = "column" in path ? path.column ?? null : null;
@@ -1806,7 +2020,10 @@
     setEditorStatus($t("common.labels.loading"));
 
     try {
-      const file = await readSessionFile(sessionId, wslPath);
+      const file =
+        options?.prefetchedFile && options.prefetchedFile.wslPath === wslPath
+          ? options.prefetchedFile
+          : await readSessionFile(sessionId, wslPath);
       if (!editorTabs.some((tab) => tab.wslPath === wslPath)) {
         return;
       }
@@ -1814,7 +2031,7 @@
       setEditorTabLoaded(wslPath, {
         content: file.content,
         languageId: file.languageId || "plaintext",
-        mtimeMs: file.mtimeMs,
+        mtimeMs: "mtimeMs" in file ? file.mtimeMs : editorMtimeByPath[wslPath] ?? 0,
         line: nextLine,
         column: nextColumn,
       });
@@ -1851,6 +2068,8 @@
 
   function requestSwitchToEditorMode() {
     ensureEditorViewMode();
+    primeEditorMonacoRuntime();
+    primeEditorWorkspaceFiles(editorRootDir || workDir);
     editorStatusText = null;
     if (!editorQuickOpenVisible && editorTabs.length === 0) {
       void openEditorQuickOpen(editorRootDir);
@@ -3122,10 +3341,12 @@
 
     if (!visible) {
       cancelEditorQuickOpenPrewarm();
+      cancelEditorMonacoPrewarm();
       return;
     }
 
     scheduleEditorQuickOpenPrewarm(editorRootDir || workDir);
+    scheduleEditorMonacoPrewarm();
   });
 
   $effect(() => {
@@ -3325,6 +3546,7 @@
     <InternalEditor
       tabs={editorTabs}
       activePath={editorActivePath}
+      rootDir={editorRootDir || workDir}
       busy={editorBusy}
       statusText={editorStatusText}
       title={$t("terminal.editor.title")}
@@ -3339,6 +3561,9 @@
       onSaveRequest={(wslPath) => void saveEditorTab(wslPath)}
       onOpenFile={() => void openEditorQuickOpen(editorRootDir || workDir)}
       onSwitchToTerminal={requestSwitchToTerminalMode}
+      onListWorkspaceFiles={listEditorWorkspaceFiles}
+      onReadWorkspaceFile={readEditorNavigationFile}
+      onOpenLocation={openEditorNavigationLocation}
     />
   {/if}
 

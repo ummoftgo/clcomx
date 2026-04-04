@@ -3,7 +3,14 @@ import * as monaco from "monaco-editor";
 import { ensureMonacoEnvironment } from "./monaco-environment";
 import type { InternalEditorChangeEvent, InternalEditorTab } from "./contracts";
 import { toMonacoFileUriString } from "./path";
+import { ensureMonacoLanguageSupport } from "./monaco-languages";
+import {
+  createMonacoNavigationSession,
+  type MonacoNavigationSession,
+  type MonacoNavigationTarget,
+} from "./monaco-navigation";
 import type { ThemeDef } from "../themes";
+import type { EditorSearchResult, ReadSessionFileResult } from "../editors";
 import {
   buildMonacoStandaloneThemeData,
   buildMonacoThemeName,
@@ -22,6 +29,14 @@ export interface MonacoEditorHostOptions {
   presentation: MonacoEditorPresentationOptions;
   onChange: (event: InternalEditorChangeEvent) => void;
   onSaveRequest?: (wslPath: string) => void;
+  navigation?: {
+    workspaceRoot: string;
+    listWorkspaceFiles: (rootDir: string) => Promise<EditorSearchResult[]>;
+    readWorkspaceFile: (
+      wslPath: string,
+    ) => Promise<Pick<ReadSessionFileResult, "wslPath" | "content" | "languageId">>;
+    openLocation: (target: MonacoNavigationTarget) => void | Promise<void>;
+  };
 }
 
 export interface MonacoEditorHost {
@@ -29,6 +44,7 @@ export interface MonacoEditorHost {
   setActivePath: (wslPath: string | null) => void;
   setTheme: (theme: ThemeDef | null) => void;
   setPresentation: (presentation: MonacoEditorPresentationOptions) => void;
+  setNavigationWorkspaceRoot: (workspaceRoot: string) => void;
   focus: () => void;
   dispose: () => void;
 }
@@ -38,8 +54,28 @@ interface ManagedModel {
   changeDisposable: monaco.IDisposable;
 }
 
+let monacoRuntimeWarmed = false;
+
+export async function warmMonacoEditorRuntime(theme?: ThemeDef | null) {
+  ensureMonacoEnvironment();
+  ensureMonacoLanguageSupport();
+  if (theme) {
+    const themeName = buildMonacoThemeName(theme.id);
+    monaco.editor.defineTheme(themeName, buildMonacoStandaloneThemeData(theme));
+    monaco.editor.setTheme(themeName);
+  }
+
+  if (monacoRuntimeWarmed) {
+    monacoRuntimeWarmed = true;
+    return;
+  }
+
+  monacoRuntimeWarmed = true;
+}
+
 export function createMonacoEditorHost(options: MonacoEditorHostOptions): MonacoEditorHost {
   ensureMonacoEnvironment();
+  ensureMonacoLanguageSupport();
 
   const managedModels = new Map<string, ManagedModel>();
   const syncingPaths = new Set<string>();
@@ -76,6 +112,16 @@ export function createMonacoEditorHost(options: MonacoEditorHostOptions): Monaco
     stickyScroll: { enabled: false },
     theme: activeThemeName ?? undefined,
   });
+  const navigationSession: MonacoNavigationSession | null = options.navigation
+    ? createMonacoNavigationSession({
+        editor,
+        workspaceRoot: options.navigation.workspaceRoot,
+        getTabs: () => options.tabs,
+        listWorkspaceFiles: options.navigation.listWorkspaceFiles,
+        readWorkspaceFile: options.navigation.readWorkspaceFile,
+        openLocation: options.navigation.openLocation,
+      })
+    : null;
 
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
     const model = editor.getModel();
@@ -154,6 +200,8 @@ export function createMonacoEditorHost(options: MonacoEditorHostOptions): Monaco
       entry.model.dispose();
       managedModels.delete(wslPath);
     }
+
+    navigationSession?.syncTabs(tabs);
   }
 
   function setActivePath(wslPath: string | null) {
@@ -198,10 +246,19 @@ export function createMonacoEditorHost(options: MonacoEditorHostOptions): Monaco
         fontSize: presentation.fontSize,
       });
     },
+    setNavigationWorkspaceRoot(workspaceRoot) {
+      if (!options.navigation) {
+        return;
+      }
+
+      options.navigation.workspaceRoot = workspaceRoot;
+      navigationSession?.setWorkspaceRoot(workspaceRoot);
+    },
     focus() {
       editor.focus();
     },
     dispose() {
+      navigationSession?.dispose();
       for (const [, entry] of managedModels) {
         entry.changeDisposable.dispose();
         entry.model.dispose();
