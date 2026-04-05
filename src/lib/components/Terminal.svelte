@@ -61,8 +61,6 @@
     resolveTerminalPath,
     writeSessionFile,
     type EditorSearchResult,
-    type TerminalPathResolution,
-    type DetectedEditor,
     type ResolvedTerminalPath,
   } from "../editors";
   import type { InternalEditorTab } from "../editor/contracts";
@@ -239,12 +237,12 @@
     getTerminal: () => terminal,
     getLivePtyId: () => livePtyId,
     writeLivePty: (text) => writePty(livePtyId, text),
+    tick,
   });
   const {
     syncDraftHeight,
     focusDraft,
     closeDraft,
-    openDraft,
     stopDraftResize,
     handleDraftResizeStart,
     routeInsertedText,
