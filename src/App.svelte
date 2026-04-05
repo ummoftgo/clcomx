@@ -64,6 +64,11 @@
   import { killPty } from "./lib/pty";
   import type { AppBootstrap, Session, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
+  import {
+    buildSession,
+    createSessionLaunchRequest,
+    createSessionLaunchRequestFromHistoryEntry,
+  } from "./lib/features/session/service/session-factory";
   import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
   import type { SessionShellAuxState } from "./lib/features/session/contracts/session-shell";
   import {
@@ -657,35 +662,31 @@
     title = workDir.split("/").pop() || workDir,
     resumeToken: string | null = null,
   ) {
-    const session: Session = {
-      id: createRuntimeId("session-"),
-      ptyId: -1,
-      auxPtyId: -1,
-      auxVisible: false,
-      auxHeightPercent: null,
-      agentId,
-      resumeToken,
-      title,
-      pinned: false,
-      locked: false,
-      terminal: null,
-      element: null,
-      distro,
-      workDir,
-      viewMode: "terminal",
-      editorRootDir: workDir,
-      openEditorTabs: [],
-      activeEditorPath: null,
-      dirtyPaths: [],
-    };
-    addSession(session);
+    addSession(
+      buildSession(
+        createSessionLaunchRequest({
+          agentId,
+          distro,
+          workDir,
+          title,
+          resumeToken,
+        }),
+      ),
+    );
     showSessionLauncher = false;
     void persistWorkspace();
     void ensureTerminalComponent();
   }
 
   function openHistoryEntry(entry: TabHistoryEntry) {
-    createSession(entry.agentId ?? "claude", entry.distro, entry.workDir, entry.title, entry.resumeToken ?? null);
+    const request = createSessionLaunchRequestFromHistoryEntry(entry);
+    createSession(
+      request.agentId,
+      request.distro,
+      request.workDir,
+      request.title,
+      request.resumeToken,
+    );
   }
 
   async function handlePtyId(sessionId: string, ptyId: number) {
