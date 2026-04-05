@@ -77,6 +77,7 @@
   } from "../terminal/claude-footer-ghosting";
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
+  import type { SessionShellProps } from "../features/session/contracts/session-shell";
   import {
     TEST_BRIDGE_EVENTS,
     decodeBase64Blob,
@@ -86,27 +87,6 @@
     type TestOpenPendingImageDetail,
   } from "../testing/test-bridge";
   import "@xterm/xterm/css/xterm.css";
-
-  interface Props {
-    sessionId: string;
-    visible: boolean;
-    agentId: string;
-    distro: string;
-    workDir: string;
-    ptyId: number;
-    storedAuxPtyId?: number;
-    storedAuxVisible?: boolean;
-    storedAuxHeightPercent?: number | null;
-    resumeToken?: string | null;
-    onPtyId?: (ptyId: number) => void;
-    onAuxStateChange?: (state: {
-      auxPtyId: number;
-      auxVisible: boolean;
-      auxHeightPercent: number | null;
-    }) => void;
-    onExit?: (ptyId: number) => void;
-    onResumeFallback?: () => void;
-  }
 
   function hasSessionFileMtime(value: unknown): value is { mtimeMs: number } {
     return (
@@ -132,7 +112,7 @@
     onAuxStateChange,
     onExit,
     onResumeFallback,
-  }: Props = $props();
+  }: SessionShellProps = $props();
 
   let shellEl: HTMLDivElement;
   let outputEl: HTMLDivElement;

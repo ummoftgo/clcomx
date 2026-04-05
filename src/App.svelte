@@ -64,6 +64,7 @@
   import type { AppBootstrap, Session, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
   import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
+  import type { SessionShellAuxState } from "./lib/features/session/contracts/session-shell";
   import {
     applyPreviewPreset,
     getActivePreviewPresetId,
@@ -243,8 +244,8 @@
 
     terminalLoadPromise = (
       browserPreview
-        ? import("./lib/components/PreviewTerminal.svelte")
-        : import("./lib/components/Terminal.svelte")
+        ? import("./lib/features/session/view/PreviewSessionShell.svelte")
+        : import("./lib/features/session/view/SessionShell.svelte")
     )
       .then((module) => {
         TerminalComponent = module.default;
@@ -1165,11 +1166,7 @@
               storedAuxHeightPercent={session.auxHeightPercent}
               resumeToken={session.resumeToken}
               onPtyId={(ptyId: number) => handlePtyId(session.id, ptyId)}
-              onAuxStateChange={(state: {
-                auxPtyId: number;
-                auxVisible: boolean;
-                auxHeightPercent: number | null;
-              }) =>
+              onAuxStateChange={(state: SessionShellAuxState) =>
                 void handleAuxTerminalState(
                   session.id,
                   state.auxPtyId,
