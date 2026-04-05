@@ -1,7 +1,5 @@
 use crate::commands::settings::WorkspaceState;
 use crate::commands::wsl::WslState;
-#[cfg(test)]
-use std::path::Path;
 
 mod detection;
 mod editor_launch;
@@ -18,10 +16,6 @@ use self::session_files::{
     list_session_files_with_state, read_session_file_with_state, search_session_files_with_state,
     write_session_file_with_state,
 };
-#[cfg(test)]
-use self::detection::{editor_override_var, file_name_matches_editor};
-#[cfg(all(test, windows))]
-use self::detection::app_paths_registry_subkeys;
 pub use self::types::{
     DetectedEditor, SessionFileListResponse, SessionFileReadResponse, SessionFileSearchResponse,
     SessionFileWriteResponse,
@@ -97,44 +91,4 @@ pub fn write_session_file(
         &content,
         expected_mtime_ms,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builds_editor_override_var_names() {
-        assert_eq!(
-            editor_override_var("vscode"),
-            "CLCOMX_WIN_EDITOR_VSCODE_PATH"
-        );
-        assert_eq!(
-            editor_override_var("notepadpp"),
-            "CLCOMX_WIN_EDITOR_NOTEPADPP_PATH"
-        );
-    }
-
-    #[test]
-    fn matches_editor_file_names_case_insensitively() {
-        assert!(file_name_matches_editor(
-            Path::new("Cursor.exe"),
-            &["cursor", "Cursor.exe"]
-        ));
-        assert!(!file_name_matches_editor(
-            Path::new("other.exe"),
-            &["cursor", "Cursor.exe"]
-        ));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn builds_app_paths_subkeys_from_editor_ids() {
-        let subkeys = app_paths_registry_subkeys("vscode");
-        assert!(subkeys
-            .iter()
-            .any(|value| value.ends_with(r"App Paths\Code.exe")));
-        assert!(subkeys.iter().any(|value| value
-            .ends_with(r"WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\Code.exe")));
-    }
 }

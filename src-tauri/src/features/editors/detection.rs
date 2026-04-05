@@ -518,3 +518,6 @@ pub(super) fn detect_available_editors() -> Vec<DetectedEditor> {
 
     detected
 }
+
+#[cfg(test)]
+mod tests;
