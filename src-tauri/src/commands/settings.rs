@@ -3,6 +3,10 @@ use crate::app_env::{
     ensure_parent_dir, is_terminal_debug_hooks_enabled, is_test_mode,
     soft_follow_experiment_override, state_path,
 };
+use crate::features::workspace::{
+    normalize_window_snapshot, normalize_workspace_snapshot, snapshot_from_state,
+    write_snapshot_to_state, write_workspace,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -13,16 +17,18 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
 };
 
+#[allow(unused_imports)]
+pub use crate::features::workspace::{
+    EditorTabRef, WindowSnapshot, WorkspaceSnapshot, WorkspaceState, WorkspaceTabSnapshot,
+    find_session_tab_snapshot, load_workspace_or_default,
+};
+
 fn settings_path() -> Result<PathBuf, String> {
     state_path("setting.json")
 }
 
 fn tab_history_path() -> Result<PathBuf, String> {
     state_path("tab_history.json")
-}
-
-fn workspace_path() -> Result<PathBuf, String> {
-    state_path("workspace.json")
 }
 
 fn theme_path() -> Result<PathBuf, String> {
@@ -98,8 +104,6 @@ const MIN_WINDOW_COLS: u16 = 60;
 const MAX_WINDOW_COLS: u16 = 300;
 const MIN_WINDOW_ROWS: u16 = 10;
 const MAX_WINDOW_ROWS: u16 = 100;
-const DEFAULT_WINDOW_WIDTH: u32 = 1024;
-const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 const DEFAULT_LANGUAGE: &str = "system";
 const DEFAULT_FILE_OPEN_MODE: &str = "picker";
 const DEFAULT_FILE_OPEN_TARGET: &str = "external";
@@ -215,14 +219,6 @@ impl Default for InterfaceSettingsPayload {
             default_editor_id: String::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-pub struct EditorTabRef {
-    pub wsl_path: String,
-    pub line: Option<u32>,
-    pub column: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -366,63 +362,6 @@ struct TabHistoryFile {
     items: Vec<TabHistoryEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceTabSnapshot {
-    pub session_id: String,
-    #[serde(default = "default_agent_id")]
-    pub agent_id: String,
-    pub distro: String,
-    pub work_dir: String,
-    pub title: String,
-    #[serde(default)]
-    pub pinned: bool,
-    #[serde(default)]
-    pub locked: bool,
-    #[serde(default, alias = "claudeResumeId", alias = "claude_resume_id")]
-    pub resume_token: Option<String>,
-    pub pty_id: Option<u32>,
-    #[serde(default)]
-    pub aux_pty_id: Option<u32>,
-    #[serde(default)]
-    pub aux_visible: bool,
-    #[serde(default)]
-    pub aux_height_percent: Option<u16>,
-    #[serde(default = "default_view_mode")]
-    pub view_mode: String,
-    #[serde(default)]
-    pub editor_root_dir: String,
-    #[serde(default)]
-    pub open_editor_tabs: Vec<EditorTabRef>,
-    #[serde(default)]
-    pub active_editor_path: Option<String>,
-}
-
-fn default_view_mode() -> String {
-    "terminal".into()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-pub struct WindowSnapshot {
-    pub label: String,
-    pub name: String,
-    pub role: String,
-    pub tabs: Vec<WorkspaceTabSnapshot>,
-    pub active_session_id: Option<String>,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-    pub maximized: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-pub struct WorkspaceSnapshot {
-    pub windows: Vec<WindowSnapshot>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppBootstrap {
@@ -483,30 +422,6 @@ pub struct ThemePackPayload {
 
 fn default_theme_pack_format_version() -> u32 {
     THEME_PACK_FORMAT_VERSION
-}
-
-pub struct WorkspaceState {
-    snapshot: Mutex<WorkspaceSnapshot>,
-}
-
-impl WorkspaceState {
-    pub fn new(initial: WorkspaceSnapshot) -> Self {
-        Self {
-            snapshot: Mutex::new(initial),
-        }
-    }
-}
-
-pub fn find_session_tab_snapshot(
-    state: &WorkspaceState,
-    session_id: &str,
-) -> Result<Option<WorkspaceTabSnapshot>, String> {
-    let snapshot = snapshot_from_state(state)?;
-    Ok(snapshot
-        .windows
-        .into_iter()
-        .flat_map(|window| window.tabs.into_iter())
-        .find(|tab| tab.session_id == session_id))
 }
 
 #[derive(Default)]
@@ -863,112 +778,6 @@ pub fn load_settings_or_default() -> SettingsPayload {
     settings
 }
 
-fn default_main_window_snapshot() -> WindowSnapshot {
-    WindowSnapshot {
-        label: "main".into(),
-        name: "main".into(),
-        role: "main".into(),
-        tabs: Vec::new(),
-        active_session_id: None,
-        x: 0,
-        y: 0,
-        width: DEFAULT_WINDOW_WIDTH,
-        height: DEFAULT_WINDOW_HEIGHT,
-        maximized: false,
-    }
-}
-
-fn normalize_window_snapshot(window: &mut WindowSnapshot) {
-    if window.label.is_empty() {
-        window.label = "main".into();
-    }
-    if window.name.is_empty() {
-        window.name = window.label.clone();
-    }
-    if window.role.is_empty() {
-        window.role = if window.label == "main" {
-            "main".into()
-        } else {
-            "secondary".into()
-        };
-    }
-    if window.width == 0 {
-        window.width = DEFAULT_WINDOW_WIDTH;
-    }
-    if window.height == 0 {
-        window.height = DEFAULT_WINDOW_HEIGHT;
-    }
-    for tab in &mut window.tabs {
-        if tab.agent_id.trim().is_empty() {
-            tab.agent_id = default_agent_id();
-        }
-        tab.agent_id = normalize_agent_id(&tab.agent_id);
-        tab.resume_token = normalize_resume_token(tab.resume_token.clone());
-        if tab.view_mode.trim().to_ascii_lowercase() != "editor" {
-            tab.view_mode = default_view_mode();
-        } else {
-            tab.view_mode = "editor".into();
-        }
-        tab.editor_root_dir = tab.editor_root_dir.trim().to_string();
-        if tab.editor_root_dir.is_empty() {
-            tab.editor_root_dir = tab.work_dir.trim().to_string();
-        }
-        tab.open_editor_tabs = tab
-            .open_editor_tabs
-            .iter()
-            .filter_map(|entry| {
-                let wsl_path = entry.wsl_path.trim().to_string();
-                if wsl_path.is_empty() {
-                    None
-                } else {
-                    Some(EditorTabRef {
-                        wsl_path,
-                        line: entry.line,
-                        column: entry.column,
-                    })
-                }
-            })
-            .collect();
-        tab.active_editor_path = tab
-            .active_editor_path
-            .as_ref()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-    }
-}
-
-fn normalize_workspace_snapshot(workspace: &mut WorkspaceSnapshot) {
-    for window in &mut workspace.windows {
-        normalize_window_snapshot(window);
-    }
-
-    if !workspace
-        .windows
-        .iter()
-        .any(|window| window.label == "main")
-    {
-        workspace.windows.insert(0, default_main_window_snapshot());
-    }
-}
-
-fn default_workspace_snapshot() -> WorkspaceSnapshot {
-    let mut workspace = WorkspaceSnapshot {
-        windows: vec![default_main_window_snapshot()],
-    };
-    normalize_workspace_snapshot(&mut workspace);
-    workspace
-}
-
-fn sanitize_workspace_for_persist(workspace: &WorkspaceSnapshot) -> WorkspaceSnapshot {
-    let mut persisted = workspace.clone();
-    for window in &mut persisted.windows {
-        for tab in &mut window.tabs {
-            tab.pty_id = None;
-        }
-    }
-    persisted
-}
-
 fn read_tab_history() -> Result<Vec<TabHistoryEntry>, String> {
     let path = tab_history_path()?;
     if !path.exists() {
@@ -993,31 +802,6 @@ fn write_tab_history(entries: &[TabHistoryEntry]) -> Result<(), String> {
 
     fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path.display(), e))
 }
-
-fn read_workspace() -> Result<Option<WorkspaceSnapshot>, String> {
-    let path = workspace_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let contents = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-    let mut workspace = serde_json::from_str::<WorkspaceSnapshot>(&contents)
-        .map_err(|e| format!("Invalid workspace.json: {}", e))?;
-    normalize_workspace_snapshot(&mut workspace);
-
-    Ok(Some(workspace))
-}
-
-fn write_workspace(workspace: &WorkspaceSnapshot) -> Result<(), String> {
-    let path = workspace_path()?;
-    ensure_parent_dir(&path)?;
-    let contents = serde_json::to_string_pretty(&sanitize_workspace_for_persist(workspace))
-        .map_err(|e| format!("Failed to serialize workspace: {}", e))?;
-
-    fs::write(&path, contents).map_err(|e| format!("Failed to write {}: {}", path.display(), e))
-}
-
 fn trim_tab_history_entries(entries: &mut Vec<TabHistoryEntry>, limit: u16) -> bool {
     let clamped_limit = clamp_tab_history_limit(limit) as usize;
     if entries.len() <= clamped_limit {
@@ -1125,34 +909,6 @@ pub fn load_tab_history_or_default() -> Vec<TabHistoryEntry> {
             Vec::new()
         }
     }
-}
-
-pub fn load_workspace_or_default() -> WorkspaceSnapshot {
-    match read_workspace() {
-        Ok(Some(workspace)) => workspace,
-        Ok(None) => default_workspace_snapshot(),
-        Err(error) => {
-            eprintln!("{error}");
-            default_workspace_snapshot()
-        }
-    }
-}
-
-fn snapshot_from_state(state: &WorkspaceState) -> Result<WorkspaceSnapshot, String> {
-    state
-        .snapshot
-        .lock()
-        .map(|snapshot| snapshot.clone())
-        .map_err(|e| e.to_string())
-}
-
-fn write_snapshot_to_state(
-    state: &WorkspaceState,
-    snapshot: WorkspaceSnapshot,
-) -> Result<(), String> {
-    let mut guard = state.snapshot.lock().map_err(|e| e.to_string())?;
-    *guard = snapshot;
-    Ok(())
 }
 
 fn emit_workspace_updated(app: &AppHandle, snapshot: &WorkspaceSnapshot) -> Result<(), String> {
