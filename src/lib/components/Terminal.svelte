@@ -21,7 +21,6 @@
     readImageFromClipboard,
     revokePendingClipboardImage,
     saveClipboardImage,
-    type PendingClipboardImage,
   } from "../clipboard";
   import {
     type PtyOutputChunk,
@@ -78,13 +77,16 @@
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
   import type { SessionShellProps } from "../features/session/contracts/session-shell";
+  import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
+  import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
+  import { createOverlayInteractionController } from "../features/terminal/controller/overlay-interaction-controller";
+  import { createTerminalTestBridgeController } from "../features/terminal/controller/terminal-test-bridge-controller";
+  import { createDraftComposerState } from "../features/terminal/state/draft-composer-state.svelte";
+  import { createOverlayInteractionState } from "../features/terminal/state/overlay-interaction-state.svelte";
   import {
     TEST_BRIDGE_EVENTS,
-    decodeBase64Blob,
     getOrCreateTerminalTestHooks,
     isTestBridgeEnabled,
-    type TerminalBufferSnapshot,
-    type TestOpenPendingImageDetail,
   } from "../testing/test-bridge";
   import "@xterm/xterm/css/xterm.css";
 
@@ -118,8 +120,6 @@
   let outputEl: HTMLDivElement;
   let auxOutputEl = $state<HTMLDivElement | null>(null);
   let assistPanelEl = $state<HTMLDivElement | null>(null);
-  let draftPanelEl = $state<HTMLDivElement | null>(null);
-  let draftEl = $state<HTMLTextAreaElement | null>(null);
   let terminal: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
   let inputTextarea: HTMLTextAreaElement | undefined;
@@ -134,30 +134,10 @@
   let terminalLoadingReadySignalSeen = false;
   let terminalLoadingQuietTimer: ReturnType<typeof setTimeout> | null = null;
   let terminalLoadingMaxTimer: ReturnType<typeof setTimeout> | null = null;
-  let draftValue = $state("");
-  let draftOpen = $state(false);
-  let pendingClipboardImage = $state<PendingClipboardImage | null>(null);
-  let linkMenuVisible = $state(false);
-  let linkMenuX = $state(0);
-  let linkMenuY = $state(0);
-  let linkMenuTarget = $state<
-    | { kind: "url"; url: string }
-    | { kind: "file"; path: ResolvedTerminalPath }
-    | { kind: "file-candidates"; raw: string; candidates: ResolvedTerminalPath[] }
-    | null
-  >(null);
-  let linkHovering = $state(false);
-  let suppressSelectionUntilMouseUp = false;
-  let clipboardBusy = $state(false);
-  let clipboardError = $state<string | null>(null);
-  let clipboardNotice = $state<string | null>(null);
   let interruptConfirmVisible = $state(false);
-  let editorPickerVisible = $state(false);
-  let editorPickerPath = $state<ResolvedTerminalPath | null>(null);
   const editorDetection = getEditorDetectionState();
   const detectedEditors = $derived(editorDetection.editors);
   const editorsError = $derived(editorDetection.error);
-  let noticeTimer: ReturnType<typeof setTimeout> | null = null;
   let unlistenOutput: UnlistenFn | null = null;
   let unlistenExit: UnlistenFn | null = null;
   let resizeObserver: ResizeObserver | null = null;
@@ -191,16 +171,10 @@
   let auxStateHydrated = false;
   let auxLayoutSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let assistPanelHeight = $state(0);
-  let draftHeightPx = $state<number | null>(null);
-  let draftNaturalHeightPx = $state<number | null>(null);
   let resizingAux = false;
   let auxResizePointerId: number | null = null;
   let auxResizeStartY = 0;
   let auxResizeStartPercent = 0;
-  let resizingDraft = false;
-  let draftResizePointerId: number | null = null;
-  let draftResizeStartY = 0;
-  let draftResizeStartHeightPx = 0;
   let replayInProgress = false;
   let replayBuffer: PtyOutputChunk[] = [];
   let testHookRegistered = $state(false);
@@ -252,6 +226,106 @@
 
   const settings = getSettings();
   const bootstrap = getBootstrap();
+  const draftComposerState = createDraftComposerState();
+  const draftComposer = createDraftComposerController(draftComposerState, {
+    getVisible: () => visible,
+    getUiScale: () => settings.interface.uiScale,
+    getTerminalFontSize: () => settings.terminal.fontSize,
+    getShellHeight: () => shellEl?.clientHeight ?? window.innerHeight,
+    getAssistPanelHeight: () => assistPanelHeight,
+    focusOutput,
+    getAuxVisible: () => auxVisible,
+    hideAuxTerminal,
+    getTerminal: () => terminal,
+    getLivePtyId: () => livePtyId,
+    writeLivePty: (text) => writePty(livePtyId, text),
+  });
+  const {
+    syncDraftHeight,
+    focusDraft,
+    closeDraft,
+    openDraft,
+    stopDraftResize,
+    handleDraftResizeStart,
+    routeInsertedText,
+    insertDraftIntoTerminal,
+    handleDraftKeydown,
+    handleDraftInput,
+    toggleDraft,
+  } = draftComposer;
+  const overlayInteractionState = createOverlayInteractionState();
+  const overlayInteraction = createOverlayInteractionController(overlayInteractionState, {
+    getSessionId: () => sessionId,
+    getDistro: () => distro,
+    getWorkDir: () => workDir,
+    getVisible: () => visible,
+    getTerminal: () => terminal,
+    getDraftOpen: () => draftComposerState.draftOpen,
+    focusDraft: () => focusDraft(),
+    focusOutput,
+    routeInsertedText,
+    openExternalUrl,
+    resolveTerminalPath,
+    getShellHomeDirHint,
+    getFileOpenTarget: () => settings.interface.fileOpenTarget,
+    getFileOpenMode: () => settings.interface.fileOpenMode,
+    getDefaultEditorId: () => settings.interface.defaultEditorId,
+    getEditorsError: () => editorsError,
+    ensureEditorsLoaded: () => ensureEditorsLoaded(),
+    openInEditor,
+    openInternalEditorForLinkPath,
+    t: (key, options) => $t(key, options),
+    createPendingClipboardImage,
+    revokePendingClipboardImage,
+    readImageFromClipboard,
+    getImageFromPasteEvent,
+    saveClipboardImage,
+    formatPathForAgentInput,
+  });
+  const {
+    setClipboardNotice,
+    openContextMenu,
+    closeLinkMenu,
+    releaseLinkSelectionBlock,
+    closeEditorPicker,
+    openFileLinkMenu,
+    openFileLinkMenuForTest,
+    openUrlLinkMenuForTest,
+    handleEditorSelect,
+    handleLinkMenuSelect,
+    handleLinkHover,
+    handleLinkLeave,
+    handleLinkPointerMove,
+    openClipboardPreview,
+    resetClipboardImage,
+    handlePasteImageFromClipboard,
+    confirmClipboardImage,
+    handleDraftPaste,
+    handleTerminalPaste,
+    handleSelectionCopy,
+    dispose: disposeOverlayInteraction,
+    buildCandidateFileLinkMenuItems,
+  } = overlayInteraction;
+  const terminalTestBridge = createTerminalTestBridgeController({
+    getSessionId: () => sessionId,
+    focusOutput,
+    isTestBridgeEnabled,
+    openClipboardPreview,
+    setClipboardNotice,
+    getLivePtyId: () => livePtyId,
+    getAuxPtyId: () => auxPtyId,
+    getPtyOutputSnapshot,
+    getTerminal: () => terminal,
+    getTestHooks: () => getOrCreateTerminalTestHooks(),
+    openUrlMenu: openUrlLinkMenuForTest,
+    openFileMenu: openFileLinkMenuForTest,
+  });
+  const {
+    handleFocusRequest,
+    handleTestPendingImage,
+    registerTestHooks,
+    unregisterTestHooks,
+  } = terminalTestBridge;
   const softFollowExperimentEnabled = $derived(
     isClaudeFooterGhostingMitigationEnabled(
       agentId,
@@ -278,49 +352,11 @@
     ),
   );
   const linkMenuItems = $derived<ContextMenuItem[]>(
-    linkMenuTarget?.kind === "file"
-      ? [
-          {
-            id: "open-file",
-            kind: "item",
-            label: $t("terminal.filePaths.openFile"),
-            icon: "file",
-          },
-          {
-            id: "open-in-internal-editor",
-            kind: "item",
-            label: $t("terminal.filePaths.openInInternalEditor"),
-            icon: "file",
-          },
-          {
-            id: "open-in-other-editor",
-            kind: "item",
-            label: $t("terminal.filePaths.openInOtherEditor"),
-            icon: "open-with",
-          },
-          {
-            id: "copy-path",
-            kind: "item",
-            label: $t("terminal.filePaths.copyPath"),
-            icon: "copy",
-          },
-        ]
-      : linkMenuTarget?.kind === "file-candidates"
-        ? buildCandidateFileLinkMenuItems(linkMenuTarget.raw, linkMenuTarget.candidates)
-        : [
-            {
-              id: "open-link-in-browser",
-              kind: "item",
-              label: $t("terminal.links.openInBrowser"),
-              icon: "external-link",
-            },
-            {
-              id: "copy-link",
-              kind: "item",
-              label: $t("terminal.links.copyLink"),
-              icon: "copy",
-            },
-        ],
+    buildOverlayLinkMenuItems(
+      overlayInteractionState.linkMenuTarget,
+      (key, options) => $t(key, options),
+      buildCandidateFileLinkMenuItems,
+    ),
   );
   const terminalLoadingLabel = $derived(
     terminalLoadingState === "restoring"
@@ -736,25 +772,6 @@
     }, DEFERRED_BOTTOM_SCROLL_MS);
   }
 
-  function syncDraftHeight() {
-    if (!draftEl) return;
-
-    draftEl.style.height = "";
-    draftEl.style.overflowY = "auto";
-  }
-
-  function focusDraft(moveCaretToEnd = false) {
-    if (!visible || !draftOpen) return;
-
-    requestAnimationFrame(() => {
-      draftEl?.focus();
-      if (moveCaretToEnd && draftEl) {
-        const length = draftEl.value.length;
-        draftEl.setSelectionRange(length, length);
-      }
-    });
-  }
-
   function focusTerminalSurface(term: Terminal | null, container: HTMLElement | null) {
     if (!term || !container) {
       return;
@@ -814,112 +831,6 @@
     }
   }
 
-  function getDraftMinHeightPx() {
-    return draftNaturalHeightPx ?? Math.max(128 * settings.interface.uiScale, settings.terminal.fontSize * 5.5);
-  }
-
-  function measureDraftNaturalHeight() {
-    if (!draftPanelEl) {
-      return null;
-    }
-
-    const rectHeight = Math.round(draftPanelEl.getBoundingClientRect().height);
-    const scrollHeight = Math.round(draftPanelEl.scrollHeight);
-    const measuredHeight = Math.max(rectHeight, scrollHeight);
-    return measuredHeight > 0 ? measuredHeight : null;
-  }
-
-  function rememberDraftNaturalHeight() {
-    if (draftHeightPx !== null) {
-      return;
-    }
-
-    const measuredHeight = measureDraftNaturalHeight();
-    if (measuredHeight !== null) {
-      draftNaturalHeightPx = measuredHeight;
-    }
-  }
-
-  function clampDraftHeightPx(value: number) {
-    const minHeight = getDraftMinHeightPx();
-    const maxHeight = Math.max(
-      minHeight,
-      (shellEl?.clientHeight ?? window.innerHeight) - assistPanelHeight - 12,
-    );
-    return Math.min(maxHeight, Math.max(minHeight, Math.round(value)));
-  }
-
-  function closeDraft(options?: { restoreFocus?: boolean }) {
-    draftOpen = false;
-
-    if (options?.restoreFocus ?? true) {
-      tick().then(focusOutput);
-    }
-  }
-
-  function openDraft(options?: { preserveFocus?: boolean }) {
-    if (auxVisible) {
-      hideAuxTerminal({ restoreFocus: false });
-    }
-
-    if (draftHeightPx !== null) {
-      draftHeightPx = clampDraftHeightPx(draftHeightPx);
-    }
-
-    draftOpen = true;
-
-    tick().then(() => {
-      syncDraftHeight();
-      rememberDraftNaturalHeight();
-      if (!(options?.preserveFocus ?? false)) {
-        focusDraft(true);
-      }
-    });
-  }
-
-  function stopDraftResize() {
-    resizingDraft = false;
-    draftResizePointerId = null;
-    window.removeEventListener("pointermove", handleDraftResizeMove, true);
-    window.removeEventListener("pointerup", stopDraftResize, true);
-    window.removeEventListener("pointercancel", stopDraftResize, true);
-    document.body.style.removeProperty("cursor");
-    document.body.style.removeProperty("user-select");
-  }
-
-  function handleDraftResizeMove(event: PointerEvent) {
-    if (!resizingDraft || draftResizePointerId !== event.pointerId) {
-      return;
-    }
-
-    event.preventDefault();
-    const delta = draftResizeStartY - event.clientY;
-    draftHeightPx = clampDraftHeightPx(draftResizeStartHeightPx + delta);
-  }
-
-  function handleDraftResizeStart(event: PointerEvent) {
-    if (event.button !== 0 || !draftOpen || !draftPanelEl) {
-      return;
-    }
-
-    event.preventDefault();
-    resizingDraft = true;
-    draftResizePointerId = event.pointerId;
-    draftResizeStartY = event.clientY;
-    const measuredNaturalHeight = measureDraftNaturalHeight();
-    if (draftNaturalHeightPx === null && measuredNaturalHeight !== null) {
-      draftNaturalHeightPx = measuredNaturalHeight;
-    }
-
-    draftResizeStartHeightPx = draftHeightPx ?? measuredNaturalHeight ?? getDraftMinHeightPx();
-    draftHeightPx = draftResizeStartHeightPx;
-    document.body.style.cursor = "ns-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("pointermove", handleDraftResizeMove, true);
-    window.addEventListener("pointerup", stopDraftResize, true);
-    window.addEventListener("pointercancel", stopDraftResize, true);
-  }
-
   async function settleAuxTerminalLayout() {
     if (!visible || !auxVisible || !auxTerminal) {
       return;
@@ -951,16 +862,6 @@
       auxLayoutSettleTimer = null;
       void settleAuxTerminalLayout();
     }, delay);
-  }
-
-  function setClipboardNotice(message: string) {
-    clipboardNotice = message;
-    if (noticeTimer) {
-      clearTimeout(noticeTimer);
-    }
-    noticeTimer = setTimeout(() => {
-      clipboardNotice = null;
-    }, 2600);
   }
 
   async function waitForTerminalPaint() {
@@ -1123,7 +1024,8 @@
     const targetNode = event.target instanceof Node ? event.target : null;
 
     if (
-      (pendingClipboardImage !== null || editorPickerVisible) &&
+      (overlayInteractionState.pendingClipboardImage !== null ||
+        overlayInteractionState.editorPickerVisible) &&
       targetNode !== null &&
       !shellEl.contains(targetNode)
     ) {
@@ -1194,9 +1096,7 @@
       return false;
     }
 
-    await navigator.clipboard.writeText(selection);
-    terminal?.clearSelection();
-    setClipboardNotice($t("terminal.selection.copySuccess"));
+    await handleSelectionCopy();
     return true;
   }
 
@@ -1240,47 +1140,8 @@
     return false;
   }
 
-  function openContextMenu(
-    target:
-      | { kind: "url"; url: string }
-      | { kind: "file"; path: ResolvedTerminalPath }
-      | { kind: "file-candidates"; raw: string; candidates: ResolvedTerminalPath[] },
-    x: number,
-    y: number,
-  ) {
-    suppressSelectionUntilMouseUp = true;
-    terminal?.clearSelection();
-    linkMenuTarget = target;
-    linkMenuX = x;
-    linkMenuY = y;
-    linkMenuVisible = true;
-  }
-
-  function closeLinkMenu() {
-    linkMenuVisible = false;
-    linkMenuTarget = null;
-  }
-
-  function releaseLinkSelectionBlock() {
-    suppressSelectionUntilMouseUp = false;
-  }
-
-  function getFilePathNotice(error: unknown, fallbackKey: string) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/path does not exist/i.test(message)) {
-      return $t("terminal.filePaths.pathNotFound");
-    }
-    return $t(fallbackKey);
-  }
-
   async function ensureEditorsLoaded() {
     return await ensureEditorsDetected();
-  }
-
-  async function showEditorPicker(path: ResolvedTerminalPath) {
-    await ensureEditorsLoaded();
-    editorPickerPath = path;
-    editorPickerVisible = true;
   }
 
   function getCurrentEditorSessionState() {
@@ -1406,7 +1267,7 @@
     if (auxVisible) {
       hideAuxTerminal({ restoreFocus: false });
     }
-    if (draftOpen) {
+    if (draftComposerState.draftOpen) {
       closeDraft({ restoreFocus: false });
     }
     editorViewMode = "editor";
@@ -1946,7 +1807,7 @@
     ensureEditorViewMode();
     primeEditorMonacoRuntime();
 
-    if (draftOpen) {
+    if (draftComposerState.draftOpen) {
       closeDraft({ restoreFocus: false });
     }
 
@@ -2160,600 +2021,6 @@
     syncEditorSessionState();
   }
 
-  function closeEditorPicker() {
-    editorPickerVisible = false;
-    editorPickerPath = null;
-  }
-
-  async function openPathInEditor(
-    path: ResolvedTerminalPath,
-    preferredEditorId?: string | null,
-    forcePicker = false,
-  ) {
-    if (!forcePicker && settings.interface.fileOpenTarget === "internal") {
-      openInternalEditorForLinkPath(path);
-      return;
-    }
-
-    const editors = await ensureEditorsLoaded();
-
-    if (editors.length === 0) {
-      setClipboardNotice(editorsError || $t("terminal.filePaths.noEditors"));
-      return;
-    }
-
-    if (forcePicker || settings.interface.fileOpenMode === "picker") {
-      await showEditorPicker(path);
-      return;
-    }
-
-    const preferredId = preferredEditorId?.trim() || settings.interface.defaultEditorId.trim();
-    const preferredEditor = editors.find((editor) => editor.id === preferredId);
-    if (!preferredEditor) {
-      await showEditorPicker(path);
-      return;
-    }
-
-    await openInEditor(preferredEditor.id, path);
-  }
-
-  function getCandidateLinkLabel(path: ResolvedTerminalPath) {
-    const displayPath = (path.wslPath || path.raw).replace(/\\/g, "/");
-    const normalizedWorkDir = workDir.replace(/\\/g, "/");
-    let shortPath = displayPath;
-
-    if (normalizedWorkDir && displayPath.startsWith(`${normalizedWorkDir}/`)) {
-      shortPath = displayPath.slice(normalizedWorkDir.length + 1);
-    } else if (displayPath === normalizedWorkDir) {
-      shortPath = ".";
-    } else {
-      const lastSlash = displayPath.lastIndexOf("/");
-      if (lastSlash >= 0) {
-        shortPath = displayPath.slice(lastSlash + 1);
-      }
-    }
-
-    const positionSuffix =
-      path.line === null
-        ? ""
-        : path.column === null
-          ? `:${path.line}`
-          : `:${path.line}:${path.column}`;
-    return `${shortPath}${positionSuffix}`;
-  }
-
-  function buildCandidateMenuActionId(
-    index: number,
-    action: "open-file" | "open-in-internal-editor" | "open-in-other-editor" | "copy-path",
-  ) {
-    return `candidate-${index}-${action}`;
-  }
-
-  function parseCandidateMenuActionId(value: string) {
-    const match =
-      /^candidate-(\d+)-(open-file|open-in-internal-editor|open-in-other-editor|copy-path)$/.exec(value);
-    if (!match) return null;
-    return {
-      index: Number(match[1]),
-      action: match[2] as
-        | "open-file"
-        | "open-in-internal-editor"
-        | "open-in-other-editor"
-        | "copy-path",
-    };
-  }
-
-  function buildCandidateFileLinkMenuItems(raw: string, candidates: ResolvedTerminalPath[]) {
-    const items: ContextMenuItem[] = [
-      {
-        id: `candidate-list-title:${raw}`,
-        kind: "header",
-        label: $t("terminal.filePaths.candidatesTitle"),
-      },
-    ];
-
-    candidates.forEach((candidate, index) => {
-      if (index > 0) {
-        items.push({ id: `candidate-${index}-separator`, kind: "separator" });
-      }
-
-      items.push({
-        id: `candidate-${index}-header`,
-        kind: "header",
-        label: getCandidateLinkLabel(candidate),
-      });
-      items.push(
-        {
-          id: buildCandidateMenuActionId(index, "open-file"),
-          kind: "item",
-          label: $t("terminal.filePaths.openFile"),
-          icon: "file",
-        },
-        {
-          id: buildCandidateMenuActionId(index, "open-in-internal-editor"),
-          kind: "item",
-          label: $t("terminal.filePaths.openInInternalEditor"),
-          icon: "file",
-        },
-        {
-          id: buildCandidateMenuActionId(index, "open-in-other-editor"),
-          kind: "item",
-          label: $t("terminal.filePaths.openInOtherEditor"),
-          icon: "open-with",
-        },
-        {
-          id: buildCandidateMenuActionId(index, "copy-path"),
-          kind: "item",
-          label: $t("terminal.filePaths.copyPath"),
-          icon: "copy",
-        },
-      );
-    });
-
-    return items;
-  }
-
-  async function handleEditorSelect(editor: DetectedEditor) {
-    if (!editorPickerPath) {
-      return;
-    }
-
-    try {
-      await openInEditor(editor.id, editorPickerPath);
-      closeEditorPicker();
-    } catch (error) {
-      console.error("Failed to open path in editor", error);
-      setClipboardNotice(getFilePathNotice(error, "terminal.filePaths.openFailed"));
-    }
-  }
-
-  async function openFileLinkMenu(rawPath: string, event: MouseEvent) {
-    suppressSelectionUntilMouseUp = true;
-    terminal?.clearSelection();
-
-    try {
-      const pathResolution: TerminalPathResolution = await resolveTerminalPath(
-        rawPath,
-        distro,
-        workDir,
-        sessionId,
-        getShellHomeDirHint(),
-      );
-      if (pathResolution.kind === "resolved") {
-        openContextMenu({ kind: "file", path: pathResolution.path }, event.clientX, event.clientY);
-        return;
-      }
-
-      if (pathResolution.candidates.length === 0) {
-        setClipboardNotice(getFilePathNotice(undefined, "terminal.filePaths.resolveFailed"));
-        return;
-      }
-
-      openContextMenu(
-        { kind: "file-candidates", raw: pathResolution.raw, candidates: pathResolution.candidates },
-        event.clientX,
-        event.clientY,
-      );
-    } catch (error) {
-      console.warn("Failed to resolve terminal file path", error);
-      setClipboardNotice(getFilePathNotice(error, "terminal.filePaths.resolveFailed"));
-    }
-  }
-
-  async function openFileLinkMenuForTest(rawPath: string) {
-    suppressSelectionUntilMouseUp = true;
-    terminal?.clearSelection();
-
-    const pathResolution: TerminalPathResolution = await resolveTerminalPath(
-      rawPath,
-      distro,
-      workDir,
-      sessionId,
-      getShellHomeDirHint(),
-    );
-    if (pathResolution.kind === "resolved") {
-      openContextMenu({ kind: "file", path: pathResolution.path }, 160, 160);
-      return;
-    }
-
-    if (pathResolution.candidates.length === 0) {
-      setClipboardNotice(getFilePathNotice(undefined, "terminal.filePaths.resolveFailed"));
-      return;
-    }
-
-    openContextMenu(
-      { kind: "file-candidates", raw: pathResolution.raw, candidates: pathResolution.candidates },
-      160,
-      160,
-    );
-  }
-
-  function openUrlLinkMenuForTest(url: string) {
-    terminal?.clearSelection();
-    openContextMenu({ kind: "url", url }, 160, 160);
-  }
-
-  async function handleLinkMenuSelect(item: Extract<ContextMenuItem, { kind: "item" }>) {
-    if (!linkMenuTarget) return;
-
-    try {
-      if (linkMenuTarget.kind === "url") {
-        if (item.id === "open-link-in-browser") {
-          await openExternalUrl(linkMenuTarget.url);
-          return;
-        }
-
-        if (item.id === "copy-link") {
-          await navigator.clipboard.writeText(linkMenuTarget.url);
-          setClipboardNotice($t("terminal.links.copySuccess"));
-        }
-        return;
-      }
-
-      if (linkMenuTarget.kind === "file-candidates") {
-        const candidateAction = parseCandidateMenuActionId(item.id);
-        if (!candidateAction) {
-          return;
-        }
-
-        const candidate = linkMenuTarget.candidates[candidateAction.index];
-        if (!candidate) {
-          return;
-        }
-
-        if (candidateAction.action === "open-file") {
-          await openPathInEditor(candidate);
-          return;
-        }
-
-        if (candidateAction.action === "open-in-internal-editor") {
-          openInternalEditorForLinkPath(candidate);
-          return;
-        }
-
-        if (candidateAction.action === "open-in-other-editor") {
-          await showEditorPicker(candidate);
-          return;
-        }
-
-        if (candidateAction.action === "copy-path") {
-          await navigator.clipboard.writeText(candidate.copyText);
-          setClipboardNotice($t("terminal.filePaths.copySuccess"));
-        }
-        return;
-      }
-
-      if (item.id === "open-file") {
-        await openPathInEditor(linkMenuTarget.path);
-        return;
-      }
-
-      if (item.id === "open-in-internal-editor") {
-        openInternalEditorForLinkPath(linkMenuTarget.path);
-        return;
-      }
-
-      if (item.id === "open-in-other-editor") {
-        await showEditorPicker(linkMenuTarget.path);
-        return;
-      }
-
-      if (item.id === "copy-path") {
-        await navigator.clipboard.writeText(linkMenuTarget.path.copyText);
-        setClipboardNotice($t("terminal.filePaths.copySuccess"));
-      }
-    } catch (error) {
-      console.error("Failed to handle link menu action", error);
-      setClipboardNotice(
-        linkMenuTarget.kind === "url"
-          ? $t("terminal.links.openFailed")
-          : getFilePathNotice(error, "terminal.filePaths.openFailed"),
-      );
-    }
-  }
-
-  function handleLinkHover() {
-    linkHovering = true;
-  }
-
-  function handleLinkLeave() {
-    linkHovering = false;
-  }
-
-  function handleLinkPointerMove(event: MouseEvent) {
-    if (!suppressSelectionUntilMouseUp || (event.buttons & 1) === 0) {
-      return;
-    }
-
-    terminal?.clearSelection();
-    event.preventDefault();
-    event.stopPropagation();
-  }
-
-  function handleFocusRequest(event: Event) {
-    const focusEvent = event as CustomEvent<{ sessionId?: string }>;
-    const targetSessionId = focusEvent.detail?.sessionId;
-    if (targetSessionId && targetSessionId !== sessionId) {
-      return;
-    }
-
-    focusOutput();
-  }
-
-  function handleTestPendingImage(event: Event) {
-    if (!isTestBridgeEnabled()) return;
-
-    const detail = (event as CustomEvent<TestOpenPendingImageDetail>).detail;
-    if (!detail?.base64) return;
-    if (detail.sessionId && detail.sessionId !== sessionId) return;
-
-    try {
-      openClipboardPreview(decodeBase64Blob(detail.base64, detail.mimeType));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setClipboardNotice(message);
-    }
-  }
-
-  function openPendingImageForTest(detail: Omit<TestOpenPendingImageDetail, "sessionId">) {
-    try {
-      openClipboardPreview(decodeBase64Blob(detail.base64, detail.mimeType));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setClipboardNotice(message);
-    }
-  }
-
-  async function getOutputSnapshotForTest() {
-    if (livePtyId < 0) {
-      return null;
-    }
-
-    return getPtyOutputSnapshot(livePtyId);
-  }
-
-  async function getAuxOutputSnapshotForTest() {
-    if (auxPtyId < 0) {
-      return null;
-    }
-
-    return getPtyOutputSnapshot(auxPtyId);
-  }
-
-  function getViewportStateForTest() {
-    if (!terminal) {
-      return null;
-    }
-
-    return {
-      viewportY: terminal.buffer.active.viewportY,
-      baseY: terminal.buffer.active.baseY,
-      rows: terminal.rows,
-      cols: terminal.cols,
-    };
-  }
-
-  function getBufferSnapshotForTest(): TerminalBufferSnapshot | null {
-    if (!terminal) {
-      return null;
-    }
-
-    const buffer = terminal.buffer.active;
-    const lines: string[] = [];
-
-    for (let index = 0; index < terminal.rows; index += 1) {
-      const line = buffer.getLine(buffer.viewportY + index);
-      lines.push(line?.translateToString(false) ?? "");
-    }
-
-    return {
-      baseY: buffer.baseY,
-      viewportY: buffer.viewportY,
-      cursorX: buffer.cursorX,
-      cursorY: buffer.cursorY,
-      rows: terminal.rows,
-      cols: terminal.cols,
-      lines,
-    };
-  }
-
-  function insertIntoDraft(text: string, moveCaretToEnd = false) {
-    if (!draftEl) {
-      draftValue += text;
-      return;
-    }
-
-    const start = draftEl.selectionStart ?? draftValue.length;
-    const end = draftEl.selectionEnd ?? draftValue.length;
-    draftValue = `${draftValue.slice(0, start)}${text}${draftValue.slice(end)}`;
-
-    tick().then(() => {
-      syncDraftHeight();
-      const nextPosition = moveCaretToEnd ? draftValue.length : start + text.length;
-      draftEl?.setSelectionRange(nextPosition, nextPosition);
-    });
-  }
-
-  function pasteIntoTerminal(text: string) {
-    if (!terminal || livePtyId < 0) {
-      if (!draftOpen) {
-        openDraft({ preserveFocus: true });
-      }
-      insertIntoDraft(text, true);
-      tick().then(() => {
-        syncDraftHeight();
-        focusDraft(true);
-      });
-      return;
-    }
-
-    terminal.paste(text);
-    focusOutput();
-  }
-
-  function routeInsertedText(text: string) {
-    if (draftOpen || draftValue.length > 0) {
-      if (!draftOpen) {
-        openDraft({ preserveFocus: true });
-      }
-      insertIntoDraft(text, true);
-      tick().then(() => {
-        syncDraftHeight();
-        focusDraft(true);
-      });
-      return;
-    }
-
-    pasteIntoTerminal(text);
-  }
-
-  function resetClipboardImage(restoreFocus = false) {
-    const current = pendingClipboardImage;
-    pendingClipboardImage = null;
-    clipboardError = null;
-    revokePendingClipboardImage(current);
-
-    if (restoreFocus) {
-      if (draftOpen) {
-        focusDraft();
-      } else {
-        focusOutput();
-      }
-    }
-  }
-
-  function openClipboardPreview(blob: Blob) {
-    const nextImage = createPendingClipboardImage(blob);
-    revokePendingClipboardImage(pendingClipboardImage);
-    pendingClipboardImage = nextImage;
-    clipboardError = null;
-  }
-
-  async function handlePasteImageFromClipboard() {
-    try {
-      const imageBlob = await readImageFromClipboard();
-      if (!imageBlob) {
-        setClipboardNotice($t("terminal.assist.clipboardNoImage"));
-        if (draftOpen) {
-          focusDraft();
-        } else {
-          focusOutput();
-        }
-        return;
-      }
-
-      openClipboardPreview(imageBlob);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setClipboardNotice(message);
-      if (draftOpen) {
-        focusDraft();
-      } else {
-        focusOutput();
-      }
-    }
-  }
-
-  async function confirmClipboardImage() {
-    if (!pendingClipboardImage) return;
-
-    clipboardBusy = true;
-    clipboardError = null;
-
-    try {
-      const savedImage = await saveClipboardImage(pendingClipboardImage, distro);
-      routeInsertedText(formatPathForAgentInput(savedImage.wslPath));
-      resetClipboardImage(true);
-    } catch (error) {
-      clipboardError = error instanceof Error ? error.message : String(error);
-    } finally {
-      clipboardBusy = false;
-    }
-  }
-
-  function handleDraftPaste(event: ClipboardEvent) {
-    const imageBlob = getImageFromPasteEvent(event);
-    if (!imageBlob) {
-      return;
-    }
-
-    event.preventDefault();
-    openClipboardPreview(imageBlob);
-  }
-
-  function splitDraftLines(text: string) {
-    return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  }
-
-  function handleTerminalPaste(event: ClipboardEvent) {
-    if (!visible) return;
-
-    const imageBlob = getImageFromPasteEvent(event);
-    if (!imageBlob) {
-      return;
-    }
-
-    event.preventDefault();
-    openClipboardPreview(imageBlob);
-  }
-
-  async function insertDraftIntoTerminal(submit: boolean) {
-    const text = draftValue;
-    if (!text || livePtyId < 0) {
-      return;
-    }
-
-    draftValue = "";
-    syncDraftHeight();
-    const lines = splitDraftLines(text);
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index] ?? "";
-      if (line.length > 0) {
-        await writePty(livePtyId, line);
-      }
-
-      const hasNextLine = index < lines.length - 1;
-      if (hasNextLine) {
-        // Agent CLIs like Claude Code and Codex accept line-feed separated multiline input here.
-        await writePty(livePtyId, "\n");
-      }
-    }
-
-    if (submit) {
-      await writePty(livePtyId, "\r");
-      closeDraft({ restoreFocus: false });
-    }
-
-    if (submit) {
-      tick().then(focusOutput);
-      return;
-    }
-
-    focusDraft();
-  }
-
-  function handleDraftKeydown(event: KeyboardEvent) {
-    if (event.key === "Enter" && event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      void insertDraftIntoTerminal(true);
-    }
-  }
-
-  function handleDraftInput(event: Event) {
-    draftValue = (event.target as HTMLTextAreaElement).value;
-    syncDraftHeight();
-  }
-
-  function toggleDraft() {
-    if (draftOpen) {
-      closeDraft();
-      return;
-    }
-
-    openDraft();
-  }
-
   function disposeAuxTerminalInstance() {
     auxResizeObserver?.disconnect();
     auxResizeObserver = null;
@@ -2925,7 +2192,7 @@
       return;
     }
 
-    if (draftOpen) {
+    if (draftComposerState.draftOpen) {
       closeDraft({ restoreFocus: false });
     }
 
@@ -3101,10 +2368,12 @@
     await syncMainTerminalLayoutToPty({ refresh: true });
   }
 
-  async function attachOrSpawnPty(term: Terminal) {
+  async function attachOrSpawnPty(term: Terminal, options?: { loadingAlreadyShown?: boolean }) {
     spawnError = null;
     if (ptyId >= 0) {
-      await showTerminalLoadingState("restoring");
+      if (!options?.loadingAlreadyShown) {
+        await showTerminalLoadingState("restoring");
+      }
       try {
         await attachToExistingPty(ptyId, term);
         return;
@@ -3121,7 +2390,9 @@
         clearShellHomeDirCache();
       }
     } else {
-      await showTerminalLoadingState("connecting");
+      if (!options?.loadingAlreadyShown) {
+        await showTerminalLoadingState("connecting");
+      }
     }
 
     await spawnNewPty(term);
@@ -3226,9 +2497,10 @@
       terminal = term;
       fitAddon = fit;
       terminalReady = true;
+      await showTerminalLoadingState(ptyId >= 0 ? "restoring" : "connecting");
       await syncMainTerminalLayoutToPty({ stickToBottom: false });
 
-      await attachOrSpawnPty(term);
+      await attachOrSpawnPty(term, { loadingAlreadyShown: true });
       terminalStartupSettled = true;
       scheduleEditorQuickOpenPrewarm();
     } catch (error) {
@@ -3295,15 +2567,7 @@
     window.addEventListener("clcomx:focus-active-terminal", handleFocusRequest);
     window.addEventListener(TEST_BRIDGE_EVENTS.openPendingImage, handleTestPendingImage as EventListener);
     if (isTestBridgeEnabled()) {
-      getOrCreateTerminalTestHooks()[sessionId] = {
-        openPendingImage: openPendingImageForTest,
-        getOutputSnapshot: getOutputSnapshotForTest,
-        getAuxOutputSnapshot: getAuxOutputSnapshotForTest,
-        getViewportState: getViewportStateForTest,
-        getBufferSnapshot: getBufferSnapshotForTest,
-        openUrlMenu: openUrlLinkMenuForTest,
-        openFileMenu: openFileLinkMenuForTest,
-      };
+      registerTestHooks();
       testHookRegistered = true;
     }
   });
@@ -3405,7 +2669,7 @@
   });
 
   $effect(() => {
-    draftOpen;
+    draftComposerState.draftOpen;
     tick().then(syncAssistPanelHeight);
   });
 
@@ -3472,7 +2736,7 @@
     window.removeEventListener("keydown", handleAuxShortcut, true);
     window.removeEventListener("keydown", handleEditorShortcut, true);
     if (isTestBridgeEnabled()) {
-      delete getOrCreateTerminalTestHooks()[sessionId];
+      unregisterTestHooks();
       testHookRegistered = false;
     }
     inputTextarea?.removeEventListener("paste", handleTerminalPaste as EventListener, true);
@@ -3486,9 +2750,6 @@
     unlistenExit?.();
     resizeObserver?.disconnect();
     assistResizeObserver?.disconnect();
-    if (noticeTimer) {
-      clearTimeout(noticeTimer);
-    }
     clearTerminalLoadingTimers();
     clearAuxLayoutSettleTimer();
     clearDeferredBottomScrollTimer();
@@ -3496,7 +2757,7 @@
     releaseBottomLock();
     pendingPostWriteScroll = false;
     invalidateEditorQuickOpenRequest();
-    revokePendingClipboardImage(pendingClipboardImage);
+    disposeOverlayInteraction();
     fileLinkProviderDisposable?.dispose();
     writeParsedDisposable?.dispose();
     disposeAuxTerminalInstance();
@@ -3521,8 +2782,8 @@
   data-pty-id={String(livePtyId)}
   data-aux-pty-id={String(auxPtyId)}
   data-aux-visible={auxVisible ? "true" : "false"}
-  data-draft-open={draftOpen ? "true" : "false"}
-  data-pending-image={pendingClipboardImage ? "true" : "false"}
+  data-draft-open={draftComposerState.draftOpen ? "true" : "false"}
+  data-pending-image={overlayInteractionState.pendingClipboardImage ? "true" : "false"}
   data-test-hook-registered={testHookRegistered ? "true" : "false"}
   data-loading-state={terminalLoadingState ?? "idle"}
   data-soft-follow-experiment={softFollowExperimentEnabled ? "true" : "false"}
@@ -3563,7 +2824,7 @@
   >
   <div
     class="terminal-output"
-    class:terminal-output--link-hover={linkHovering}
+    class:terminal-output--link-hover={overlayInteractionState.linkHovering}
     data-testid={TEST_IDS.terminalOutput}
     bind:this={outputEl}
   >
@@ -3573,9 +2834,9 @@
       </div>
     {/if}
 
-    {#if clipboardNotice}
+    {#if overlayInteractionState.clipboardNotice}
       <div class="terminal-notice">
-        {clipboardNotice}
+        {overlayInteractionState.clipboardNotice}
       </div>
     {/if}
 
@@ -3598,13 +2859,13 @@
     {/if}
   </div>
 
-  {#if draftOpen}
+  {#if draftComposerState.draftOpen}
     <TerminalDraftPanel
       title={$t("terminal.assist.draftTitle")}
-      draftValue={draftValue}
-      fixedHeightPx={draftHeightPx}
-      bind:draftElement={draftEl}
-      bind:panelElement={draftPanelEl}
+      draftValue={draftComposerState.draftValue}
+      fixedHeightPx={draftComposerState.draftHeightPx}
+      bind:draftElement={draftComposerState.draftEl}
+      bind:panelElement={draftComposerState.draftPanelEl}
       onResizeStart={handleDraftResizeStart}
       onClose={toggleDraft}
       onDraftInput={handleDraftInput}
@@ -3663,8 +2924,8 @@
     <TerminalAssistPanel
       auxVisible={auxVisible}
       auxBusy={auxBusy}
-      draftOpen={draftOpen}
-      draftValue={draftValue}
+      draftOpen={draftComposerState.draftOpen}
+      draftValue={draftComposerState.draftValue}
       showEditorActions={true}
       onPasteImage={handlePasteImageFromClipboard}
       onOpenFile={() => void openEditorQuickOpen(editorRootDir || workDir)}
@@ -3680,25 +2941,25 @@
 </div>
 
 <ContextMenu
-  visible={linkMenuVisible}
-  x={linkMenuX}
-  y={linkMenuY}
+  visible={overlayInteractionState.linkMenuVisible}
+  x={overlayInteractionState.linkMenuX}
+  y={overlayInteractionState.linkMenuY}
   items={linkMenuItems}
   onSelect={handleLinkMenuSelect}
   onClose={closeLinkMenu}
 />
 
 <ImagePasteModal
-  visible={pendingClipboardImage !== null}
-  image={pendingClipboardImage}
-  busy={clipboardBusy}
-  error={clipboardError}
+  visible={overlayInteractionState.pendingClipboardImage !== null}
+  image={overlayInteractionState.pendingClipboardImage}
+  busy={overlayInteractionState.clipboardBusy}
+  error={overlayInteractionState.clipboardError}
   onCancel={() => resetClipboardImage(true)}
   onConfirm={confirmClipboardImage}
 />
 
 <EditorPickerModal
-  visible={editorPickerVisible}
+  visible={overlayInteractionState.editorPickerVisible}
   title={$t("terminal.filePaths.pickerTitle")}
   description={$t("terminal.filePaths.pickerDescription")}
   emptyLabel={editorsError || $t("terminal.filePaths.noEditors")}

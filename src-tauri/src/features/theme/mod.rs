@@ -128,7 +128,8 @@ pub(crate) fn load_custom_css_or_default() -> Result<String, String> {
         return Ok(String::new());
     }
 
-    fs::read_to_string(&path).map_err(|error| format!("Failed to read {}: {}", path.display(), error))
+    fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read {}: {}", path.display(), error))
 }
 
 fn theme_path() -> Result<PathBuf, String> {
@@ -164,7 +165,10 @@ fn empty_overlay_theme_pack() -> ThemePackPayload {
     }
 }
 
-fn merge_theme_pack_payloads(base: ThemePackPayload, overlay: ThemePackPayload) -> ThemePackPayload {
+fn merge_theme_pack_payloads(
+    base: ThemePackPayload,
+    overlay: ThemePackPayload,
+) -> ThemePackPayload {
     ThemePackPayload {
         format_version: base.format_version.max(overlay.format_version),
         themes: base

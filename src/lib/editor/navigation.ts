@@ -1,98 +1,38 @@
-import type { EditorSearchResult, ReadSessionFileResult } from "../editors";
+import type { EditorSearchResult } from "../editors";
+import {
+  JS_TS_EXTENSIONS,
+  JS_TS_LANGUAGE_IDS,
+  PHP_EXTENSIONS,
+  PHP_LANGUAGE_IDS,
+  SVELTE_EXTENSIONS,
+  SVELTE_LANGUAGE_IDS,
+  type HeuristicDefinitionRequest,
+  type HeuristicDocumentSymbol,
+  type JSImportBinding,
+  type NavigationLocation,
+  type PHPUseBinding,
+  type PhpExpressionToken,
+  type ScriptBlock,
+} from "../features/editor/navigation/contracts";
+import {
+  escapeRegExp,
+  extractQuotedValueAtColumnInLine,
+  extractQuotedValueAtPosition,
+  getLineContent,
+  offsetToLineColumn,
+} from "../features/editor/navigation/text-utils";
+import {
+  basenameWithoutExtension,
+  joinWslPath,
+  normalizeWslPath,
+} from "../features/editor/navigation/wsl-path-utils";
 import { basenameFromPath, directoryFromPath } from "./path";
-
-export interface NavigationLocation {
-  wslPath: string;
-  line: number;
-  column: number;
-}
-
-export interface HeuristicDocumentSymbol {
-  name: string;
-  detail: string;
-  kind: "class" | "function" | "method" | "variable" | "type";
-  line: number;
-  column: number;
-  containerName?: string;
-}
-
-export interface NavigationFileSnapshot
-  extends Pick<ReadSessionFileResult, "wslPath" | "content" | "languageId"> {}
-
-export interface HeuristicDefinitionRequest {
-  modelPath: string;
-  languageId: string;
-  content: string;
-  lineNumber: number;
-  column: number;
-  workspaceRoot: string;
-  workspaceFiles: EditorSearchResult[];
-  readWorkspaceFile: (wslPath: string) => Promise<NavigationFileSnapshot>;
-}
-
-interface JSImportBinding {
-  localName: string;
-  importedName: string;
-  source: string;
-}
-
-interface PHPUseBinding {
-  alias: string;
-  fqcn: string;
-}
-
-interface ScriptBlock {
-  content: string;
-  lineOffset: number;
-}
-
-interface PhpExpressionToken {
-  type: "string" | "identifier" | "concat" | "lparen" | "rparen";
-  value?: string;
-}
-
-const JS_TS_LANGUAGE_IDS = new Set([
-  "javascript",
-  "javascriptreact",
-  "typescript",
-  "typescriptreact",
-]);
-
-const PHP_LANGUAGE_IDS = new Set(["php"]);
-const SVELTE_LANGUAGE_IDS = new Set(["svelte"]);
-
-const JS_TS_EXTENSIONS = [
-  "",
-  ".ts",
-  ".tsx",
-  ".js",
-  ".jsx",
-  ".mts",
-  ".cts",
-  ".mjs",
-  ".cjs",
-  ".svelte",
-  "/index.ts",
-  "/index.tsx",
-  "/index.js",
-  "/index.jsx",
-  "/index.mts",
-  "/index.cts",
-  "/index.mjs",
-  "/index.cjs",
-  "/index.svelte",
-];
-
-const PHP_EXTENSIONS = ["", ".php", ".phtml", ".inc.php", "/index.php"];
-const SVELTE_EXTENSIONS = [
-  "",
-  ".svelte",
-  ".ts",
-  ".js",
-  "/index.svelte",
-  "/index.ts",
-  "/index.js",
-];
+export type {
+  HeuristicDefinitionRequest,
+  HeuristicDocumentSymbol,
+  NavigationFileSnapshot,
+  NavigationLocation,
+} from "../features/editor/navigation/contracts";
 
 export async function findHeuristicDefinition(
   request: HeuristicDefinitionRequest,
@@ -958,80 +898,6 @@ function extractScriptBlocks(content: string, svelteAware: boolean): ScriptBlock
   return blocks.length > 0 ? blocks : [{ content, lineOffset: 0 }];
 }
 
-function extractQuotedValueAtPosition(
-  content: string,
-  lineNumber: number,
-  column: number,
-): { value: string; startColumn: number; endColumn: number } | null {
-  const line = getLineContent(content, lineNumber);
-  if (!line) {
-    return null;
-  }
-
-  return extractQuotedValueAtColumnInLine(line, column);
-}
-
-function extractQuotedValueAtColumnInLine(
-  line: string,
-  column: number,
-): { value: string; startColumn: number; endColumn: number } | null {
-  if (!line) {
-    return null;
-  }
-
-  const index = Math.max(0, column - 1);
-  for (const quote of [`"`, "'", "`"]) {
-    const start = findUnescapedQuoteLeft(line, index, quote);
-    if (start < 0) {
-      continue;
-    }
-    const end = findUnescapedQuoteRight(line, Math.max(index, start + 1), quote);
-    if (end < 0 || index < start || index > end) {
-      continue;
-    }
-
-    return {
-      value: line.slice(start + 1, end),
-      startColumn: start + 2,
-      endColumn: end + 1,
-    };
-  }
-
-  return null;
-}
-
-function findUnescapedQuoteLeft(line: string, fromIndex: number, quote: string) {
-  for (let index = fromIndex; index >= 0; index -= 1) {
-    if (line[index] !== quote) {
-      continue;
-    }
-    if (!isEscaped(line, index)) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function findUnescapedQuoteRight(line: string, fromIndex: number, quote: string) {
-  for (let index = fromIndex; index < line.length; index += 1) {
-    if (line[index] !== quote) {
-      continue;
-    }
-    if (!isEscaped(line, index)) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function isEscaped(line: string, index: number) {
-  let slashCount = 0;
-  for (let cursor = index - 1; cursor >= 0 && line[cursor] === "\\"; cursor -= 1) {
-    slashCount += 1;
-  }
-  return slashCount % 2 === 1;
-}
-
 function looksLikeFileSpecifier(value: string) {
   if (!value.trim()) {
     return false;
@@ -1537,50 +1403,4 @@ function getImportCandidateExtensions(languageId: string) {
 
 function hasExplicitFileExtension(specifier: string) {
   return /\/?[^/]+\.[A-Za-z0-9]+$/.test(specifier.trim());
-}
-
-function normalizeWslPath(value: string) {
-  const normalized = value.replace(/\\/g, "/");
-  const parts: string[] = [];
-  const rawParts = normalized.split("/");
-  for (const part of rawParts) {
-    if (!part || part === ".") {
-      continue;
-    }
-    if (part === "..") {
-      parts.pop();
-      continue;
-    }
-    parts.push(part);
-  }
-
-  return `/${parts.join("/")}`;
-}
-
-function joinWslPath(basePath: string, targetPath: string) {
-  if (!targetPath) {
-    return normalizeWslPath(basePath);
-  }
-  return normalizeWslPath(`${normalizeWslPath(basePath)}/${targetPath}`);
-}
-
-function basenameWithoutExtension(wslPath: string) {
-  return basenameFromPath(wslPath).replace(/\.[^.]+$/, "");
-}
-
-function getLineContent(content: string, lineNumber: number) {
-  return content.split("\n")[Math.max(0, lineNumber - 1)] ?? "";
-}
-
-function offsetToLineColumn(content: string, offset: number) {
-  const slice = content.slice(0, offset);
-  const lines = slice.split("\n");
-  return {
-    line: lines.length,
-    column: (lines[lines.length - 1]?.length ?? 0) + 1,
-  };
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

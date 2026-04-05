@@ -1,17 +1,17 @@
 use super::workspace::WorkspaceState;
 use crate::features::bootstrap::build_app_bootstrap;
+pub use crate::features::bootstrap::AppBootstrap;
 use crate::features::history::{
     load_tab_history_with_limit, record_tab_history_with_limit, remove_persisted_tab_history_entry,
     trim_tab_history_to_limit, TabHistoryEntry,
 };
-pub use crate::features::bootstrap::AppBootstrap;
-use crate::features::settings::{read_settings, save_settings_payload};
 #[allow(unused_imports)]
 pub use crate::features::settings::{
-    ClaudeCliFlagsPayload, EditorSettingsPayload, HistorySettingsPayload,
+    load_settings_or_default, ClaudeCliFlagsPayload, EditorSettingsPayload, HistorySettingsPayload,
     InterfaceSettingsPayload, SettingsPayload, TerminalSettingsPayload, WindowPlacement,
-    WorkspaceSettingsPayload, load_settings_or_default,
+    WorkspaceSettingsPayload,
 };
+use crate::features::settings::{read_settings, save_settings_payload};
 use crate::features::theme::load_custom_css_or_default;
 use tauri::State;
 

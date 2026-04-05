@@ -1,8 +1,8 @@
 use super::pty::PtyState;
 use crate::features::workspace::{
-    clear_session_pty_in_workspace, merge_workspace_snapshot, set_session_aux_terminal_state_in_workspace,
-    set_session_pty_in_workspace, set_session_resume_token_in_workspace,
-    update_window_geometry_in_workspace,
+    clear_session_pty_in_workspace, merge_workspace_snapshot,
+    set_session_aux_terminal_state_in_workspace, set_session_pty_in_workspace,
+    set_session_resume_token_in_workspace, update_window_geometry_in_workspace,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -126,8 +126,9 @@ pub fn close_session(
     session_id: String,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(workspace_state.inner())?;
-    let (tab, _) = crate::features::workspace::remove_session_from_workspace(&mut runtime, &session_id)
-        .ok_or("Session not found")?;
+    let (tab, _) =
+        crate::features::workspace::remove_session_from_workspace(&mut runtime, &session_id)
+            .ok_or("Session not found")?;
     if let Some(pty_id) = tab.pty_id {
         super::pty::kill_pty_session(pty_state.inner(), pty_id)?;
     }
@@ -151,7 +152,11 @@ pub fn close_session_by_pty(
     let mut closed_session_id: Option<String> = None;
 
     for window in &mut runtime.windows {
-        if let Some(index) = window.tabs.iter().position(|tab| tab.pty_id == Some(pty_id)) {
+        if let Some(index) = window
+            .tabs
+            .iter()
+            .position(|tab| tab.pty_id == Some(pty_id))
+        {
             closed_session_id = Some(window.tabs[index].session_id.clone());
             if let Some(aux_pty_id) = window.tabs[index].aux_pty_id {
                 super::pty::kill_pty_session(pty_state.inner(), aux_pty_id)?;

@@ -935,13 +935,13 @@ mod tests {
         assert_eq!(loaded.workspace.default_agent_id, "claude");
         assert_eq!(loaded.workspace.default_distro, "Ubuntu");
         assert_eq!(
-            loaded
-                .workspace
-                .default_start_paths_by_distro
-                .get("Ubuntu"),
+            loaded.workspace.default_start_paths_by_distro.get("Ubuntu"),
             Some(&"/home/tester/work".to_string())
         );
-        assert_eq!(loaded.terminal.font_family, "JetBrains Mono, Cascadia Code, Consolas");
+        assert_eq!(
+            loaded.terminal.font_family,
+            "JetBrains Mono, Cascadia Code, Consolas"
+        );
         assert_eq!(
             loaded.terminal.font_family_fallback,
             "Malgun Gothic, NanumGothicCoding, monospace"
@@ -1017,7 +1017,10 @@ mod tests {
             saved.workspace.default_start_paths_by_distro,
             BTreeMap::from([("Ubuntu".into(), "/home/tester/work".into())])
         );
-        assert_eq!(saved.terminal.font_family, "JetBrains Mono, Cascadia Code, Consolas");
+        assert_eq!(
+            saved.terminal.font_family,
+            "JetBrains Mono, Cascadia Code, Consolas"
+        );
         assert_eq!(
             saved.terminal.font_family_fallback,
             "Malgun Gothic, NanumGothicCoding, monospace"
@@ -1041,6 +1044,9 @@ mod tests {
         assert_eq!(saved.history.tab_limit, MIN_TAB_HISTORY_LIMIT);
         assert_eq!(persisted.language, saved.language);
         assert_eq!(persisted.history.tab_limit, saved.history.tab_limit);
-        assert_eq!(persisted.workspace.default_distro, saved.workspace.default_distro);
+        assert_eq!(
+            persisted.workspace.default_distro,
+            saved.workspace.default_distro
+        );
     }
 }
