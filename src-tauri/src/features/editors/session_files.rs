@@ -1,16 +1,17 @@
 use super::file_policy::{
     infer_language_id, metadata_mtime_ms, read_text_file_with_policy, MAX_SESSION_FILE_BYTES,
 };
+#[cfg(test)]
+use super::path_resolution::normalize_posix_path;
 use super::path_resolution::{
     canonical_access_path, ensure_resolved_path_within_session_root, ensure_search_root_allowed,
     ensure_session_file_allowed, resolve_existing_access_path,
 };
-#[cfg(test)]
-use super::path_resolution::normalize_posix_path;
 use super::search_index::{
-    build_cached_entries_from_relative_candidates, build_ranked_search_entries_from_relative_candidates,
-    build_search_index_cache_once, cache_index, cached_list_response, collect_search_index_entries,
-    ensure_search_index, ensure_search_index_cache, search_rank, upsert_search_cache_path,
+    build_cached_entries_from_relative_candidates,
+    build_ranked_search_entries_from_relative_candidates, build_search_index_cache_once,
+    cache_index, cached_list_response, collect_search_index_entries, ensure_search_index,
+    ensure_search_index_cache, search_rank, upsert_search_cache_path,
 };
 use super::types::{
     SessionFileListResponse, SessionFileMatch, SessionFileReadResponse, SessionFileSearchResponse,

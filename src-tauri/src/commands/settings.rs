@@ -9,9 +9,11 @@ use crate::features::history::{
     DEFAULT_TAB_HISTORY_LIMIT,
 };
 use crate::features::workspace::{
-    collect_window_ptys, ensure_active_session, find_window_index, merge_window_snapshot,
-    next_available_window_label, normalize_workspace_snapshot, remove_session_from_workspace,
-    snapshot_from_state, write_snapshot_to_state, write_workspace,
+    clear_session_pty_in_workspace, collect_window_ptys, ensure_active_session, find_window_index,
+    merge_workspace_snapshot, next_available_window_label, normalize_workspace_snapshot,
+    remove_session_from_workspace, set_session_aux_terminal_state_in_workspace,
+    set_session_pty_in_workspace, set_session_resume_token_in_workspace, snapshot_from_state,
+    update_window_geometry_in_workspace, write_snapshot_to_state, write_workspace,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -25,8 +27,8 @@ use tauri::{
 
 #[allow(unused_imports)]
 pub use crate::features::workspace::{
-    EditorTabRef, WindowSnapshot, WorkspaceSnapshot, WorkspaceState, WorkspaceTabSnapshot,
-    find_session_tab_snapshot, load_workspace_or_default,
+    find_session_tab_snapshot, load_workspace_or_default, EditorTabRef, WindowSnapshot,
+    WorkspaceSnapshot, WorkspaceState, WorkspaceTabSnapshot,
 };
 
 fn settings_path() -> Result<PathBuf, String> {
@@ -610,8 +612,10 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         &[&["terminal", "fontSize"], &["fontSize"]],
         settings.terminal.font_size,
     );
-    settings.terminal.font_family =
-        normalize_font_family(&settings.terminal.font_family, "JetBrains Mono, Cascadia Code, Consolas");
+    settings.terminal.font_family = normalize_font_family(
+        &settings.terminal.font_family,
+        "JetBrains Mono, Cascadia Code, Consolas",
+    );
     settings.terminal.font_family_fallback = normalize_font_family(
         &settings.terminal.font_family_fallback,
         "Malgun Gothic, NanumGothicCoding, monospace",
@@ -728,8 +732,10 @@ pub fn load_settings_or_default() -> SettingsPayload {
             }
         })
         .collect();
-    settings.terminal.font_family =
-        normalize_font_family(&settings.terminal.font_family, "JetBrains Mono, Cascadia Code, Consolas");
+    settings.terminal.font_family = normalize_font_family(
+        &settings.terminal.font_family,
+        "JetBrains Mono, Cascadia Code, Consolas",
+    );
     settings.terminal.font_family_fallback = normalize_font_family(
         &settings.terminal.font_family_fallback,
         "Malgun Gothic, NanumGothicCoding, monospace",
@@ -893,8 +899,10 @@ pub fn save_settings(mut settings: SettingsPayload) -> Result<(), String> {
             }
         })
         .collect();
-    settings.terminal.font_family =
-        normalize_font_family(&settings.terminal.font_family, "JetBrains Mono, Cascadia Code, Consolas");
+    settings.terminal.font_family = normalize_font_family(
+        &settings.terminal.font_family,
+        "JetBrains Mono, Cascadia Code, Consolas",
+    );
     settings.terminal.font_family_fallback = normalize_font_family(
         &settings.terminal.font_family_fallback,
         "Malgun Gothic, NanumGothicCoding, monospace",
@@ -962,17 +970,7 @@ pub fn save_workspace(
     workspace: WorkspaceSnapshot,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    for incoming_window in workspace.windows {
-        if let Some(index) = find_window_index(&runtime, &incoming_window.label) {
-            let merged = merge_window_snapshot(runtime.windows.get(index), incoming_window);
-            runtime.windows[index] = merged;
-        } else {
-            runtime
-                .windows
-                .push(merge_window_snapshot(None, incoming_window));
-        }
-    }
-    normalize_workspace_snapshot(&mut runtime);
+    merge_workspace_snapshot(&mut runtime, workspace);
     write_snapshot_to_state(state.inner(), runtime.clone())?;
     write_workspace(&runtime)?;
     emit_workspace_updated(&app, &runtime)?;
@@ -986,19 +984,9 @@ pub fn set_session_pty(
     pty_id: u32,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    for window in &mut runtime.windows {
-        if let Some(tab) = window
-            .tabs
-            .iter_mut()
-            .find(|tab| tab.session_id == session_id)
-        {
-            tab.pty_id = Some(pty_id);
-            write_snapshot_to_state(state.inner(), runtime)?;
-            return Ok(());
-        }
-    }
-
-    Err("Session not found".into())
+    set_session_pty_in_workspace(&mut runtime, &session_id, pty_id)?;
+    write_snapshot_to_state(state.inner(), runtime)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1008,23 +996,9 @@ pub fn set_session_resume_token(
     resume_token: Option<String>,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    for window in &mut runtime.windows {
-        if let Some(tab) = window
-            .tabs
-            .iter_mut()
-            .find(|tab| tab.session_id == session_id)
-        {
-            tab.resume_token = resume_token
-                .as_ref()
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string());
-            write_snapshot_to_state(state.inner(), runtime)?;
-            return Ok(());
-        }
-    }
-
-    Err("Session not found".into())
+    set_session_resume_token_in_workspace(&mut runtime, &session_id, resume_token)?;
+    write_snapshot_to_state(state.inner(), runtime)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1033,19 +1007,9 @@ pub fn clear_session_pty(
     session_id: String,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    for window in &mut runtime.windows {
-        if let Some(tab) = window
-            .tabs
-            .iter_mut()
-            .find(|tab| tab.session_id == session_id)
-        {
-            tab.pty_id = None;
-            write_snapshot_to_state(state.inner(), runtime)?;
-            return Ok(());
-        }
-    }
-
-    Err("Session not found".into())
+    clear_session_pty_in_workspace(&mut runtime, &session_id)?;
+    write_snapshot_to_state(state.inner(), runtime)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1057,21 +1021,15 @@ pub fn set_session_aux_terminal_state(
     aux_height_percent: Option<u16>,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    for window in &mut runtime.windows {
-        if let Some(tab) = window
-            .tabs
-            .iter_mut()
-            .find(|tab| tab.session_id == session_id)
-        {
-            tab.aux_pty_id = aux_pty_id;
-            tab.aux_visible = aux_visible;
-            tab.aux_height_percent = aux_height_percent;
-            write_snapshot_to_state(state.inner(), runtime)?;
-            return Ok(());
-        }
-    }
-
-    Err("Session not found".into())
+    set_session_aux_terminal_state_in_workspace(
+        &mut runtime,
+        &session_id,
+        aux_pty_id,
+        aux_visible,
+        aux_height_percent,
+    )?;
+    write_snapshot_to_state(state.inner(), runtime)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1086,18 +1044,7 @@ pub fn update_window_geometry(
     maximized: bool,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    let window = runtime
-        .windows
-        .iter_mut()
-        .find(|window| window.label == label)
-        .ok_or("Window not found")?;
-
-    window.x = x;
-    window.y = y;
-    window.width = width.max(640);
-    window.height = height.max(480);
-    window.maximized = maximized;
-
+    update_window_geometry_in_workspace(&mut runtime, &label, x, y, width, height, maximized)?;
     write_snapshot_to_state(state.inner(), runtime.clone())?;
     write_workspace(&runtime)?;
     emit_workspace_updated(&app, &runtime)?;
@@ -1429,7 +1376,10 @@ fn empty_overlay_theme_pack() -> ThemePackPayload {
     }
 }
 
-fn merge_theme_pack_payloads(base: ThemePackPayload, overlay: ThemePackPayload) -> ThemePackPayload {
+fn merge_theme_pack_payloads(
+    base: ThemePackPayload,
+    overlay: ThemePackPayload,
+) -> ThemePackPayload {
     ThemePackPayload {
         format_version: base.format_version.max(overlay.format_version),
         themes: base
@@ -1473,7 +1423,9 @@ fn merge_monaco_theme_payloads(
     })
 }
 
-fn resolve_theme_pack_payload(pack: &ThemePackPayload) -> BTreeMap<String, ThemeSourceEntryPayload> {
+fn resolve_theme_pack_payload(
+    pack: &ThemePackPayload,
+) -> BTreeMap<String, ThemeSourceEntryPayload> {
     let mut resolved: BTreeMap<String, ThemeSourceEntryPayload> = BTreeMap::new();
 
     for source_theme in &pack.themes {
@@ -1485,7 +1437,9 @@ fn resolve_theme_pack_payload(pack: &ThemePackPayload) -> BTreeMap<String, Theme
             }
         });
 
-        let mut theme = base_theme.map(|theme| theme.theme.clone()).unwrap_or_default();
+        let mut theme = base_theme
+            .map(|theme| theme.theme.clone())
+            .unwrap_or_default();
         theme.extend(source_theme.theme.clone());
 
         let monaco = merge_monaco_theme_payloads(
@@ -1808,7 +1762,10 @@ mod tests {
         assert_eq!(parsed.terminal.font_family_fallback, "NanumGothicCoding");
         assert_eq!(parsed.terminal.font_size, 99);
         assert_eq!(parsed.editor.font_family, "JetBrains Mono");
-        assert_eq!(parsed.editor.font_family_fallback, "IBM Plex Sans KR, monospace");
+        assert_eq!(
+            parsed.editor.font_family_fallback,
+            "IBM Plex Sans KR, monospace"
+        );
         assert_eq!(parsed.editor.font_size, MIN_EDITOR_FONT_SIZE);
     }
 

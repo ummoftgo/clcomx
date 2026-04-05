@@ -179,7 +179,11 @@ pub fn search_wsl_files(
     let bounded_limit = limit.clamp(1, 400);
     let mut shells = state.get_or_spawn_shell(distro)?;
     let shell = shells.get_mut(distro).ok_or("Shell not found")?;
-    let lines = shell.exec(&build_search_command(root_dir, trimmed_query, bounded_limit))?;
+    let lines = shell.exec(&build_search_command(
+        root_dir,
+        trimmed_query,
+        bounded_limit,
+    ))?;
 
     Ok(lines
         .into_iter()
@@ -391,7 +395,9 @@ pub struct WslEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_list_files_command, build_search_command, list_wsl_files, search_wsl_files, WslState};
+    use super::{
+        build_list_files_command, build_search_command, list_wsl_files, search_wsl_files, WslState,
+    };
 
     #[test]
     fn search_wsl_files_returns_empty_without_spawning_for_empty_query() {
@@ -429,8 +435,8 @@ mod tests {
     #[test]
     fn list_wsl_files_uses_mock_data_in_test_mode() {
         let state = WslState::default();
-        let files =
-            list_wsl_files(&state, "clcomx-test", "/home/tester/workspace/clcomx").expect("list should succeed");
+        let files = list_wsl_files(&state, "clcomx-test", "/home/tester/workspace/clcomx")
+            .expect("list should succeed");
 
         assert!(files.iter().any(|value| value == "src/App.svelte"));
         assert!(files.iter().any(|value| value == ".claude/settings.json"));

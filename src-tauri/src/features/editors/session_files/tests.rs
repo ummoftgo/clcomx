@@ -230,20 +230,14 @@ fn read_session_file_rejects_binary_and_large_files() {
     let workspace_state =
         workspace_state_with_session("session-1", "Ubuntu-20.04", root.to_str().unwrap(), None);
 
-    let binary_error = read_session_file_with_state(
-        &workspace_state,
-        "session-1",
-        binary_file.to_str().unwrap(),
-    )
-    .expect_err("binary read should fail");
+    let binary_error =
+        read_session_file_with_state(&workspace_state, "session-1", binary_file.to_str().unwrap())
+            .expect_err("binary read should fail");
     assert_eq!(binary_error, "BinaryFile");
 
-    let large_error = read_session_file_with_state(
-        &workspace_state,
-        "session-1",
-        large_file.to_str().unwrap(),
-    )
-    .expect_err("large read should fail");
+    let large_error =
+        read_session_file_with_state(&workspace_state, "session-1", large_file.to_str().unwrap())
+            .expect_err("large read should fail");
     assert_eq!(large_error, "FileTooLarge");
 
     let _ = fs::remove_dir_all(&root);
@@ -396,9 +390,8 @@ fn write_session_file_updates_file_and_touches_session_cache() {
     .expect("initial search should succeed");
     assert_eq!(initial_search.results.len(), 1);
 
-    let read =
-        read_session_file_with_state(&workspace_state, "session-1", file.to_str().unwrap())
-            .expect("read should succeed");
+    let read = read_session_file_with_state(&workspace_state, "session-1", file.to_str().unwrap())
+        .expect("read should succeed");
     let write = write_session_file_with_state(
         &workspace_state,
         "session-1",
@@ -434,9 +427,8 @@ fn write_session_file_rejects_mtime_conflicts() {
 
     let workspace_state =
         workspace_state_with_session("session-1", "Ubuntu-20.04", root.to_str().unwrap(), None);
-    let read =
-        read_session_file_with_state(&workspace_state, "session-1", file.to_str().unwrap())
-            .expect("read should succeed");
+    let read = read_session_file_with_state(&workspace_state, "session-1", file.to_str().unwrap())
+        .expect("read should succeed");
     std::thread::sleep(std::time::Duration::from_millis(5));
     fs::write(&file, "console.log('changed elsewhere');\n").unwrap();
 
@@ -481,12 +473,9 @@ fn write_session_file_rejects_binary_targets_and_large_content() {
     .expect_err("binary write should fail");
     assert_eq!(binary_error, "BinaryFile");
 
-    let text_read = read_session_file_with_state(
-        &workspace_state,
-        "session-1",
-        text_file.to_str().unwrap(),
-    )
-    .expect("text read should succeed");
+    let text_read =
+        read_session_file_with_state(&workspace_state, "session-1", text_file.to_str().unwrap())
+            .expect("text read should succeed");
     let large_error = write_session_file_with_state(
         &workspace_state,
         "session-1",

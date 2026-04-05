@@ -6,9 +6,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::types::{ResolvedTerminalPath, TerminalPathResolution};
 #[cfg(windows)]
 use super::CREATE_NO_WINDOW;
-use super::types::{ResolvedTerminalPath, TerminalPathResolution};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -624,7 +624,9 @@ pub(super) fn collect_bare_filename_matches(
         }
     }
 
-    matches.sort_by(|left, right| candidate_sort_key(root, left).cmp(&candidate_sort_key(root, right)));
+    matches.sort_by(|left, right| {
+        candidate_sort_key(root, left).cmp(&candidate_sort_key(root, right))
+    });
     matches
 }
 

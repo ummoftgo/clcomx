@@ -32,6 +32,8 @@ fn builds_app_paths_subkeys_from_editor_ids() {
     assert!(subkeys
         .iter()
         .any(|value| value.ends_with(r"App Paths\Code.exe")));
-    assert!(subkeys.iter().any(|value| value
-        .ends_with(r"WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\Code.exe")));
+    assert!(subkeys
+        .iter()
+        .any(|value| value
+            .ends_with(r"WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\Code.exe")));
 }

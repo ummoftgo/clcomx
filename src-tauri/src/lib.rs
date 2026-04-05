@@ -6,8 +6,8 @@ use commands::clipboard::{
     clear_image_cache, get_image_cache_stats, open_image_cache_folder, save_clipboard_image,
 };
 use commands::editors::{
-    list_available_editors, list_session_files, open_in_editor, read_session_file, resolve_terminal_path,
-    search_session_files, write_session_file,
+    list_available_editors, list_session_files, open_in_editor, read_session_file,
+    resolve_terminal_path, search_session_files, write_session_file,
 };
 use commands::external::open_external_url;
 use commands::fonts::list_monospace_fonts;

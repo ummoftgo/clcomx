@@ -48,8 +48,7 @@ pub(super) fn is_likely_text_path(path: &str) -> bool {
             .unwrap_or("")
             .to_ascii_lowercase()
             .as_str(),
-        "ts"
-            | "tsx"
+        "ts" | "tsx"
             | "js"
             | "jsx"
             | "json"

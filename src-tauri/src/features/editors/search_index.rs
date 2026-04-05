@@ -3,22 +3,22 @@ use super::file_policy::ensure_text_file_policy;
 use super::file_policy::{
     ensure_text_file_policy_from_metadata, is_likely_text_path, sniff_file_is_binary,
 };
-use super::path_resolution::{
-    access_path_to_wsl_path, basename_for_path, is_heavy_directory_name, normalize_posix_path,
-    path_is_within_root, relative_wsl_path, resolve_existing_access_path, sorted_directory_entries,
-};
 #[cfg(windows)]
 use super::path_resolution::access_path_is_within_canonical_root;
 #[cfg(not(windows))]
 use super::path_resolution::ensure_resolved_path_within_session_root;
+use super::path_resolution::{
+    access_path_to_wsl_path, basename_for_path, is_heavy_directory_name, normalize_posix_path,
+    path_is_within_root, relative_wsl_path, resolve_existing_access_path, sorted_directory_entries,
+};
 use super::types::{
     CachedFileEntry, CachedFileIndex, SearchIndexBuildState, SearchIndexBuildStatus,
     SessionFileListResponse, SessionFileMatch,
 };
 use crate::commands::settings::WorkspaceTabSnapshot;
+use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(windows)]
 use std::fs;
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -78,7 +78,9 @@ fn begin_search_index_build(key: &str) -> (Arc<SearchIndexBuildState>, bool) {
     )
 }
 
-fn wait_for_search_index_build(state: &Arc<SearchIndexBuildState>) -> Result<CachedFileIndex, String> {
+fn wait_for_search_index_build(
+    state: &Arc<SearchIndexBuildState>,
+) -> Result<CachedFileIndex, String> {
     let mut guard = state
         .status
         .lock()
