@@ -17,7 +17,7 @@ use super::types::{
     SessionFileListResponse, SessionFileMatch, SessionFileReadResponse, SessionFileSearchResponse,
     SessionFileWriteResponse,
 };
-use crate::commands::settings::{find_session_tab_snapshot, WorkspaceState, WorkspaceTabSnapshot};
+use crate::commands::workspace::{find_session_tab_snapshot, WorkspaceState, WorkspaceTabSnapshot};
 use crate::commands::wsl::{list_wsl_files, search_wsl_files, WslState};
 use std::fs;
 

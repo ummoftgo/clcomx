@@ -1,4 +1,4 @@
-use crate::commands::settings::WorkspaceState;
+use crate::commands::workspace::WorkspaceState;
 use crate::commands::wsl::WslState;
 
 mod detection;

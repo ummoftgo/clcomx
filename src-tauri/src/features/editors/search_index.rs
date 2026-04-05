@@ -15,7 +15,7 @@ use super::types::{
     CachedFileEntry, CachedFileIndex, SearchIndexBuildState, SearchIndexBuildStatus,
     SessionFileListResponse, SessionFileMatch,
 };
-use crate::commands::settings::WorkspaceTabSnapshot;
+use crate::commands::workspace::WorkspaceTabSnapshot;
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(windows)]
 use std::fs;

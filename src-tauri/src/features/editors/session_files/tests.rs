@@ -9,7 +9,7 @@ fn workspace_state_with_session(
     work_dir: &str,
     pty_id: Option<u32>,
 ) -> WorkspaceState {
-    let tab = crate::commands::settings::WorkspaceTabSnapshot {
+    let tab = crate::commands::workspace::WorkspaceTabSnapshot {
         session_id: session_id.to_string(),
         agent_id: "claude".into(),
         distro: distro.to_string(),
@@ -28,7 +28,7 @@ fn workspace_state_with_session(
         active_editor_path: None,
     };
 
-    let window = crate::commands::settings::WindowSnapshot {
+    let window = crate::commands::workspace::WindowSnapshot {
         label: "main".into(),
         name: "main".into(),
         role: "main".into(),
@@ -41,7 +41,7 @@ fn workspace_state_with_session(
         maximized: false,
     };
 
-    WorkspaceState::new(crate::commands::settings::WorkspaceSnapshot {
+    WorkspaceState::new(crate::commands::workspace::WorkspaceSnapshot {
         windows: vec![window],
     })
 }

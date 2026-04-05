@@ -17,14 +17,16 @@ use commands::pty::{
     PtyState,
 };
 use commands::settings::{
-    bootstrap_app, clear_session_pty, close_app, close_session, close_session_by_pty,
-    close_window_sessions, detach_session_to_new_window, is_window_ready, load_custom_css,
-    load_settings, load_settings_or_default, load_tab_history, load_workspace,
-    load_workspace_or_default, move_session_to_window, move_window_sessions_to_main,
-    open_empty_window, record_tab_history, remove_tab_history_entry, remove_window,
-    restore_secondary_windows, save_settings, save_workspace, set_session_aux_terminal_state,
-    set_session_pty, set_session_resume_token, trim_tab_history, update_window_geometry,
-    window_ready, WindowReadyState, WorkspaceState,
+    bootstrap_app, close_app, close_window_sessions, detach_session_to_new_window,
+    is_window_ready, load_custom_css, load_settings, load_settings_or_default, load_tab_history,
+    move_session_to_window, move_window_sessions_to_main, open_empty_window,
+    record_tab_history, remove_tab_history_entry, remove_window, restore_secondary_windows,
+    save_settings, trim_tab_history, window_ready, WindowReadyState,
+};
+use commands::workspace::{
+    clear_session_pty, close_session, close_session_by_pty, load_workspace,
+    load_workspace_or_default, save_workspace, set_session_aux_terminal_state, set_session_pty,
+    set_session_resume_token, update_window_geometry, WorkspaceState,
 };
 use commands::wsl::{list_wsl_directories, list_wsl_distros, WslState};
 use tauri::{Manager, PhysicalPosition, PhysicalSize};

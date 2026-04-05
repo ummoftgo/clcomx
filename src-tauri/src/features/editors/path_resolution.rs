@@ -1,6 +1,6 @@
 use crate::app_env::is_test_mode;
 use crate::commands::pty::{get_runtime_snapshot, PtyState};
-use crate::commands::settings::{find_session_tab_snapshot, WorkspaceState, WorkspaceTabSnapshot};
+use crate::commands::workspace::{find_session_tab_snapshot, WorkspaceState, WorkspaceTabSnapshot};
 use std::collections::VecDeque;
 use std::env;
 use std::fs;
