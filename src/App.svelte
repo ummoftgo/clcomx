@@ -5,6 +5,7 @@
   import { currentMonitor, getCurrentWindow } from "./lib/tauri/window";
   import TabBar from "./lib/components/TabBar.svelte";
   import SessionLauncher from "./lib/components/SessionLauncher.svelte";
+  import SessionViewport from "./lib/features/session/view/SessionViewport.svelte";
   import PreviewControlPanel from "./lib/components/PreviewControlPanel.svelte";
   import {
     addSession,
@@ -1134,56 +1135,24 @@
       }))}
     />
 
-    <div class="terminal-area">
-      <div
-        class="welcome-layer"
-        style:display={sessions.length === 0 ? "block" : "none"}
-      >
-        <SessionLauncher
-          visible={sessions.length === 0}
-          embedded={true}
-          historyEntries={historyEntries}
-          onOpenHistory={openHistoryEntry}
-          onConfirm={createSession}
-        />
-      </div>
-
-      <div
-        class="sessions-layer"
-        style:display={sessions.length > 0 ? "block" : "none"}
-      >
-        {#if TerminalComponent}
-          {#each sessions as session (session.id)}
-            <TerminalComponent
-              sessionId={session.id}
-              visible={session.id === activeSessionId}
-              agentId={session.agentId}
-              distro={session.distro}
-              workDir={session.workDir}
-              ptyId={session.ptyId}
-              storedAuxPtyId={session.auxPtyId}
-              storedAuxVisible={session.auxVisible}
-              storedAuxHeightPercent={session.auxHeightPercent}
-              resumeToken={session.resumeToken}
-              onPtyId={(ptyId: number) => handlePtyId(session.id, ptyId)}
-              onAuxStateChange={(state: SessionShellAuxState) =>
-                void handleAuxTerminalState(
-                  session.id,
-                  state.auxPtyId,
-                  state.auxVisible,
-                  state.auxHeightPercent,
-                )}
-              onExit={handleExit}
-              onResumeFallback={() => void handleResumeFallback(session.id)}
-            />
-          {/each}
-        {:else}
-          <div class="terminal-loading">
-            <div class="terminal-loading-card">{$t("common.labels.loading")}</div>
-          </div>
-        {/if}
-      </div>
-    </div>
+    <SessionViewport
+      {sessions}
+      {activeSessionId}
+      {historyEntries}
+      {TerminalComponent}
+      onOpenHistory={openHistoryEntry}
+      onConfirmSession={createSession}
+      onSessionPtyId={handlePtyId}
+      onSessionAuxStateChange={(sessionId: string, state: SessionShellAuxState) =>
+        handleAuxTerminalState(
+          sessionId,
+          state.auxPtyId,
+          state.auxVisible,
+          state.auxHeightPercent,
+        )}
+      onSessionExit={handleExit}
+      onSessionResumeFallback={handleResumeFallback}
+    />
   </div>
 
   <SessionLauncher
@@ -1381,37 +1350,6 @@
     box-shadow:
       0 28px 70px rgba(var(--ui-shadow-rgb), 0.24),
       inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  }
-
-  .terminal-area {
-    flex: 1;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .welcome-layer,
-  .sessions-layer {
-    width: 100%;
-    height: 100%;
-  }
-
-  .terminal-loading {
-    width: 100%;
-    height: 100%;
-    display: grid;
-    place-items: center;
-    padding: 24px;
-  }
-
-  .terminal-loading-card {
-    min-width: 180px;
-    padding: 14px 18px;
-    border: 1px solid var(--ui-border-subtle);
-    border-radius: 14px;
-    background: var(--ui-bg-surface);
-    color: var(--ui-text-secondary);
-    text-align: center;
-    box-shadow: 0 12px 32px rgba(var(--ui-shadow-rgb), 0.18);
   }
 
   .window-close-panel {
