@@ -4,5 +4,6 @@ pub mod external;
 pub mod fonts;
 pub mod pty;
 pub mod settings;
+pub mod window_runtime;
 pub mod workspace;
 pub mod wsl;

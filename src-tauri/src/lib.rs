@@ -17,11 +17,13 @@ use commands::pty::{
     PtyState,
 };
 use commands::settings::{
-    bootstrap_app, close_app, close_window_sessions, detach_session_to_new_window,
-    is_window_ready, load_custom_css, load_settings, load_settings_or_default, load_tab_history,
-    move_session_to_window, move_window_sessions_to_main, open_empty_window,
-    record_tab_history, remove_tab_history_entry, remove_window, restore_secondary_windows,
-    save_settings, trim_tab_history, window_ready, WindowReadyState,
+    bootstrap_app, load_custom_css, load_settings, load_settings_or_default, load_tab_history,
+    record_tab_history, remove_tab_history_entry, save_settings, trim_tab_history,
+};
+use commands::window_runtime::{
+    close_app, close_window_sessions, detach_session_to_new_window, is_window_ready,
+    move_session_to_window, move_window_sessions_to_main, open_empty_window, remove_window,
+    restore_secondary_windows, window_ready, WindowReadyState,
 };
 use commands::workspace::{
     clear_session_pty, close_session, close_session_by_pty, load_workspace,
