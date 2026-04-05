@@ -1,11 +1,10 @@
 use super::pty::PtyState;
-use crate::app_env::{
-    is_terminal_debug_hooks_enabled, is_test_mode, soft_follow_experiment_override,
-};
+use crate::features::bootstrap::build_app_bootstrap;
 use crate::features::history::{
     load_tab_history_with_limit, record_tab_history_with_limit, remove_persisted_tab_history_entry,
     trim_tab_history_to_limit, TabHistoryEntry,
 };
+pub use crate::features::bootstrap::AppBootstrap;
 use crate::features::settings::{read_settings, save_settings_payload};
 #[allow(unused_imports)]
 pub use crate::features::settings::{
@@ -13,9 +12,7 @@ pub use crate::features::settings::{
     InterfaceSettingsPayload, SettingsPayload, TerminalSettingsPayload, WindowPlacement,
     WorkspaceSettingsPayload, load_settings_or_default,
 };
-use crate::features::theme::{
-    load_custom_css_or_default, load_theme_pack_or_default, ThemePackPayload,
-};
+use crate::features::theme::load_custom_css_or_default;
 use crate::features::workspace::{
     clear_session_pty_in_workspace, collect_window_ptys, ensure_active_session, find_window_index,
     merge_workspace_snapshot, next_available_window_label, normalize_workspace_snapshot,
@@ -23,7 +20,6 @@ use crate::features::workspace::{
     set_session_pty_in_workspace, set_session_resume_token_in_workspace, snapshot_from_state,
     update_window_geometry_in_workspace, write_snapshot_to_state, write_workspace,
 };
-use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use tauri::{
@@ -35,18 +31,6 @@ pub use crate::features::workspace::{
     find_session_tab_snapshot, load_workspace_or_default, EditorTabRef, WindowSnapshot,
     WorkspaceSnapshot, WorkspaceState, WorkspaceTabSnapshot,
 };
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppBootstrap {
-    pub settings: SettingsPayload,
-    pub tab_history: Vec<TabHistoryEntry>,
-    pub workspace: Option<WorkspaceSnapshot>,
-    pub theme_pack: ThemePackPayload,
-    pub test_mode: bool,
-    pub debug_terminal_hooks: bool,
-    pub soft_follow_experiment: Option<bool>,
-}
 
 #[derive(Default)]
 pub struct WindowReadyState {
@@ -84,17 +68,6 @@ impl WindowReadyState {
             .map_err(|e| e.to_string())?
             .remove(label);
         Ok(())
-    }
-}
-
-pub fn load_tab_history_or_default() -> Vec<TabHistoryEntry> {
-    let settings = load_settings_or_default();
-    match load_tab_history_with_limit(settings.history.tab_limit) {
-        Ok(entries) => entries,
-        Err(error) => {
-            eprintln!("{error}");
-            Vec::new()
-        }
     }
 }
 
@@ -623,15 +596,7 @@ pub fn close_app(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn bootstrap_app(state: tauri::State<'_, WorkspaceState>) -> Result<AppBootstrap, String> {
-    Ok(AppBootstrap {
-        settings: load_settings_or_default(),
-        tab_history: load_tab_history_or_default(),
-        workspace: Some(snapshot_from_state(state.inner())?),
-        theme_pack: load_theme_pack_or_default(),
-        test_mode: is_test_mode(),
-        debug_terminal_hooks: is_terminal_debug_hooks_enabled(),
-        soft_follow_experiment: soft_follow_experiment_override(),
-    })
+    build_app_bootstrap(state.inner())
 }
 
 #[tauri::command]
