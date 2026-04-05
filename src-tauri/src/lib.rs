@@ -1,5 +1,6 @@
 mod app_env;
 mod commands;
+mod features;
 
 use commands::clipboard::{
     clear_image_cache, get_image_cache_stats, open_image_cache_folder, save_clipboard_image,

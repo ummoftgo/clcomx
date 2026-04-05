@@ -108,6 +108,15 @@
     onResumeFallback?: () => void;
   }
 
+  function hasSessionFileMtime(value: unknown): value is { mtimeMs: number } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "mtimeMs" in value &&
+      typeof (value as { mtimeMs?: unknown }).mtimeMs === "number"
+    );
+  }
+
   let {
     sessionId,
     visible,
@@ -2031,7 +2040,7 @@
       setEditorTabLoaded(wslPath, {
         content: file.content,
         languageId: file.languageId || "plaintext",
-        mtimeMs: "mtimeMs" in file ? file.mtimeMs : editorMtimeByPath[wslPath] ?? 0,
+        mtimeMs: hasSessionFileMtime(file) ? file.mtimeMs : (editorMtimeByPath[wslPath] ?? 0),
         line: nextLine,
         column: nextColumn,
       });
