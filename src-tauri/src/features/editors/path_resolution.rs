@@ -91,6 +91,9 @@ fn parse_wrapped_line_and_column(
 }
 
 pub(super) fn normalize_posix_path(value: &str) -> String {
+    let value = value.replace('\\', "/");
+    let value = value.as_str();
+    let unc = value.starts_with("//");
     let absolute = value.starts_with('/');
     let mut parts: Vec<&str> = Vec::new();
 
@@ -104,7 +107,13 @@ pub(super) fn normalize_posix_path(value: &str) -> String {
         }
     }
 
-    if absolute {
+    if unc {
+        if parts.is_empty() {
+            "//".into()
+        } else {
+            format!("//{}", parts.join("/"))
+        }
+    } else if absolute {
         if parts.is_empty() {
             "/".into()
         } else {
@@ -239,11 +248,32 @@ pub(super) fn resolve_wsl_path_from(
 }
 
 pub(super) fn wsl_path_to_windows(path: &str, distro: &str) -> Result<String, String> {
+    let normalized = normalize_posix_path(path);
+    if normalized.len() >= 2 {
+        let bytes = normalized.as_bytes();
+        if bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            let drive_letter = normalized.chars().next().unwrap().to_ascii_uppercase();
+            let tail = normalized[2..].trim_start_matches('/').replace('/', "\\");
+            return Ok(if tail.is_empty() {
+                format!("{drive_letter}:\\")
+            } else {
+                format!("{drive_letter}:\\{tail}")
+            });
+        }
+    }
+
+    if normalized.starts_with("//") {
+        return Ok(format!(
+            r"\\{}",
+            normalized.trim_start_matches('/').replace('/', "\\")
+        ));
+    }
+
     if distro.trim().is_empty() {
         return Err("WSL distro is required".into());
     }
 
-    if let Some(rest) = path.strip_prefix("/mnt/") {
+    if let Some(rest) = normalized.strip_prefix("/mnt/") {
         let mut segments = rest.splitn(2, '/');
         let drive = segments
             .next()
@@ -255,13 +285,13 @@ pub(super) fn wsl_path_to_windows(path: &str, distro: &str) -> Result<String, St
         let drive_letter = drive.chars().next().unwrap().to_ascii_uppercase();
         let tail = segments.next().unwrap_or("").replace('/', "\\");
         return Ok(if tail.is_empty() {
-            format!(r"{drive_letter}:\")
+            format!("{drive_letter}:\\")
         } else {
-            format!(r"{drive_letter}:\{tail}")
+            format!("{drive_letter}:\\{tail}")
         });
     }
 
-    let rest = path.trim_start_matches('/');
+    let rest = normalized.trim_start_matches('/');
     Ok(if rest.is_empty() {
         format!(r"\\wsl.localhost\{distro}")
     } else {
@@ -797,4 +827,43 @@ pub fn resolve_terminal_path(
         session_id,
         home_dir_hint,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_posix_path, path_is_within_root, wsl_path_to_windows};
+
+    #[test]
+    fn normalize_posix_path_converts_windows_separators() {
+        assert_eq!(
+            normalize_posix_path(r"C:\Users\runneradmin\AppData\Local\Temp\project\src\main.ts"),
+            "C:/Users/runneradmin/AppData/Local/Temp/project/src/main.ts"
+        );
+    }
+
+    #[test]
+    fn path_is_within_root_accepts_windows_style_children() {
+        assert!(path_is_within_root(
+            r"C:\Users\runneradmin\AppData\Local\Temp\project\src\main.ts",
+            r"C:\Users\runneradmin\AppData\Local\Temp\project"
+        ));
+        assert!(!path_is_within_root(
+            r"C:\Users\runneradmin\AppData\Local\Temp\other\main.ts",
+            r"C:\Users\runneradmin\AppData\Local\Temp\project"
+        ));
+    }
+
+    #[test]
+    fn wsl_path_to_windows_accepts_native_windows_paths() {
+        assert_eq!(
+            wsl_path_to_windows("C:/Users/runneradmin/project/src/main.ts", "")
+                .expect("windows drive path should convert"),
+            r"C:\Users\runneradmin\project\src\main.ts"
+        );
+        assert_eq!(
+            wsl_path_to_windows(r"\\wsl.localhost\Ubuntu-20.04\home\xenia\project", "")
+                .expect("windows UNC path should pass through"),
+            r"\\wsl.localhost\Ubuntu-20.04\home\xenia\project"
+        );
+    }
 }
