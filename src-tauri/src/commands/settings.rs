@@ -18,8 +18,9 @@ pub use crate::features::settings::{
 };
 use crate::features::theme::load_custom_css_or_default;
 use crate::features::workspace::{
-    collect_window_ptys, ensure_active_session, find_window_index, next_available_window_label,
-    normalize_workspace_snapshot, remove_session_from_workspace,
+    close_window_sessions_in_workspace, detach_session_to_new_window_in_workspace,
+    move_session_to_window_in_workspace, move_window_sessions_to_main_in_workspace,
+    open_empty_window_in_workspace, remove_window_in_workspace,
 };
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -200,23 +201,8 @@ pub fn open_empty_window(
     height: u32,
 ) -> Result<String, String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    let new_label = next_available_window_label(&runtime);
-
-    let window_snapshot = WindowSnapshot {
-        label: new_label.clone(),
-        name: new_label.clone(),
-        role: "secondary".into(),
-        tabs: Vec::new(),
-        active_session_id: None,
-        x,
-        y,
-        width: width.max(640),
-        height: height.max(480),
-        maximized: false,
-    };
-
-    runtime.windows.push(window_snapshot.clone());
-    normalize_workspace_snapshot(&mut runtime);
+    let window_snapshot = open_empty_window_in_workspace(&mut runtime, x, y, width, height);
+    let new_label = window_snapshot.label.clone();
     write_snapshot_to_state(state.inner(), runtime.clone())?;
     write_workspace(&runtime)?;
     ready_state.inner().mark_pending(&new_label)?;
@@ -236,38 +222,8 @@ pub fn detach_session_to_new_window(
     height: u32,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    let (tab, source_label) =
-        remove_session_from_workspace(&mut runtime, &session_id).ok_or("Session not found")?;
-
-    let new_label = next_available_window_label(&runtime);
-
-    runtime.windows.push(WindowSnapshot {
-        label: new_label.clone(),
-        name: new_label.clone(),
-        role: "secondary".into(),
-        tabs: vec![tab],
-        active_session_id: Some(session_id),
-        x,
-        y,
-        width: width.max(640),
-        height: height.max(480),
-        maximized: false,
-    });
-
-    if let Some(source_window) = runtime
-        .windows
-        .iter_mut()
-        .find(|window| window.label == source_label)
-    {
-        ensure_active_session(source_window);
-    }
-
-    let detached_window = runtime
-        .windows
-        .iter()
-        .find(|window| window.label == new_label)
-        .cloned()
-        .ok_or("Detached window not found")?;
+    let detached_window =
+        detach_session_to_new_window_in_workspace(&mut runtime, &session_id, x, y, width, height)?;
 
     write_snapshot_to_state(state.inner(), runtime.clone())?;
     write_workspace(&runtime)?;
@@ -288,16 +244,7 @@ pub fn move_window_sessions_to_main(
     }
 
     let mut runtime = snapshot_from_state(state.inner())?;
-    let index = find_window_index(&runtime, &label).ok_or("Window not found")?;
-    let window = runtime.windows.remove(index);
-    let main_index = find_window_index(&runtime, "main").ok_or("Main window not found")?;
-
-    let active_from_secondary = window.active_session_id.clone();
-    runtime.windows[main_index].tabs.extend(window.tabs);
-    if active_from_secondary.is_some() {
-        runtime.windows[main_index].active_session_id = active_from_secondary;
-    }
-    ensure_active_session(&mut runtime.windows[main_index]);
+    move_window_sessions_to_main_in_workspace(&mut runtime, &label)?;
 
     write_snapshot_to_state(state.inner(), runtime.clone())?;
     write_workspace(&runtime)?;
@@ -315,37 +262,19 @@ pub fn move_session_to_window(
     target_label: String,
 ) -> Result<(), String> {
     let mut runtime = snapshot_from_state(state.inner())?;
-    let (tab, source_label) =
-        remove_session_from_workspace(&mut runtime, &session_id).ok_or("Session not found")?;
+    let move_result =
+        move_session_to_window_in_workspace(&mut runtime, &session_id, &target_label)?;
 
-    if source_label == target_label {
-        if let Some(source_index) = find_window_index(&runtime, &source_label) {
-            runtime.windows[source_index].tabs.push(tab);
-            ensure_active_session(&mut runtime.windows[source_index]);
-        }
+    if move_result.moved_within_same_window {
         write_snapshot_to_state(state.inner(), runtime)?;
         return Ok(());
     }
-
-    let target_index =
-        find_window_index(&runtime, &target_label).ok_or("Target window not found")?;
-    runtime.windows[target_index].tabs.push(tab);
-    runtime.windows[target_index].active_session_id = Some(session_id);
-    ensure_active_session(&mut runtime.windows[target_index]);
-
-    normalize_workspace_snapshot(&mut runtime);
     write_snapshot_to_state(state.inner(), runtime.clone())?;
     write_workspace(&runtime)?;
 
     if target_label != "main" && app.get_webview_window(&target_label).is_none() {
-        let target_snapshot = runtime
-            .windows
-            .iter()
-            .find(|window| window.label == target_label)
-            .cloned()
-            .ok_or("Target window snapshot not found")?;
         ready_state.inner().mark_pending(&target_label)?;
-        spawn_secondary_window_build(app.clone(), target_snapshot);
+        spawn_secondary_window_build(app.clone(), move_result.target_snapshot.clone());
     }
 
     if let Some(target_window) = app.get_webview_window(&target_label) {
@@ -369,26 +298,12 @@ pub fn close_window_sessions(
     }
 
     let mut runtime = snapshot_from_state(workspace_state.inner())?;
-    let pty_ids = collect_window_ptys(&runtime, &label);
-    let aux_pty_ids = runtime
-        .windows
-        .iter()
-        .find(|window| window.label == label)
-        .map(|window| {
-            window
-                .tabs
-                .iter()
-                .filter_map(|tab| tab.aux_pty_id)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    runtime.windows.retain(|window| window.label != label);
-    normalize_workspace_snapshot(&mut runtime);
+    let closed = close_window_sessions_in_workspace(&mut runtime, &label);
 
-    for pty_id in pty_ids {
+    for pty_id in closed.pty_ids {
         super::pty::kill_pty_session(pty_state.inner(), pty_id)?;
     }
-    for aux_pty_id in aux_pty_ids {
+    for aux_pty_id in closed.aux_pty_ids {
         super::pty::kill_pty_session(pty_state.inner(), aux_pty_id)?;
     }
 
@@ -411,8 +326,7 @@ pub fn remove_window(
     }
 
     let mut runtime = snapshot_from_state(state.inner())?;
-    runtime.windows.retain(|window| window.label != label);
-    normalize_workspace_snapshot(&mut runtime);
+    remove_window_in_workspace(&mut runtime, &label);
 
     write_snapshot_to_state(state.inner(), runtime.clone())?;
     write_workspace(&runtime)?;
