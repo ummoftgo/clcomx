@@ -75,6 +75,7 @@
   } from "../terminal/claude-footer-ghosting";
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
+  import { createEditorQuickOpenController } from "../features/editor/controller/editor-quick-open-controller";
   import type { SessionShellProps } from "../features/session/contracts/session-shell";
   import { createEditorRuntimeController } from "../features/editor/controller/editor-runtime-controller";
   import {
@@ -83,6 +84,7 @@
     resolveHydratedActivePath,
     splitHydratedEditorTabs,
   } from "../features/editor/service/editor-session-hydration";
+  import { createEditorQuickOpenState } from "../features/editor/state/editor-quick-open-state.svelte";
   import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
   import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
@@ -194,24 +196,9 @@
   let writeParsedDisposable: IDisposable | null = null;
   let editorViewMode = $state<"terminal" | "editor">("terminal");
   let editorRootDir = $state("");
-  let editorQuickOpenVisible = $state(false);
-  let editorQuickOpenQuery = $state("");
-  let editorQuickOpenRootDir = $state("");
-  let editorQuickOpenEntries = $state<EditorSearchResult[]>([]);
-  let editorQuickOpenLastUpdatedMs = $state(0);
-  let editorQuickOpenBusy = $state(false);
-  let editorQuickOpenOpenKey = $state(0);
   let editorHydratedSessionId = $state<string | null>(null);
   let editorHydrationToken = 0;
-  let editorQuickOpenRequestToken = 0;
-  let editorQuickOpenPrewarmHandle: ReturnType<typeof setTimeout> | number | null = null;
-  let editorQuickOpenPrewarmToken = 0;
-  let editorQuickOpenPrewarmRequestedRootDir = "";
-  let editorQuickOpenPrewarmInFlightRootDir = "";
-  let editorMonacoPrewarmHandle: ReturnType<typeof setTimeout> | number | null = null;
-  let editorMonacoPrewarmToken = 0;
-  let editorMonacoPrewarming = false;
-  let editorMonacoPrewarmed = false;
+  const editorQuickOpenState = createEditorQuickOpenState();
   const editorRuntimeState = createEditorRuntimeState();
   const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
   const BOTTOM_LOCK_MAX_MS = 12000;
@@ -220,7 +207,6 @@
   const TERMINAL_LOADING_QUIET_MS = 1300;
   const TERMINAL_LOADING_MAX_MS = 8000;
   const DEFERRED_BOTTOM_SCROLL_MS = 60;
-  const QUICK_OPEN_CACHE_STALE_MS = 30_000;
   const WEB_LINK_REGEX = /(?:https?|ftp):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/i;
   const SYNC_OUTPUT_MODE_SEQUENCE = /\u001b\[\?2026[hl]/;
   const ABSOLUTE_CURSOR_POSITION_SEQUENCE = /\u001b\[\d+(?:;\d+)?[Hf]/;
@@ -331,6 +317,32 @@
     dispose: disposeOverlayInteraction,
     buildCandidateFileLinkMenuItems,
   } = overlayInteraction;
+  const {
+    cancelMonacoPrewarm: cancelEditorMonacoPrewarm,
+    cancelPrewarm: cancelEditorQuickOpenPrewarm,
+    closeQuickOpen: closeEditorQuickOpen,
+    computeEntryForRoot: computeQuickOpenEntryForRoot,
+    invalidateRequest: invalidateEditorQuickOpenRequest,
+    listWorkspaceFiles: listEditorWorkspaceFiles,
+    openQuickOpen: openEditorQuickOpen,
+    primeMonacoRuntime: primeEditorMonacoRuntime,
+    primeWorkspaceFiles: primeEditorWorkspaceFiles,
+    refreshEntries: refreshEditorQuickOpenEntries,
+    scheduleMonacoPrewarm: scheduleEditorMonacoPrewarm,
+    schedulePrewarm: scheduleEditorQuickOpenPrewarm,
+    upsertEntry: upsertEditorQuickOpenEntry,
+  } = createEditorQuickOpenController(editorQuickOpenState, {
+    getSessionId: () => sessionId,
+    getWorkDir: () => workDir,
+    getEditorRootDir: () => editorRootDir,
+    getVisible: () => visible,
+    getTerminalReady: () => terminalReady,
+    getTerminalStartupSettled: () => terminalStartupSettled,
+    getThemeDefinition: () => getThemeById(settings.interface.theme) ?? null,
+    warmMonacoRuntime: warmMonacoEditorRuntime,
+    listSessionFiles,
+    reportForegroundError: setClipboardNotice,
+  });
   const terminalTestBridge = createTerminalTestBridgeController({
     getSessionId: () => sessionId,
     focusOutput,
@@ -1097,7 +1109,7 @@
     event.preventDefault();
     event.stopPropagation();
 
-    if (editorQuickOpenVisible) {
+    if (editorQuickOpenState.visible) {
       return;
     }
 
@@ -1198,7 +1210,7 @@
     editorHydratedSessionId = sessionId;
     editorViewMode = session?.viewMode ?? "terminal";
     editorRootDir = session?.editorRootDir || workDir;
-    editorQuickOpenRootDir = editorRootDir;
+    editorQuickOpenState.rootDir = editorRootDir;
     editorRuntimeState.activePath = session?.activeEditorPath ?? null;
     editorRuntimeState.savedContentByPath = {};
     editorRuntimeState.mtimeByPath = {};
@@ -1233,140 +1245,6 @@
     }
 
     await initializeEditorRuntimeFromSession();
-  }
-
-  function invalidateEditorQuickOpenRequest() {
-    editorQuickOpenRequestToken += 1;
-  }
-
-  function resetEditorQuickOpenState({
-    resetRootDir = false,
-    clearEntries = false,
-  }: { resetRootDir?: boolean; clearEntries?: boolean } = {}) {
-    invalidateEditorQuickOpenRequest();
-    editorQuickOpenBusy = false;
-    if (clearEntries) {
-      editorQuickOpenEntries = [];
-      editorQuickOpenLastUpdatedMs = 0;
-    }
-    if (resetRootDir) {
-      editorQuickOpenRootDir = "";
-    }
-  }
-
-  function closeEditorQuickOpen() {
-    editorQuickOpenVisible = false;
-    resetEditorQuickOpenState();
-  }
-
-  function clearEditorQuickOpenPrewarmHandle() {
-    if (editorQuickOpenPrewarmHandle === null) {
-      return;
-    }
-
-    const idleWindow = window as Window & {
-      cancelIdleCallback?: (handle: number) => void;
-    };
-    if (
-      typeof editorQuickOpenPrewarmHandle === "number" &&
-      typeof idleWindow.cancelIdleCallback === "function"
-    ) {
-      idleWindow.cancelIdleCallback(editorQuickOpenPrewarmHandle);
-    } else {
-      clearTimeout(editorQuickOpenPrewarmHandle);
-    }
-    editorQuickOpenPrewarmHandle = null;
-  }
-
-  function cancelEditorQuickOpenPrewarm() {
-    editorQuickOpenPrewarmToken += 1;
-    editorQuickOpenPrewarmRequestedRootDir = "";
-    clearEditorQuickOpenPrewarmHandle();
-  }
-
-  function clearEditorMonacoPrewarmHandle() {
-    if (editorMonacoPrewarmHandle === null) {
-      return;
-    }
-
-    const idleWindow = window as Window & {
-      cancelIdleCallback?: (handle: number) => void;
-    };
-    if (
-      typeof editorMonacoPrewarmHandle === "number" &&
-      typeof idleWindow.cancelIdleCallback === "function"
-    ) {
-      idleWindow.cancelIdleCallback(editorMonacoPrewarmHandle);
-    } else {
-      clearTimeout(editorMonacoPrewarmHandle);
-    }
-    editorMonacoPrewarmHandle = null;
-  }
-
-  function cancelEditorMonacoPrewarm() {
-    editorMonacoPrewarmToken += 1;
-    clearEditorMonacoPrewarmHandle();
-  }
-
-  function isEditorQuickOpenCacheStale() {
-    if (!editorQuickOpenLastUpdatedMs) {
-      return true;
-    }
-    return Date.now() - editorQuickOpenLastUpdatedMs > QUICK_OPEN_CACHE_STALE_MS;
-  }
-
-  async function refreshEditorQuickOpenEntries(
-    forceRefresh = false,
-    rootDir = editorQuickOpenRootDir || workDir,
-    options?: { background?: boolean },
-  ) {
-    const requestToken = ++editorQuickOpenRequestToken;
-    const normalizedRootDir = rootDir || workDir;
-    const background = options?.background ?? false;
-    if (!background) {
-      editorQuickOpenBusy = true;
-    }
-    try {
-      const result = await listSessionFiles(sessionId, normalizedRootDir, forceRefresh);
-      if (requestToken !== editorQuickOpenRequestToken) {
-        return;
-      }
-      editorQuickOpenRootDir = result.rootDir;
-      editorQuickOpenEntries = result.results;
-      editorQuickOpenLastUpdatedMs = result.lastUpdatedMs;
-    } catch (error) {
-      if (requestToken !== editorQuickOpenRequestToken) {
-        return;
-      }
-
-      if (!background) {
-        setClipboardNotice(error instanceof Error ? error.message : String(error));
-      }
-    } finally {
-      if (!background && requestToken === editorQuickOpenRequestToken) {
-        editorQuickOpenBusy = false;
-      }
-    }
-  }
-
-  async function listEditorWorkspaceFiles(rootDir: string) {
-    const normalizedRootDir = rootDir || editorRootDir || workDir;
-    if (editorQuickOpenRootDir === normalizedRootDir && editorQuickOpenEntries.length > 0) {
-      if (!isEditorQuickOpenCacheStale()) {
-        return editorQuickOpenEntries;
-      }
-
-      void refreshEditorQuickOpenEntries(false, normalizedRootDir, { background: true });
-      return editorQuickOpenEntries;
-    }
-
-    const result = await listSessionFiles(sessionId, normalizedRootDir, false);
-    if (editorQuickOpenRootDir === normalizedRootDir || !editorQuickOpenVisible) {
-      editorQuickOpenRootDir = result.rootDir;
-      editorQuickOpenEntries = result.results;
-      editorQuickOpenLastUpdatedMs = result.lastUpdatedMs;
-    }
-    return result.results;
   }
 
   async function readEditorNavigationFile(wslPath: string) {
@@ -1408,238 +1286,6 @@
       },
       { rootDir, focusExisting: true, prefetchedFile: detail.snapshot },
     );
-  }
-
-  function primeEditorWorkspaceFiles(rootDir = editorRootDir || workDir) {
-    const normalizedRootDir = rootDir || workDir;
-    if (!normalizedRootDir) {
-      return;
-    }
-
-    if (
-      editorQuickOpenRootDir === normalizedRootDir &&
-      editorQuickOpenEntries.length > 0 &&
-      !isEditorQuickOpenCacheStale()
-    ) {
-      return;
-    }
-
-    if (
-      editorQuickOpenPrewarmRequestedRootDir === normalizedRootDir ||
-      editorQuickOpenPrewarmInFlightRootDir === normalizedRootDir
-    ) {
-      return;
-    }
-
-    editorQuickOpenPrewarmInFlightRootDir = normalizedRootDir;
-    void refreshEditorQuickOpenEntries(false, normalizedRootDir, { background: true }).finally(() => {
-      if (editorQuickOpenPrewarmInFlightRootDir === normalizedRootDir) {
-        editorQuickOpenPrewarmInFlightRootDir = "";
-      }
-    });
-  }
-
-  function primeEditorMonacoRuntime() {
-    if (editorMonacoPrewarmed || editorMonacoPrewarming) {
-      return;
-    }
-
-    clearEditorMonacoPrewarmHandle();
-    const prewarmToken = ++editorMonacoPrewarmToken;
-    requestAnimationFrame(() => {
-      if (
-        prewarmToken !== editorMonacoPrewarmToken ||
-        editorMonacoPrewarmed ||
-        editorMonacoPrewarming
-      ) {
-        return;
-      }
-
-      editorMonacoPrewarming = true;
-      const themeDef = getThemeById(settings.interface.theme) ?? null;
-      void warmMonacoEditorRuntime(themeDef)
-        .then(() => {
-          editorMonacoPrewarmed = true;
-        })
-        .finally(() => {
-          editorMonacoPrewarming = false;
-        });
-    });
-  }
-
-  function scheduleEditorQuickOpenPrewarm(rootDir = editorRootDir || workDir) {
-    const normalizedRootDir = rootDir || workDir;
-    if (!terminalReady || !terminalStartupSettled || !visible || editorQuickOpenVisible) {
-      return;
-    }
-
-    if (!normalizedRootDir) {
-      return;
-    }
-
-    if (
-      editorQuickOpenRootDir === normalizedRootDir &&
-      editorQuickOpenLastUpdatedMs > 0 &&
-      !isEditorQuickOpenCacheStale()
-    ) {
-      return;
-    }
-
-    if (
-      editorQuickOpenPrewarmRequestedRootDir === normalizedRootDir ||
-      editorQuickOpenPrewarmInFlightRootDir === normalizedRootDir
-    ) {
-      return;
-    }
-
-    clearEditorQuickOpenPrewarmHandle();
-    const prewarmToken = ++editorQuickOpenPrewarmToken;
-    editorQuickOpenPrewarmRequestedRootDir = normalizedRootDir;
-
-    const runPrewarm = () => {
-      if (prewarmToken !== editorQuickOpenPrewarmToken) {
-        return;
-      }
-
-      editorQuickOpenPrewarmHandle = null;
-      editorQuickOpenPrewarmRequestedRootDir = "";
-      if (!terminalReady || !terminalStartupSettled || !visible || editorQuickOpenVisible) {
-        return;
-      }
-
-      editorQuickOpenPrewarmInFlightRootDir = normalizedRootDir;
-      void refreshEditorQuickOpenEntries(false, normalizedRootDir, { background: true }).finally(
-        () => {
-          if (editorQuickOpenPrewarmInFlightRootDir === normalizedRootDir) {
-            editorQuickOpenPrewarmInFlightRootDir = "";
-          }
-        },
-      );
-    };
-
-    const idleWindow = window as Window & {
-      requestIdleCallback?: (
-        callback: IdleRequestCallback,
-        options?: IdleRequestOptions,
-      ) => number;
-    };
-
-    if (typeof idleWindow.requestIdleCallback === "function") {
-      editorQuickOpenPrewarmHandle = idleWindow.requestIdleCallback(runPrewarm, { timeout: 1200 });
-      return;
-    }
-
-    editorQuickOpenPrewarmHandle = window.setTimeout(runPrewarm, 250);
-  }
-
-  function scheduleEditorMonacoPrewarm() {
-    if (
-      editorMonacoPrewarmed ||
-      editorMonacoPrewarming ||
-      !terminalReady ||
-      !terminalStartupSettled ||
-      !visible
-    ) {
-      return;
-    }
-
-    clearEditorMonacoPrewarmHandle();
-    const prewarmToken = ++editorMonacoPrewarmToken;
-    const runPrewarm = () => {
-      if (prewarmToken !== editorMonacoPrewarmToken) {
-        return;
-      }
-
-      editorMonacoPrewarmHandle = null;
-      if (
-        editorMonacoPrewarmed ||
-        editorMonacoPrewarming ||
-        !terminalReady ||
-        !terminalStartupSettled ||
-        !visible
-      ) {
-        return;
-      }
-
-      editorMonacoPrewarming = true;
-      const themeDef = getThemeById(settings.interface.theme) ?? null;
-      void warmMonacoEditorRuntime(themeDef)
-        .then(() => {
-          editorMonacoPrewarmed = true;
-        })
-        .finally(() => {
-          editorMonacoPrewarming = false;
-        });
-    };
-
-    const idleWindow = window as Window & {
-      requestIdleCallback?: (
-        callback: IdleRequestCallback,
-        options?: IdleRequestOptions,
-      ) => number;
-    };
-
-    if (typeof idleWindow.requestIdleCallback === "function") {
-      editorMonacoPrewarmHandle = idleWindow.requestIdleCallback(runPrewarm, { timeout: 1500 });
-      return;
-    }
-
-    editorMonacoPrewarmHandle = window.setTimeout(runPrewarm, 350);
-  }
-
-  function computeQuickOpenEntryForRoot(
-    wslPath: string,
-    rootDir = editorQuickOpenRootDir || editorRootDir || workDir,
-  ): EditorSearchResult | null {
-    const normalizedRoot = rootDir.replace(/\/+$/, "") || "/";
-    if (wslPath !== normalizedRoot && !wslPath.startsWith(`${normalizedRoot}/`)) {
-      return null;
-    }
-
-    const basename = wslPath.split("/").pop() || wslPath;
-    const relativePath =
-      wslPath === normalizedRoot ? basename : wslPath.slice(normalizedRoot.length + 1);
-
-    return {
-      wslPath,
-      relativePath,
-      basename,
-    };
-  }
-
-  function upsertEditorQuickOpenEntry(wslPath: string) {
-    const entry = computeQuickOpenEntryForRoot(wslPath);
-    if (!entry) {
-      return;
-    }
-
-    const index = editorQuickOpenEntries.findIndex((candidate) => candidate.wslPath === wslPath);
-    if (index < 0) {
-      editorQuickOpenEntries = [...editorQuickOpenEntries, entry];
-    } else {
-      editorQuickOpenEntries = editorQuickOpenEntries.map((candidate) =>
-        candidate.wslPath === wslPath ? entry : candidate,
-      );
-    }
-    editorQuickOpenLastUpdatedMs = Date.now();
-  }
-
-  function openEditorQuickOpen(rootDir = editorRootDir, query = "") {
-    const normalizedRoot = rootDir || workDir;
-    primeEditorMonacoRuntime();
-    primeEditorWorkspaceFiles(normalizedRoot);
-    const rootChanged = editorQuickOpenRootDir !== normalizedRoot;
-    if (rootChanged) {
-      resetEditorQuickOpenState({ clearEntries: true });
-    }
-    editorQuickOpenRootDir = normalizedRoot;
-    editorQuickOpenQuery = query;
-    editorQuickOpenVisible = true;
-    editorQuickOpenOpenKey += 1;
-
-    if (isEditorQuickOpenCacheStale()) {
-      void refreshEditorQuickOpenEntries(false, normalizedRoot);
-    }
   }
 
   async function openEditorDirectory(rootDir: string) {
@@ -1750,7 +1396,7 @@
   }
 
   function openEditorPathFromQuickResult(result: EditorSearchResult) {
-    void openEditorPath(result, { rootDir: editorQuickOpenRootDir, focusExisting: true });
+    void openEditorPath(result, { rootDir: editorQuickOpenState.rootDir, focusExisting: true });
   }
 
   function openResolvedPathInInternalEditor(path: ResolvedTerminalPath) {
@@ -1775,7 +1421,7 @@
     primeEditorMonacoRuntime();
     primeEditorWorkspaceFiles(editorRootDir || workDir);
     editorRuntimeState.statusText = null;
-    if (!editorQuickOpenVisible && editorRuntimeState.tabs.length === 0) {
+    if (!editorQuickOpenState.visible && editorRuntimeState.tabs.length === 0) {
       void openEditorQuickOpen(editorRootDir);
       return;
     }
@@ -2395,14 +2041,14 @@
     terminalReady;
     terminalStartupSettled;
     visible;
-    editorQuickOpenVisible;
-    editorQuickOpenBusy;
-    editorQuickOpenRootDir;
-    editorQuickOpenLastUpdatedMs;
+    editorQuickOpenState.visible;
+    editorQuickOpenState.busy;
+    editorQuickOpenState.rootDir;
+    editorQuickOpenState.lastUpdatedMs;
     editorRootDir;
-    editorQuickOpenEntries.length;
-    editorQuickOpenPrewarmRequestedRootDir;
-    editorQuickOpenPrewarmInFlightRootDir;
+    editorQuickOpenState.entries.length;
+    editorQuickOpenState.prewarmRequestedRootDir;
+    editorQuickOpenState.prewarmInFlightRootDir;
 
     if (!visible) {
       cancelEditorQuickOpenPrewarm();
@@ -2782,11 +2428,11 @@
 />
 
 <EditorQuickOpenModal
-  visible={editorQuickOpenVisible}
-  openKey={editorQuickOpenOpenKey}
-  initialQuery={editorQuickOpenQuery}
-  rootDir={editorQuickOpenRootDir || editorRootDir || workDir}
-  entries={editorQuickOpenEntries}
+  visible={editorQuickOpenState.visible}
+  openKey={editorQuickOpenState.openKey}
+  initialQuery={editorQuickOpenState.query}
+  rootDir={editorQuickOpenState.rootDir || editorRootDir || workDir}
+  entries={editorQuickOpenState.entries}
   title={$t("terminal.editor.quickOpenTitle")}
   description={$t("terminal.editor.quickOpenDescription")}
   placeholder={$t("terminal.editor.quickOpenPlaceholder")}
@@ -2796,7 +2442,7 @@
   refreshLabel={$t("common.actions.refresh")}
   closeLabel={$t("common.actions.close")}
   keyboardHintLabel={$t("terminal.editor.quickOpenKeyboardHint")}
-  busy={editorQuickOpenBusy}
+  busy={editorQuickOpenState.busy}
   onRefresh={() => void refreshEditorQuickOpenEntries(true)}
   onSelect={openEditorPathFromQuickResult}
   onClose={closeEditorQuickOpen}
