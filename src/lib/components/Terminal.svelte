@@ -64,7 +64,6 @@
     type EditorSearchResult,
     type ResolvedTerminalPath,
   } from "../editors";
-  import type { InternalEditorTab } from "../editor/contracts";
   import type { NavigationFileSnapshot } from "../editor/navigation";
   import { warmMonacoEditorRuntime } from "../editor/monaco-host";
   import { createTerminalFileLinks } from "../terminal/file-links";
@@ -77,6 +76,7 @@
   import { openExternalUrl } from "../workspace";
   import { createEditorDocumentController } from "../features/editor/controller/editor-document-controller";
   import { createEditorNavigationAdapterController } from "../features/editor/controller/editor-navigation-adapter-controller";
+  import { createEditorOpenStateController } from "../features/editor/controller/editor-open-state-controller";
   import { createEditorQuickOpenController } from "../features/editor/controller/editor-quick-open-controller";
   import { createEditorViewController } from "../features/editor/controller/editor-view-controller";
   import type { SessionShellProps } from "../features/session/contracts/session-shell";
@@ -254,6 +254,12 @@
     setTabSaving: setEditorTabSaving,
     syncSessionState: syncEditorSessionState,
     upsertQuickOpenEntry: (wslPath) => upsertEditorQuickOpenEntry(wslPath),
+  });
+  const { prepareOpenPath: prepareEditorOpenPath } = createEditorOpenStateController(editorRuntimeState, {
+    setEditorRootDir: (rootDir) => {
+      editorRootDir = rootDir;
+    },
+    syncSessionState: syncEditorSessionState,
   });
   const {
     handleActivePathChange: handleEditorActivePathChange,
@@ -1320,54 +1326,25 @@
     const wslPath = path.wslPath;
     const nextRootDir = options?.rootDir || editorRootDir || workDir;
     primeEditorWorkspaceFiles(nextRootDir);
-    const existingTabIndex = editorRuntimeState.tabs.findIndex((tab) => tab.wslPath === wslPath);
     const nextLine = "line" in path ? path.line ?? null : null;
     const nextColumn = "column" in path ? path.column ?? null : null;
 
-    if (existingTabIndex >= 0) {
-      const currentTab = editorRuntimeState.tabs[existingTabIndex];
-      editorRuntimeState.tabs = editorRuntimeState.tabs.map((tab) =>
-        tab.wslPath !== wslPath
-          ? tab
-          : {
-              ...tab,
-              line: nextLine ?? tab.line ?? null,
-              column: nextColumn ?? tab.column ?? null,
-              error: null,
-            },
-      );
-      editorRuntimeState.activePath = wslPath;
-      if (options?.rootDir) {
-        editorRootDir = options.rootDir;
-      }
+    const preparedOpenPath = prepareEditorOpenPath({
+      wslPath,
+      line: nextLine,
+      column: nextColumn,
+      rootDir: options?.rootDir,
+    });
+
+    if (preparedOpenPath.kind === "existing") {
       closeEditorQuickOpen();
-      syncEditorSessionState();
       tick().then(() => {
-        if (editorViewMode === "editor" && !currentTab.loading) {
+        if (editorViewMode === "editor" && !preparedOpenPath.wasLoading) {
           editorRuntimeState.statusText = null;
         }
       });
       return;
     }
-
-    const newTab: InternalEditorTab = {
-      wslPath,
-      content: "",
-      languageId: "plaintext",
-      dirty: false,
-      line: nextLine,
-      column: nextColumn,
-      loading: true,
-      saving: false,
-      error: null,
-    };
-
-    editorRuntimeState.tabs = [...editorRuntimeState.tabs, newTab];
-    editorRuntimeState.activePath = wslPath;
-    if (options?.rootDir) {
-      editorRootDir = options.rootDir;
-    }
-    syncEditorSessionState();
     setEditorStatus($t("common.labels.loading"));
 
     try {
