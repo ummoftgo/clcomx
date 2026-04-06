@@ -78,6 +78,7 @@
   import { createEditorDocumentController } from "../features/editor/controller/editor-document-controller";
   import { createEditorNavigationAdapterController } from "../features/editor/controller/editor-navigation-adapter-controller";
   import { createEditorQuickOpenController } from "../features/editor/controller/editor-quick-open-controller";
+  import { createEditorViewController } from "../features/editor/controller/editor-view-controller";
   import type { SessionShellProps } from "../features/session/contracts/session-shell";
   import { createEditorRuntimeController } from "../features/editor/controller/editor-runtime-controller";
   import {
@@ -255,6 +256,26 @@
     upsertQuickOpenEntry: (wslPath) => upsertEditorQuickOpenEntry(wslPath),
   });
   const {
+    handleActivePathChange: handleEditorActivePathChange,
+    openDirectory: openEditorDirectory,
+    requestSwitchToEditorMode,
+  } = createEditorViewController(editorRuntimeState, {
+    getWorkDir: () => workDir,
+    getEditorRootDir: () => editorRootDir,
+    getQuickOpenVisible: () => editorQuickOpenState.visible,
+    setEditorRootDir: (rootDir) => {
+      editorRootDir = rootDir;
+    },
+    setEditorViewMode: (viewMode) => {
+      editorViewMode = viewMode;
+    },
+    ensureEditorViewMode,
+    primeMonacoRuntime: () => primeEditorMonacoRuntime(),
+    primeWorkspaceFiles: (rootDir) => primeEditorWorkspaceFiles(rootDir),
+    openQuickOpen: (rootDir, query) => openEditorQuickOpen(rootDir, query),
+    syncSessionState: syncEditorSessionState,
+  });
+  const {
     openInternalEditorForLinkPath,
     openNavigationLocation: openEditorNavigationLocation,
     openPathFromQuickResult: openEditorPathFromQuickResult,
@@ -263,7 +284,7 @@
     getQuickOpenRootDir: () => editorQuickOpenState.rootDir,
     getWorkDir: () => workDir,
     computeQuickOpenEntryForRoot: (wslPath, rootDir) => computeQuickOpenEntryForRoot(wslPath, rootDir),
-    openEditorDirectory,
+    openEditorDirectory: (rootDir) => openEditorDirectory(rootDir),
     openEditorPath,
   });
   const draftComposerState = createDraftComposerState();
@@ -1276,14 +1297,6 @@
     await initializeEditorRuntimeFromSession();
   }
 
-  async function openEditorDirectory(rootDir: string) {
-    editorRootDir = rootDir || workDir;
-    syncEditorSessionState();
-    primeEditorMonacoRuntime();
-    primeEditorWorkspaceFiles(editorRootDir);
-    openEditorQuickOpen(editorRootDir, "");
-  }
-
   async function openEditorPath(
     path: ResolvedTerminalPath | EditorSearchResult,
     options?: {
@@ -1383,25 +1396,8 @@
     syncEditorSessionState();
   }
 
-  function requestSwitchToEditorMode() {
-    ensureEditorViewMode();
-    primeEditorMonacoRuntime();
-    primeEditorWorkspaceFiles(editorRootDir || workDir);
-    editorRuntimeState.statusText = null;
-    if (!editorQuickOpenState.visible && editorRuntimeState.tabs.length === 0) {
-      void openEditorQuickOpen(editorRootDir);
-      return;
-    }
-  }
-
   function requestSwitchToTerminalMode() {
     switchToTerminalView();
-  }
-
-  function handleEditorActivePathChange(wslPath: string) {
-    editorRuntimeState.activePath = wslPath;
-    editorViewMode = "editor";
-    syncEditorSessionState();
   }
 
   function disposeAuxTerminalInstance() {
