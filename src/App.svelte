@@ -69,6 +69,7 @@
     createSessionLaunchRequest,
     createSessionLaunchRequestFromHistoryEntry,
   } from "./lib/features/session/service/session-factory";
+  import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
   import {
     applySessionAuxState,
     clearSessionResumeFallback,
@@ -254,12 +255,10 @@
     }
 
     terminalLoadPromise = (
-      browserPreview
-        ? import("./lib/features/session/view/PreviewSessionShell.svelte")
-        : import("./lib/features/session/view/SessionShell.svelte")
+      loadSessionShellComponent(browserPreview)
     )
-      .then((module) => {
-        TerminalComponent = module.default;
+      .then((component) => {
+        TerminalComponent = component;
       })
       .finally(() => {
         terminalLoadPromise = null;
