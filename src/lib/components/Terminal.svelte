@@ -11,6 +11,7 @@
   import TerminalAssistPanel from "./TerminalAssistPanel.svelte";
   import TerminalAuxPanel from "./TerminalAuxPanel.svelte";
   import TerminalDraftPanel from "./TerminalDraftPanel.svelte";
+  import TerminalEditorCloseConfirmModal from "../features/terminal/view/TerminalEditorCloseConfirmModal.svelte";
   import TerminalInterruptConfirmModal from "../features/terminal/view/TerminalInterruptConfirmModal.svelte";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
   import { listen, type UnlistenFn } from "../tauri/event";
@@ -51,7 +52,6 @@
   import { getSettings } from "../stores/settings.svelte";
   import { getThemeById } from "../themes";
   import type { ContextMenuItem } from "../ui/context-menu";
-  import { Button, ModalShell } from "../ui";
   import { buildFontStack, serializeFontFamilyList } from "../font-family";
   import { matchesShortcut } from "../hotkeys";
   import type { TerminalRendererPreference } from "../types";
@@ -2989,24 +2989,12 @@
   onClose={closeEditorQuickOpen}
 />
 
-<ModalShell
+<TerminalEditorCloseConfirmModal
   open={editorCloseConfirmVisible}
-  size="sm"
+  title={editorCloseConfirmLabel}
   onClose={cancelCloseEditorTab}
->
-  <div class="terminal-interrupt-panel">
-    <h2>{$t("terminal.editor.closeDirtyTitle")}</h2>
-    <p>{$t("terminal.editor.closeDirtyDescription", { values: { title: editorCloseConfirmLabel } })}</p>
-    <div class="terminal-interrupt-actions">
-      <Button variant="danger" onclick={confirmCloseEditorTab}>
-        {$t("terminal.editor.closeDirtyConfirm")}
-      </Button>
-      <Button onclick={cancelCloseEditorTab}>
-        {$t("common.actions.cancel")}
-      </Button>
-    </div>
-  </div>
-</ModalShell>
+  onConfirm={confirmCloseEditorTab}
+/>
 
 <TerminalInterruptConfirmModal
   open={interruptConfirmVisible}
@@ -3180,34 +3168,6 @@
 
   .terminal-output.terminal-output--link-hover {
     cursor: pointer;
-  }
-
-  .terminal-interrupt-panel {
-    display: grid;
-    gap: 16px;
-    padding: 24px;
-    color: var(--ui-text-primary, var(--tab-text));
-  }
-
-  .terminal-interrupt-panel h2 {
-    margin: 0;
-    font-size: 19px;
-    line-height: 1.2;
-    color: var(--ui-text-primary, var(--tab-text));
-  }
-
-  .terminal-interrupt-panel p {
-    margin: 0;
-    font-size: 14px;
-    line-height: 1.55;
-    color: var(--ui-text-muted, var(--tab-text));
-  }
-
-  .terminal-interrupt-actions {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 10px;
   }
 
   .terminal-error {
