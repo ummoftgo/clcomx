@@ -75,6 +75,7 @@
   } from "../terminal/claude-footer-ghosting";
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
+  import { createEditorDocumentController } from "../features/editor/controller/editor-document-controller";
   import { createEditorQuickOpenController } from "../features/editor/controller/editor-quick-open-controller";
   import type { SessionShellProps } from "../features/session/contracts/session-shell";
   import { createEditorRuntimeController } from "../features/editor/controller/editor-runtime-controller";
@@ -236,6 +237,21 @@
     setSessionOpenEditorTabs,
     setSessionActiveEditorPath,
     setSessionDirtyPaths,
+  });
+  const {
+    readNavigationFile: readEditorNavigationFile,
+    saveTab: saveEditorTab,
+  } = createEditorDocumentController(editorRuntimeState, {
+    getSessionId: () => sessionId,
+    getSaveStatusLabel: () => $t("common.actions.save"),
+    readSessionFile,
+    writeSessionFile,
+    patchTab: patchEditorTab,
+    setStatus: setEditorStatus,
+    setTabError: setEditorTabError,
+    setTabSaving: setEditorTabSaving,
+    syncSessionState: syncEditorSessionState,
+    upsertQuickOpenEntry: (wslPath) => upsertEditorQuickOpenEntry(wslPath),
   });
   const draftComposerState = createDraftComposerState();
   const draftComposer = createDraftComposerController(draftComposerState, {
@@ -1247,26 +1263,6 @@
     await initializeEditorRuntimeFromSession();
   }
 
-  async function readEditorNavigationFile(wslPath: string) {
-    const existingTab = editorRuntimeState.tabs.find(
-      (tab) => tab.wslPath === wslPath && !tab.loading && !tab.error,
-    );
-    if (existingTab) {
-      return {
-        wslPath,
-        content: existingTab.content,
-        languageId: existingTab.languageId,
-      };
-    }
-
-    const file = await readSessionFile(sessionId, wslPath);
-    return {
-      wslPath: file.wslPath,
-      content: file.content,
-      languageId: file.languageId,
-    };
-  }
-
   function openEditorNavigationLocation(detail: {
     wslPath: string;
     line?: number | null;
@@ -1429,48 +1425,6 @@
 
   function requestSwitchToTerminalMode() {
     switchToTerminalView();
-  }
-
-  async function saveEditorTab(wslPath: string) {
-    const tab = editorRuntimeState.tabs.find((entry) => entry.wslPath === wslPath);
-    if (!tab) {
-      return;
-    }
-
-    const contentToSave = tab.content;
-    const expectedMtimeMs = editorRuntimeState.mtimeByPath[wslPath] ?? 0;
-    setEditorTabSaving(wslPath, true);
-    setEditorStatus($t("common.actions.save"));
-
-    try {
-      const result = await writeSessionFile(sessionId, wslPath, contentToSave, expectedMtimeMs);
-      const latestTab = editorRuntimeState.tabs.find((entry) => entry.wslPath === wslPath);
-      if (!latestTab) {
-        return;
-      }
-
-      editorRuntimeState.savedContentByPath = {
-        ...editorRuntimeState.savedContentByPath,
-        [wslPath]: contentToSave,
-      };
-      editorRuntimeState.mtimeByPath = {
-        ...editorRuntimeState.mtimeByPath,
-        [wslPath]: result.mtimeMs,
-      };
-      patchEditorTab(wslPath, {
-        dirty: latestTab.content !== contentToSave,
-        saving: false,
-        error: null,
-      });
-      upsertEditorQuickOpenEntry(wslPath);
-      editorRuntimeState.statusText = null;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setEditorTabError(wslPath, message);
-      editorRuntimeState.statusText = message;
-    } finally {
-      syncEditorSessionState();
-    }
   }
 
   function handleEditorActivePathChange(wslPath: string) {
