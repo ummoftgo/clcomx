@@ -76,6 +76,7 @@
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
   import { createEditorDocumentController } from "../features/editor/controller/editor-document-controller";
+  import { createEditorNavigationAdapterController } from "../features/editor/controller/editor-navigation-adapter-controller";
   import { createEditorQuickOpenController } from "../features/editor/controller/editor-quick-open-controller";
   import type { SessionShellProps } from "../features/session/contracts/session-shell";
   import { createEditorRuntimeController } from "../features/editor/controller/editor-runtime-controller";
@@ -252,6 +253,18 @@
     setTabSaving: setEditorTabSaving,
     syncSessionState: syncEditorSessionState,
     upsertQuickOpenEntry: (wslPath) => upsertEditorQuickOpenEntry(wslPath),
+  });
+  const {
+    openInternalEditorForLinkPath,
+    openNavigationLocation: openEditorNavigationLocation,
+    openPathFromQuickResult: openEditorPathFromQuickResult,
+  } = createEditorNavigationAdapterController({
+    getEditorRootDir: () => editorRootDir,
+    getQuickOpenRootDir: () => editorQuickOpenState.rootDir,
+    getWorkDir: () => workDir,
+    computeQuickOpenEntryForRoot: (wslPath, rootDir) => computeQuickOpenEntryForRoot(wslPath, rootDir),
+    openEditorDirectory,
+    openEditorPath,
   });
   const draftComposerState = createDraftComposerState();
   const draftComposer = createDraftComposerController(draftComposerState, {
@@ -1263,27 +1276,6 @@
     await initializeEditorRuntimeFromSession();
   }
 
-  function openEditorNavigationLocation(detail: {
-    wslPath: string;
-    line?: number | null;
-    column?: number | null;
-    rootDir?: string;
-    snapshot?: NavigationFileSnapshot;
-  }) {
-    const rootDir = detail.rootDir || editorRootDir || workDir;
-    const quickOpenEntry = computeQuickOpenEntryForRoot(detail.wslPath, rootDir);
-    void openEditorPath(
-      {
-        wslPath: detail.wslPath,
-        relativePath: quickOpenEntry?.relativePath || detail.wslPath,
-        basename: quickOpenEntry?.basename || detail.wslPath.split("/").pop() || detail.wslPath,
-        line: detail.line ?? null,
-        column: detail.column ?? null,
-      },
-      { rootDir, focusExisting: true, prefetchedFile: detail.snapshot },
-    );
-  }
-
   async function openEditorDirectory(rootDir: string) {
     editorRootDir = rootDir || workDir;
     syncEditorSessionState();
@@ -1389,27 +1381,6 @@
     }
 
     syncEditorSessionState();
-  }
-
-  function openEditorPathFromQuickResult(result: EditorSearchResult) {
-    void openEditorPath(result, { rootDir: editorQuickOpenState.rootDir, focusExisting: true });
-  }
-
-  function openResolvedPathInInternalEditor(path: ResolvedTerminalPath) {
-    void openEditorPath(path, { rootDir: editorRootDir });
-  }
-
-  function openResolvedDirectoryInInternalEditor(path: ResolvedTerminalPath) {
-    void openEditorDirectory(path.wslPath);
-  }
-
-  function openInternalEditorForLinkPath(path: ResolvedTerminalPath) {
-    if (path.isDirectory) {
-      openResolvedDirectoryInInternalEditor(path);
-      return;
-    }
-
-    openResolvedPathInInternalEditor(path);
   }
 
   function requestSwitchToEditorMode() {
