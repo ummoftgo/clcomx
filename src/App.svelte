@@ -71,6 +71,11 @@
   } from "./lib/features/session/service/session-factory";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
   import {
+    resolveAdjacentSessionMoveIndex,
+    resolveCloseTabRequest,
+    resolveRenamedSessionTitle,
+  } from "./lib/features/session/service/session-tab-behavior";
+  import {
     applySessionAuxState,
     clearSessionResumeFallback,
     registerSessionPty,
@@ -342,14 +347,6 @@
 
     await removeWindow(currentWindowLabel);
     await closeCurrentWindow();
-  }
-
-  function sessionHasDirtyEditorState(session: Session | null | undefined) {
-    return Boolean(session && session.dirtyPaths.length > 0);
-  }
-
-  function canCloseSessionWithoutDirtyWarning(session: Session | null | undefined) {
-    return !sessionHasDirtyEditorState(session);
   }
 
   function usesKoreanCopy() {
@@ -829,22 +826,21 @@
 
   function requestCloseTab(sessionId: string) {
     const session = sessions.find((entry) => entry.id === sessionId);
-    if (!session) return;
-    if (session.locked) return;
-
-    if (!canCloseSessionWithoutDirtyWarning(session)) {
-      pendingCloseSessionId = sessionId;
-      showDirtyTabDialog = true;
-      return;
+    switch (resolveCloseTabRequest(session)) {
+      case "blocked":
+        return;
+      case "dirty-warning":
+        pendingCloseSessionId = sessionId;
+        showDirtyTabDialog = true;
+        return;
+      case "close-confirm":
+        pendingCloseSessionId = sessionId;
+        showCloseTabDialog = true;
+        return;
+      case "close-now":
+        void handleCloseTab(sessionId);
+        return;
     }
-
-    if (session.ptyId >= 0) {
-      pendingCloseSessionId = sessionId;
-      showCloseTabDialog = true;
-      return;
-    }
-
-    void handleCloseTab(sessionId);
   }
 
   async function confirmCloseTab() {
@@ -940,27 +936,15 @@
   }
 
   function handleMoveTabLeft(sessionId: string) {
-    const session = sessions.find((entry) => entry.id === sessionId);
-    if (!session) return;
-    const group = sessions.filter((entry) => entry.pinned === session.pinned);
-    const groupIndex = group.findIndex((entry) => entry.id === sessionId);
-    if (groupIndex <= 0) return;
-    const targetId = group[groupIndex - 1]?.id;
-    const targetIndex = sessions.findIndex((entry) => entry.id === targetId);
-    if (targetIndex < 0) return;
+    const targetIndex = resolveAdjacentSessionMoveIndex(sessions, sessionId, "left");
+    if (targetIndex === null) return;
     moveSession(sessionId, targetIndex);
     setActiveSession(sessionId);
   }
 
   function handleMoveTabRight(sessionId: string) {
-    const session = sessions.find((entry) => entry.id === sessionId);
-    if (!session) return;
-    const group = sessions.filter((entry) => entry.pinned === session.pinned);
-    const groupIndex = group.findIndex((entry) => entry.id === sessionId);
-    if (groupIndex < 0 || groupIndex >= group.length - 1) return;
-    const targetId = group[groupIndex + 1]?.id;
-    const targetIndex = sessions.findIndex((entry) => entry.id === targetId);
-    if (targetIndex < 0) return;
+    const targetIndex = resolveAdjacentSessionMoveIndex(sessions, sessionId, "right");
+    if (targetIndex === null) return;
     moveSession(sessionId, targetIndex);
     setActiveSession(sessionId);
   }
@@ -991,8 +975,7 @@
     if (renameDialogKind === "tab" && renameTargetSessionId) {
       const session = sessions.find((entry) => entry.id === renameTargetSessionId);
       if (session) {
-        const fallbackTitle = session.workDir.split("/").pop() || session.workDir;
-        const nextTitle = trimmed || fallbackTitle;
+        const nextTitle = resolveRenamedSessionTitle(session, trimmed);
         setSessionTitle(renameTargetSessionId, nextTitle);
         void recordTabHistory(
           session.agentId,
