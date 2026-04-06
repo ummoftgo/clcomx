@@ -11,6 +11,7 @@
   import TerminalAssistPanel from "./TerminalAssistPanel.svelte";
   import TerminalAuxPanel from "./TerminalAuxPanel.svelte";
   import TerminalDraftPanel from "./TerminalDraftPanel.svelte";
+  import TerminalInterruptConfirmModal from "../features/terminal/view/TerminalInterruptConfirmModal.svelte";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
   import { listen, type UnlistenFn } from "../tauri/event";
   import { getBootstrap } from "../bootstrap";
@@ -3007,24 +3008,11 @@
   </div>
 </ModalShell>
 
-<ModalShell
+<TerminalInterruptConfirmModal
   open={interruptConfirmVisible}
-  size="sm"
   onClose={closeInterruptConfirm}
->
-  <div class="terminal-interrupt-panel">
-    <h2>{$t("terminal.interrupt.title")}</h2>
-    <p>{$t("terminal.interrupt.description")}</p>
-    <div class="terminal-interrupt-actions">
-      <Button variant="danger" onclick={() => void confirmTerminalInterrupt()}>
-        {$t("terminal.interrupt.confirm")}
-      </Button>
-      <Button onclick={closeInterruptConfirm}>
-        {$t("common.actions.cancel")}
-      </Button>
-    </div>
-  </div>
-</ModalShell>
+  onConfirm={confirmTerminalInterrupt}
+/>
 
 <style>
   .terminal-shell {
