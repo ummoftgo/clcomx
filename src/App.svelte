@@ -69,6 +69,11 @@
     createSessionLaunchRequest,
     createSessionLaunchRequestFromHistoryEntry,
   } from "./lib/features/session/service/session-factory";
+  import {
+    applySessionAuxState,
+    clearSessionResumeFallback,
+    registerSessionPty,
+  } from "./lib/features/session/service/session-runtime";
   import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
   import type { SessionShellAuxState } from "./lib/features/session/contracts/session-shell";
   import {
@@ -689,23 +694,25 @@
     );
   }
 
+  const sessionRuntime = {
+    setSessionPtyId,
+    persistSessionPty: setSessionPty,
+    recordTabHistory,
+    setSessionAuxState,
+    persistSessionAuxState: persistSessionAuxTerminalState,
+    setSessionResumeToken,
+    persistSessionResumeToken,
+    persistWorkspace,
+    reportError: (message: string, error: unknown) => {
+      console.error(message, error);
+    },
+  };
+
   async function handlePtyId(sessionId: string, ptyId: number) {
     const session = sessions.find((entry) => entry.id === sessionId);
     if (!session) return;
 
-    setSessionPtyId(sessionId, ptyId);
-    try {
-      await setSessionPty(sessionId, ptyId);
-    } catch (error) {
-      console.error("Failed to register session PTY", error);
-    }
-    void recordTabHistory(
-      session.agentId,
-      session.distro,
-      session.workDir,
-      session.title,
-      session.resumeToken ?? null,
-    );
+    await registerSessionPty(sessionRuntime, sessionId, session, ptyId);
   }
 
   async function handleAuxTerminalState(
@@ -714,17 +721,11 @@
     auxVisible: boolean,
     auxHeightPercent: number | null,
   ) {
-    setSessionAuxState(sessionId, auxPtyId, auxVisible, auxHeightPercent);
-    try {
-      await persistSessionAuxTerminalState(
-        sessionId,
-        auxPtyId >= 0 ? auxPtyId : null,
-        auxVisible,
-        auxHeightPercent,
-      );
-    } catch (error) {
-      console.error("Failed to persist auxiliary terminal state", error);
-    }
+    await applySessionAuxState(sessionRuntime, sessionId, {
+      auxPtyId,
+      auxVisible,
+      auxHeightPercent,
+    });
   }
 
   async function handleExit(ptyId: number) {
@@ -737,13 +738,7 @@
   }
 
   async function handleResumeFallback(sessionId: string) {
-    setSessionResumeToken(sessionId, null);
-    try {
-      await persistSessionResumeToken(sessionId, null);
-    } catch (error) {
-      console.error("Failed to clear invalid resume token", error);
-    }
-    void persistWorkspace();
+    await clearSessionResumeFallback(sessionRuntime, sessionId);
   }
 
   async function captureSessionResumeToken(session: Session): Promise<string | null> {
