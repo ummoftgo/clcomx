@@ -65,10 +65,9 @@
   import type { AppBootstrap, Session, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
   import {
-    buildSession,
-    createSessionLaunchRequest,
-    createSessionLaunchRequestFromHistoryEntry,
-  } from "./lib/features/session/service/session-factory";
+    launchSession,
+    launchSessionFromHistoryEntry,
+  } from "./lib/features/session/controller/session-launch-controller";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
   import {
     resolveAdjacentSessionMoveIndex,
@@ -663,30 +662,36 @@
     title = workDir.split("/").pop() || workDir,
     resumeToken: string | null = null,
   ) {
-    addSession(
-      buildSession(
-        createSessionLaunchRequest({
-          agentId,
-          distro,
-          workDir,
-          title,
-          resumeToken,
-        }),
-      ),
+    launchSession(
+      {
+        addSession,
+        hideSessionLauncher: () => {
+          showSessionLauncher = false;
+        },
+        persistWorkspace,
+        ensureTerminalComponent,
+      },
+      {
+        agentId,
+        distro,
+        workDir,
+        title,
+        resumeToken,
+      },
     );
-    showSessionLauncher = false;
-    void persistWorkspace();
-    void ensureTerminalComponent();
   }
 
   function openHistoryEntry(entry: TabHistoryEntry) {
-    const request = createSessionLaunchRequestFromHistoryEntry(entry);
-    createSession(
-      request.agentId,
-      request.distro,
-      request.workDir,
-      request.title,
-      request.resumeToken,
+    launchSessionFromHistoryEntry(
+      {
+        addSession,
+        hideSessionLauncher: () => {
+          showSessionLauncher = false;
+        },
+        persistWorkspace,
+        ensureTerminalComponent,
+      },
+      entry,
     );
   }
 
