@@ -76,6 +76,7 @@
   import { openExternalUrl } from "../workspace";
   import { createEditorDocumentController } from "../features/editor/controller/editor-document-controller";
   import { createEditorNavigationAdapterController } from "../features/editor/controller/editor-navigation-adapter-controller";
+  import { createEditorOpenLoadController } from "../features/editor/controller/editor-open-load-controller";
   import { createEditorOpenStateController } from "../features/editor/controller/editor-open-state-controller";
   import { createEditorQuickOpenController } from "../features/editor/controller/editor-quick-open-controller";
   import { createEditorViewController } from "../features/editor/controller/editor-view-controller";
@@ -101,15 +102,6 @@
     isTestBridgeEnabled,
   } from "../testing/test-bridge";
   import "@xterm/xterm/css/xterm.css";
-
-  function hasSessionFileMtime(value: unknown): value is { mtimeMs: number } {
-    return (
-      typeof value === "object" &&
-      value !== null &&
-      "mtimeMs" in value &&
-      typeof (value as { mtimeMs?: unknown }).mtimeMs === "number"
-    );
-  }
 
   let {
     sessionId,
@@ -259,6 +251,16 @@
     setEditorRootDir: (rootDir) => {
       editorRootDir = rootDir;
     },
+    syncSessionState: syncEditorSessionState,
+  });
+  const { loadPreparedOpenPath } = createEditorOpenLoadController(editorRuntimeState, {
+    getSessionId: () => sessionId,
+    getLoadingStatusLabel: () => $t("common.labels.loading"),
+    readSessionFile,
+    setStatus: setEditorStatus,
+    setTabLoaded: setEditorTabLoaded,
+    setTabError: setEditorTabError,
+    closeQuickOpen: () => closeEditorQuickOpen(),
     syncSessionState: syncEditorSessionState,
   });
   const {
@@ -1345,32 +1347,12 @@
       });
       return;
     }
-    setEditorStatus($t("common.labels.loading"));
-
-    try {
-      const file =
-        options?.prefetchedFile && options.prefetchedFile.wslPath === wslPath
-          ? options.prefetchedFile
-          : await readSessionFile(sessionId, wslPath);
-      if (!editorRuntimeState.tabs.some((tab) => tab.wslPath === wslPath)) {
-        return;
-      }
-
-      setEditorTabLoaded(wslPath, {
-        content: file.content,
-        languageId: file.languageId || "plaintext",
-        mtimeMs: hasSessionFileMtime(file) ? file.mtimeMs : (editorRuntimeState.mtimeByPath[wslPath] ?? 0),
-        line: nextLine,
-        column: nextColumn,
-      });
-      editorRuntimeState.statusText = null;
-      closeEditorQuickOpen();
-    } catch (error) {
-      setEditorTabError(wslPath, error instanceof Error ? error.message : String(error));
-      editorRuntimeState.statusText = error instanceof Error ? error.message : String(error);
-    }
-
-    syncEditorSessionState();
+    await loadPreparedOpenPath({
+      wslPath,
+      line: nextLine,
+      column: nextColumn,
+      prefetchedFile: options?.prefetchedFile,
+    });
   }
 
   function requestSwitchToTerminalMode() {
