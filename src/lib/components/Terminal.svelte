@@ -77,6 +77,12 @@
   import { openExternalUrl } from "../workspace";
   import type { SessionShellProps } from "../features/session/contracts/session-shell";
   import { createEditorRuntimeController } from "../features/editor/controller/editor-runtime-controller";
+  import {
+    buildEditorHydrationPlaceholderTabs,
+    loadHydratedEditorTabs,
+    resolveHydratedActivePath,
+    splitHydratedEditorTabs,
+  } from "../features/editor/service/editor-session-hydration";
   import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
   import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
@@ -1204,75 +1210,19 @@
     }
 
     const token = ++editorHydrationToken;
-    setEditorTabs(
-      refs.map((ref) => ({
-        wslPath: ref.wslPath,
-        content: "",
-        languageId: "plaintext",
-        dirty: false,
-        line: ref.line ?? null,
-        column: ref.column ?? null,
-        loading: true,
-        saving: false,
-        error: null,
-      })),
-    );
+    setEditorTabs(buildEditorHydrationPlaceholderTabs(refs));
 
-    const loadedTabs = await Promise.all(
-      refs.map(async (ref) => {
-        try {
-          const file = await readSessionFile(sessionId, ref.wslPath);
-          return {
-            wslPath: ref.wslPath,
-            content: file.content,
-            languageId: file.languageId || "plaintext",
-            dirty: false,
-            line: ref.line ?? null,
-            column: ref.column ?? null,
-            loading: false,
-            saving: false,
-            error: null,
-            mtimeMs: file.mtimeMs,
-          };
-        } catch (error) {
-          return {
-            wslPath: ref.wslPath,
-            content: "",
-            languageId: "plaintext",
-            dirty: false,
-            line: ref.line ?? null,
-            column: ref.column ?? null,
-            loading: false,
-            saving: false,
-            error: error instanceof Error ? error.message : String(error),
-            mtimeMs: 0,
-          };
-        }
-      }),
-    );
+    const loadedTabs = await loadHydratedEditorTabs({ readSessionFile }, sessionId, refs);
 
     if (token !== editorHydrationToken) {
       return;
     }
 
-    for (const tab of loadedTabs) {
-      if (tab.mtimeMs > 0) {
-        editorRuntimeState.savedContentByPath = {
-          ...editorRuntimeState.savedContentByPath,
-          [tab.wslPath]: tab.content,
-        };
-        editorRuntimeState.mtimeByPath = {
-          ...editorRuntimeState.mtimeByPath,
-          [tab.wslPath]: tab.mtimeMs,
-        };
-      }
-    }
-
-    editorRuntimeState.tabs = loadedTabs.map(({ mtimeMs, ...tab }) => tab);
-
-    if (!editorRuntimeState.activePath || !editorRuntimeState.tabs.some((tab) => tab.wslPath === editorRuntimeState.activePath)) {
-      editorRuntimeState.activePath = editorRuntimeState.tabs[0]?.wslPath ?? null;
-    }
+    const { tabs, savedContentByPath, mtimeByPath } = splitHydratedEditorTabs(loadedTabs);
+    editorRuntimeState.savedContentByPath = savedContentByPath;
+    editorRuntimeState.mtimeByPath = mtimeByPath;
+    editorRuntimeState.tabs = tabs;
+    editorRuntimeState.activePath = resolveHydratedActivePath(editorRuntimeState.activePath, tabs);
 
     syncEditorSessionState();
   }
