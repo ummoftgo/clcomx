@@ -76,6 +76,8 @@
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
   import type { SessionShellProps } from "../features/session/contracts/session-shell";
+  import { createEditorRuntimeController } from "../features/editor/controller/editor-runtime-controller";
+  import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
   import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
   import { createOverlayInteractionController } from "../features/terminal/controller/overlay-interaction-controller";
@@ -186,11 +188,6 @@
   let writeParsedDisposable: IDisposable | null = null;
   let editorViewMode = $state<"terminal" | "editor">("terminal");
   let editorRootDir = $state("");
-  let editorTabs = $state<InternalEditorTab[]>([]);
-  let editorActivePath = $state<string | null>(null);
-  let editorSavedContentByPath = $state<Record<string, string>>({});
-  let editorMtimeByPath = $state<Record<string, number>>({});
-  let editorStatusText = $state<string | null>(null);
   let editorQuickOpenVisible = $state(false);
   let editorQuickOpenQuery = $state("");
   let editorQuickOpenRootDir = $state("");
@@ -209,8 +206,7 @@
   let editorMonacoPrewarmToken = 0;
   let editorMonacoPrewarming = false;
   let editorMonacoPrewarmed = false;
-  let editorCloseConfirmVisible = $state(false);
-  let editorCloseConfirmPath = $state<string | null>(null);
+  const editorRuntimeState = createEditorRuntimeState();
   const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
   const BOTTOM_LOCK_MAX_MS = 12000;
   const BOTTOM_LOCK_QUIET_MS = 1400;
@@ -225,6 +221,30 @@
 
   const settings = getSettings();
   const bootstrap = getBootstrap();
+  const {
+    cancelCloseTab: cancelCloseEditorTab,
+    confirmCloseTab: confirmCloseEditorTab,
+    getCurrentSessionState: getCurrentEditorSessionState,
+    handleContentChange: handleEditorContentChange,
+    patchTab: patchEditorTab,
+    requestCloseTab: closeEditorTab,
+    setStatus: setEditorStatus,
+    setTabError: setEditorTabError,
+    setTabLoaded: setEditorTabLoaded,
+    setTabSaving: setEditorTabSaving,
+    setTabs: setEditorTabs,
+    syncSessionState: syncEditorSessionState,
+  } = createEditorRuntimeController(editorRuntimeState, {
+    getSessionId: () => sessionId,
+    getSessions,
+    getViewMode: () => editorViewMode,
+    getRootDir: () => editorRootDir,
+    setSessionViewMode,
+    setSessionEditorRootDir,
+    setSessionOpenEditorTabs,
+    setSessionActiveEditorPath,
+    setSessionDirtyPaths,
+  });
   const draftComposerState = createDraftComposerState();
   const draftComposer = createDraftComposerController(draftComposerState, {
     getVisible: () => visible,
@@ -333,9 +353,9 @@
     ),
   );
   const preferredRenderer = $derived(settings.terminal.renderer);
-  const editorBusy = $derived(editorTabs.some((tab) => tab.loading || tab.saving));
+  const editorBusy = $derived(editorRuntimeState.tabs.some((tab) => tab.loading || tab.saving));
   const editorCloseConfirmLabel = $derived(
-    editorCloseConfirmPath ? editorCloseConfirmPath.split("/").pop() || editorCloseConfirmPath : "",
+    editorRuntimeState.closeConfirmPath ? editorRuntimeState.closeConfirmPath.split("/").pop() || editorRuntimeState.closeConfirmPath : "",
   );
   const terminalFontFamily = $derived(
     buildFontStack(
@@ -1143,121 +1163,6 @@
     return await ensureEditorsDetected();
   }
 
-  function getCurrentEditorSessionState() {
-    return getSessions().find((entry) => entry.id === sessionId) ?? null;
-  }
-
-  function syncEditorSessionState() {
-    setSessionViewMode(sessionId, editorViewMode);
-    setSessionEditorRootDir(sessionId, editorRootDir);
-    setSessionOpenEditorTabs(sessionId, getEditorOpenRefTabs());
-    setSessionActiveEditorPath(sessionId, editorActivePath);
-    setSessionDirtyPaths(
-      sessionId,
-      editorTabs.filter((tab) => tab.dirty).map((tab) => tab.wslPath),
-    );
-  }
-
-  function setEditorStatus(message: string | null) {
-    editorStatusText = message;
-  }
-
-  function setEditorTabs(nextTabs: InternalEditorTab[]) {
-    editorTabs = nextTabs;
-    syncEditorSessionState();
-  }
-
-  function patchEditorTab(wslPath: string, updates: Partial<InternalEditorTab>) {
-    let changed = false;
-    editorTabs = editorTabs.map((tab) => {
-      if (tab.wslPath !== wslPath) {
-        return tab;
-      }
-
-      changed = true;
-      return {
-        ...tab,
-        ...updates,
-      };
-    });
-
-    if (changed) {
-      syncEditorSessionState();
-    }
-  }
-
-  function removeEditorTab(wslPath: string) {
-    const nextTabs = editorTabs.filter((tab) => tab.wslPath !== wslPath);
-    if (nextTabs.length === editorTabs.length) {
-      return false;
-    }
-
-    delete editorSavedContentByPath[wslPath];
-    delete editorMtimeByPath[wslPath];
-    editorTabs = nextTabs;
-
-    if (editorActivePath === wslPath) {
-      const nextActive = nextTabs[nextTabs.length - 1]?.wslPath ?? null;
-      editorActivePath = nextActive;
-    }
-
-    syncEditorSessionState();
-    return true;
-  }
-
-  function setEditorTabLoaded(
-    wslPath: string,
-    detail: {
-      content: string;
-      languageId: string;
-      mtimeMs: number;
-      line?: number | null;
-      column?: number | null;
-    },
-  ) {
-    editorSavedContentByPath = {
-      ...editorSavedContentByPath,
-      [wslPath]: detail.content,
-    };
-    editorMtimeByPath = {
-      ...editorMtimeByPath,
-      [wslPath]: detail.mtimeMs,
-    };
-    patchEditorTab(wslPath, {
-      content: detail.content,
-      languageId: detail.languageId,
-      dirty: false,
-      loading: false,
-      saving: false,
-      error: null,
-      line: detail.line ?? null,
-      column: detail.column ?? null,
-    });
-  }
-
-  function setEditorTabError(wslPath: string, message: string) {
-    patchEditorTab(wslPath, {
-      loading: false,
-      saving: false,
-      error: message,
-    });
-  }
-
-  function setEditorTabSaving(wslPath: string, saving: boolean) {
-    patchEditorTab(wslPath, {
-      saving,
-      error: saving ? null : undefined,
-    });
-  }
-
-  function getEditorOpenRefTabs() {
-    return editorTabs.map((tab) => ({
-      wslPath: tab.wslPath,
-      line: tab.line ?? null,
-      column: tab.column ?? null,
-    }));
-  }
-
   function ensureEditorViewMode() {
     if (editorViewMode === "editor") {
       return;
@@ -1276,8 +1181,8 @@
   function switchToTerminalView() {
     editorViewMode = "terminal";
     closeEditorQuickOpen();
-    editorCloseConfirmVisible = false;
-    editorCloseConfirmPath = null;
+    editorRuntimeState.closeConfirmVisible = false;
+    editorRuntimeState.closeConfirmPath = null;
     setSessionViewMode(sessionId, editorViewMode);
     tick().then(focusOutput);
   }
@@ -1288,9 +1193,9 @@
     editorViewMode = session?.viewMode ?? "terminal";
     editorRootDir = session?.editorRootDir || workDir;
     editorQuickOpenRootDir = editorRootDir;
-    editorActivePath = session?.activeEditorPath ?? null;
-    editorSavedContentByPath = {};
-    editorMtimeByPath = {};
+    editorRuntimeState.activePath = session?.activeEditorPath ?? null;
+    editorRuntimeState.savedContentByPath = {};
+    editorRuntimeState.mtimeByPath = {};
 
     const refs = session?.openEditorTabs ?? [];
     if (refs.length === 0) {
@@ -1352,21 +1257,21 @@
 
     for (const tab of loadedTabs) {
       if (tab.mtimeMs > 0) {
-        editorSavedContentByPath = {
-          ...editorSavedContentByPath,
+        editorRuntimeState.savedContentByPath = {
+          ...editorRuntimeState.savedContentByPath,
           [tab.wslPath]: tab.content,
         };
-        editorMtimeByPath = {
-          ...editorMtimeByPath,
+        editorRuntimeState.mtimeByPath = {
+          ...editorRuntimeState.mtimeByPath,
           [tab.wslPath]: tab.mtimeMs,
         };
       }
     }
 
-    editorTabs = loadedTabs.map(({ mtimeMs, ...tab }) => tab);
+    editorRuntimeState.tabs = loadedTabs.map(({ mtimeMs, ...tab }) => tab);
 
-    if (!editorActivePath || !editorTabs.some((tab) => tab.wslPath === editorActivePath)) {
-      editorActivePath = editorTabs[0]?.wslPath ?? null;
+    if (!editorRuntimeState.activePath || !editorRuntimeState.tabs.some((tab) => tab.wslPath === editorRuntimeState.activePath)) {
+      editorRuntimeState.activePath = editorRuntimeState.tabs[0]?.wslPath ?? null;
     }
 
     syncEditorSessionState();
@@ -1515,7 +1420,7 @@
   }
 
   async function readEditorNavigationFile(wslPath: string) {
-    const existingTab = editorTabs.find(
+    const existingTab = editorRuntimeState.tabs.find(
       (tab) => tab.wslPath === wslPath && !tab.loading && !tab.error,
     );
     if (existingTab) {
@@ -1818,13 +1723,13 @@
     const wslPath = path.wslPath;
     const nextRootDir = options?.rootDir || editorRootDir || workDir;
     primeEditorWorkspaceFiles(nextRootDir);
-    const existingTabIndex = editorTabs.findIndex((tab) => tab.wslPath === wslPath);
+    const existingTabIndex = editorRuntimeState.tabs.findIndex((tab) => tab.wslPath === wslPath);
     const nextLine = "line" in path ? path.line ?? null : null;
     const nextColumn = "column" in path ? path.column ?? null : null;
 
     if (existingTabIndex >= 0) {
-      const currentTab = editorTabs[existingTabIndex];
-      editorTabs = editorTabs.map((tab) =>
+      const currentTab = editorRuntimeState.tabs[existingTabIndex];
+      editorRuntimeState.tabs = editorRuntimeState.tabs.map((tab) =>
         tab.wslPath !== wslPath
           ? tab
           : {
@@ -1834,7 +1739,7 @@
               error: null,
             },
       );
-      editorActivePath = wslPath;
+      editorRuntimeState.activePath = wslPath;
       if (options?.rootDir) {
         editorRootDir = options.rootDir;
       }
@@ -1842,7 +1747,7 @@
       syncEditorSessionState();
       tick().then(() => {
         if (editorViewMode === "editor" && !currentTab.loading) {
-          editorStatusText = null;
+          editorRuntimeState.statusText = null;
         }
       });
       return;
@@ -1860,8 +1765,8 @@
       error: null,
     };
 
-    editorTabs = [...editorTabs, newTab];
-    editorActivePath = wslPath;
+    editorRuntimeState.tabs = [...editorRuntimeState.tabs, newTab];
+    editorRuntimeState.activePath = wslPath;
     if (options?.rootDir) {
       editorRootDir = options.rootDir;
     }
@@ -1873,22 +1778,22 @@
         options?.prefetchedFile && options.prefetchedFile.wslPath === wslPath
           ? options.prefetchedFile
           : await readSessionFile(sessionId, wslPath);
-      if (!editorTabs.some((tab) => tab.wslPath === wslPath)) {
+      if (!editorRuntimeState.tabs.some((tab) => tab.wslPath === wslPath)) {
         return;
       }
 
       setEditorTabLoaded(wslPath, {
         content: file.content,
         languageId: file.languageId || "plaintext",
-        mtimeMs: hasSessionFileMtime(file) ? file.mtimeMs : (editorMtimeByPath[wslPath] ?? 0),
+        mtimeMs: hasSessionFileMtime(file) ? file.mtimeMs : (editorRuntimeState.mtimeByPath[wslPath] ?? 0),
         line: nextLine,
         column: nextColumn,
       });
-      editorStatusText = null;
+      editorRuntimeState.statusText = null;
       closeEditorQuickOpen();
     } catch (error) {
       setEditorTabError(wslPath, error instanceof Error ? error.message : String(error));
-      editorStatusText = error instanceof Error ? error.message : String(error);
+      editorRuntimeState.statusText = error instanceof Error ? error.message : String(error);
     }
 
     syncEditorSessionState();
@@ -1919,8 +1824,8 @@
     ensureEditorViewMode();
     primeEditorMonacoRuntime();
     primeEditorWorkspaceFiles(editorRootDir || workDir);
-    editorStatusText = null;
-    if (!editorQuickOpenVisible && editorTabs.length === 0) {
+    editorRuntimeState.statusText = null;
+    if (!editorQuickOpenVisible && editorRuntimeState.tabs.length === 0) {
       void openEditorQuickOpen(editorRootDir);
       return;
     }
@@ -1930,64 +1835,30 @@
     switchToTerminalView();
   }
 
-  function closeEditorTab(wslPath: string, force = false) {
-    const tab = editorTabs.find((entry) => entry.wslPath === wslPath);
-    if (!tab) {
-      return;
-    }
-
-    if (tab.dirty && !force) {
-      editorCloseConfirmPath = wslPath;
-      editorCloseConfirmVisible = true;
-      return;
-    }
-
-    if (!removeEditorTab(wslPath)) {
-      return;
-    }
-  }
-
-  function confirmCloseEditorTab() {
-    if (!editorCloseConfirmPath) {
-      editorCloseConfirmVisible = false;
-      return;
-    }
-
-    const path = editorCloseConfirmPath;
-    editorCloseConfirmVisible = false;
-    editorCloseConfirmPath = null;
-    closeEditorTab(path, true);
-  }
-
-  function cancelCloseEditorTab() {
-    editorCloseConfirmVisible = false;
-    editorCloseConfirmPath = null;
-  }
-
   async function saveEditorTab(wslPath: string) {
-    const tab = editorTabs.find((entry) => entry.wslPath === wslPath);
+    const tab = editorRuntimeState.tabs.find((entry) => entry.wslPath === wslPath);
     if (!tab) {
       return;
     }
 
     const contentToSave = tab.content;
-    const expectedMtimeMs = editorMtimeByPath[wslPath] ?? 0;
+    const expectedMtimeMs = editorRuntimeState.mtimeByPath[wslPath] ?? 0;
     setEditorTabSaving(wslPath, true);
     setEditorStatus($t("common.actions.save"));
 
     try {
       const result = await writeSessionFile(sessionId, wslPath, contentToSave, expectedMtimeMs);
-      const latestTab = editorTabs.find((entry) => entry.wslPath === wslPath);
+      const latestTab = editorRuntimeState.tabs.find((entry) => entry.wslPath === wslPath);
       if (!latestTab) {
         return;
       }
 
-      editorSavedContentByPath = {
-        ...editorSavedContentByPath,
+      editorRuntimeState.savedContentByPath = {
+        ...editorRuntimeState.savedContentByPath,
         [wslPath]: contentToSave,
       };
-      editorMtimeByPath = {
-        ...editorMtimeByPath,
+      editorRuntimeState.mtimeByPath = {
+        ...editorRuntimeState.mtimeByPath,
         [wslPath]: result.mtimeMs,
       };
       patchEditorTab(wslPath, {
@@ -1996,26 +1867,18 @@
         error: null,
       });
       upsertEditorQuickOpenEntry(wslPath);
-      editorStatusText = null;
+      editorRuntimeState.statusText = null;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setEditorTabError(wslPath, message);
-      editorStatusText = message;
+      editorRuntimeState.statusText = message;
     } finally {
       syncEditorSessionState();
     }
   }
 
-  function handleEditorContentChange(detail: { wslPath: string; content: string }) {
-    patchEditorTab(detail.wslPath, {
-      content: detail.content,
-      dirty: detail.content !== (editorSavedContentByPath[detail.wslPath] ?? ""),
-      error: null,
-    });
-  }
-
   function handleEditorActivePathChange(wslPath: string) {
-    editorActivePath = wslPath;
+    editorRuntimeState.activePath = wslPath;
     editorViewMode = "editor";
     syncEditorSessionState();
   }
@@ -2793,11 +2656,11 @@
 >
   {#if editorViewMode === "editor"}
     <InternalEditor
-      tabs={editorTabs}
-      activePath={editorActivePath}
+      tabs={editorRuntimeState.tabs}
+      activePath={editorRuntimeState.activePath}
       rootDir={editorRootDir || workDir}
       busy={editorBusy}
-      statusText={editorStatusText}
+      statusText={editorRuntimeState.statusText}
       title={$t("terminal.editor.title")}
       emptyTitle={$t("terminal.editor.emptyTitle")}
       emptyDescription={$t("terminal.editor.emptyDescription")}
@@ -2990,7 +2853,7 @@
 />
 
 <TerminalEditorCloseConfirmModal
-  open={editorCloseConfirmVisible}
+  open={editorRuntimeState.closeConfirmVisible}
   title={editorCloseConfirmLabel}
   onClose={cancelCloseEditorTab}
   onConfirm={confirmCloseEditorTab}
