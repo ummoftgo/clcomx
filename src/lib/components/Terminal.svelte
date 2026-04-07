@@ -28,7 +28,6 @@
     type PtyOutputChunk,
     getPtyOutputSnapshot,
     getPtyRuntimeSnapshot,
-    resolvePtyHomeDir,
     spawnShellPty,
     spawnPty,
     writePty,
@@ -68,10 +67,12 @@
   import { createEditorQuickOpenState } from "../features/editor/state/editor-quick-open-state.svelte";
   import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
   import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
+  import { createMainTerminalRuntimeController } from "../features/terminal/controller/main-terminal-runtime-controller";
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
   import { createOverlayInteractionController } from "../features/terminal/controller/overlay-interaction-controller";
   import { createTerminalTestBridgeController } from "../features/terminal/controller/terminal-test-bridge-controller";
   import { createDraftComposerState } from "../features/terminal/state/draft-composer-state.svelte";
+  import { createMainTerminalRuntimeState } from "../features/terminal/state/main-terminal-runtime-state.svelte";
   import { createOverlayInteractionState } from "../features/terminal/state/overlay-interaction-state.svelte";
   import {
     TEST_BRIDGE_EVENTS,
@@ -106,17 +107,9 @@
   let terminal: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
   let inputTextarea: HTMLTextAreaElement | undefined;
-  let livePtyId = $state(-1);
-  let initialOutputReady = false;
+  const mainTerminalRuntimeState = createMainTerminalRuntimeState();
   let terminalReady = $state(false);
   let terminalStartupSettled = $state(false);
-  let spawnError = $state<string | null>(null);
-  let terminalLoadingState = $state<"connecting" | "restoring" | null>(null);
-  let terminalLoadingStartedAt = 0;
-  let terminalLoadingHasRenderableOutput = false;
-  let terminalLoadingReadySignalSeen = false;
-  let terminalLoadingQuietTimer: ReturnType<typeof setTimeout> | null = null;
-  let terminalLoadingMaxTimer: ReturnType<typeof setTimeout> | null = null;
   let interruptConfirmVisible = $state(false);
   const editorDetection = getEditorDetectionState();
   const detectedEditors = $derived(editorDetection.editors);
@@ -144,9 +137,6 @@
   let auxSpawnError = $state<string | null>(null);
   let auxCurrentPath = $state("");
   let auxMetadataRemainder = "";
-  let mainMetadataRemainder = "";
-  let shellHomeDir = $state<string | null>(null);
-  let shellHomeDirSessionId = $state<string | null>(null);
   let auxHeightPercent = $state(28);
   let auxHeightCustomized = false;
   let auxFollowTail = true;
@@ -158,33 +148,26 @@
   let auxResizePointerId: number | null = null;
   let auxResizeStartY = 0;
   let auxResizeStartPercent = 0;
-  let replayInProgress = false;
-  let replayBuffer: PtyOutputChunk[] = [];
   let testHookRegistered = $state(false);
-  let bottomLockTimer: ReturnType<typeof setTimeout> | null = null;
-  let bottomLockDeadline = 0;
-  let bottomLockMaxDeadline = 0;
-  let followTail = true;
-  let pendingPostWriteScroll = false;
-  let deferredBottomScrollTimer: ReturnType<typeof setTimeout> | null = null;
   let writeParsedDisposable: IDisposable | null = null;
   let editorViewMode = $state<"terminal" | "editor">("terminal");
   let editorRootDir = $state("");
   const editorQuickOpenState = createEditorQuickOpenState();
   const editorRuntimeState = createEditorRuntimeState();
-  const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
-  const BOTTOM_LOCK_MAX_MS = 12000;
-  const BOTTOM_LOCK_QUIET_MS = 1400;
   const MIN_TERMINAL_LOADING_MS = 360;
   const TERMINAL_LOADING_QUIET_MS = 1300;
   const TERMINAL_LOADING_MAX_MS = 8000;
-  const DEFERRED_BOTTOM_SCROLL_MS = 60;
   const WEB_LINK_REGEX = /(?:https?|ftp):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/i;
-  const SYNC_OUTPUT_MODE_SEQUENCE = /\u001b\[\?2026[hl]/;
-  const ABSOLUTE_CURSOR_POSITION_SEQUENCE = /\u001b\[\d+(?:;\d+)?[Hf]/;
 
   const settings = getSettings();
   const bootstrap = getBootstrap();
+  const softFollowExperimentEnabled = $derived(
+    isClaudeFooterGhostingMitigationEnabled(
+      agentId,
+      settings.terminal.claudeFooterGhostingMitigation,
+      bootstrap.softFollowExperiment,
+    ),
+  );
   const {
     cancelCloseTab: cancelCloseEditorTab,
     confirmCloseTab: confirmCloseEditorTab,
@@ -250,6 +233,33 @@
     listSessionFiles,
     reportForegroundError: (message) => setClipboardNotice(message),
   });
+  const mainTerminalRuntime = createMainTerminalRuntimeController({
+    state: mainTerminalRuntimeState,
+    getSessionId: () => sessionId,
+    getStoredPtyId: () => ptyId,
+    getAgentId: () => agentId,
+    getDistro: () => distro,
+    getWorkDir: () => workDir,
+    getResumeToken: () => resumeToken,
+    getTerminal: () => terminal,
+    getSoftFollowExperimentEnabled: () => softFollowExperimentEnabled,
+    getEditorViewMode: () => editorViewMode,
+    getInitialPtySize,
+    writeTerminalData,
+    waitForTerminalPaint,
+    syncLayoutToPty: syncMainTerminalLayoutToPty,
+    scrollTerminalToBottom,
+    requestCanonicalScreenSnapshot,
+    registerCanonicalSession,
+    spawnPty,
+    takePtyInitialOutput,
+    getPtyOutputSnapshot,
+    getPtyRuntimeSnapshot,
+    resizePty,
+    onPtyId: (nextPtyId) => onPtyId?.(nextPtyId),
+    onResumeFallback: () => onResumeFallback?.(),
+    onExit: (exitedPtyId) => onExit?.(exitedPtyId),
+  });
   const draftComposerState = createDraftComposerState();
   const draftComposer = createDraftComposerController(draftComposerState, {
     getVisible: () => visible,
@@ -261,8 +271,8 @@
     getAuxVisible: () => auxVisible,
     hideAuxTerminal,
     getTerminal: () => terminal,
-    getLivePtyId: () => livePtyId,
-    writeLivePty: (text) => writePty(livePtyId, text),
+    getLivePtyId: () => mainTerminalRuntimeState.livePtyId,
+    writeLivePty: (text) => writePty(mainTerminalRuntimeState.livePtyId, text),
     tick,
   });
   const {
@@ -290,7 +300,7 @@
     routeInsertedText,
     openExternalUrl,
     resolveTerminalPath,
-    getShellHomeDirHint,
+    getShellHomeDirHint: mainTerminalRuntime.getShellHomeDirHint,
     getFileOpenTarget: () => settings.interface.fileOpenTarget,
     getFileOpenMode: () => settings.interface.fileOpenMode,
     getDefaultEditorId: () => settings.interface.defaultEditorId,
@@ -336,7 +346,7 @@
     isTestBridgeEnabled,
     openClipboardPreview,
     setClipboardNotice,
-    getLivePtyId: () => livePtyId,
+    getLivePtyId: () => mainTerminalRuntimeState.livePtyId,
     getAuxPtyId: () => auxPtyId,
     getPtyOutputSnapshot,
     getTerminal: () => terminal,
@@ -350,13 +360,6 @@
     registerTestHooks,
     unregisterTestHooks,
   } = terminalTestBridge;
-  const softFollowExperimentEnabled = $derived(
-    isClaudeFooterGhostingMitigationEnabled(
-      agentId,
-      settings.terminal.claudeFooterGhostingMitigation,
-      bootstrap.softFollowExperiment,
-    ),
-  );
   const preferredRenderer = $derived(settings.terminal.renderer);
   const editorBusy = $derived(editorRuntimeState.tabs.some((tab) => tab.loading || tab.saving));
   const editorCloseConfirmLabel = $derived(
@@ -383,7 +386,7 @@
     ),
   );
   const terminalLoadingLabel = $derived(
-    terminalLoadingState === "restoring"
+    mainTerminalRuntimeState.terminalLoadingState === "restoring"
       ? $t("terminal.loading.restoring")
       : $t("terminal.loading.connecting"),
   );
@@ -529,51 +532,6 @@
     });
   }
 
-  function consumeMainTerminalMetadata(data: string) {
-    const parsed = consumeAuxShellMetadata(data, mainMetadataRemainder);
-    mainMetadataRemainder = parsed.remainder;
-    const parsedHomeDir = resolvePtyHomeDir(parsed.homeDir, null);
-    if (parsedHomeDir) {
-      shellHomeDir = parsedHomeDir;
-    }
-    return parsed;
-  }
-
-  function getActivePtyId() {
-    return livePtyId >= 0 ? livePtyId : ptyId;
-  }
-
-  function clearShellHomeDirCache() {
-    shellHomeDir = null;
-  }
-
-  function getShellHomeDirHint() {
-    return resolvePtyHomeDir(shellHomeDir, null);
-  }
-
-  async function rehydrateShellHomeDirFromRuntimeSnapshot() {
-    const activePtyId = getActivePtyId();
-    if (activePtyId < 0) {
-      return null;
-    }
-
-    try {
-      const snapshot = await getPtyRuntimeSnapshot(activePtyId);
-      const resolvedHomeDir = resolvePtyHomeDir(null, snapshot.homeDir);
-      if (resolvedHomeDir) {
-        shellHomeDir = resolvedHomeDir;
-      }
-      return resolvedHomeDir;
-    } catch {
-      return null;
-    }
-  }
-
-  function writeMainTerminalData(term: Terminal, data: string) {
-    const parsed = consumeMainTerminalMetadata(data);
-    return writeTerminalData(term, parsed.text);
-  }
-
   function hasRenderableTerminalOutput(data: string) {
     if (!data) {
       return false;
@@ -585,43 +543,6 @@
     return withoutControl.trim().length > 0;
   }
 
-  function extractPrintableTerminalText(data: string) {
-    if (!data) {
-      return "";
-    }
-
-    const withoutOsc = data.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "");
-    const withoutCsi = withoutOsc.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
-    return withoutCsi.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
-  }
-
-  function requiresAgentReadySignal() {
-    return agentId === "claude" || agentId === "codex";
-  }
-
-  function hasAgentReadySignal(data: string) {
-    const text = extractPrintableTerminalText(data);
-    if (!text) {
-      return false;
-    }
-
-    if (agentId === "codex") {
-      return (
-        text.includes("OpenAI Codex") ||
-        /(?:^|\n)\s*›\s/m.test(text)
-      );
-    }
-
-    if (agentId === "claude") {
-      return (
-        /(?:^|\n)\s*❯[\u00a0 ]?/m.test(text) ||
-        (text.includes("current:") && text.includes("tokens"))
-      );
-    }
-
-    return hasRenderableTerminalOutput(data);
-  }
-
   function writeAuxTerminalData(term: Terminal, data: string) {
     const parsed = consumeAuxShellMetadata(data, auxMetadataRemainder);
     auxMetadataRemainder = parsed.remainder;
@@ -629,26 +550,6 @@
       auxCurrentPath = parsed.cwd;
     }
     return writeTerminalData(term, parsed.text);
-  }
-
-  function clearBottomLockTimer() {
-    if (bottomLockTimer) {
-      clearTimeout(bottomLockTimer);
-      bottomLockTimer = null;
-    }
-  }
-
-  function clearDeferredBottomScrollTimer() {
-    if (deferredBottomScrollTimer) {
-      clearTimeout(deferredBottomScrollTimer);
-      deferredBottomScrollTimer = null;
-    }
-  }
-
-  function releaseBottomLock() {
-    clearBottomLockTimer();
-    bottomLockDeadline = 0;
-    bottomLockMaxDeadline = 0;
   }
 
   function scrollTerminalToBottom() {
@@ -667,7 +568,9 @@
 
     const term = terminal;
     const fit = fitAddon;
-    const stickToBottom = options?.stickToBottom ?? (followTail || isBottomLockActive());
+    const stickToBottom =
+      options?.stickToBottom
+      ?? (mainTerminalRuntimeState.followTail || mainTerminalRuntime.isBottomLockActive());
     const refresh = options?.refresh ?? false;
 
     await waitForStableTerminalLayout();
@@ -682,9 +585,9 @@
       term.refresh(0, Math.max(term.rows - 1, 0));
     }
 
-    if (livePtyId >= 0) {
+    if (mainTerminalRuntimeState.livePtyId >= 0) {
       try {
-        await resizePty(livePtyId, term.cols, term.rows);
+        await resizePty(mainTerminalRuntimeState.livePtyId, term.cols, term.rows);
       } catch (error) {
         console.error("Failed to resize terminal PTY", error);
       }
@@ -699,101 +602,6 @@
     }
     syncDraftHeight();
     syncAssistPanelHeight();
-  }
-
-  function isBottomLockActive() {
-    return terminal !== null && Date.now() < bottomLockDeadline;
-  }
-
-  function canExtendBottomLock() {
-    return terminal !== null && Date.now() < bottomLockMaxDeadline;
-  }
-
-  function scheduleBottomLockTick() {
-    clearBottomLockTimer();
-
-    if (!terminal) {
-      return;
-    }
-
-    terminal.scrollToBottom();
-
-    if (Date.now() >= bottomLockDeadline) {
-      releaseBottomLock();
-      return;
-    }
-
-    bottomLockTimer = setTimeout(() => {
-      bottomLockTimer = null;
-      scheduleBottomLockTick();
-    }, 80);
-  }
-
-  function armBottomLock(maxDurationMs = BOTTOM_LOCK_MAX_MS, quietWindowMs = BOTTOM_LOCK_QUIET_MS) {
-    const now = Date.now();
-    bottomLockMaxDeadline = now + maxDurationMs;
-    bottomLockDeadline = Math.min(bottomLockMaxDeadline, now + quietWindowMs);
-    followTail = true;
-
-    if (softFollowExperimentEnabled) {
-      clearBottomLockTimer();
-      scrollTerminalToBottom();
-      return;
-    }
-
-    scheduleBottomLockTick();
-  }
-
-  function extendBottomLock(quietWindowMs = BOTTOM_LOCK_QUIET_MS) {
-    if (!canExtendBottomLock()) {
-      return;
-    }
-
-    bottomLockDeadline = Math.min(bottomLockMaxDeadline, Date.now() + quietWindowMs);
-    followTail = true;
-
-    if (softFollowExperimentEnabled) {
-      clearBottomLockTimer();
-      return;
-    }
-
-    scheduleBottomLockTick();
-  }
-
-  function disableAutoFollow() {
-    followTail = false;
-    pendingPostWriteScroll = false;
-    clearDeferredBottomScrollTimer();
-    releaseBottomLock();
-  }
-
-  function isLikelyTerminalRepaintChunk(data: string) {
-    if (!softFollowExperimentEnabled) {
-      return false;
-    }
-
-    if (SYNC_OUTPUT_MODE_SEQUENCE.test(data)) {
-      return true;
-    }
-
-    if (ABSOLUTE_CURSOR_POSITION_SEQUENCE.test(data)) {
-      return true;
-    }
-
-    return data.includes("\r") && !data.includes("\n");
-  }
-
-  function scheduleDeferredBottomScroll() {
-    clearDeferredBottomScrollTimer();
-    deferredBottomScrollTimer = setTimeout(() => {
-      deferredBottomScrollTimer = null;
-      if (!softFollowExperimentEnabled || !pendingPostWriteScroll || terminal?.modes.synchronizedOutputMode) {
-        return;
-      }
-
-      pendingPostWriteScroll = false;
-      scrollTerminalToBottom();
-    }, DEFERRED_BOTTOM_SCROLL_MS);
   }
 
   function focusTerminalSurface(term: Terminal | null, container: HTMLElement | null) {
@@ -895,91 +703,6 @@
         requestAnimationFrame(() => resolve());
       });
     });
-  }
-
-  async function showTerminalLoadingState(state: "connecting" | "restoring") {
-    clearTerminalLoadingTimers();
-    terminalLoadingState = state;
-    terminalLoadingStartedAt = performance.now();
-    terminalLoadingHasRenderableOutput = false;
-    terminalLoadingReadySignalSeen = !requiresAgentReadySignal();
-    terminalLoadingMaxTimer = setTimeout(() => {
-      terminalLoadingMaxTimer = null;
-      void clearTerminalLoadingState(true);
-    }, TERMINAL_LOADING_MAX_MS);
-    await waitForTerminalPaint();
-  }
-
-  function clearTerminalLoadingTimers() {
-    if (terminalLoadingQuietTimer) {
-      clearTimeout(terminalLoadingQuietTimer);
-      terminalLoadingQuietTimer = null;
-    }
-    if (terminalLoadingMaxTimer) {
-      clearTimeout(terminalLoadingMaxTimer);
-      terminalLoadingMaxTimer = null;
-    }
-  }
-
-  function noteTerminalLoadingActivity() {
-    if (terminalLoadingState === null) {
-      return;
-    }
-
-    terminalLoadingHasRenderableOutput = true;
-  }
-
-  function noteTerminalLoadingOutput(data: string) {
-    if (terminalLoadingState === null) {
-      return;
-    }
-
-    if (hasRenderableTerminalOutput(data)) {
-      noteTerminalLoadingActivity();
-    }
-
-    if (!terminalLoadingReadySignalSeen && hasAgentReadySignal(data)) {
-      terminalLoadingReadySignalSeen = true;
-    }
-  }
-
-  function handleTerminalRender() {
-    if (terminalLoadingState === null || !terminalLoadingHasRenderableOutput) {
-      return;
-    }
-
-    if (requiresAgentReadySignal() && !terminalLoadingReadySignalSeen) {
-      return;
-    }
-
-    if (terminalLoadingQuietTimer) {
-      clearTimeout(terminalLoadingQuietTimer);
-    }
-    terminalLoadingQuietTimer = setTimeout(() => {
-      terminalLoadingQuietTimer = null;
-      void clearTerminalLoadingState();
-    }, TERMINAL_LOADING_QUIET_MS);
-  }
-
-  async function clearTerminalLoadingState(force = false) {
-    if (terminalLoadingState === null) {
-      return;
-    }
-
-    if (!force) {
-      const elapsed = performance.now() - terminalLoadingStartedAt;
-      const remaining = MIN_TERMINAL_LOADING_MS - elapsed;
-      if (remaining > 0) {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, remaining);
-        });
-      }
-    }
-
-    clearTerminalLoadingTimers();
-    terminalLoadingHasRenderableOutput = false;
-    terminalLoadingReadySignalSeen = false;
-    terminalLoadingState = null;
   }
 
   function showAuxLoadingState() {
@@ -1131,13 +854,13 @@
 
   async function confirmTerminalInterrupt() {
     interruptConfirmVisible = false;
-    if (livePtyId < 0) {
+    if (mainTerminalRuntimeState.livePtyId < 0) {
       tick().then(focusOutput);
       return;
     }
 
     try {
-      await writePty(livePtyId, "\u0003");
+      await writePty(mainTerminalRuntimeState.livePtyId, "\u0003");
     } catch (error) {
       console.error("Failed to send Ctrl+C to terminal", error);
     } finally {
@@ -1415,160 +1138,7 @@
       });
       return;
     }
-
-    if (event.id !== livePtyId || !terminal) {
-      return;
-    }
-
-    let data = event.data;
-    const parsedMetadata = consumeMainTerminalMetadata(data);
-    data = parsedMetadata.text;
-
-    if (data.includes(RESUME_FAILED_MARKER)) {
-      data = data.replaceAll(`${RESUME_FAILED_MARKER}\r\n`, "").replaceAll(RESUME_FAILED_MARKER, "");
-      void onResumeFallback?.();
-    }
-
-    if (replayInProgress) {
-      replayBuffer.push({ ...event, data });
-      return;
-    }
-
-    if (initialOutputReady) {
-      const repaintChunk = isLikelyTerminalRepaintChunk(data);
-      const shouldStickToBottom = followTail || isBottomLockActive();
-      if (!repaintChunk) {
-        extendBottomLock();
-      }
-      terminal.write(data, () => {
-        noteTerminalLoadingOutput(data);
-        if (!shouldStickToBottom) {
-          return;
-        }
-
-        if (repaintChunk || terminal?.modes.synchronizedOutputMode) {
-          pendingPostWriteScroll = true;
-          scheduleDeferredBottomScroll();
-          return;
-        }
-
-        terminal?.scrollToBottom();
-      });
-    }
-  }
-
-  async function attachToExistingPty(id: number, term: Terminal) {
-    livePtyId = id;
-    replayInProgress = true;
-    replayBuffer = [];
-    mainMetadataRemainder = "";
-    clearShellHomeDirCache();
-    void registerCanonicalSession({ sessionId, ptyId: id, agentId });
-
-    await syncMainTerminalLayoutToPty({ stickToBottom: false });
-
-    let appliedSeq = 0;
-    let restored = false;
-    let fallbackSnapshotData = "";
-    const canonicalSnapshot = await requestCanonicalScreenSnapshot({
-      sessionId,
-      ptyId: id,
-      agentId,
-      cols: term.cols,
-      rows: term.rows,
-    });
-
-    if (canonicalSnapshot) {
-      await writeMainTerminalData(term, canonicalSnapshot.serialized);
-      await writeMainTerminalData(term, canonicalSnapshot.delta);
-      appliedSeq = canonicalSnapshot.appliedSeq;
-      restored = true;
-    } else {
-      const snapshot = await getPtyOutputSnapshot(id);
-      await writeMainTerminalData(term, snapshot.data);
-      appliedSeq = snapshot.seq;
-      fallbackSnapshotData = snapshot.data;
-    }
-
-    const pendingChunks = replayBuffer
-      .filter((chunk) => chunk.seq > appliedSeq)
-      .sort((left, right) => left.seq - right.seq);
-
-    replayInProgress = false;
-    for (const chunk of pendingChunks) {
-      await writeMainTerminalData(term, chunk.data);
-    }
-
-    initialOutputReady = true;
-    armBottomLock();
-    if (
-      (restored && canonicalSnapshot
-        ? hasRenderableTerminalOutput(canonicalSnapshot.serialized) ||
-          hasRenderableTerminalOutput(canonicalSnapshot.delta)
-        : false) ||
-      hasRenderableTerminalOutput(fallbackSnapshotData) ||
-      pendingChunks.some((chunk) => hasRenderableTerminalOutput(chunk.data))
-    ) {
-      noteTerminalLoadingOutput(
-        restored && canonicalSnapshot
-          ? `${canonicalSnapshot.serialized}${canonicalSnapshot.delta}`
-          : `${fallbackSnapshotData}${pendingChunks.map((chunk) => chunk.data).join("")}`,
-      );
-    }
-
-    await rehydrateShellHomeDirFromRuntimeSnapshot();
-    await syncMainTerminalLayoutToPty({ refresh: true });
-  }
-
-  async function attachOrSpawnPty(term: Terminal, options?: { loadingAlreadyShown?: boolean }) {
-    spawnError = null;
-    if (ptyId >= 0) {
-      if (!options?.loadingAlreadyShown) {
-        await showTerminalLoadingState("restoring");
-      }
-      try {
-        await attachToExistingPty(ptyId, term);
-        return;
-      } catch (error) {
-        console.warn("Failed to attach to existing PTY, spawning a new one", error);
-        livePtyId = -1;
-        replayInProgress = false;
-        replayBuffer = [];
-        initialOutputReady = false;
-        terminalLoadingState = "connecting";
-        terminalLoadingStartedAt = performance.now();
-        terminalLoadingHasRenderableOutput = false;
-        terminalLoadingReadySignalSeen = !requiresAgentReadySignal();
-        clearShellHomeDirCache();
-      }
-    } else {
-      if (!options?.loadingAlreadyShown) {
-        await showTerminalLoadingState("connecting");
-      }
-    }
-
-    await spawnNewPty(term);
-  }
-
-  async function spawnNewPty(term: Terminal) {
-    const { cols, rows } = getInitialPtySize(term);
-    mainMetadataRemainder = "";
-    clearShellHomeDirCache();
-    livePtyId = await spawnPty(cols, rows, agentId, distro, workDir, resumeToken);
-    void registerCanonicalSession({ sessionId, ptyId: livePtyId, agentId });
-    const initialOutput = await takePtyInitialOutput(livePtyId);
-    let sanitizedOutput = initialOutput;
-    if (sanitizedOutput.includes(RESUME_FAILED_MARKER)) {
-      sanitizedOutput = sanitizedOutput
-        .replaceAll(`${RESUME_FAILED_MARKER}\r\n`, "")
-        .replaceAll(RESUME_FAILED_MARKER, "");
-      void onResumeFallback?.();
-    }
-    await writeMainTerminalData(term, sanitizedOutput);
-    initialOutputReady = true;
-    armBottomLock();
-    noteTerminalLoadingOutput(sanitizedOutput);
-    void onPtyId?.(livePtyId);
+    mainTerminalRuntime.handleMainOutputChunk(event);
   }
 
   onMount(async () => {
@@ -1635,8 +1205,7 @@
     });
 
     unlistenExit = await listen<number>("pty-exit", (event) => {
-      if (event.payload === livePtyId) {
-        void onExit?.(event.payload);
+      if (mainTerminalRuntime.handlePtyExit(event.payload)) {
         return;
       }
 
@@ -1649,20 +1218,20 @@
       terminal = term;
       fitAddon = fit;
       terminalReady = true;
-      await showTerminalLoadingState(ptyId >= 0 ? "restoring" : "connecting");
+      await mainTerminalRuntime.showTerminalLoadingState(ptyId >= 0 ? "restoring" : "connecting");
       await syncMainTerminalLayoutToPty({ stickToBottom: false });
 
-      await attachOrSpawnPty(term, { loadingAlreadyShown: true });
+      await mainTerminalRuntime.attachOrSpawnPty(term, { loadingAlreadyShown: true });
       terminalStartupSettled = true;
       scheduleEditorQuickOpenPrewarm();
     } catch (error) {
-      spawnError = error instanceof Error ? error.message : String(error);
-      await clearTerminalLoadingState();
+      mainTerminalRuntimeState.spawnError = error instanceof Error ? error.message : String(error);
+      await mainTerminalRuntime.clearTerminalLoadingState();
     }
 
     term.onData((data) => {
-      if (livePtyId >= 0) {
-        void writePty(livePtyId, data);
+      if (mainTerminalRuntimeState.livePtyId >= 0) {
+        void writePty(mainTerminalRuntimeState.livePtyId, data);
       }
     });
 
@@ -1681,37 +1250,24 @@
     }
 
     term.onResize(({ cols, rows }) => {
-      if (livePtyId >= 0) {
-        void resizePty(livePtyId, cols, rows);
-      }
-      if (editorViewMode === "terminal" && (followTail || isBottomLockActive())) {
-        scrollTerminalToBottom();
-      }
+      mainTerminalRuntime.handleTerminalResize(cols, rows);
     });
 
     term.onRender(() => {
-      handleTerminalRender();
+      mainTerminalRuntime.handleTerminalRender();
     });
 
     writeParsedDisposable = term.onWriteParsed(() => {
-      if (!softFollowExperimentEnabled || !pendingPostWriteScroll || term.modes.synchronizedOutputMode) {
-        return;
-      }
-
-      scheduleDeferredBottomScroll();
+      mainTerminalRuntime.handleWriteParsed(term);
     });
 
     term.onScroll((viewportY) => {
-      if (!terminal || isBottomLockActive()) {
-        return;
-      }
-
-      followTail = viewportY >= terminal.buffer.active.baseY;
+      mainTerminalRuntime.handleViewportScroll(viewportY, term.buffer.active.baseY);
     });
 
     inputTextarea?.addEventListener("paste", handleTerminalPaste as EventListener, true);
     outputEl.addEventListener("mousemove", handleLinkPointerMove, true);
-    outputEl.addEventListener("wheel", disableAutoFollow, true);
+    outputEl.addEventListener("wheel", mainTerminalRuntime.disableAutoFollow, true);
     window.addEventListener("mouseup", releaseLinkSelectionBlock, true);
     window.addEventListener("blur", releaseLinkSelectionBlock);
     window.addEventListener("keydown", handleAuxShortcut, true);
@@ -1727,7 +1283,7 @@
   $effect(() => {
     if (!terminalReady || !visible || editorViewMode !== "terminal") return;
 
-    armBottomLock();
+    mainTerminalRuntime.armBottomLock();
     void syncMainTerminalLayoutToPty();
   });
 
@@ -1860,18 +1416,7 @@
   });
 
   $effect(() => {
-    if (shellHomeDirSessionId === null) {
-      shellHomeDirSessionId = sessionId;
-      return;
-    }
-
-    if (shellHomeDirSessionId === sessionId) {
-      return;
-    }
-
-    shellHomeDirSessionId = sessionId;
-    clearShellHomeDirCache();
-    mainMetadataRemainder = "";
+    mainTerminalRuntime.handleSessionChange(sessionId);
   });
 
   $effect(() => {
@@ -1891,7 +1436,7 @@
     }
     inputTextarea?.removeEventListener("paste", handleTerminalPaste as EventListener, true);
     outputEl?.removeEventListener("mousemove", handleLinkPointerMove, true);
-    outputEl?.removeEventListener("wheel", disableAutoFollow, true);
+    outputEl?.removeEventListener("wheel", mainTerminalRuntime.disableAutoFollow, true);
     window.removeEventListener("mouseup", releaseLinkSelectionBlock, true);
     window.removeEventListener("blur", releaseLinkSelectionBlock);
     stopDraftResize();
@@ -1900,12 +1445,9 @@
     unlistenExit?.();
     resizeObserver?.disconnect();
     assistResizeObserver?.disconnect();
-    clearTerminalLoadingTimers();
     clearAuxLayoutSettleTimer();
-    clearDeferredBottomScrollTimer();
     cancelEditorQuickOpenPrewarm();
-    releaseBottomLock();
-    pendingPostWriteScroll = false;
+    mainTerminalRuntime.dispose();
     invalidateEditorQuickOpenRequest();
     disposeOverlayInteraction();
     fileLinkProviderDisposable?.dispose();
@@ -1929,13 +1471,13 @@
   data-testid={TEST_IDS.terminalShell}
   data-agent-id={agentId}
   data-session-id={sessionId}
-  data-pty-id={String(livePtyId)}
+  data-pty-id={String(mainTerminalRuntimeState.livePtyId)}
   data-aux-pty-id={String(auxPtyId)}
   data-aux-visible={auxVisible ? "true" : "false"}
   data-draft-open={draftComposerState.draftOpen ? "true" : "false"}
   data-pending-image={overlayInteractionState.pendingClipboardImage ? "true" : "false"}
   data-test-hook-registered={testHookRegistered ? "true" : "false"}
-  data-loading-state={terminalLoadingState ?? "idle"}
+  data-loading-state={mainTerminalRuntimeState.terminalLoadingState ?? "idle"}
   data-soft-follow-experiment={softFollowExperimentEnabled ? "true" : "false"}
   data-renderer-preference={preferredRenderer}
   data-renderer={activeRenderer}
@@ -1978,9 +1520,9 @@
     data-testid={TEST_IDS.terminalOutput}
     bind:this={outputEl}
   >
-    {#if spawnError}
+    {#if mainTerminalRuntimeState.spawnError}
       <div class="terminal-error">
-        {$t("terminal.assist.startFailed", { values: { message: spawnError } })}
+        {$t("terminal.assist.startFailed", { values: { message: mainTerminalRuntimeState.spawnError } })}
       </div>
     {/if}
 
@@ -1990,7 +1532,7 @@
       </div>
     {/if}
 
-    {#if terminalLoadingState !== null && !spawnError}
+    {#if mainTerminalRuntimeState.terminalLoadingState !== null && !mainTerminalRuntimeState.spawnError}
       <div class="terminal-connect-overlay">
         <div class="terminal-connect-card">
           <div class="terminal-connect-eyebrow">CLCOMX</div>
