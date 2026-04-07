@@ -19,7 +19,7 @@ describe("session-launch-controller", () => {
         persistWorkspace: () => {
           steps.push("persist");
         },
-        ensureTerminalComponent: () => {
+        ensureSessionShellComponent: () => {
           steps.push("ensure");
         },
       },
@@ -42,14 +42,14 @@ describe("session-launch-controller", () => {
     const addSession = vi.fn();
     const hideSessionLauncher = vi.fn();
     const persistWorkspace = vi.fn();
-    const ensureTerminalComponent = vi.fn();
+    const ensureSessionShellComponent = vi.fn();
 
     launchSessionFromHistoryEntry(
       {
         addSession,
         hideSessionLauncher,
         persistWorkspace,
-        ensureTerminalComponent,
+        ensureSessionShellComponent,
       },
       {
         agentId: "codex",
@@ -71,6 +71,6 @@ describe("session-launch-controller", () => {
     });
     expect(hideSessionLauncher).toHaveBeenCalledTimes(1);
     expect(persistWorkspace).toHaveBeenCalledTimes(1);
-    expect(ensureTerminalComponent).toHaveBeenCalledTimes(1);
+    expect(ensureSessionShellComponent).toHaveBeenCalledTimes(1);
   });
 });

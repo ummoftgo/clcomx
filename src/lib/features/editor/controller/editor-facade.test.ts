@@ -10,27 +10,38 @@ function createFacade(options?: {
     openEditorTabs: { wslPath: string; line?: number | null; column?: number | null }[];
     activeEditorPath: string | null;
   } | null;
+  readSessionFileImpl?: (sessionId: string, wslPath: string) => Promise<{
+    wslPath: string;
+    content: string;
+    languageId: string;
+    sizeBytes: number;
+    mtimeMs: number;
+  }>;
 }) {
   const runtimeState = createEditorRuntimeState();
   const quickOpenState = createEditorQuickOpenState();
+  let sessionSnapshot = options?.sessionSnapshot ?? null;
   let viewMode: "terminal" | "editor" = "editor";
   let rootDir = "/workspace";
   const syncSessionState = vi.fn();
   const prepareForEditorMode = vi.fn();
   const prepareForEditorPathOpen = vi.fn();
-  const readSessionFile = vi.fn(async (_sessionId: string, wslPath: string) => ({
-    wslPath,
-    content: "alpha",
-    languageId: "typescript",
-    sizeBytes: 5,
-    mtimeMs: 12,
-  }));
+  const readSessionFile = vi.fn(
+    options?.readSessionFileImpl
+      ?? (async (_sessionId: string, wslPath: string) => ({
+        wslPath,
+        content: "alpha",
+        languageId: "typescript",
+        sizeBytes: 5,
+        mtimeMs: 12,
+      })),
+  );
 
   const facade = createEditorFacade({
     runtimeState,
     quickOpenState,
     getSessionId: () => "session-1",
-    getSessionSnapshot: () => options?.sessionSnapshot ?? null,
+    getSessionSnapshot: () => sessionSnapshot,
     getWorkDir: () => "/workspace",
     getViewMode: () => viewMode,
     setViewMode: (nextViewMode) => {
@@ -74,6 +85,16 @@ function createFacade(options?: {
     prepareForEditorPathOpen,
     getViewMode: () => viewMode,
     getRootDir: () => rootDir,
+    setSessionSnapshot: (
+      nextSessionSnapshot: {
+        viewMode: "terminal" | "editor";
+        editorRootDir: string;
+        openEditorTabs: { wslPath: string; line?: number | null; column?: number | null }[];
+        activeEditorPath: string | null;
+      } | null,
+    ) => {
+      sessionSnapshot = nextSessionSnapshot;
+    },
   };
 }
 
@@ -134,6 +155,112 @@ describe("editor-facade", () => {
       activeEditorPath: "/workspace/src/a.ts",
       dirtyPaths: [],
     });
+  });
+
+  it("rehydrates when the mounted session receives a new external snapshot", async () => {
+    const { facade, runtimeState, getViewMode, getRootDir, readSessionFile, setSessionSnapshot } =
+      createFacade({
+        sessionSnapshot: {
+          viewMode: "editor",
+          editorRootDir: "/workspace/src",
+          openEditorTabs: [{ wslPath: "/workspace/src/a.ts" }],
+          activeEditorPath: "/workspace/src/a.ts",
+        },
+      });
+
+    await facade.ensureRuntimeReady();
+
+    setSessionSnapshot({
+      viewMode: "terminal",
+      editorRootDir: "/workspace/next",
+      openEditorTabs: [],
+      activeEditorPath: null,
+    });
+
+    await facade.ensureRuntimeReady();
+
+    expect(getViewMode()).toBe("terminal");
+    expect(getRootDir()).toBe("/workspace/next");
+    expect(runtimeState.tabs).toEqual([]);
+    expect(runtimeState.activePath).toBeNull();
+    expect(readSessionFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not rehydrate when the external snapshot only reflects the current runtime state", async () => {
+    const { facade, readSessionFile, syncSessionState, setSessionSnapshot } = createFacade({
+      sessionSnapshot: {
+        viewMode: "terminal",
+        editorRootDir: "/workspace",
+        openEditorTabs: [],
+        activeEditorPath: null,
+      },
+    });
+
+    await facade.ensureRuntimeReady();
+    await facade.openPath({
+      wslPath: "/workspace/a.ts",
+      relativePath: "a.ts",
+      basename: "a.ts",
+    });
+
+    const latestSessionState = syncSessionState.mock.calls[syncSessionState.mock.calls.length - 1]?.[1];
+    expect(latestSessionState).toBeTruthy();
+
+    setSessionSnapshot({
+      viewMode: latestSessionState.viewMode,
+      editorRootDir: latestSessionState.editorRootDir,
+      openEditorTabs: latestSessionState.openEditorTabs,
+      activeEditorPath: latestSessionState.activeEditorPath,
+    });
+
+    await facade.ensureRuntimeReady();
+
+    expect(readSessionFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an in-flight hydrate when the same session snapshot clears all open tabs", async () => {
+    type ReadSessionFileResponse = {
+      wslPath: string;
+      content: string;
+      languageId: string;
+      sizeBytes: number;
+      mtimeMs: number;
+    };
+    let resolveRead!: (value: ReadSessionFileResponse) => void;
+    const { facade, runtimeState, setSessionSnapshot } = createFacade({
+      sessionSnapshot: {
+        viewMode: "editor",
+        editorRootDir: "/workspace/src",
+        openEditorTabs: [{ wslPath: "/workspace/src/a.ts" }],
+        activeEditorPath: "/workspace/src/a.ts",
+      },
+      readSessionFileImpl: async (_sessionId, _wslPath) =>
+        await new Promise<ReadSessionFileResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    });
+
+    const firstHydration = facade.ensureRuntimeReady();
+
+    setSessionSnapshot({
+      viewMode: "terminal",
+      editorRootDir: "/workspace",
+      openEditorTabs: [],
+      activeEditorPath: null,
+    });
+
+    await facade.ensureRuntimeReady();
+    resolveRead({
+      wslPath: "/workspace/src/a.ts",
+      content: "alpha",
+      languageId: "typescript",
+      sizeBytes: 5,
+      mtimeMs: 12,
+    });
+    await firstHydration;
+
+    expect(runtimeState.tabs).toEqual([]);
+    expect(runtimeState.activePath).toBeNull();
   });
 
   it("keeps editor-mode path opens from requesting a full editor-mode transition", async () => {

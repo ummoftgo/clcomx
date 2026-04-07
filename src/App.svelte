@@ -18,6 +18,7 @@
     persistWorkspace,
     setActiveSession,
     setSessionAuxState,
+    setSessionEditorState,
     setCurrentWindowName,
     setSessionLocked,
     setSessionPtyId,
@@ -154,7 +155,7 @@
   let placementSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let initialPlacementTimer: ReturnType<typeof setTimeout> | null = null;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
-  let TerminalComponent = $state<Component<any> | null>(null);
+  let SessionShellComponent = $state<Component<any> | null>(null);
   let SettingsModalComponent = $state<Component<any> | null>(null);
   let previewPresetId = $state<PreviewPresetId>(getActivePreviewPresetId());
   let previewFrameMode = $state<PreviewFrameMode>(getInitialPreviewFrameMode());
@@ -251,8 +252,8 @@
     void appWindow.setTitle(nextTitle);
   });
 
-  async function ensureTerminalComponent() {
-    if (TerminalComponent) return;
+  async function ensureSessionShellComponent() {
+    if (SessionShellComponent) return;
     if (terminalLoadPromise) {
       await terminalLoadPromise;
       return;
@@ -262,7 +263,7 @@
       loadSessionShellComponent(browserPreview)
     )
       .then((component) => {
-        TerminalComponent = component;
+        SessionShellComponent = component;
       })
       .finally(() => {
         terminalLoadPromise = null;
@@ -555,7 +556,7 @@
 
   $effect(() => {
     if (sessions.length > 0) {
-      void ensureTerminalComponent();
+      void ensureSessionShellComponent();
     }
   });
 
@@ -669,7 +670,7 @@
           showSessionLauncher = false;
         },
         persistWorkspace,
-        ensureTerminalComponent,
+        ensureSessionShellComponent,
       },
       {
         agentId,
@@ -689,7 +690,7 @@
           showSessionLauncher = false;
         },
         persistWorkspace,
-        ensureTerminalComponent,
+        ensureSessionShellComponent,
       },
       entry,
     );
@@ -1122,9 +1123,12 @@
       {sessions}
       {activeSessionId}
       {historyEntries}
-      {TerminalComponent}
+      {SessionShellComponent}
       onOpenHistory={openHistoryEntry}
       onConfirmSession={createSession}
+      onSessionEditorStateChange={(sessionId, state) => {
+        setSessionEditorState(sessionId, state);
+      }}
       onSessionPtyId={handlePtyId}
       onSessionAuxStateChange={(sessionId: string, state: SessionShellAuxState) =>
         handleAuxTerminalState(

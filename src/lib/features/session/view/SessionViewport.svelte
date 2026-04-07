@@ -2,24 +2,20 @@
   import SessionLauncher from "../../../components/SessionLauncher.svelte";
   import { t } from "../../../i18n";
   import type { SessionViewportProps } from "../contracts/session-viewport";
-  import type { SessionShellAuxState } from "../contracts/session-shell";
 
   let {
     sessions,
     activeSessionId,
     historyEntries,
-    TerminalComponent,
+    SessionShellComponent,
     onOpenHistory,
     onConfirmSession,
+    onSessionEditorStateChange,
     onSessionPtyId,
     onSessionAuxStateChange,
     onSessionExit,
     onSessionResumeFallback,
   }: SessionViewportProps = $props();
-
-  function handleSessionAuxState(sessionId: string, state: SessionShellAuxState) {
-    void onSessionAuxStateChange(sessionId, state);
-  }
 </script>
 
 <div class="terminal-area">
@@ -40,24 +36,16 @@
     class="sessions-layer"
     style:display={sessions.length > 0 ? "block" : "none"}
   >
-    {#if TerminalComponent}
+    {#if SessionShellComponent}
       {#each sessions as session (session.id)}
-        <TerminalComponent
-          sessionId={session.id}
+        <SessionShellComponent
+          {session}
           visible={session.id === activeSessionId}
-          agentId={session.agentId}
-          distro={session.distro}
-          workDir={session.workDir}
-          ptyId={session.ptyId}
-          storedAuxPtyId={session.auxPtyId}
-          storedAuxVisible={session.auxVisible}
-          storedAuxHeightPercent={session.auxHeightPercent}
-          resumeToken={session.resumeToken}
-          onPtyId={(ptyId: number) => void onSessionPtyId(session.id, ptyId)}
-          onAuxStateChange={(state: SessionShellAuxState) =>
-            handleSessionAuxState(session.id, state)}
-          onExit={(ptyId: number) => void onSessionExit(ptyId)}
-          onResumeFallback={() => void onSessionResumeFallback(session.id)}
+          onSessionEditorStateChange={onSessionEditorStateChange}
+          onSessionPtyId={onSessionPtyId}
+          onSessionAuxStateChange={onSessionAuxStateChange}
+          onSessionExit={onSessionExit}
+          onSessionResumeFallback={onSessionResumeFallback}
         />
       {/each}
     {:else}

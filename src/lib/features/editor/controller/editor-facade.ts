@@ -76,7 +76,31 @@ interface EditorFacadeDependencies {
 
 export function createEditorFacade(deps: EditorFacadeDependencies) {
   let hydratedSessionId: string | null = null;
+  let hydratedSessionSnapshotKey: string | null = null;
   let hydrationToken = 0;
+
+  function buildHydrationSourceKey(source: EditorHydrationSource | null) {
+    return JSON.stringify({
+      sessionId: deps.getSessionId(),
+      viewMode: source?.viewMode ?? "terminal",
+      editorRootDir: source?.editorRootDir || deps.getWorkDir(),
+      openEditorTabs: (source?.openEditorTabs ?? []).map((entry) => ({
+        wslPath: entry.wslPath,
+        line: entry.line ?? null,
+        column: entry.column ?? null,
+      })),
+      activeEditorPath: source?.activeEditorPath ?? null,
+    });
+  }
+
+  function buildSessionStateHydrationKey(sessionState: SessionEditorState) {
+    return buildHydrationSourceKey({
+      viewMode: sessionState.viewMode,
+      editorRootDir: sessionState.editorRootDir,
+      openEditorTabs: sessionState.openEditorTabs,
+      activeEditorPath: sessionState.activeEditorPath,
+    });
+  }
 
   const quickOpenController = createEditorQuickOpenController(deps.quickOpenState, {
     getSessionId: deps.getSessionId,
@@ -113,7 +137,11 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     getSessionId: deps.getSessionId,
     getViewMode: deps.getViewMode,
     getRootDir: deps.getRootDir,
-    syncSessionState: deps.syncSessionState,
+    syncSessionState: (sessionId, sessionState) => {
+      hydratedSessionId = sessionId;
+      hydratedSessionSnapshotKey = buildSessionStateHydrationKey(sessionState);
+      deps.syncSessionState(sessionId, sessionState);
+    },
   });
   const documentController = createEditorDocumentController(deps.runtimeState, {
     getSessionId: deps.getSessionId,
@@ -156,7 +184,9 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
 
   async function hydrateFromSession() {
     const session = deps.getSessionSnapshot();
+    const token = ++hydrationToken;
     hydratedSessionId = deps.getSessionId();
+    hydratedSessionSnapshotKey = buildHydrationSourceKey(session);
     deps.setViewMode(session?.viewMode ?? "terminal");
     deps.setRootDir(session?.editorRootDir || deps.getWorkDir());
     deps.quickOpenState.rootDir = deps.getRootDir();
@@ -170,7 +200,6 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
       return;
     }
 
-    const token = ++hydrationToken;
     runtimeController.setTabs(buildEditorHydrationPlaceholderTabs(refs));
 
     const loadedTabs = await loadHydratedEditorTabs(
@@ -193,7 +222,12 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
   }
 
   async function ensureRuntimeReady() {
-    if (hydratedSessionId === deps.getSessionId()) {
+    const nextSessionId = deps.getSessionId();
+    const nextSessionSnapshotKey = buildHydrationSourceKey(deps.getSessionSnapshot());
+    if (
+      hydratedSessionId === nextSessionId
+      && hydratedSessionSnapshotKey === nextSessionSnapshotKey
+    ) {
       return;
     }
 

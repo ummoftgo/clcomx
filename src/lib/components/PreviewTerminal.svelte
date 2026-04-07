@@ -5,7 +5,7 @@
   import TerminalAuxPanel from "./TerminalAuxPanel.svelte";
   import TerminalDraftPanel from "./TerminalDraftPanel.svelte";
   import { getAgentLabel } from "../agents";
-  import type { SessionShellProps } from "../features/session/contracts/session-shell";
+  import type { SessionHostProps } from "../features/session/contracts/session-shell";
 
   type PreviewLineKind = "meta" | "command" | "output" | "accent";
 
@@ -44,7 +44,7 @@
     storedAuxVisible = false,
     storedAuxHeightPercent = null,
     onAuxStateChange,
-  }: SessionShellProps = $props();
+  }: SessionHostProps = $props();
 
   let auxVisible = $state(false);
   let draftOpen = $state(false);
@@ -112,7 +112,7 @@
     }
 
     auxVisible = !auxVisible;
-    onAuxStateChange?.({
+    void onAuxStateChange?.({
       auxPtyId: -1,
       auxVisible,
       auxHeightPercent: auxVisible ? auxHeightPercent : null,
@@ -127,7 +127,7 @@
 
     if (auxVisible) {
       auxVisible = false;
-      onAuxStateChange?.({
+      void onAuxStateChange?.({
         auxPtyId: -1,
         auxVisible: false,
         auxHeightPercent: null,

@@ -41,10 +41,6 @@
   } from "../terminal/canonical-screen-authority";
   import { t } from "../i18n";
   import { ensureEditorsDetected, getEditorDetectionState } from "../stores/editors.svelte";
-  import {
-    getSessions,
-    setSessionEditorState,
-  } from "../stores/sessions.svelte";
   import { getSettings } from "../stores/settings.svelte";
   import { getThemeById } from "../themes";
   import type { ContextMenuItem } from "../ui/context-menu";
@@ -68,7 +64,7 @@
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
   import { createEditorFacade } from "../features/editor/controller/editor-facade";
-  import type { SessionShellProps } from "../features/session/contracts/session-shell";
+  import type { SessionHostProps } from "../features/session/contracts/session-shell";
   import { createEditorQuickOpenState } from "../features/editor/state/editor-quick-open-state.svelte";
   import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
   import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
@@ -94,12 +90,14 @@
     storedAuxPtyId = -1,
     storedAuxVisible = false,
     storedAuxHeightPercent = null,
+    sessionSnapshot = null,
+    onEditorSessionStateChange,
     resumeToken = null,
     onPtyId,
     onAuxStateChange,
     onExit,
     onResumeFallback,
-  }: SessionShellProps = $props();
+  }: SessionHostProps = $props();
 
   let shellEl: HTMLDivElement;
   let outputEl: HTMLDivElement;
@@ -214,8 +212,7 @@
     runtimeState: editorRuntimeState,
     quickOpenState: editorQuickOpenState,
     getSessionId: () => sessionId,
-    getSessionSnapshot: () =>
-      getSessions().find((entry) => entry.id === sessionId) ?? null,
+    getSessionSnapshot: () => sessionSnapshot,
     getWorkDir: () => workDir,
     getViewMode: () => editorViewMode,
     setViewMode: (viewMode) => {
@@ -225,8 +222,8 @@
     setRootDir: (rootDir) => {
       editorRootDir = rootDir;
     },
-    syncSessionState: (id, sessionState) => {
-      setSessionEditorState(id, sessionState);
+    syncSessionState: (_id, sessionState) => {
+      void onEditorSessionStateChange?.(sessionState);
     },
     prepareForEditorMode: () => {
       if (auxVisible) {
@@ -1429,7 +1426,7 @@
 
     if (data.includes(RESUME_FAILED_MARKER)) {
       data = data.replaceAll(`${RESUME_FAILED_MARKER}\r\n`, "").replaceAll(RESUME_FAILED_MARKER, "");
-      onResumeFallback?.();
+      void onResumeFallback?.();
     }
 
     if (replayInProgress) {
@@ -1565,13 +1562,13 @@
       sanitizedOutput = sanitizedOutput
         .replaceAll(`${RESUME_FAILED_MARKER}\r\n`, "")
         .replaceAll(RESUME_FAILED_MARKER, "");
-      onResumeFallback?.();
+      void onResumeFallback?.();
     }
     await writeMainTerminalData(term, sanitizedOutput);
     initialOutputReady = true;
     armBottomLock();
     noteTerminalLoadingOutput(sanitizedOutput);
-    onPtyId?.(livePtyId);
+    void onPtyId?.(livePtyId);
   }
 
   onMount(async () => {
@@ -1639,7 +1636,7 @@
 
     unlistenExit = await listen<number>("pty-exit", (event) => {
       if (event.payload === livePtyId) {
-        onExit?.(event.payload);
+        void onExit?.(event.payload);
         return;
       }
 
@@ -1849,7 +1846,7 @@
   });
 
   $effect(() => {
-    onAuxStateChange?.({
+    void onAuxStateChange?.({
       auxPtyId,
       auxVisible,
       auxHeightPercent: auxHeightCustomized ? auxHeightPercent : null,
@@ -1878,6 +1875,8 @@
   });
 
   $effect(() => {
+    sessionId;
+    sessionSnapshot;
     void ensureEditorRuntimeReady();
   });
 

@@ -10,7 +10,7 @@ interface SessionLaunchControllerDependencies {
   addSession: (session: Session) => void;
   hideSessionLauncher: () => void;
   persistWorkspace: () => void | Promise<void>;
-  ensureTerminalComponent: () => void | Promise<void>;
+  ensureSessionShellComponent: () => void | Promise<void>;
 }
 
 export function launchSession(
@@ -27,7 +27,7 @@ export function launchSession(
   deps.addSession(buildSession(request));
   deps.hideSessionLauncher();
   void deps.persistWorkspace();
-  void deps.ensureTerminalComponent();
+  void deps.ensureSessionShellComponent();
 }
 
 export function launchSessionFromHistoryEntry(
