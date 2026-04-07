@@ -1,5 +1,5 @@
 import type { InternalEditorTab } from "../../../editor/contracts";
-import type { EditorTabRef, SessionCore, SessionEditorSnapshot, SessionViewMode } from "../../../types";
+import type { SessionEditorState, SessionViewMode } from "../../../types";
 import type { EditorRuntimeState } from "../state/editor-runtime-state.svelte";
 
 export interface EditorTabLoadedDetail {
@@ -12,26 +12,15 @@ export interface EditorTabLoadedDetail {
 
 interface EditorRuntimeControllerDependencies {
   getSessionId: () => string;
-  getSessions: () => EditorSessionState[];
   getViewMode: () => SessionViewMode;
   getRootDir: () => string;
-  setSessionViewMode: (id: string, viewMode: SessionViewMode) => void;
-  setSessionEditorRootDir: (id: string, rootDir: string) => void;
-  setSessionOpenEditorTabs: (id: string, openEditorTabs: EditorTabRef[]) => void;
-  setSessionActiveEditorPath: (id: string, activeEditorPath: string | null) => void;
-  setSessionDirtyPaths: (id: string, dirtyPaths: string[]) => void;
+  syncSessionState: (id: string, sessionState: SessionEditorState) => void;
 }
-
-type EditorSessionState = Pick<SessionCore, "id"> & SessionEditorSnapshot;
 
 export function createEditorRuntimeController(
   state: EditorRuntimeState,
   deps: EditorRuntimeControllerDependencies,
 ) {
-  function getCurrentSessionState() {
-    return deps.getSessions().find((entry) => entry.id === deps.getSessionId()) ?? null;
-  }
-
   function getOpenRefTabs() {
     return state.tabs.map((tab) => ({
       wslPath: tab.wslPath,
@@ -40,16 +29,18 @@ export function createEditorRuntimeController(
     }));
   }
 
+  function buildSessionState(): SessionEditorState {
+    return {
+      viewMode: deps.getViewMode(),
+      editorRootDir: deps.getRootDir(),
+      openEditorTabs: getOpenRefTabs(),
+      activeEditorPath: state.activePath,
+      dirtyPaths: state.tabs.filter((tab) => tab.dirty).map((tab) => tab.wslPath),
+    };
+  }
+
   function syncSessionState() {
-    const sessionId = deps.getSessionId();
-    deps.setSessionViewMode(sessionId, deps.getViewMode());
-    deps.setSessionEditorRootDir(sessionId, deps.getRootDir());
-    deps.setSessionOpenEditorTabs(sessionId, getOpenRefTabs());
-    deps.setSessionActiveEditorPath(sessionId, state.activePath);
-    deps.setSessionDirtyPaths(
-      sessionId,
-      state.tabs.filter((tab) => tab.dirty).map((tab) => tab.wslPath),
-    );
+    deps.syncSessionState(deps.getSessionId(), buildSessionState());
   }
 
   function setStatus(message: string | null) {
@@ -177,7 +168,7 @@ export function createEditorRuntimeController(
   return {
     cancelCloseTab,
     confirmCloseTab,
-    getCurrentSessionState,
+    buildSessionState,
     getOpenRefTabs,
     handleContentChange,
     patchTab,

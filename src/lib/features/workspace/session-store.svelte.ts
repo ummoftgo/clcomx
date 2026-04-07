@@ -1,4 +1,10 @@
-import type { EditorTabRef, Session, SessionViewMode, WorkspaceSnapshot } from "../../types";
+import type {
+  EditorTabRef,
+  Session,
+  SessionEditorState,
+  SessionViewMode,
+  WorkspaceSnapshot,
+} from "../../types";
 import {
   applyWorkspaceWindowSnapshot,
   createWorkspaceSnapshotForWindow,
@@ -16,6 +22,7 @@ import {
   setSessionActiveEditorPathInList,
   setSessionAuxStateInList,
   setSessionDirtyPathsInList,
+  setSessionEditorStateInList,
   setSessionEditorRootDirInList,
   setSessionLockedInList,
   setSessionOpenEditorTabsInList,
@@ -139,6 +146,10 @@ export function setSessionActiveEditorPath(id: string, activeEditorPath: string 
 
 export function setSessionDirtyPaths(id: string, dirtyPaths: string[]) {
   setSessionDirtyPathsInList(sessions, id, dirtyPaths);
+}
+
+export function setSessionEditorState(id: string, editorState: SessionEditorState) {
+  setSessionEditorStateInList(sessions, id, editorState);
 }
 
 export function setSessionPinned(id: string, pinned: boolean) {

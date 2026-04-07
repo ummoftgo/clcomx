@@ -3,6 +3,7 @@ import type { Session } from "../../types";
 import {
   moveSessionInList,
   removeSessionAndResolveActive,
+  setSessionEditorStateInList,
   setSessionPinnedInList,
 } from "./session-store-mutations";
 
@@ -56,5 +57,25 @@ describe("session-store-mutations", () => {
     moveSessionInList(sessions, "c", 0);
 
     expect(sessions.map((session) => session.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("applies editor snapshot state through a single mutation", () => {
+    const sessions = [createSession("a")];
+
+    setSessionEditorStateInList(sessions, "a", {
+      viewMode: "editor",
+      editorRootDir: "/tmp/a/src",
+      openEditorTabs: [{ wslPath: "/tmp/a/src/main.ts", line: 3, column: 7 }],
+      activeEditorPath: "/tmp/a/src/main.ts",
+      dirtyPaths: ["/tmp/a/src/main.ts"],
+    });
+
+    expect(sessions[0]).toMatchObject({
+      viewMode: "editor",
+      editorRootDir: "/tmp/a/src",
+      openEditorTabs: [{ wslPath: "/tmp/a/src/main.ts", line: 3, column: 7 }],
+      activeEditorPath: "/tmp/a/src/main.ts",
+      dirtyPaths: ["/tmp/a/src/main.ts"],
+    });
   });
 });

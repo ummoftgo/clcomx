@@ -14,6 +14,7 @@ export {
   setActiveSession,
   setCurrentWindowName,
   setSessionAuxState,
+  setSessionEditorState,
   setSessionDirtyPaths,
   setSessionEditorRootDir,
   setSessionLocked,

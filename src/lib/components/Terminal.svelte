@@ -43,11 +43,7 @@
   import { ensureEditorsDetected, getEditorDetectionState } from "../stores/editors.svelte";
   import {
     getSessions,
-    setSessionActiveEditorPath,
-    setSessionDirtyPaths,
-    setSessionEditorRootDir,
-    setSessionOpenEditorTabs,
-    setSessionViewMode,
+    setSessionEditorState,
   } from "../stores/sessions.svelte";
   import { getSettings } from "../stores/settings.svelte";
   import { getThemeById } from "../themes";
@@ -61,10 +57,7 @@
     readSessionFile,
     resolveTerminalPath,
     writeSessionFile,
-    type EditorSearchResult,
-    type ResolvedTerminalPath,
   } from "../editors";
-  import type { NavigationFileSnapshot } from "../editor/navigation";
   import { warmMonacoEditorRuntime } from "../editor/monaco-host";
   import { createTerminalFileLinks } from "../terminal/file-links";
   import { consumeAuxShellMetadata } from "../terminal/aux-shell-metadata";
@@ -74,20 +67,8 @@
   } from "../terminal/claude-footer-ghosting";
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
-  import { createEditorDocumentController } from "../features/editor/controller/editor-document-controller";
-  import { createEditorNavigationAdapterController } from "../features/editor/controller/editor-navigation-adapter-controller";
-  import { createEditorOpenLoadController } from "../features/editor/controller/editor-open-load-controller";
-  import { createEditorOpenStateController } from "../features/editor/controller/editor-open-state-controller";
-  import { createEditorQuickOpenController } from "../features/editor/controller/editor-quick-open-controller";
-  import { createEditorViewController } from "../features/editor/controller/editor-view-controller";
+  import { createEditorFacade } from "../features/editor/controller/editor-facade";
   import type { SessionShellProps } from "../features/session/contracts/session-shell";
-  import { createEditorRuntimeController } from "../features/editor/controller/editor-runtime-controller";
-  import {
-    buildEditorHydrationPlaceholderTabs,
-    loadHydratedEditorTabs,
-    resolveHydratedActivePath,
-    splitHydratedEditorTabs,
-  } from "../features/editor/service/editor-session-hydration";
   import { createEditorQuickOpenState } from "../features/editor/state/editor-quick-open-state.svelte";
   import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
   import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
@@ -191,8 +172,6 @@
   let writeParsedDisposable: IDisposable | null = null;
   let editorViewMode = $state<"terminal" | "editor">("terminal");
   let editorRootDir = $state("");
-  let editorHydratedSessionId = $state<string | null>(null);
-  let editorHydrationToken = 0;
   const editorQuickOpenState = createEditorQuickOpenState();
   const editorRuntimeState = createEditorRuntimeState();
   const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
@@ -211,89 +190,68 @@
   const {
     cancelCloseTab: cancelCloseEditorTab,
     confirmCloseTab: confirmCloseEditorTab,
-    getCurrentSessionState: getCurrentEditorSessionState,
-    handleContentChange: handleEditorContentChange,
-    patchTab: patchEditorTab,
-    requestCloseTab: closeEditorTab,
-    setStatus: setEditorStatus,
-    setTabError: setEditorTabError,
-    setTabLoaded: setEditorTabLoaded,
-    setTabSaving: setEditorTabSaving,
-    setTabs: setEditorTabs,
-    syncSessionState: syncEditorSessionState,
-  } = createEditorRuntimeController(editorRuntimeState, {
-    getSessionId: () => sessionId,
-    getSessions,
-    getViewMode: () => editorViewMode,
-    getRootDir: () => editorRootDir,
-    setSessionViewMode,
-    setSessionEditorRootDir,
-    setSessionOpenEditorTabs,
-    setSessionActiveEditorPath,
-    setSessionDirtyPaths,
-  });
-  const {
-    readNavigationFile: readEditorNavigationFile,
-    saveTab: saveEditorTab,
-  } = createEditorDocumentController(editorRuntimeState, {
-    getSessionId: () => sessionId,
-    getSaveStatusLabel: () => $t("common.actions.save"),
-    readSessionFile,
-    writeSessionFile,
-    patchTab: patchEditorTab,
-    setStatus: setEditorStatus,
-    setTabError: setEditorTabError,
-    setTabSaving: setEditorTabSaving,
-    syncSessionState: syncEditorSessionState,
-    upsertQuickOpenEntry: (wslPath) => upsertEditorQuickOpenEntry(wslPath),
-  });
-  const { prepareOpenPath: prepareEditorOpenPath } = createEditorOpenStateController(editorRuntimeState, {
-    setEditorRootDir: (rootDir) => {
-      editorRootDir = rootDir;
-    },
-    syncSessionState: syncEditorSessionState,
-  });
-  const { loadPreparedOpenPath } = createEditorOpenLoadController(editorRuntimeState, {
-    getSessionId: () => sessionId,
-    getLoadingStatusLabel: () => $t("common.labels.loading"),
-    readSessionFile,
-    setStatus: setEditorStatus,
-    setTabLoaded: setEditorTabLoaded,
-    setTabError: setEditorTabError,
-    closeQuickOpen: () => closeEditorQuickOpen(),
-    syncSessionState: syncEditorSessionState,
-  });
-  const {
     handleActivePathChange: handleEditorActivePathChange,
-    openDirectory: openEditorDirectory,
-    requestSwitchToEditorMode,
-  } = createEditorViewController(editorRuntimeState, {
-    getWorkDir: () => workDir,
-    getEditorRootDir: () => editorRootDir,
-    getQuickOpenVisible: () => editorQuickOpenState.visible,
-    setEditorRootDir: (rootDir) => {
-      editorRootDir = rootDir;
-    },
-    setEditorViewMode: (viewMode) => {
-      editorViewMode = viewMode;
-    },
-    ensureEditorViewMode,
-    primeMonacoRuntime: () => primeEditorMonacoRuntime(),
-    primeWorkspaceFiles: (rootDir) => primeEditorWorkspaceFiles(rootDir),
-    openQuickOpen: (rootDir, query) => openEditorQuickOpen(rootDir, query),
-    syncSessionState: syncEditorSessionState,
-  });
-  const {
+    handleContentChange: handleEditorContentChange,
+    invalidateQuickOpenRequest: invalidateEditorQuickOpenRequest,
+    listWorkspaceFiles: listEditorWorkspaceFiles,
     openInternalEditorForLinkPath,
     openNavigationLocation: openEditorNavigationLocation,
     openPathFromQuickResult: openEditorPathFromQuickResult,
-  } = createEditorNavigationAdapterController({
-    getEditorRootDir: () => editorRootDir,
-    getQuickOpenRootDir: () => editorQuickOpenState.rootDir,
+    openQuickOpen: openEditorQuickOpen,
+    readNavigationFile: readEditorNavigationFile,
+    refreshQuickOpenEntries: refreshEditorQuickOpenEntries,
+    requestCloseTab: closeEditorTab,
+    requestSwitchToEditorMode,
+    saveTab: saveEditorTab,
+    scheduleMonacoPrewarm: scheduleEditorMonacoPrewarm,
+    scheduleQuickOpenPrewarm: scheduleEditorQuickOpenPrewarm,
+    switchToTerminalView,
+    cancelMonacoPrewarm: cancelEditorMonacoPrewarm,
+    cancelQuickOpenPrewarm: cancelEditorQuickOpenPrewarm,
+    closeQuickOpen: closeEditorQuickOpen,
+    ensureRuntimeReady: ensureEditorRuntimeReady,
+  } = createEditorFacade({
+    runtimeState: editorRuntimeState,
+    quickOpenState: editorQuickOpenState,
+    getSessionId: () => sessionId,
+    getSessionSnapshot: () =>
+      getSessions().find((entry) => entry.id === sessionId) ?? null,
     getWorkDir: () => workDir,
-    computeQuickOpenEntryForRoot: (wslPath, rootDir) => computeQuickOpenEntryForRoot(wslPath, rootDir),
-    openEditorDirectory: (rootDir) => openEditorDirectory(rootDir),
-    openEditorPath,
+    getViewMode: () => editorViewMode,
+    setViewMode: (viewMode) => {
+      editorViewMode = viewMode;
+    },
+    getRootDir: () => editorRootDir,
+    setRootDir: (rootDir) => {
+      editorRootDir = rootDir;
+    },
+    syncSessionState: (id, sessionState) => {
+      setSessionEditorState(id, sessionState);
+    },
+    prepareForEditorMode: () => {
+      if (auxVisible) {
+        hideAuxTerminal({ restoreFocus: false });
+      }
+      if (draftComposerState.draftOpen) {
+        closeDraft({ restoreFocus: false });
+      }
+    },
+    prepareForEditorPathOpen: () => {
+      if (draftComposerState.draftOpen) {
+        closeDraft({ restoreFocus: false });
+      }
+    },
+    getLoadingStatusLabel: () => $t("common.labels.loading"),
+    getSaveStatusLabel: () => $t("common.actions.save"),
+    readSessionFile,
+    writeSessionFile,
+    getVisible: () => visible,
+    getTerminalReady: () => terminalReady,
+    getTerminalStartupSettled: () => terminalStartupSettled,
+    getThemeDefinition: () => getThemeById(settings.interface.theme) ?? null,
+    warmMonacoRuntime: warmMonacoEditorRuntime,
+    listSessionFiles,
+    reportForegroundError: (message) => setClipboardNotice(message),
   });
   const draftComposerState = createDraftComposerState();
   const draftComposer = createDraftComposerController(draftComposerState, {
@@ -375,32 +333,6 @@
     dispose: disposeOverlayInteraction,
     buildCandidateFileLinkMenuItems,
   } = overlayInteraction;
-  const {
-    cancelMonacoPrewarm: cancelEditorMonacoPrewarm,
-    cancelPrewarm: cancelEditorQuickOpenPrewarm,
-    closeQuickOpen: closeEditorQuickOpen,
-    computeEntryForRoot: computeQuickOpenEntryForRoot,
-    invalidateRequest: invalidateEditorQuickOpenRequest,
-    listWorkspaceFiles: listEditorWorkspaceFiles,
-    openQuickOpen: openEditorQuickOpen,
-    primeMonacoRuntime: primeEditorMonacoRuntime,
-    primeWorkspaceFiles: primeEditorWorkspaceFiles,
-    refreshEntries: refreshEditorQuickOpenEntries,
-    scheduleMonacoPrewarm: scheduleEditorMonacoPrewarm,
-    schedulePrewarm: scheduleEditorQuickOpenPrewarm,
-    upsertEntry: upsertEditorQuickOpenEntry,
-  } = createEditorQuickOpenController(editorQuickOpenState, {
-    getSessionId: () => sessionId,
-    getWorkDir: () => workDir,
-    getEditorRootDir: () => editorRootDir,
-    getVisible: () => visible,
-    getTerminalReady: () => terminalReady,
-    getTerminalStartupSettled: () => terminalStartupSettled,
-    getThemeDefinition: () => getThemeById(settings.interface.theme) ?? null,
-    warmMonacoRuntime: warmMonacoEditorRuntime,
-    listSessionFiles,
-    reportForegroundError: setClipboardNotice,
-  });
   const terminalTestBridge = createTerminalTestBridgeController({
     getSessionId: () => sessionId,
     focusOutput,
@@ -1239,124 +1171,9 @@
     return await ensureEditorsDetected();
   }
 
-  function ensureEditorViewMode() {
-    if (editorViewMode === "editor") {
-      return;
-    }
-
-    if (auxVisible) {
-      hideAuxTerminal({ restoreFocus: false });
-    }
-    if (draftComposerState.draftOpen) {
-      closeDraft({ restoreFocus: false });
-    }
-    editorViewMode = "editor";
-    setSessionViewMode(sessionId, editorViewMode);
-  }
-
-  function switchToTerminalView() {
-    editorViewMode = "terminal";
-    closeEditorQuickOpen();
-    editorRuntimeState.closeConfirmVisible = false;
-    editorRuntimeState.closeConfirmPath = null;
-    setSessionViewMode(sessionId, editorViewMode);
-    tick().then(focusOutput);
-  }
-
-  async function initializeEditorRuntimeFromSession() {
-    const session = getCurrentEditorSessionState();
-    editorHydratedSessionId = sessionId;
-    editorViewMode = session?.viewMode ?? "terminal";
-    editorRootDir = session?.editorRootDir || workDir;
-    editorQuickOpenState.rootDir = editorRootDir;
-    editorRuntimeState.activePath = session?.activeEditorPath ?? null;
-    editorRuntimeState.savedContentByPath = {};
-    editorRuntimeState.mtimeByPath = {};
-
-    const refs = session?.openEditorTabs ?? [];
-    if (refs.length === 0) {
-      setEditorTabs([]);
-      return;
-    }
-
-    const token = ++editorHydrationToken;
-    setEditorTabs(buildEditorHydrationPlaceholderTabs(refs));
-
-    const loadedTabs = await loadHydratedEditorTabs({ readSessionFile }, sessionId, refs);
-
-    if (token !== editorHydrationToken) {
-      return;
-    }
-
-    const { tabs, savedContentByPath, mtimeByPath } = splitHydratedEditorTabs(loadedTabs);
-    editorRuntimeState.savedContentByPath = savedContentByPath;
-    editorRuntimeState.mtimeByPath = mtimeByPath;
-    editorRuntimeState.tabs = tabs;
-    editorRuntimeState.activePath = resolveHydratedActivePath(editorRuntimeState.activePath, tabs);
-
-    syncEditorSessionState();
-  }
-
-  async function ensureEditorRuntimeReady() {
-    if (editorHydratedSessionId === sessionId) {
-      return;
-    }
-
-    await initializeEditorRuntimeFromSession();
-  }
-
-  async function openEditorPath(
-    path: ResolvedTerminalPath | EditorSearchResult,
-    options?: {
-      rootDir?: string;
-      focusExisting?: boolean;
-      prefetchedFile?: NavigationFileSnapshot;
-    },
-  ) {
-    ensureEditorViewMode();
-    primeEditorMonacoRuntime();
-
-    if (draftComposerState.draftOpen) {
-      closeDraft({ restoreFocus: false });
-    }
-
-    if ("isDirectory" in path && path.isDirectory) {
-      await openEditorDirectory(path.wslPath);
-      return;
-    }
-
-    const wslPath = path.wslPath;
-    const nextRootDir = options?.rootDir || editorRootDir || workDir;
-    primeEditorWorkspaceFiles(nextRootDir);
-    const nextLine = "line" in path ? path.line ?? null : null;
-    const nextColumn = "column" in path ? path.column ?? null : null;
-
-    const preparedOpenPath = prepareEditorOpenPath({
-      wslPath,
-      line: nextLine,
-      column: nextColumn,
-      rootDir: options?.rootDir,
-    });
-
-    if (preparedOpenPath.kind === "existing") {
-      closeEditorQuickOpen();
-      tick().then(() => {
-        if (editorViewMode === "editor" && !preparedOpenPath.wasLoading) {
-          editorRuntimeState.statusText = null;
-        }
-      });
-      return;
-    }
-    await loadPreparedOpenPath({
-      wslPath,
-      line: nextLine,
-      column: nextColumn,
-      prefetchedFile: options?.prefetchedFile,
-    });
-  }
-
   function requestSwitchToTerminalMode() {
     switchToTerminalView();
+    tick().then(focusOutput);
   }
 
   function disposeAuxTerminalInstance() {
@@ -2061,10 +1878,6 @@
   });
 
   $effect(() => {
-    if (editorHydratedSessionId === sessionId) {
-      return;
-    }
-
     void ensureEditorRuntimeReady();
   });
 

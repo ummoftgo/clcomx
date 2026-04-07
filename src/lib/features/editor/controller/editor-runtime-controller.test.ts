@@ -5,23 +5,9 @@ import { createEditorRuntimeState } from "../state/editor-runtime-state.svelte";
 function createDeps() {
   return {
     getSessionId: () => "session-1",
-    getSessions: () => [
-      {
-        id: "session-1",
-        viewMode: "editor" as const,
-        editorRootDir: "/workspace",
-        openEditorTabs: [],
-        activeEditorPath: null,
-        dirtyPaths: [],
-      },
-    ],
     getViewMode: () => "editor" as const,
     getRootDir: () => "/workspace",
-    setSessionViewMode: vi.fn(),
-    setSessionEditorRootDir: vi.fn(),
-    setSessionOpenEditorTabs: vi.fn(),
-    setSessionActiveEditorPath: vi.fn(),
-    setSessionDirtyPaths: vi.fn(),
+    syncSessionState: vi.fn(),
   };
 }
 
@@ -49,14 +35,16 @@ describe("editor-runtime-controller", () => {
       },
     ]);
 
-    expect(deps.setSessionViewMode).toHaveBeenCalledWith("session-1", "editor");
-    expect(deps.setSessionEditorRootDir).toHaveBeenCalledWith("session-1", "/workspace");
-    expect(deps.setSessionOpenEditorTabs).toHaveBeenCalledWith("session-1", [
-      { wslPath: "/workspace/a.ts", line: null, column: null },
-      { wslPath: "/workspace/b.ts", line: 5, column: 2 },
-    ]);
-    expect(deps.setSessionActiveEditorPath).toHaveBeenCalledWith("session-1", "/workspace/a.ts");
-    expect(deps.setSessionDirtyPaths).toHaveBeenCalledWith("session-1", ["/workspace/a.ts"]);
+    expect(deps.syncSessionState).toHaveBeenCalledWith("session-1", {
+      viewMode: "editor",
+      editorRootDir: "/workspace",
+      openEditorTabs: [
+        { wslPath: "/workspace/a.ts", line: null, column: null },
+        { wslPath: "/workspace/b.ts", line: 5, column: 2 },
+      ],
+      activeEditorPath: "/workspace/a.ts",
+      dirtyPaths: ["/workspace/a.ts"],
+    });
   });
 
   it("removes tabs and clears cached file snapshots", () => {

@@ -1,4 +1,9 @@
-import type { EditorTabRef, Session, SessionViewMode } from "../../types";
+import type {
+  EditorTabRef,
+  Session,
+  SessionEditorState,
+  SessionViewMode,
+} from "../../types";
 
 export function removeSessionAndResolveActive(
   sessions: Session[],
@@ -111,6 +116,27 @@ export function setSessionDirtyPathsInList(sessions: Session[], id: string, dirt
   if (session) {
     session.dirtyPaths = [...dirtyPaths];
   }
+}
+
+export function setSessionEditorStateInList(
+  sessions: Session[],
+  id: string,
+  editorState: SessionEditorState,
+) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (!session) {
+    return;
+  }
+
+  session.viewMode = editorState.viewMode;
+  session.editorRootDir = editorState.editorRootDir || session.workDir;
+  session.openEditorTabs = editorState.openEditorTabs.map((entry) => ({
+    wslPath: entry.wslPath,
+    line: entry.line ?? null,
+    column: entry.column ?? null,
+  }));
+  session.activeEditorPath = editorState.activeEditorPath;
+  session.dirtyPaths = [...editorState.dirtyPaths];
 }
 
 function firstUnpinnedIndex(sessions: Session[]) {
