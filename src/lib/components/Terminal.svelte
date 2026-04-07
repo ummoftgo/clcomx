@@ -55,7 +55,6 @@
   } from "../editors";
   import { warmMonacoEditorRuntime } from "../editor/monaco-host";
   import { createTerminalFileLinks } from "../terminal/file-links";
-  import { consumeAuxShellMetadata } from "../terminal/aux-shell-metadata";
   import {
     isClaudeFooterGhostingMitigationEnabled,
     syncTerminalUnicodeWidth,
@@ -67,10 +66,12 @@
   import { createEditorQuickOpenState } from "../features/editor/state/editor-quick-open-state.svelte";
   import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
   import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
+  import { createAuxTerminalRuntimeController } from "../features/terminal/controller/aux-terminal-runtime-controller";
   import { createMainTerminalRuntimeController } from "../features/terminal/controller/main-terminal-runtime-controller";
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
   import { createOverlayInteractionController } from "../features/terminal/controller/overlay-interaction-controller";
   import { createTerminalTestBridgeController } from "../features/terminal/controller/terminal-test-bridge-controller";
+  import { createAuxTerminalRuntimeState } from "../features/terminal/state/aux-terminal-runtime-state.svelte";
   import { createDraftComposerState } from "../features/terminal/state/draft-composer-state.svelte";
   import { createMainTerminalRuntimeState } from "../features/terminal/state/main-terminal-runtime-state.svelte";
   import { createOverlayInteractionState } from "../features/terminal/state/overlay-interaction-state.svelte";
@@ -107,6 +108,7 @@
   let terminal: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
   let inputTextarea: HTMLTextAreaElement | undefined;
+  const auxTerminalRuntimeState = createAuxTerminalRuntimeState();
   const mainTerminalRuntimeState = createMainTerminalRuntimeState();
   let terminalReady = $state(false);
   let terminalStartupSettled = $state(false);
@@ -124,23 +126,10 @@
   let auxResizeObserver: ResizeObserver | null = null;
   let auxOutputPointerCleanup: (() => void) | null = null;
   let activeRenderer = $state<TerminalRendererPreference>("dom");
-  let auxPtyId = $state(-1);
   let auxVisible = $state(false);
   let auxInitialized = $state(false);
-  let auxExited = $state(true);
-  let auxBusy = $state(false);
-  let auxLoadingState = $state<"opening" | null>(null);
-  let auxLoadingStartedAt = 0;
-  let auxLoadingHasRenderableOutput = false;
-  let auxLoadingQuietTimer: ReturnType<typeof setTimeout> | null = null;
-  let auxLoadingMaxTimer: ReturnType<typeof setTimeout> | null = null;
-  let auxSpawnError = $state<string | null>(null);
-  let auxCurrentPath = $state("");
-  let auxMetadataRemainder = "";
   let auxHeightPercent = $state(28);
   let auxHeightCustomized = false;
-  let auxFollowTail = true;
-  let auxAttached = false;
   let auxStateHydrated = false;
   let auxLayoutSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let assistPanelHeight = $state(0);
@@ -154,9 +143,6 @@
   let editorRootDir = $state("");
   const editorQuickOpenState = createEditorQuickOpenState();
   const editorRuntimeState = createEditorRuntimeState();
-  const MIN_TERMINAL_LOADING_MS = 360;
-  const TERMINAL_LOADING_QUIET_MS = 1300;
-  const TERMINAL_LOADING_MAX_MS = 8000;
   const WEB_LINK_REGEX = /(?:https?|ftp):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/i;
 
   const settings = getSettings();
@@ -287,6 +273,20 @@
     handleDraftInput,
     toggleDraft,
   } = draftComposer;
+  const auxTerminalRuntime = createAuxTerminalRuntimeController({
+    state: auxTerminalRuntimeState,
+    getDistro: () => distro,
+    getWorkDir: () => workDir,
+    getTerminal: () => auxTerminal,
+    getInitialPtySize,
+    writeTerminalData,
+    focusOutput,
+    spawnShellPty,
+    takePtyInitialOutput,
+    getPtyOutputSnapshot,
+    writePty,
+    resizePty,
+  });
   const overlayInteractionState = createOverlayInteractionState();
   const overlayInteraction = createOverlayInteractionController(overlayInteractionState, {
     getSessionId: () => sessionId,
@@ -347,7 +347,7 @@
     openClipboardPreview,
     setClipboardNotice,
     getLivePtyId: () => mainTerminalRuntimeState.livePtyId,
-    getAuxPtyId: () => auxPtyId,
+    getAuxPtyId: () => auxTerminalRuntimeState.ptyId,
     getPtyOutputSnapshot,
     getTerminal: () => terminal,
     getTestHooks: () => getOrCreateTerminalTestHooks(),
@@ -532,26 +532,6 @@
     });
   }
 
-  function hasRenderableTerminalOutput(data: string) {
-    if (!data) {
-      return false;
-    }
-
-    const withoutOsc = data.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "");
-    const withoutCsi = withoutOsc.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
-    const withoutControl = withoutCsi.replace(/[\u0000-\u001f\u007f]/g, "");
-    return withoutControl.trim().length > 0;
-  }
-
-  function writeAuxTerminalData(term: Terminal, data: string) {
-    const parsed = consumeAuxShellMetadata(data, auxMetadataRemainder);
-    auxMetadataRemainder = parsed.remainder;
-    if (parsed.cwd) {
-      auxCurrentPath = parsed.cwd;
-    }
-    return writeTerminalData(term, parsed.text);
-  }
-
   function scrollTerminalToBottom() {
     requestAnimationFrame(() => {
       terminal?.scrollToBottom();
@@ -677,9 +657,9 @@
     }
 
     fit.fit();
-    if (auxPtyId >= 0) {
+    if (auxTerminalRuntimeState.ptyId >= 0) {
       try {
-        await resizePty(auxPtyId, term.cols, term.rows);
+        await resizePty(auxTerminalRuntimeState.ptyId, term.cols, term.rows);
       } catch (error) {
         console.error("Failed to resize auxiliary terminal PTY", error);
       }
@@ -703,64 +683,6 @@
         requestAnimationFrame(() => resolve());
       });
     });
-  }
-
-  function showAuxLoadingState() {
-    clearAuxLoadingTimers();
-    auxLoadingState = "opening";
-    auxLoadingStartedAt = performance.now();
-    auxLoadingHasRenderableOutput = false;
-    auxLoadingMaxTimer = setTimeout(() => {
-      auxLoadingMaxTimer = null;
-      void clearAuxLoadingState(true);
-    }, TERMINAL_LOADING_MAX_MS);
-  }
-
-  function clearAuxLoadingTimers() {
-    if (auxLoadingQuietTimer) {
-      clearTimeout(auxLoadingQuietTimer);
-      auxLoadingQuietTimer = null;
-    }
-    if (auxLoadingMaxTimer) {
-      clearTimeout(auxLoadingMaxTimer);
-      auxLoadingMaxTimer = null;
-    }
-  }
-
-  function noteAuxLoadingOutput(data: string) {
-    if (auxLoadingState === null || !hasRenderableTerminalOutput(data)) {
-      return;
-    }
-
-    auxLoadingHasRenderableOutput = true;
-
-    if (auxLoadingQuietTimer) {
-      clearTimeout(auxLoadingQuietTimer);
-    }
-    auxLoadingQuietTimer = setTimeout(() => {
-      auxLoadingQuietTimer = null;
-      void clearAuxLoadingState();
-    }, TERMINAL_LOADING_QUIET_MS);
-  }
-
-  async function clearAuxLoadingState(force = false) {
-    if (auxLoadingState === null) {
-      return;
-    }
-
-    if (!force && auxLoadingHasRenderableOutput) {
-      const elapsed = performance.now() - auxLoadingStartedAt;
-      const remaining = MIN_TERMINAL_LOADING_MS - elapsed;
-      if (remaining > 0) {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, remaining);
-        });
-      }
-    }
-
-    clearAuxLoadingTimers();
-    auxLoadingState = null;
-    auxLoadingHasRenderableOutput = false;
   }
 
   function handleAuxShortcut(event: KeyboardEvent) {
@@ -905,8 +827,7 @@
     auxTerminal?.dispose();
     auxTerminal = null;
     auxFitAddon = null;
-    auxMetadataRemainder = "";
-    auxAttached = false;
+    auxTerminalRuntime.handleTerminalInstanceDisposed();
     auxOutputEl?.replaceChildren();
   }
 
@@ -929,22 +850,15 @@
     };
 
     auxTerm.onData((data) => {
-      if (auxPtyId >= 0) {
-        void writePty(auxPtyId, data);
-      }
+      auxTerminalRuntime.handleTerminalInput(data);
     });
 
     auxTerm.onResize(({ cols, rows }) => {
-      if (auxPtyId >= 0) {
-        void resizePty(auxPtyId, cols, rows);
-      }
-      if (auxFollowTail) {
-        auxTerm.scrollToBottom();
-      }
+      auxTerminalRuntime.handleTerminalResize(cols, rows);
     });
 
     auxTerm.onScroll((viewportY) => {
-      auxFollowTail = viewportY >= auxTerm.buffer.active.baseY;
+      auxTerminalRuntime.handleViewportScroll(viewportY, auxTerm.buffer.active.baseY);
     });
 
     auxResizeObserver = new ResizeObserver(() => {
@@ -958,51 +872,13 @@
 
     auxTerminal = auxTerm;
     auxFitAddon = auxFit;
-    auxFollowTail = true;
+    auxTerminalRuntimeState.followTail = true;
 
     await tick();
     requestAnimationFrame(() => {
       auxFit.fit();
       scheduleAuxLayoutSettle();
     });
-  }
-
-  async function spawnAuxShell(term: Terminal) {
-    const { cols, rows } = getInitialPtySize(term);
-    auxBusy = true;
-    auxSpawnError = null;
-    auxCurrentPath = workDir;
-    auxMetadataRemainder = "";
-
-    try {
-      auxPtyId = await spawnShellPty(cols, rows, distro, workDir);
-      const initialOutput = await takePtyInitialOutput(auxPtyId);
-      await writeAuxTerminalData(term, initialOutput);
-      noteAuxLoadingOutput(initialOutput);
-      auxExited = false;
-      auxFollowTail = true;
-      auxAttached = true;
-    } catch (error) {
-      auxSpawnError = error instanceof Error ? error.message : String(error);
-      auxPtyId = -1;
-    } finally {
-      auxBusy = false;
-      if (auxSpawnError) {
-        void clearAuxLoadingState(true);
-      }
-    }
-  }
-
-  async function attachToExistingAuxPty(id: number, term: Terminal) {
-    auxPtyId = id;
-    auxCurrentPath = workDir;
-    auxMetadataRemainder = "";
-    const snapshot = await getPtyOutputSnapshot(id);
-    await writeAuxTerminalData(term, snapshot.data);
-    noteAuxLoadingOutput(snapshot.data);
-    auxExited = false;
-    auxFollowTail = true;
-    auxAttached = true;
   }
 
   async function ensureAuxTerminalVisible() {
@@ -1015,13 +891,9 @@
       auxInitialized = true;
     }
 
-    if (auxLoadingState === null && !auxAttached) {
-      showAuxLoadingState();
-    }
-
     await tick();
 
-    if (!auxTerminal || auxExited) {
+    if (!auxTerminal || auxTerminalRuntimeState.exited) {
       await createAuxTerminalInstance();
     }
 
@@ -1029,18 +901,8 @@
       return;
     }
 
-    if (!auxAttached) {
-      if (auxPtyId >= 0) {
-        try {
-          await attachToExistingAuxPty(auxPtyId, auxTerminal);
-        } catch (error) {
-          console.warn("Failed to attach to existing auxiliary PTY, spawning a new shell", error);
-          auxPtyId = -1;
-          await spawnAuxShell(auxTerminal);
-        }
-      } else {
-        await spawnAuxShell(auxTerminal);
-      }
+    if (!auxTerminalRuntimeState.attached) {
+      await auxTerminalRuntime.attachOrSpawn(auxTerminal);
     }
 
     requestAnimationFrame(() => {
@@ -1072,19 +934,6 @@
     }
 
     await ensureAuxTerminalVisible();
-  }
-
-  function handleAuxPtyExit() {
-    auxExited = true;
-    auxPtyId = -1;
-    auxVisible = false;
-    auxBusy = false;
-    clearAuxLoadingTimers();
-    auxLoadingState = null;
-    auxLoadingHasRenderableOutput = false;
-    auxMetadataRemainder = "";
-    auxAttached = false;
-    focusOutput();
   }
 
   function stopAuxResize() {
@@ -1128,14 +977,7 @@
   }
 
   function handleOutputChunk(event: PtyOutputChunk) {
-    if (event.id === auxPtyId && auxTerminal) {
-      const shouldStickToBottom = auxFollowTail;
-      void writeAuxTerminalData(auxTerminal, event.data).then(() => {
-        noteAuxLoadingOutput(event.data);
-        if (shouldStickToBottom) {
-          auxTerminal?.scrollToBottom();
-        }
-      });
+    if (auxTerminalRuntime.handleOutputChunk(event)) {
       return;
     }
     mainTerminalRuntime.handleMainOutputChunk(event);
@@ -1209,8 +1051,8 @@
         return;
       }
 
-      if (event.payload === auxPtyId) {
-        handleAuxPtyExit();
+      if (auxTerminalRuntime.handlePtyExit(event.payload)) {
+        auxVisible = false;
       }
     });
 
@@ -1390,10 +1232,10 @@
 
   $effect(() => {
     if (auxStateHydrated) return;
-    auxPtyId = storedAuxPtyId;
+    auxTerminalRuntimeState.ptyId = storedAuxPtyId;
     auxVisible = storedAuxVisible;
     auxInitialized = storedAuxVisible;
-    auxExited = storedAuxPtyId < 0;
+    auxTerminalRuntimeState.exited = storedAuxPtyId < 0;
     auxHeightPercent = clampAuxHeightPercent(
       storedAuxHeightPercent ?? settings.terminal.auxTerminalDefaultHeight,
     );
@@ -1403,15 +1245,15 @@
 
   $effect(() => {
     void onAuxStateChange?.({
-      auxPtyId,
+      auxPtyId: auxTerminalRuntimeState.ptyId,
       auxVisible,
       auxHeightPercent: auxHeightCustomized ? auxHeightPercent : null,
     });
   });
 
   $effect(() => {
-    if (auxPtyId < 0) {
-      auxCurrentPath = workDir;
+    if (auxTerminalRuntimeState.ptyId < 0) {
+      auxTerminalRuntimeState.currentPath = workDir;
     }
   });
 
@@ -1448,6 +1290,7 @@
     clearAuxLayoutSettleTimer();
     cancelEditorQuickOpenPrewarm();
     mainTerminalRuntime.dispose();
+    auxTerminalRuntime.dispose();
     invalidateEditorQuickOpenRequest();
     disposeOverlayInteraction();
     fileLinkProviderDisposable?.dispose();
@@ -1461,7 +1304,7 @@
 
   $effect(() => {
     if (!terminalReady || !visible || !storedAuxVisible) return;
-    if (auxVisible && auxAttached) return;
+    if (auxVisible && auxTerminalRuntimeState.attached) return;
     void ensureAuxTerminalVisible();
   });
 </script>
@@ -1472,7 +1315,7 @@
   data-agent-id={agentId}
   data-session-id={sessionId}
   data-pty-id={String(mainTerminalRuntimeState.livePtyId)}
-  data-aux-pty-id={String(auxPtyId)}
+  data-aux-pty-id={String(auxTerminalRuntimeState.ptyId)}
   data-aux-visible={auxVisible ? "true" : "false"}
   data-draft-open={draftComposerState.draftOpen ? "true" : "false"}
   data-pending-image={overlayInteractionState.pendingClipboardImage ? "true" : "false"}
@@ -1570,15 +1413,15 @@
 
   {#if auxInitialized}
     {#snippet liveAuxBody()}
-      {#if auxSpawnError}
+      {#if auxTerminalRuntimeState.spawnError}
         <div class="terminal-error">
-          {$t("terminal.aux.startFailed", { values: { message: auxSpawnError } })}
+          {$t("terminal.aux.startFailed", { values: { message: auxTerminalRuntimeState.spawnError } })}
         </div>
       {/if}
     {/snippet}
 
     {#snippet liveAuxOverlay()}
-      {#if auxLoadingState !== null && !auxSpawnError}
+      {#if auxTerminalRuntimeState.loadingState !== null && !auxTerminalRuntimeState.spawnError}
         <div class="terminal-connect-overlay terminal-connect-overlay--subpanel terminal-connect-overlay--aux-panel">
           <div class="terminal-connect-card terminal-connect-card--compact">
             <div class="terminal-connect-eyebrow">CLCOMX</div>
@@ -1598,7 +1441,7 @@
       visible={auxVisible}
       heightPercent={auxHeightPercent}
       title={$t("terminal.aux.title")}
-      currentPath={auxCurrentPath}
+      currentPath={auxTerminalRuntimeState.currentPath}
       pathLabel={$t("terminal.aux.currentPath")}
       outputTestId={TEST_IDS.auxTerminalShell}
       resizable={true}
@@ -1615,7 +1458,7 @@
   <div bind:this={assistPanelEl}>
     <TerminalAssistPanel
       auxVisible={auxVisible}
-      auxBusy={auxBusy}
+      auxBusy={auxTerminalRuntimeState.busy}
       draftOpen={draftComposerState.draftOpen}
       draftValue={draftComposerState.draftValue}
       showEditorActions={true}
