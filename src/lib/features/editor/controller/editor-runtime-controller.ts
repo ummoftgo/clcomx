@@ -1,5 +1,5 @@
 import type { InternalEditorTab } from "../../../editor/contracts";
-import type { Session } from "../../../types";
+import type { EditorTabRef, SessionCore, SessionEditorSnapshot, SessionViewMode } from "../../../types";
 import type { EditorRuntimeState } from "../state/editor-runtime-state.svelte";
 
 export interface EditorTabLoadedDetail {
@@ -12,15 +12,17 @@ export interface EditorTabLoadedDetail {
 
 interface EditorRuntimeControllerDependencies {
   getSessionId: () => string;
-  getSessions: () => Session[];
-  getViewMode: () => Session["viewMode"];
+  getSessions: () => EditorSessionState[];
+  getViewMode: () => SessionViewMode;
   getRootDir: () => string;
-  setSessionViewMode: (id: string, viewMode: Session["viewMode"]) => void;
+  setSessionViewMode: (id: string, viewMode: SessionViewMode) => void;
   setSessionEditorRootDir: (id: string, rootDir: string) => void;
-  setSessionOpenEditorTabs: (id: string, openEditorTabs: Session["openEditorTabs"]) => void;
+  setSessionOpenEditorTabs: (id: string, openEditorTabs: EditorTabRef[]) => void;
   setSessionActiveEditorPath: (id: string, activeEditorPath: string | null) => void;
   setSessionDirtyPaths: (id: string, dirtyPaths: string[]) => void;
 }
+
+type EditorSessionState = Pick<SessionCore, "id"> & SessionEditorSnapshot;
 
 export function createEditorRuntimeController(
   state: EditorRuntimeState,

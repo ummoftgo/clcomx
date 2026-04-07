@@ -18,8 +18,6 @@ function createSession(id: string, pinned = false): Session {
     title: id,
     pinned,
     locked: false,
-    terminal: null,
-    element: null,
     distro: "Ubuntu",
     workDir: `/tmp/${id}`,
     viewMode: "terminal",

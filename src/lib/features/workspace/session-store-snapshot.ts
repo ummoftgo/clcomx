@@ -1,5 +1,9 @@
 import type {
   Session,
+  SessionCore,
+  SessionEditorSnapshot,
+  SessionPersistedState,
+  SessionShellRuntimeState,
   WorkspaceSnapshot,
   WorkspaceTabSnapshot,
   WorkspaceWindowSnapshot,
@@ -11,22 +15,32 @@ export function getDefaultSessionTitle(workDir: string) {
   return workDir.split("/").pop() || workDir;
 }
 
-export function createRuntimeSession(tab: WorkspaceTabSnapshot): Session {
+function createSessionCore(tab: WorkspaceTabSnapshot): SessionCore {
   return {
     id: tab.sessionId,
-    ptyId: tab.ptyId ?? -1,
-    auxPtyId: tab.auxPtyId ?? -1,
-    auxVisible: tab.auxVisible ?? false,
-    auxHeightPercent: tab.auxHeightPercent ?? null,
     agentId: tab.agentId ?? "claude",
     resumeToken: tab.resumeToken ?? null,
     title: tab.title || getDefaultSessionTitle(tab.workDir),
     pinned: tab.pinned ?? false,
     locked: tab.locked ?? false,
-    terminal: null,
-    element: null,
     distro: tab.distro,
     workDir: tab.workDir,
+  };
+}
+
+function createSessionShellRuntimeState(
+  tab: WorkspaceTabSnapshot,
+): SessionShellRuntimeState {
+  return {
+    ptyId: tab.ptyId ?? -1,
+    auxPtyId: tab.auxPtyId ?? -1,
+    auxVisible: tab.auxVisible ?? false,
+    auxHeightPercent: tab.auxHeightPercent ?? null,
+  };
+}
+
+function createSessionEditorSnapshot(tab: WorkspaceTabSnapshot): SessionEditorSnapshot {
+  return {
     viewMode: tab.viewMode ?? "terminal",
     editorRootDir: tab.editorRootDir || tab.workDir,
     openEditorTabs: (tab.openEditorTabs ?? []).map((entry) => ({
@@ -35,12 +49,45 @@ export function createRuntimeSession(tab: WorkspaceTabSnapshot): Session {
       column: entry.column ?? null,
     })),
     activeEditorPath: tab.activeEditorPath ?? null,
+  };
+}
+
+function createWorkspaceTabSnapshot(session: SessionPersistedState): WorkspaceTabSnapshot {
+  return {
+    sessionId: session.id,
+    agentId: session.agentId,
+    distro: session.distro,
+    workDir: session.workDir,
+    title: session.title,
+    pinned: session.pinned,
+    locked: session.locked,
+    resumeToken: session.resumeToken,
+    ptyId: session.ptyId >= 0 ? session.ptyId : null,
+    auxPtyId: session.auxPtyId >= 0 ? session.auxPtyId : null,
+    auxVisible: session.auxVisible,
+    auxHeightPercent: session.auxHeightPercent,
+    viewMode: session.viewMode,
+    editorRootDir: session.editorRootDir,
+    openEditorTabs: session.openEditorTabs.map((entry) => ({
+      wslPath: entry.wslPath,
+      line: entry.line ?? null,
+      column: entry.column ?? null,
+    })),
+    activeEditorPath: session.activeEditorPath,
+  };
+}
+
+export function createRuntimeSession(tab: WorkspaceTabSnapshot): Session {
+  return {
+    ...createSessionCore(tab),
+    ...createSessionShellRuntimeState(tab),
+    ...createSessionEditorSnapshot(tab),
     dirtyPaths: [],
   };
 }
 
 export function createWorkspaceWindowSnapshot(params: {
-  sessions: Session[];
+  sessions: SessionPersistedState[];
   activeSessionId: string | null;
   currentWindowLabel: string;
   currentWindowName: string;
@@ -51,34 +98,13 @@ export function createWorkspaceWindowSnapshot(params: {
     label: windowLabel,
     name: params.currentWindowName || windowLabel,
     role: windowLabel === MAIN_WINDOW_LABEL ? "main" : "secondary",
-    tabs: params.sessions.map((session) => ({
-      sessionId: session.id,
-      agentId: session.agentId,
-      distro: session.distro,
-      workDir: session.workDir,
-      title: session.title,
-      pinned: session.pinned,
-      locked: session.locked,
-      resumeToken: session.resumeToken,
-      ptyId: session.ptyId >= 0 ? session.ptyId : null,
-      auxPtyId: session.auxPtyId >= 0 ? session.auxPtyId : null,
-      auxVisible: session.auxVisible,
-      auxHeightPercent: session.auxHeightPercent,
-      viewMode: session.viewMode,
-      editorRootDir: session.editorRootDir,
-      openEditorTabs: session.openEditorTabs.map((entry) => ({
-        wslPath: entry.wslPath,
-        line: entry.line ?? null,
-        column: entry.column ?? null,
-      })),
-      activeEditorPath: session.activeEditorPath,
-    })),
+    tabs: params.sessions.map(createWorkspaceTabSnapshot),
     activeSessionId: params.activeSessionId,
   };
 }
 
 export function createWorkspaceSnapshotForWindow(params: {
-  sessions: Session[];
+  sessions: SessionPersistedState[];
   activeSessionId: string | null;
   currentWindowLabel: string;
   currentWindowName: string;

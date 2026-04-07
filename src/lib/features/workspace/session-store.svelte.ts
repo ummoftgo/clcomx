@@ -1,4 +1,4 @@
-import type { Session, WorkspaceSnapshot } from "../../types";
+import type { EditorTabRef, Session, SessionViewMode, WorkspaceSnapshot } from "../../types";
 import {
   applyWorkspaceWindowSnapshot,
   createWorkspaceSnapshotForWindow,
@@ -121,7 +121,7 @@ export function setSessionTitle(id: string, title: string) {
   setSessionTitleInList(sessions, id, title);
 }
 
-export function setSessionViewMode(id: string, viewMode: Session["viewMode"]) {
+export function setSessionViewMode(id: string, viewMode: SessionViewMode) {
   setSessionViewModeInList(sessions, id, viewMode);
 }
 
@@ -129,7 +129,7 @@ export function setSessionEditorRootDir(id: string, rootDir: string) {
   setSessionEditorRootDirInList(sessions, id, rootDir);
 }
 
-export function setSessionOpenEditorTabs(id: string, openEditorTabs: Session["openEditorTabs"]) {
+export function setSessionOpenEditorTabs(id: string, openEditorTabs: EditorTabRef[]) {
   setSessionOpenEditorTabsInList(sessions, id, openEditorTabs);
 }
 

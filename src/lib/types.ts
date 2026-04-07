@@ -1,4 +1,3 @@
-import type { Terminal } from "@xterm/xterm";
 import type { AgentId } from "./agents";
 import type { ThemePack } from "./themes";
 
@@ -21,27 +20,41 @@ export interface EditorTabRef {
   column?: number | null;
 }
 
-export interface Session {
+export interface SessionCore {
   id: string;
-  ptyId: number;
-  auxPtyId: number;
-  auxVisible: boolean;
-  auxHeightPercent: number | null;
   agentId: AgentId;
   resumeToken: string | null;
   title: string;
   pinned: boolean;
   locked: boolean;
-  terminal: Terminal | null;
-  element: HTMLDivElement | null;
   distro: string;
   workDir: string;
+}
+
+export interface SessionShellRuntimeState {
+  ptyId: number;
+  auxPtyId: number;
+  auxVisible: boolean;
+  auxHeightPercent: number | null;
+}
+
+export interface SessionEditorSnapshot {
   viewMode: SessionViewMode;
   editorRootDir: string;
   openEditorTabs: EditorTabRef[];
   activeEditorPath: string | null;
+}
+
+export interface SessionEditorState extends SessionEditorSnapshot {
   dirtyPaths: string[];
 }
+
+export type SessionPersistedState =
+  & SessionCore
+  & SessionShellRuntimeState
+  & SessionEditorSnapshot;
+
+export type Session = SessionPersistedState & Pick<SessionEditorState, "dirtyPaths">;
 
 export interface WindowPlacement {
   monitor: string | null;

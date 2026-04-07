@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Session } from "../../../types";
+import type { SessionCore } from "../../../types";
 import {
   applySessionAuxState,
   clearSessionResumeFallback,
@@ -22,27 +22,16 @@ function createDeps(overrides: Partial<SessionRuntimeDependencies> = {}): Sessio
   };
 }
 
-function createSession(): Session {
+function createSession(): Pick<
+  SessionCore,
+  "agentId" | "resumeToken" | "title" | "distro" | "workDir"
+> {
   return {
-    id: "session-1",
-    ptyId: -1,
-    auxPtyId: -1,
-    auxVisible: false,
-    auxHeightPercent: null,
     agentId: "claude",
     resumeToken: "resume-1",
     title: "Demo",
-    pinned: false,
-    locked: false,
-    terminal: null,
-    element: null,
     distro: "Ubuntu",
     workDir: "/workspace/demo",
-    viewMode: "terminal",
-    editorRootDir: "/workspace/demo",
-    openEditorTabs: [],
-    activeEditorPath: null,
-    dirtyPaths: [],
   };
 }
 

@@ -1,11 +1,17 @@
-import type { Session } from "../../../types";
+import type { AgentId } from "../../../agents";
+import type { SessionCore } from "../../../types";
 import type { SessionShellAuxState } from "../contracts/session-shell";
+
+type SessionHistorySource = Pick<
+  SessionCore,
+  "agentId" | "resumeToken" | "title" | "distro" | "workDir"
+>;
 
 export interface SessionRuntimeDependencies {
   setSessionPtyId: (sessionId: string, ptyId: number) => void;
   persistSessionPty: (sessionId: string, ptyId: number) => Promise<void>;
   recordTabHistory: (
-    agentId: Session["agentId"],
+    agentId: AgentId,
     distro: string,
     workDir: string,
     title: string,
@@ -32,7 +38,7 @@ export interface SessionRuntimeDependencies {
 export async function registerSessionPty(
   deps: SessionRuntimeDependencies,
   sessionId: string,
-  session: Session,
+  session: SessionHistorySource,
   ptyId: number,
 ) {
   deps.setSessionPtyId(sessionId, ptyId);

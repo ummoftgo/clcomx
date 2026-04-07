@@ -1,6 +1,12 @@
 import type { AgentId } from "../../../agents";
 import { createRuntimeId } from "../../../ids";
-import type { Session, TabHistoryEntry } from "../../../types";
+import type {
+  Session,
+  SessionCore,
+  SessionEditorState,
+  SessionShellRuntimeState,
+  TabHistoryEntry,
+} from "../../../types";
 
 export interface SessionLaunchRequest {
   agentId: AgentId;
@@ -39,26 +45,42 @@ export function createSessionLaunchRequestFromHistoryEntry(
   });
 }
 
-export function buildSession(request: SessionLaunchRequest): Session {
+function buildSessionCore(request: SessionLaunchRequest): SessionCore {
   return {
     id: createRuntimeId("session-"),
-    ptyId: -1,
-    auxPtyId: -1,
-    auxVisible: false,
-    auxHeightPercent: null,
     agentId: request.agentId,
     resumeToken: request.resumeToken,
     title: request.title,
     pinned: false,
     locked: false,
-    terminal: null,
-    element: null,
     distro: request.distro,
     workDir: request.workDir,
+  };
+}
+
+function buildSessionShellRuntimeState(): SessionShellRuntimeState {
+  return {
+    ptyId: -1,
+    auxPtyId: -1,
+    auxVisible: false,
+    auxHeightPercent: null,
+  };
+}
+
+function buildSessionEditorState(rootDir: string): SessionEditorState {
+  return {
     viewMode: "terminal",
-    editorRootDir: request.workDir,
+    editorRootDir: rootDir,
     openEditorTabs: [],
     activeEditorPath: null,
     dirtyPaths: [],
+  };
+}
+
+export function buildSession(request: SessionLaunchRequest): Session {
+  return {
+    ...buildSessionCore(request),
+    ...buildSessionShellRuntimeState(),
+    ...buildSessionEditorState(request.workDir),
   };
 }

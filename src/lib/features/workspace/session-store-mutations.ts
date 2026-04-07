@@ -1,4 +1,4 @@
-import type { Session } from "../../types";
+import type { EditorTabRef, Session, SessionViewMode } from "../../types";
 
 export function removeSessionAndResolveActive(
   sessions: Session[],
@@ -66,7 +66,7 @@ export function setSessionTitleInList(sessions: Session[], id: string, title: st
 export function setSessionViewModeInList(
   sessions: Session[],
   id: string,
-  viewMode: Session["viewMode"],
+  viewMode: SessionViewMode,
 ) {
   const session = sessions.find((entry) => entry.id === id);
   if (session) {
@@ -84,7 +84,7 @@ export function setSessionEditorRootDirInList(sessions: Session[], id: string, r
 export function setSessionOpenEditorTabsInList(
   sessions: Session[],
   id: string,
-  openEditorTabs: Session["openEditorTabs"],
+  openEditorTabs: EditorTabRef[],
 ) {
   const session = sessions.find((entry) => entry.id === id);
   if (!session) return;

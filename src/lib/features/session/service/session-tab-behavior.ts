@@ -1,7 +1,12 @@
-import type { Session } from "../../../types";
+import type { SessionCore, SessionEditorState, SessionShellRuntimeState } from "../../../types";
 
-type SessionTabState = Pick<Session, "id" | "pinned">;
-type SessionCloseState = Pick<Session, "locked" | "ptyId" | "dirtyPaths"> | null | undefined;
+type SessionTabState = Pick<SessionCore, "id" | "pinned">;
+type SessionCloseState =
+  | (Pick<SessionCore, "locked"> &
+      Pick<SessionShellRuntimeState, "ptyId"> &
+      Pick<SessionEditorState, "dirtyPaths">)
+  | null
+  | undefined;
 
 export type CloseTabRequest = "blocked" | "dirty-warning" | "close-confirm" | "close-now";
 export type SessionMoveDirection = "left" | "right";
@@ -46,7 +51,7 @@ export function resolveAdjacentSessionMoveIndex(
 }
 
 export function resolveRenamedSessionTitle(
-  session: Pick<Session, "workDir">,
+  session: Pick<SessionCore, "workDir">,
   rawValue: string,
 ): string {
   const trimmed = rawValue.trim();
