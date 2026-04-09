@@ -16,24 +16,26 @@
   } from "./lib/features/app-shell/controller/window-close-orchestration-controller";
   import {
     addSession,
-    areSessionsInitialized,
     getActiveSessionId,
-    getCurrentWindowName,
-    initializeSessionsFromWorkspace,
     getSessions,
     moveSession,
-    persistWorkspace,
     setActiveSession,
     setSessionAuxState,
     setSessionEditorState,
-    setCurrentWindowName,
     setSessionLocked,
     setSessionPtyId,
     setSessionPinned,
     setSessionResumeToken,
     setSessionTitle,
+  } from "./lib/features/session/state/live-session-store.svelte";
+  import {
+    areSessionsInitialized,
+    getCurrentWindowName,
+    initializeSessionsFromWorkspace,
+    persistWorkspace,
+    setCurrentWindowName,
     syncSessionsFromWorkspace,
-  } from "./lib/stores/sessions.svelte";
+  } from "./lib/features/workspace/session-store.svelte";
   import {
     getOtherWindows,
     initializeWorkspaceSnapshot,

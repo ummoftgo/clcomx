@@ -2,11 +2,11 @@
   import { tick } from "svelte";
   import { _ as t } from "svelte-i18n";
   import {
-    getSessions,
     getActiveSessionId,
+    getSessions,
     moveSession,
     setActiveSession,
-  } from "../stores/sessions.svelte";
+  } from "../features/session/state/live-session-store.svelte";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
   import AgentIcon from "./AgentIcon.svelte";
   import type { ContextMenuItem } from "../ui/context-menu";

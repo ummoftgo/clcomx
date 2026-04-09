@@ -1,9 +1,10 @@
 import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getActiveSessionId } from "../features/session/state/live-session-store.svelte";
+import { initializeSessionsFromWorkspace } from "../features/workspace/session-store.svelte";
 import { initializeI18n } from "../i18n";
 import { DEFAULT_SETTINGS, type WorkspaceSnapshot } from "../types";
 import { initializeSettings } from "../stores/settings.svelte";
-import { getActiveSessionId, initializeSessionsFromWorkspace } from "../stores/sessions.svelte";
 import TabBar from "./TabBar.svelte";
 import { contextMenuItemTestId } from "../testids";
 

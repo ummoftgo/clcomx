@@ -1,10 +1,10 @@
 import { mount } from "svelte";
 import { loadBootstrap } from "./bootstrap";
 import { loadCustomCss } from "./custom-css";
+import { initializeSessionsFromWorkspace } from "./features/workspace/session-store.svelte";
 import { initializeI18n } from "./i18n";
 import { getCurrentWindow } from "./tauri/window";
 import { initializeSettings, getSettings } from "./stores/settings.svelte";
-import { initializeSessionsFromWorkspace } from "./stores/sessions.svelte";
 import { initializeTabHistory } from "./stores/tab-history.svelte";
 import { initializeWorkspaceSnapshot } from "./stores/workspace.svelte";
 import { getThemeById, initializeThemes } from "./themes";
