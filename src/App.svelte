@@ -8,6 +8,13 @@
   import SessionViewport from "./lib/features/session/view/SessionViewport.svelte";
   import PreviewControlPanel from "./lib/components/PreviewControlPanel.svelte";
   import {
+    createWindowCloseOrchestrationController,
+    DIRTY_STATE_QUERY_EVENT,
+    DIRTY_STATE_RESPONSE_EVENT,
+    type DirtyStateQueryPayload,
+    type DirtyStateResponsePayload,
+  } from "./lib/features/app-shell/controller/window-close-orchestration-controller";
+  import {
     addSession,
     areSessionsInitialized,
     getActiveSessionId,
@@ -90,20 +97,6 @@
     { id: "desktop", label: "Desktop" },
     { id: "narrow", label: "Narrow" },
   ] as const;
-  const DIRTY_STATE_QUERY_EVENT = "clcomx:dirty-state-query";
-  const DIRTY_STATE_RESPONSE_EVENT = "clcomx:dirty-state-response";
-
-  interface DirtyStateQueryPayload {
-    requestId: string;
-    replyLabel: string;
-  }
-
-  interface DirtyStateResponsePayload {
-    requestId: string;
-    windowLabel: string;
-    dirtyCount: number;
-  }
-
   const appWindow = getCurrentWindow();
   const currentWindowLabel = appWindow.label;
   const isMainWindow = currentWindowLabel === "main";
@@ -139,7 +132,6 @@
   let renameDialogKind = $state<"tab" | "window" | null>(null);
   let renameDialogValue = $state("");
   let renameTargetSessionId = $state<string | null>(null);
-  let appCloseRequested = false;
   let allowNativeClose = false;
   let windowListeners: UnlistenFn[] = [];
   let placementSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -169,68 +161,6 @@
 
   function getLocalDirtySessionCount() {
     return dirtySessions.length;
-  }
-
-  async function queryOtherWindowDirtySessionCount(timeoutMs = 700) {
-    const targetLabels = otherWindows.map((window) => window.label).filter(Boolean);
-    if (targetLabels.length === 0) {
-      return { dirtyCount: 0, incomplete: false };
-    }
-
-    const requestId = createRuntimeId();
-    const responded = new Set<string>();
-    let dirtyCount = 0;
-    let resolveWait: (() => void) | null = null;
-    const done = new Promise<void>((resolve) => {
-      resolveWait = resolve;
-    });
-
-    const unlisten = await listen<DirtyStateResponsePayload>(DIRTY_STATE_RESPONSE_EVENT, (event) => {
-      const payload = event.payload;
-      if (!payload || payload.requestId !== requestId || responded.has(payload.windowLabel)) {
-        return;
-      }
-
-      responded.add(payload.windowLabel);
-      dirtyCount += Math.max(0, payload.dirtyCount);
-      if (responded.size >= targetLabels.length) {
-        resolveWait?.();
-      }
-    });
-
-    try {
-      await Promise.all(
-        targetLabels.map((label) =>
-          emitTo<DirtyStateQueryPayload>(label, DIRTY_STATE_QUERY_EVENT, {
-            requestId,
-            replyLabel: currentWindowLabel,
-          }).catch(() => {}),
-        ),
-      );
-
-      await Promise.race([
-        done,
-        new Promise<void>((resolve) => {
-          setTimeout(resolve, timeoutMs);
-        }),
-      ]);
-    } finally {
-      unlisten();
-    }
-
-    return {
-      dirtyCount,
-      incomplete: responded.size < targetLabels.length,
-    };
-  }
-
-  async function getAppCloseDirtySessionCount() {
-    const localDirtyCount = getLocalDirtySessionCount();
-    const otherWindowState = await queryOtherWindowDirtySessionCount();
-    if (otherWindowState.incomplete) {
-      return Math.max(1, localDirtyCount + otherWindowState.dirtyCount);
-    }
-    return localDirtyCount + otherWindowState.dirtyCount;
   }
 
   $effect(() => {
@@ -329,15 +259,33 @@
     await appWindow.close();
   }
 
-  async function handleSecondaryCloseRequest() {
-    if (sessions.length > 0) {
-      showCloseWindowDialog = true;
-      return;
-    }
-
-    await removeWindow(currentWindowLabel);
-    await closeCurrentWindow();
-  }
+  const windowCloseOrchestration = createWindowCloseOrchestrationController({
+    isMainWindow: () => isMainWindow,
+    currentWindowLabel: () => currentWindowLabel,
+    getSessionsCount: () => sessions.length,
+    getLocalDirtySessionCount,
+    getOtherWindowLabels: () => otherWindows.map((window) => window.label).filter(Boolean),
+    emitDirtyStateQuery: (label, payload) => emitTo<DirtyStateQueryPayload>(label, DIRTY_STATE_QUERY_EVENT, payload),
+    listenDirtyStateResponse: async (listener) => {
+      const unlisten = await listen<DirtyStateResponsePayload>(DIRTY_STATE_RESPONSE_EVENT, (event) => {
+        listener(event.payload);
+      });
+      return unlisten;
+    },
+    closeCurrentWindow,
+    removeCurrentWindow: () => removeWindow(currentWindowLabel),
+    captureResumeIdsBeforeAppClose,
+    closeApp,
+    closeWindowSessions: () => closeWindowSessions(currentWindowLabel),
+    moveWindowSessionsToMain: () => moveWindowSessionsToMain(currentWindowLabel),
+    reportError: (message, error) => {
+      console.error(message, error);
+    },
+    createRequestId: createRuntimeId,
+    wait: (ms) => new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    }),
+  });
 
   function usesKoreanCopy() {
     if (settings.language === "ko") return true;
@@ -393,18 +341,6 @@
         };
   }
 
-  async function performAppClose() {
-    if (appCloseRequested) return;
-    appCloseRequested = true;
-    try {
-      await captureResumeIdsBeforeAppClose();
-      await closeApp();
-    } catch (error) {
-      appCloseRequested = false;
-      console.error("Failed to close app", error);
-    }
-  }
-
   async function waitForWindowReady(targetLabel: string, timeoutMs = 8000): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -433,24 +369,26 @@
 
           event.preventDefault();
 
-          if (isMainWindow) {
-            const totalDirtyCount = await getAppCloseDirtySessionCount();
-            if (totalDirtyCount > 0) {
-              dirtyAppCloseCount = totalDirtyCount;
-              showCloseTabDialog = false;
-              showDirtyTabDialog = false;
-              showCloseWindowDialog = false;
-              showDirtyWindowCloseDialog = false;
-              pendingCloseSessionId = null;
-              showDirtyAppDialog = true;
-              return;
-            }
-
-            await performAppClose();
+          const closeResult = await windowCloseOrchestration.handleCloseRequested();
+          if (closeResult.kind === "show-dirty-app-dialog") {
+            dirtyAppCloseCount = closeResult.dirtyCount;
+            showCloseTabDialog = false;
+            showDirtyTabDialog = false;
+            showCloseWindowDialog = false;
+            showDirtyWindowCloseDialog = false;
+            pendingCloseSessionId = null;
+            showDirtyAppDialog = true;
             return;
           }
 
-          await handleSecondaryCloseRequest();
+          if (closeResult.kind === "show-close-window-dialog") {
+            showCloseWindowDialog = true;
+            return;
+          }
+
+          if (closeResult.kind === "noop") {
+            return;
+          }
         }),
         appWindow.onMoved(() => scheduleWindowPlacementPersist()),
         appWindow.onResized(() => scheduleWindowPlacementPersist()),
@@ -784,7 +722,7 @@
   function confirmDirtyAppClose() {
     showDirtyAppDialog = false;
     dirtyAppCloseCount = 0;
-    void performAppClose();
+    void windowCloseOrchestration.performAppClose();
   }
 
   function dismissDirtyWindowCloseDialog() {
@@ -794,12 +732,7 @@
   async function confirmDirtyWindowCloseDialog() {
     showDirtyWindowCloseDialog = false;
     showCloseWindowDialog = false;
-    try {
-      await closeWindowSessions(currentWindowLabel);
-      await closeCurrentWindow();
-    } catch (error) {
-      console.error("Failed to close secondary window sessions", error);
-    }
+    await windowCloseOrchestration.confirmDirtyWindowClose();
   }
 
   async function handleMoveTabToNewWindow(sessionId: string) {
@@ -914,30 +847,17 @@
   }
 
   async function handleMoveWindowToMain() {
-    try {
-      await moveWindowSessionsToMain(currentWindowLabel);
-      await closeCurrentWindow();
-    } catch (error) {
-      console.error("Failed to move window sessions to main", error);
-    } finally {
-      showCloseWindowDialog = false;
-    }
+    await windowCloseOrchestration.moveWindowSessionsToMainAndClose();
+    showCloseWindowDialog = false;
   }
 
   async function handleCloseWindowSessions() {
-    if (dirtySessions.length > 0) {
+    const result = await windowCloseOrchestration.handleCloseWindowSessions();
+    if (result.kind === "show-dirty-window-dialog") {
       showDirtyWindowCloseDialog = true;
       return;
     }
-
-    try {
-      await closeWindowSessions(currentWindowLabel);
-      await closeCurrentWindow();
-    } catch (error) {
-      console.error("Failed to close secondary window sessions", error);
-    } finally {
-      showCloseWindowDialog = false;
-    }
+    showCloseWindowDialog = false;
   }
 
   function handleKeydown(e: KeyboardEvent) {
