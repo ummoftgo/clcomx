@@ -46,9 +46,6 @@
   import { applyRuntimeStyleLayer, Button, ModalShell } from "./lib/ui";
   import {
     closeApp,
-    closePtyAndCaptureResume,
-    clearSessionPty,
-    closeSession,
     closeSessionByPtyId,
     closeWindowSessions,
     isWindowReady,
@@ -59,27 +56,22 @@
     removeWindow,
     setSessionAuxTerminalState as persistSessionAuxTerminalState,
     setSessionPty,
+    closePtyAndCaptureResume,
+    clearSessionPty,
+    closeSession,
     setSessionResumeToken as persistSessionResumeToken,
     updateWindowGeometry,
   } from "./lib/workspace";
   import { killPty } from "./lib/pty";
-  import type { AppBootstrap, Session, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
+  import type { AppBootstrap, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
-  import {
-    launchSession,
-    launchSessionFromHistoryEntry,
-  } from "./lib/features/session/controller/session-launch-controller";
+  import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
   import {
     resolveAdjacentSessionMoveIndex,
     resolveCloseTabRequest,
     resolveRenamedSessionTitle,
   } from "./lib/features/session/service/session-tab-behavior";
-  import {
-    applySessionAuxState,
-    clearSessionResumeFallback,
-    registerSessionPty,
-  } from "./lib/features/session/service/session-runtime";
   import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
   import type { SessionShellAuxState } from "./lib/features/session/contracts/session-shell";
   import {
@@ -148,8 +140,6 @@
   let renameDialogValue = $state("");
   let renameTargetSessionId = $state<string | null>(null);
   let appCloseRequested = false;
-  let capturingResumeOnAppClose = false;
-  const pendingResumeCapturePtyIds = new Set<number>();
   let allowNativeClose = false;
   let windowListeners: UnlistenFn[] = [];
   let placementSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -656,47 +646,19 @@
     showCloseTabDialog = true;
   }
 
-  function createSession(
-    agentId: AgentId,
-    distro: string,
-    workDir: string,
-    title = workDir.split("/").pop() || workDir,
-    resumeToken: string | null = null,
-  ) {
-    launchSession(
-      {
-        addSession,
-        hideSessionLauncher: () => {
-          showSessionLauncher = false;
-        },
-        persistWorkspace,
-        ensureSessionShellComponent,
-      },
-      {
-        agentId,
-        distro,
-        workDir,
-        title,
-        resumeToken,
-      },
-    );
-  }
+  const reportSessionLifecycleError = (message: string, error: unknown) => {
+    console.error(message, error);
+  };
 
-  function openHistoryEntry(entry: TabHistoryEntry) {
-    launchSessionFromHistoryEntry(
-      {
-        addSession,
-        hideSessionLauncher: () => {
-          showSessionLauncher = false;
-        },
-        persistWorkspace,
-        ensureSessionShellComponent,
-      },
-      entry,
-    );
-  }
-
-  const sessionRuntime = {
+  const sessionLifecycle = createSessionLifecycleController({
+    addSession,
+    hideSessionLauncher: () => {
+      showSessionLauncher = false;
+    },
+    ensureSessionShellComponent,
+    persistWorkspace,
+    getSession: (sessionId) => sessions.find((entry) => entry.id === sessionId) ?? null,
+    getSessions: () => sessions,
     setSessionPtyId,
     persistSessionPty: setSessionPty,
     recordTabHistory,
@@ -704,17 +666,30 @@
     persistSessionAuxState: persistSessionAuxTerminalState,
     setSessionResumeToken,
     persistSessionResumeToken,
-    persistWorkspace,
-    reportError: (message: string, error: unknown) => {
-      console.error(message, error);
-    },
-  };
+    clearSessionPty,
+    closeSession,
+    closeSessionByPtyId,
+    closePtyAndCaptureResume,
+    killPty,
+    reportError: reportSessionLifecycleError,
+  });
+
+  function createSession(
+    agentId: AgentId,
+    distro: string,
+    workDir: string,
+    title = workDir.split("/").pop() || workDir,
+    resumeToken: string | null = null,
+  ) {
+    sessionLifecycle.createSession(agentId, distro, workDir, title, resumeToken);
+  }
+
+  function openHistoryEntry(entry: TabHistoryEntry) {
+    sessionLifecycle.openHistoryEntry(entry);
+  }
 
   async function handlePtyId(sessionId: string, ptyId: number) {
-    const session = sessions.find((entry) => entry.id === sessionId);
-    if (!session) return;
-
-    await registerSessionPty(sessionRuntime, sessionId, session, ptyId);
+    await sessionLifecycle.handlePtyId(sessionId, ptyId);
   }
 
   async function handleAuxTerminalState(
@@ -723,7 +698,7 @@
     auxVisible: boolean,
     auxHeightPercent: number | null,
   ) {
-    await applySessionAuxState(sessionRuntime, sessionId, {
+    await sessionLifecycle.handleAuxTerminalState(sessionId, {
       auxPtyId,
       auxVisible,
       auxHeightPercent,
@@ -731,93 +706,19 @@
   }
 
   async function handleExit(ptyId: number) {
-    if (capturingResumeOnAppClose || pendingResumeCapturePtyIds.has(ptyId)) return;
-    try {
-      await closeSessionByPtyId(ptyId);
-    } catch (error) {
-      console.error("Failed to close exited session", error);
-    }
+    await sessionLifecycle.handleExit(ptyId);
   }
 
   async function handleResumeFallback(sessionId: string) {
-    await clearSessionResumeFallback(sessionRuntime, sessionId);
-  }
-
-  async function captureSessionResumeToken(session: Session): Promise<string | null> {
-    const existingResumeToken = session.resumeToken ?? null;
-    if (session.ptyId < 0) {
-      return existingResumeToken;
-    }
-
-    const ptyId = session.ptyId;
-    pendingResumeCapturePtyIds.add(ptyId);
-    try {
-      const result = await closePtyAndCaptureResume(ptyId, session.agentId);
-      const nextResumeToken = result.resumeToken ?? existingResumeToken;
-      setSessionPtyId(session.id, -1);
-      setSessionResumeToken(session.id, nextResumeToken ?? null);
-      await clearSessionPty(session.id);
-      await persistSessionResumeToken(session.id, nextResumeToken ?? null);
-      return nextResumeToken ?? null;
-    } catch (error) {
-      console.error("Failed to capture session resume token", error);
-      setSessionPtyId(session.id, -1);
-      setSessionResumeToken(session.id, existingResumeToken);
-      try {
-        await clearSessionPty(session.id);
-        await persistSessionResumeToken(session.id, existingResumeToken);
-      } catch (persistError) {
-        console.error("Failed to persist resume state after capture failure", persistError);
-      }
-      return existingResumeToken;
-    } finally {
-      pendingResumeCapturePtyIds.delete(ptyId);
-    }
+    await sessionLifecycle.handleResumeFallback(sessionId);
   }
 
   async function captureResumeIdsBeforeAppClose() {
-    capturingResumeOnAppClose = true;
-    try {
-      for (const session of sessions) {
-        const resumeToken = await captureSessionResumeToken(session);
-        if (session.auxPtyId >= 0) {
-          try {
-            await killPty(session.auxPtyId);
-          } catch (error) {
-            console.error("Failed to stop auxiliary terminal PTY", error);
-          }
-        }
-        setSessionAuxState(session.id, -1, false, session.auxHeightPercent);
-        try {
-          await persistSessionAuxTerminalState(
-            session.id,
-            null,
-            false,
-            session.auxHeightPercent,
-          );
-        } catch (error) {
-          console.error("Failed to clear auxiliary terminal state", error);
-        }
-        await recordTabHistory(session.agentId, session.distro, session.workDir, session.title, resumeToken);
-      }
-
-      await persistWorkspace();
-    } finally {
-      capturingResumeOnAppClose = false;
-    }
+    await sessionLifecycle.captureResumeIdsBeforeAppClose();
   }
 
   async function handleCloseTab(sessionId: string) {
-    const session = sessions.find((entry) => entry.id === sessionId);
-    if (!session) return;
-
-    try {
-      const resumeToken = await captureSessionResumeToken(session);
-      await recordTabHistory(session.agentId, session.distro, session.workDir, session.title, resumeToken);
-      await closeSession(sessionId);
-    } catch (error) {
-      console.error("Failed to close session", error);
-    }
+    await sessionLifecycle.handleCloseTab(sessionId);
   }
 
   function dismissCloseTabDialog() {
