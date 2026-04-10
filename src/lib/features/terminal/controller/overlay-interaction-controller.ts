@@ -13,6 +13,10 @@ import type {
 } from "../../../editors";
 import type { ContextMenuItem } from "../../../ui/context-menu";
 import type { OverlayInteractionState, LinkMenuTarget } from "../state/overlay-interaction-state.svelte";
+import {
+  createOverlayFileLinkActions,
+  getFilePathNotice,
+} from "./overlay-file-link-actions";
 
 type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
 
@@ -56,14 +60,6 @@ function clearNoticeTimer(state: OverlayInteractionState) {
     clearTimeout(state.noticeTimer);
     state.noticeTimer = null;
   }
-}
-
-function getFilePathNotice(t: TranslateFn, error: unknown, fallbackKey: string) {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/path does not exist/i.test(message)) {
-    return t("terminal.filePaths.pathNotFound");
-  }
-  return t(fallbackKey);
 }
 
 export function createOverlayInteractionController(
@@ -119,10 +115,7 @@ export function createOverlayInteractionController(
     event.stopPropagation();
   };
 
-  const ensureEditorsLoaded = async () => await deps.ensureEditorsLoaded();
-
-  const showEditorPicker = async (path: ResolvedTerminalPath) => {
-    await ensureEditorsLoaded();
+  const showEditorPicker = (path: ResolvedTerminalPath) => {
     state.editorPickerPath = path;
     state.editorPickerVisible = true;
   };
@@ -132,132 +125,24 @@ export function createOverlayInteractionController(
     state.editorPickerPath = null;
   };
 
-  const openPathInEditor = async (
-    path: ResolvedTerminalPath,
-    preferredEditorId?: string | null,
-    forcePicker = false,
-  ) => {
-    if (!forcePicker && deps.getFileOpenTarget() === "internal") {
-      deps.openInternalEditorForLinkPath(path);
-      return;
-    }
-
-    const editors = await ensureEditorsLoaded();
-    if (editors.length === 0) {
-      setClipboardNotice(deps.getEditorsError() || deps.t("terminal.filePaths.noEditors"));
-      return;
-    }
-
-    if (forcePicker || deps.getFileOpenMode() === "picker") {
-      await showEditorPicker(path);
-      return;
-    }
-
-    const preferredId = preferredEditorId?.trim() || deps.getDefaultEditorId().trim();
-    const preferredEditor = editors.find((editor) => editor.id === preferredId);
-    if (!preferredEditor) {
-      await showEditorPicker(path);
-      return;
-    }
-
-    await deps.openInEditor(preferredEditor.id, path);
-  };
-
-  const getCandidateLinkLabel = (path: ResolvedTerminalPath) => {
-    const displayPath = (path.wslPath || path.raw).replace(/\\/g, "/");
-    const normalizedWorkDir = deps.getWorkDir().replace(/\\/g, "/");
-    let shortPath = displayPath;
-
-    if (normalizedWorkDir && displayPath.startsWith(`${normalizedWorkDir}/`)) {
-      shortPath = displayPath.slice(normalizedWorkDir.length + 1);
-    } else if (displayPath === normalizedWorkDir) {
-      shortPath = ".";
-    } else {
-      const lastSlash = displayPath.lastIndexOf("/");
-      if (lastSlash >= 0) {
-        shortPath = displayPath.slice(lastSlash + 1);
-      }
-    }
-
-    const positionSuffix =
-      path.line === null
-        ? ""
-        : path.column === null
-          ? `:${path.line}`
-          : `:${path.line}:${path.column}`;
-    return `${shortPath}${positionSuffix}`;
-  };
-
-  const buildCandidateMenuActionId = (
-    index: number,
-    action: "open-file" | "open-in-internal-editor" | "open-in-other-editor" | "copy-path",
-  ) => `candidate-${index}-${action}`;
-
-  const parseCandidateMenuActionId = (value: string) => {
-    const match =
-      /^candidate-(\d+)-(open-file|open-in-internal-editor|open-in-other-editor|copy-path)$/.exec(
-        value,
-      );
-    if (!match) return null;
-    return {
-      index: Number(match[1]),
-      action: match[2] as
-        | "open-file"
-        | "open-in-internal-editor"
-        | "open-in-other-editor"
-        | "copy-path",
-    };
-  };
-
-  const buildCandidateFileLinkMenuItems = (raw: string, candidates: ResolvedTerminalPath[]) => {
-    const items: ContextMenuItem[] = [
-      {
-        id: `candidate-list-title:${raw}`,
-        kind: "header",
-        label: deps.t("terminal.filePaths.candidatesTitle"),
-      },
-    ];
-
-    candidates.forEach((candidate, index) => {
-      if (index > 0) {
-        items.push({ id: `candidate-${index}-separator`, kind: "separator" });
-      }
-
-      items.push({
-        id: `candidate-${index}-header`,
-        kind: "header",
-        label: getCandidateLinkLabel(candidate),
-      });
-      items.push(
-        {
-          id: buildCandidateMenuActionId(index, "open-file"),
-          kind: "item",
-          label: deps.t("terminal.filePaths.openFile"),
-          icon: "file",
-        },
-        {
-          id: buildCandidateMenuActionId(index, "open-in-internal-editor"),
-          kind: "item",
-          label: deps.t("terminal.filePaths.openInInternalEditor"),
-          icon: "file",
-        },
-        {
-          id: buildCandidateMenuActionId(index, "open-in-other-editor"),
-          kind: "item",
-          label: deps.t("terminal.filePaths.openInOtherEditor"),
-          icon: "open-with",
-        },
-        {
-          id: buildCandidateMenuActionId(index, "copy-path"),
-          kind: "item",
-          label: deps.t("terminal.filePaths.copyPath"),
-          icon: "copy",
-        },
-      );
-    });
-
-    return items;
-  };
+  const fileLinkActions = createOverlayFileLinkActions({
+    getWorkDir: deps.getWorkDir,
+    getFileOpenTarget: deps.getFileOpenTarget,
+    getFileOpenMode: deps.getFileOpenMode,
+    getDefaultEditorId: deps.getDefaultEditorId,
+    getEditorsError: deps.getEditorsError,
+    ensureEditorsLoaded: deps.ensureEditorsLoaded,
+    openInEditor: deps.openInEditor,
+    openInternalEditorForLinkPath: deps.openInternalEditorForLinkPath,
+    openExternalUrl: deps.openExternalUrl,
+    openEditorPicker: showEditorPicker,
+    writeClipboardText: (text) => navigator.clipboard.writeText(text),
+    setNotice: setClipboardNotice,
+    reportError: (message, error) => {
+      console.error(message, error);
+    },
+    t: deps.t,
+  });
 
   const openFileLinkMenu = async (rawPath: string, event: MouseEvent) => {
     state.suppressSelectionUntilMouseUp = true;
@@ -326,96 +211,15 @@ export function createOverlayInteractionController(
   };
 
   const handleEditorSelect = async (editor: DetectedEditor) => {
-    if (!state.editorPickerPath) {
-      return;
-    }
-
-    try {
-      await deps.openInEditor(editor.id, state.editorPickerPath);
+    const opened = await fileLinkActions.handleEditorSelect(editor, state.editorPickerPath);
+    if (opened) {
       closeEditorPicker();
-    } catch (error) {
-      console.error("Failed to open path in editor", error);
-      setClipboardNotice(getFilePathNotice(deps.t, error, "terminal.filePaths.openFailed"));
     }
   };
 
   const handleLinkMenuSelect = async (item: Extract<ContextMenuItem, { kind: "item" }>) => {
     if (!state.linkMenuTarget) return;
-
-    try {
-      if (state.linkMenuTarget.kind === "url") {
-        if (item.id === "open-link-in-browser") {
-          await deps.openExternalUrl(state.linkMenuTarget.url);
-          return;
-        }
-
-        if (item.id === "copy-link") {
-          await navigator.clipboard.writeText(state.linkMenuTarget.url);
-          setClipboardNotice(deps.t("terminal.links.copySuccess"));
-        }
-        return;
-      }
-
-      if (state.linkMenuTarget.kind === "file-candidates") {
-        const candidateAction = parseCandidateMenuActionId(item.id);
-        if (!candidateAction) {
-          return;
-        }
-
-        const candidate = state.linkMenuTarget.candidates[candidateAction.index];
-        if (!candidate) {
-          return;
-        }
-
-        if (candidateAction.action === "open-file") {
-          await openPathInEditor(candidate);
-          return;
-        }
-
-        if (candidateAction.action === "open-in-internal-editor") {
-          deps.openInternalEditorForLinkPath(candidate);
-          return;
-        }
-
-        if (candidateAction.action === "open-in-other-editor") {
-          await showEditorPicker(candidate);
-          return;
-        }
-
-        if (candidateAction.action === "copy-path") {
-          await navigator.clipboard.writeText(candidate.copyText);
-          setClipboardNotice(deps.t("terminal.filePaths.copySuccess"));
-        }
-        return;
-      }
-
-      if (item.id === "open-file") {
-        await openPathInEditor(state.linkMenuTarget.path);
-        return;
-      }
-
-      if (item.id === "open-in-internal-editor") {
-        deps.openInternalEditorForLinkPath(state.linkMenuTarget.path);
-        return;
-      }
-
-      if (item.id === "open-in-other-editor") {
-        await showEditorPicker(state.linkMenuTarget.path);
-        return;
-      }
-
-      if (item.id === "copy-path") {
-        await navigator.clipboard.writeText(state.linkMenuTarget.path.copyText);
-        setClipboardNotice(deps.t("terminal.filePaths.copySuccess"));
-      }
-    } catch (error) {
-      console.error("Failed to handle link menu action", error);
-      setClipboardNotice(
-        state.linkMenuTarget.kind === "url"
-          ? deps.t("terminal.links.openFailed")
-          : getFilePathNotice(deps.t, error, "terminal.filePaths.openFailed"),
-      );
-    }
+    await fileLinkActions.handleLinkMenuSelect(state.linkMenuTarget, item);
   };
 
   const resetClipboardImage = (restoreFocus = false) => {
@@ -538,8 +342,8 @@ export function createOverlayInteractionController(
     handleLinkPointerMove,
     closeEditorPicker,
     showEditorPicker,
-    openPathInEditor,
-    buildCandidateFileLinkMenuItems,
+    openPathInEditor: fileLinkActions.openPathInEditor,
+    buildCandidateFileLinkMenuItems: fileLinkActions.buildCandidateFileLinkMenuItems,
     openFileLinkMenu,
     openFileLinkMenuForTest,
     openUrlLinkMenuForTest,
