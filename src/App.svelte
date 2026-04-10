@@ -14,6 +14,7 @@
     type DirtyStateQueryPayload,
     type DirtyStateResponsePayload,
   } from "./lib/features/app-shell/controller/window-close-orchestration-controller";
+  import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
   import {
     createPreviewUrlStateController,
@@ -80,7 +81,7 @@
     updateWindowGeometry,
   } from "./lib/workspace";
   import { killPty } from "./lib/pty";
-  import type { AppBootstrap, TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
+  import type { TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
   import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
@@ -230,6 +231,25 @@
 
   const workspaceAutosave = createWorkspaceAutosaveController({
     persistWorkspace,
+  });
+
+  const previewBootstrapController = createPreviewBootstrapController({
+    isBrowserPreview: () => browserPreview,
+    currentWindowLabel: () => currentWindowLabel,
+    applyPreviewPreset,
+    getActivePreviewPresetId,
+    setActivePreviewPresetId: (nextPresetId) => {
+      previewPresetId = nextPresetId;
+    },
+    setBootstrapSnapshot: setBootstrap,
+    setLocalBootstrap: (nextBootstrap) => {
+      bootstrap = nextBootstrap;
+    },
+    initializeSettings,
+    initializeTabHistory,
+    initializeWorkspaceSnapshot,
+    initializeSessionsFromWorkspace,
+    resetOverlays: resetPreviewOverlays,
   });
 
   const windowCloseOrchestration = createWindowCloseOrchestrationController({
@@ -470,21 +490,8 @@
     previewUrlState.setControlsVisible(visible);
   }
 
-  function applyPreviewBootstrap(nextBootstrap: AppBootstrap) {
-    setBootstrap(nextBootstrap);
-    bootstrap = nextBootstrap;
-    initializeSettings(nextBootstrap.settings);
-    initializeTabHistory(nextBootstrap.tabHistory);
-    initializeWorkspaceSnapshot(nextBootstrap.workspace, currentWindowLabel);
-    initializeSessionsFromWorkspace(nextBootstrap.workspace, currentWindowLabel);
-    resetPreviewOverlays();
-  }
-
   function handlePreviewPresetChange(nextPresetId: PreviewPresetId) {
-    if (!browserPreview) return;
-    const nextBootstrap = applyPreviewPreset(nextPresetId);
-    previewPresetId = getActivePreviewPresetId();
-    applyPreviewBootstrap(nextBootstrap);
+    previewBootstrapController.handlePresetChange(nextPresetId);
   }
 
   function handlePreviewFrameModeChange(nextFrameMode: string) {
