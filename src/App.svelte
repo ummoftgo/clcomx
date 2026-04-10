@@ -14,6 +14,7 @@
     type DirtyStateQueryPayload,
     type DirtyStateResponsePayload,
   } from "./lib/features/app-shell/controller/window-close-orchestration-controller";
+  import { createWindowPlacementController } from "./lib/features/app-shell/controller/window-placement-controller";
   import {
     addSession,
     getActiveSessionId,
@@ -136,8 +137,6 @@
   let renameTargetSessionId = $state<string | null>(null);
   let allowNativeClose = false;
   let windowListeners: UnlistenFn[] = [];
-  let placementSaveTimer: ReturnType<typeof setTimeout> | null = null;
-  let initialPlacementTimer: ReturnType<typeof setTimeout> | null = null;
   let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let SessionShellComponent = $state<Component<any> | null>(null);
   let SettingsModalComponent = $state<Component<any> | null>(null);
@@ -212,54 +211,26 @@
     await settingsLoadPromise;
   }
 
-  async function persistWindowState() {
-    const [position, size, maximized, monitor] = await Promise.all([
-      appWindow.outerPosition(),
-      appWindow.innerSize(),
-      appWindow.isMaximized(),
-      currentMonitor().catch(() => null),
-    ]);
-
-    if (isMainWindow) {
-      updateSettings({
-        mainWindow: {
-          monitor: monitor?.name ?? null,
-          x: position.x,
-          y: position.y,
-          width: size.width,
-          height: size.height,
-          maximized,
-        },
-      });
-    }
-
-    try {
-      await updateWindowGeometry(
-        currentWindowLabel,
-        position.x,
-        position.y,
-        size.width,
-        size.height,
-        maximized,
-      );
-    } catch (error) {
-      console.error("Failed to update window geometry", error);
-    }
-  }
-
-  function scheduleWindowPlacementPersist() {
-    if (placementSaveTimer) {
-      clearTimeout(placementSaveTimer);
-    }
-    placementSaveTimer = setTimeout(() => {
-      void persistWindowState();
-    }, 150);
-  }
-
   async function closeCurrentWindow() {
     allowNativeClose = true;
     await appWindow.close();
   }
+
+  const windowPlacement = createWindowPlacementController({
+    isMainWindow: () => isMainWindow,
+    currentWindowLabel: () => currentWindowLabel,
+    getWindowPosition: () => appWindow.outerPosition(),
+    getWindowSize: () => appWindow.innerSize(),
+    isWindowMaximized: () => appWindow.isMaximized(),
+    getCurrentMonitorName: async () => (await currentMonitor())?.name ?? null,
+    updateMainWindowPlacement: (mainWindow) => {
+      updateSettings({ mainWindow });
+    },
+    updateWindowGeometry,
+    reportError: (message, error) => {
+      console.error(message, error);
+    },
+  });
 
   const windowCloseOrchestration = createWindowCloseOrchestrationController({
     isMainWindow: () => isMainWindow,
@@ -392,8 +363,8 @@
             return;
           }
         }),
-        appWindow.onMoved(() => scheduleWindowPlacementPersist()),
-        appWindow.onResized(() => scheduleWindowPlacementPersist()),
+        appWindow.onMoved(() => windowPlacement.schedulePersist()),
+        appWindow.onResized(() => windowPlacement.schedulePersist()),
         listen<WorkspaceSnapshot>("workspace-updated", (event) => {
           syncWorkspaceSnapshot(event.payload);
           syncSessionsFromWorkspace(event.payload);
@@ -426,21 +397,14 @@
         console.error("Failed to notify window readiness", error);
       }
 
-      initialPlacementTimer = setTimeout(() => {
-        scheduleWindowPlacementPersist();
-      }, 500);
+      windowPlacement.scheduleInitialPersist();
 
       primeEditorsDetection(1200);
     })();
   });
 
   onDestroy(() => {
-    if (initialPlacementTimer) {
-      clearTimeout(initialPlacementTimer);
-    }
-    if (placementSaveTimer) {
-      clearTimeout(placementSaveTimer);
-    }
+    windowPlacement.dispose();
     if (workspaceSaveTimer) {
       clearTimeout(workspaceSaveTimer);
       void persistWorkspace();
