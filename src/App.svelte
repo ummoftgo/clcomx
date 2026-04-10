@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Component } from "svelte";
   import { onMount, onDestroy } from "svelte";
-  import { emitTo, listen, type UnlistenFn } from "./lib/tauri/event";
+  import { emitTo, listen } from "./lib/tauri/event";
   import { currentMonitor, getCurrentWindow } from "./lib/tauri/window";
   import TabBar from "./lib/components/TabBar.svelte";
   import SessionLauncher from "./lib/components/SessionLauncher.svelte";
@@ -14,6 +14,7 @@
     type DirtyStateQueryPayload,
     type DirtyStateResponsePayload,
   } from "./lib/features/app-shell/controller/window-close-orchestration-controller";
+  import { createAppWindowListenerController } from "./lib/features/app-shell/controller/app-window-listener-controller";
   import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
   import {
@@ -145,7 +146,6 @@
   let renameDialogValue = $state("");
   let renameTargetSessionId = $state<string | null>(null);
   let allowNativeClose = false;
-  let windowListeners: UnlistenFn[] = [];
   let SessionShellComponent = $state<Component<any> | null>(null);
   let SettingsModalComponent = $state<Component<any> | null>(null);
   let previewPresetId = $state<PreviewPresetId>(getActivePreviewPresetId());
@@ -280,6 +280,49 @@
     }),
   });
 
+  const appWindowListeners = createAppWindowListenerController({
+    onCloseRequested: (listener) => appWindow.onCloseRequested(listener),
+    onMoved: (listener) => appWindow.onMoved(listener),
+    onResized: (listener) => appWindow.onResized(listener),
+    listenWorkspaceUpdated: async (listener) => {
+      const unlisten = await listen<WorkspaceSnapshot>("workspace-updated", (event) => {
+        listener(event.payload);
+      });
+      return unlisten;
+    },
+    listenDirtyStateQuery: async (listener) => {
+      const unlisten = await listen<DirtyStateQueryPayload>(DIRTY_STATE_QUERY_EVENT, (event) => {
+        listener(event.payload);
+      });
+      return unlisten;
+    },
+    emitDirtyStateResponse: (label, payload) =>
+      emitTo<DirtyStateResponsePayload>(label, DIRTY_STATE_RESPONSE_EVENT, payload),
+    consumeNativeCloseAllowance: () => {
+      if (!allowNativeClose) return false;
+      allowNativeClose = false;
+      return true;
+    },
+    handleCloseRequested: () => windowCloseOrchestration.handleCloseRequested(),
+    showDirtyAppDialog: (dirtyCount) => {
+      dirtyAppCloseCount = dirtyCount;
+      showCloseTabDialog = false;
+      showDirtyTabDialog = false;
+      showCloseWindowDialog = false;
+      showDirtyWindowCloseDialog = false;
+      pendingCloseSessionId = null;
+      showDirtyAppDialog = true;
+    },
+    showCloseWindowDialog: () => {
+      showCloseWindowDialog = true;
+    },
+    schedulePlacementPersist: () => windowPlacement.schedulePersist(),
+    syncWorkspaceSnapshot,
+    syncSessionsFromWorkspace,
+    currentWindowLabel: () => currentWindowLabel,
+    getLocalDirtySessionCount,
+  });
+
   function usesKoreanCopy() {
     if (settings.language === "ko") return true;
     if (settings.language === "en") return false;
@@ -353,55 +396,7 @@
 
   onMount(() => {
     void (async () => {
-      windowListeners = await Promise.all([
-        appWindow.onCloseRequested(async (event) => {
-          if (allowNativeClose) {
-            allowNativeClose = false;
-            return;
-          }
-
-          event.preventDefault();
-
-          const closeResult = await windowCloseOrchestration.handleCloseRequested();
-          if (closeResult.kind === "show-dirty-app-dialog") {
-            dirtyAppCloseCount = closeResult.dirtyCount;
-            showCloseTabDialog = false;
-            showDirtyTabDialog = false;
-            showCloseWindowDialog = false;
-            showDirtyWindowCloseDialog = false;
-            pendingCloseSessionId = null;
-            showDirtyAppDialog = true;
-            return;
-          }
-
-          if (closeResult.kind === "show-close-window-dialog") {
-            showCloseWindowDialog = true;
-            return;
-          }
-
-          if (closeResult.kind === "noop") {
-            return;
-          }
-        }),
-        appWindow.onMoved(() => windowPlacement.schedulePersist()),
-        appWindow.onResized(() => windowPlacement.schedulePersist()),
-        listen<WorkspaceSnapshot>("workspace-updated", (event) => {
-          syncWorkspaceSnapshot(event.payload);
-          syncSessionsFromWorkspace(event.payload);
-        }),
-        listen<DirtyStateQueryPayload>(DIRTY_STATE_QUERY_EVENT, (event) => {
-          const payload = event.payload;
-          if (!payload?.requestId || !payload.replyLabel) {
-            return;
-          }
-
-          void emitTo<DirtyStateResponsePayload>(payload.replyLabel, DIRTY_STATE_RESPONSE_EVENT, {
-            requestId: payload.requestId,
-            windowLabel: currentWindowLabel,
-            dirtyCount: getLocalDirtySessionCount(),
-          }).catch(() => {});
-        }),
-      ]);
+      await appWindowListeners.register();
 
       if (isMainWindow) {
         try {
@@ -428,9 +423,7 @@
     workspaceAutosave.dispose();
     canonicalAuthorityCleanup?.();
     canonicalAuthorityCleanup = null;
-    for (const unlisten of windowListeners) {
-      unlisten();
-    }
+    appWindowListeners.dispose();
   });
 
   $effect(() => {
