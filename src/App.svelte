@@ -43,6 +43,7 @@
     setCurrentWindowName,
     syncSessionsFromWorkspace,
   } from "./lib/features/workspace/session-store.svelte";
+  import { createWorkspaceAutosaveController } from "./lib/features/workspace/controller/workspace-autosave-controller";
   import {
     getOtherWindows,
     initializeWorkspaceSnapshot,
@@ -144,7 +145,6 @@
   let renameTargetSessionId = $state<string | null>(null);
   let allowNativeClose = false;
   let windowListeners: UnlistenFn[] = [];
-  let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let SessionShellComponent = $state<Component<any> | null>(null);
   let SettingsModalComponent = $state<Component<any> | null>(null);
   let previewPresetId = $state<PreviewPresetId>(getActivePreviewPresetId());
@@ -226,6 +226,10 @@
     reportError: (message, error) => {
       console.error(message, error);
     },
+  });
+
+  const workspaceAutosave = createWorkspaceAutosaveController({
+    persistWorkspace,
   });
 
   const windowCloseOrchestration = createWindowCloseOrchestrationController({
@@ -401,10 +405,7 @@
 
   onDestroy(() => {
     windowPlacement.dispose();
-    if (workspaceSaveTimer) {
-      clearTimeout(workspaceSaveTimer);
-      void persistWorkspace();
-    }
+    workspaceAutosave.dispose();
     canonicalAuthorityCleanup?.();
     canonicalAuthorityCleanup = null;
     for (const unlisten of windowListeners) {
@@ -436,12 +437,7 @@
     activeSessionId;
     currentWindowName;
 
-    if (workspaceSaveTimer) {
-      clearTimeout(workspaceSaveTimer);
-    }
-    workspaceSaveTimer = setTimeout(() => {
-      void persistWorkspace();
-    }, 120);
+    workspaceAutosave.schedule();
   });
 
   $effect(() => {
