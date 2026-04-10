@@ -7,6 +7,7 @@ export interface SessionViewportProps {
   sessions: Session[];
   activeSessionId: string | null;
   historyEntries: TabHistoryEntry[];
+  SessionLauncherComponent: Component<any>;
   SessionShellComponent: Component<any> | null;
   onOpenHistory: (entry: TabHistoryEntry) => void;
   onConfirmSession: (agentId: AgentId, distro: string, workDir: string) => void;

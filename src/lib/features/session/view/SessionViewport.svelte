@@ -1,5 +1,4 @@
 <script lang="ts">
-  import SessionLauncher from "../../../components/SessionLauncher.svelte";
   import { t } from "../../../i18n";
   import type { SessionViewportProps } from "../contracts/session-viewport";
 
@@ -7,6 +6,7 @@
     sessions,
     activeSessionId,
     historyEntries,
+    SessionLauncherComponent,
     SessionShellComponent,
     onOpenHistory,
     onConfirmSession,
@@ -23,7 +23,7 @@
     class="welcome-layer"
     style:display={sessions.length === 0 ? "block" : "none"}
   >
-    <SessionLauncher
+    <SessionLauncherComponent
       visible={sessions.length === 0}
       embedded={true}
       historyEntries={historyEntries}

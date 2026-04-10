@@ -1,12 +1,18 @@
 <script lang="ts">
   import { _ as translate } from "svelte-i18n";
-  import { listWslDistros, listWslDirectories, type WslEntry } from "../wsl";
-  import type { TabHistoryEntry } from "../types";
-  import { getSettings } from "../stores/settings.svelte";
-  import { removeTabHistoryEntry } from "../stores/tab-history.svelte";
-  import { getBuiltinAgents, getAgentDefinition, getAgentLabel, summarizeResumeToken, type AgentId } from "../agents";
-  import { Button, ModalShell } from "../ui";
-  import AgentIcon from "./AgentIcon.svelte";
+  import { listWslDistros, listWslDirectories } from "../../../wsl";
+  import type { TabHistoryEntry } from "../../../types";
+  import { getSettings } from "../../../stores/settings.svelte";
+  import { removeTabHistoryEntry } from "../../../stores/tab-history.svelte";
+  import { getBuiltinAgents, getAgentDefinition, getAgentLabel, summarizeResumeToken } from "../../../agents";
+  import { Button, ModalShell } from "../../../ui";
+  import AgentIcon from "../../../components/AgentIcon.svelte";
+  import type { SessionLauncherProps } from "../contracts/session-launcher";
+  import {
+    createSessionLauncherController,
+    createSessionLauncherState,
+    getParentPath,
+  } from "../controller/session-launcher-controller";
   import {
     TEST_IDS,
     launcherAgentTestId,
@@ -14,7 +20,7 @@
     launcherHistoryDeleteButtonTestId,
     launcherDistroTestId,
     launcherHistoryItemTestId,
-  } from "../testids";
+  } from "../../../testids";
 
   type TranslationOptions = {
     default?: string;
@@ -23,15 +29,6 @@
     format?: string;
   };
 
-  interface Props {
-    visible: boolean;
-    embedded?: boolean;
-    historyEntries: TabHistoryEntry[];
-    onOpenHistory: (entry: TabHistoryEntry) => void;
-    onConfirm: (agentId: AgentId, distro: string, workDir: string) => void;
-    onCancel?: () => void;
-  }
-
   let {
     visible,
     embedded = false,
@@ -39,192 +36,81 @@
     onOpenHistory,
     onConfirm,
     onCancel = () => {},
-  }: Props = $props();
+  }: SessionLauncherProps = $props();
 
-  let step = $state<"home" | "browser">("home");
-  let distros = $state<string[]>([]);
   const builtinAgents = getBuiltinAgents();
   const settings = getSettings();
   const t = (key: string, options?: TranslationOptions) => $translate(key, options);
-  let selectedDistro = $state("");
-  let selectedAgentId = $state<AgentId>(settings.workspace.defaultAgentId || "claude");
-  let currentPath = $state("/home");
-  let selectedPath = $state("/home");
-  let directories = $state<WslEntry[]>([]);
-  let loading = $state(false);
-  let agentPickerOpen = $state(false);
-  let distroPickerOpen = $state(false);
-  let pathInput = $state("/home");
-  let error = $state("");
-  let historyDeleteError = $state("");
-  let pendingDeleteEntry = $state<TabHistoryEntry | null>(null);
-  let deletingHistoryEntry = $state(false);
-  let navigationHistory = $state<string[]>(["/home"]);
-  let navigationIndex = $state(0);
-
-  $effect(() => {
-    const availableAgentIds = new Set(builtinAgents.map((agent) => agent.id));
-    const preferredAgentId = settings.workspace.defaultAgentId || "claude";
-    if (!selectedAgentId || !availableAgentIds.has(selectedAgentId)) {
-      selectedAgentId = availableAgentIds.has(preferredAgentId) ? preferredAgentId : "claude";
-    }
+  const launcher = $state(createSessionLauncherState(settings.workspace.defaultAgentId || "claude"));
+  const launcherController = createSessionLauncherController({
+    state: launcher,
+    getDefaultAgentId: () => settings.workspace.defaultAgentId || "claude",
+    getDefaultDistro: () => settings.workspace.defaultDistro,
+    getDefaultStartPathsByDistro: () => settings.workspace.defaultStartPathsByDistro,
+    getAvailableAgentIds: () => builtinAgents.map((agent) => agent.id),
+    listWslDistros,
+    listWslDirectories,
+    removeHistoryEntry: removeTabHistoryEntry,
+    onOpenHistory: (entry) => onOpenHistory(entry),
+    onConfirm: (agentId, distro, workDir) => onConfirm(agentId, distro, workDir),
+    formatNoDistrosError: () => t("launcher.error.noDistros"),
+    formatLoadDistrosError: (error) => `${t("launcher.error.loadDistros")}: ${error}`,
+    formatLoadDirectoriesError: (error) => `${t("launcher.error.loadDirectories")}: ${error}`,
+    formatDeleteHistoryError: (error) => `${t("launcher.recent.deleteFailed")}: ${error}`,
   });
 
-  async function ensureDistrosLoaded() {
-    if (distros.length > 0) return distros;
-    if (loading) return distros;
+  $effect(() => {
+    launcherController.syncSelectedAgentId();
+  });
 
-    loading = true;
-    error = "";
-    try {
-      distros = await listWslDistros();
-      if (!selectedDistro && settings.workspace.defaultDistro && distros.includes(settings.workspace.defaultDistro)) {
-        selectedDistro = settings.workspace.defaultDistro;
-      }
-      if (distros.length === 0) {
-        error = t("launcher.error.noDistros");
-      }
-    } catch (e) {
-      error = `${t("launcher.error.loadDistros")}: ${e}`;
-    } finally {
-      loading = false;
-    }
-    return distros;
+  function beginNewSession() {
+    void launcherController.beginNewSession();
   }
 
   function resetToHome() {
-    step = "home";
-    selectedDistro = "";
-    selectedAgentId = settings.workspace.defaultAgentId || "claude";
-    currentPath = "/home";
-    selectedPath = "/home";
-    pathInput = "/home";
-    directories = [];
-    navigationHistory = ["/home"];
-    navigationIndex = 0;
-    agentPickerOpen = false;
-    distroPickerOpen = false;
-    pendingDeleteEntry = null;
-    historyDeleteError = "";
-    deletingHistoryEntry = false;
-    error = "";
-    loading = false;
-  }
-
-  function getDefaultPathForDistro(distro: string) {
-    return settings.workspace.defaultStartPathsByDistro[distro]?.trim() || "/home";
-  }
-
-  async function selectDistro(distro: string) {
-    selectedDistro = distro;
-    await navigateTo(getDefaultPathForDistro(distro));
-  }
-
-  async function beginNewSession() {
-    step = "browser";
-    selectedAgentId = selectedAgentId || settings.workspace.defaultAgentId || "claude";
-    const loadedDistros = await ensureDistrosLoaded();
-    const preferredDistro =
-      (settings.workspace.defaultDistro.trim() && loadedDistros.includes(settings.workspace.defaultDistro.trim())
-        ? settings.workspace.defaultDistro.trim()
-        : "") ||
-      loadedDistros[0] ||
-      "";
-
-    if (preferredDistro) {
-      await selectDistro(preferredDistro);
-    }
+    launcherController.resetToHome();
   }
 
   function selectHistory(entry: TabHistoryEntry) {
-    onOpenHistory(entry);
-    if (!embedded) {
-      resetToHome();
-    }
+    launcherController.selectHistory(entry, { embedded });
   }
 
   function promptDeleteHistory(entry: TabHistoryEntry, event?: MouseEvent) {
     event?.stopPropagation();
-    pendingDeleteEntry = entry;
-    historyDeleteError = "";
+    launcherController.promptDeleteHistory(entry);
   }
 
   function dismissDeleteHistoryDialog() {
-    if (deletingHistoryEntry) return;
-    pendingDeleteEntry = null;
-    historyDeleteError = "";
+    launcherController.dismissDeleteHistoryDialog();
   }
 
-  async function confirmDeleteHistory() {
-    if (!pendingDeleteEntry || deletingHistoryEntry) return;
-
-    deletingHistoryEntry = true;
-    historyDeleteError = "";
-
-    try {
-      await removeTabHistoryEntry(pendingDeleteEntry);
-      pendingDeleteEntry = null;
-    } catch (deleteError) {
-      historyDeleteError = `${t("launcher.recent.deleteFailed")}: ${deleteError}`;
-    } finally {
-      deletingHistoryEntry = false;
-    }
-  }
-
-  function recordNavigation(path: string) {
-    if (navigationHistory[navigationIndex] === path) return;
-    navigationHistory = [...navigationHistory.slice(0, navigationIndex + 1), path];
-    navigationIndex = navigationHistory.length - 1;
-  }
-
-  async function navigateTo(path: string, options: { recordHistory?: boolean } = {}) {
-    currentPath = path;
-    selectedPath = path;
-    pathInput = path;
-    if (options.recordHistory !== false) {
-      recordNavigation(path);
-    }
-    loading = true;
-    error = "";
-    try {
-      directories = await listWslDirectories(selectedDistro, path);
-    } catch (e) {
-      error = `${t("launcher.error.loadDirectories")}: ${e}`;
-      directories = [];
-    } finally {
-      loading = false;
-    }
+  function confirmDeleteHistory() {
+    void launcherController.confirmDeleteHistory();
   }
 
   function goUp() {
-    const parent = currentPath.replace(/\/[^/]+\/?$/, "") || "/";
-    void navigateTo(parent);
+    void launcherController.goUp();
   }
 
   function goBackHistory() {
-    if (navigationIndex <= 0) return;
-    navigationIndex -= 1;
-    void navigateTo(navigationHistory[navigationIndex], { recordHistory: false });
+    void launcherController.goBackHistory();
   }
 
   function goForwardHistory() {
-    if (navigationIndex >= navigationHistory.length - 1) return;
-    navigationIndex += 1;
-    void navigateTo(navigationHistory[navigationIndex], { recordHistory: false });
+    void launcherController.goForwardHistory();
   }
 
   function openSelectedDirectory() {
-    void navigateTo(pathInput.trim() || selectedPath || currentPath);
+    void launcherController.openSelectedDirectory();
   }
 
   function confirmDirectory() {
-    onConfirm(selectedAgentId, selectedDistro, pathInput.trim() || selectedPath || currentPath);
-    resetToHome();
+    launcherController.confirmDirectory();
   }
 
   function handlePathKeydown(e: KeyboardEvent) {
     if (e.key === "Enter") {
-      void navigateTo(pathInput);
+      void launcherController.navigateTo(launcher.pathInput);
     }
   }
 
@@ -232,22 +118,22 @@
     if (!visible) return;
     if (e.key !== "Escape") return;
 
-    if (pendingDeleteEntry) {
+    if (launcher.pendingDeleteEntry) {
       dismissDeleteHistoryDialog();
       return;
     }
 
-    if (agentPickerOpen) {
-      agentPickerOpen = false;
+    if (launcher.agentPickerOpen) {
+      launcherController.closeAgentPicker();
       return;
     }
 
-    if (distroPickerOpen) {
-      distroPickerOpen = false;
+    if (launcher.distroPickerOpen) {
+      launcherController.closeDistroPicker();
       return;
     }
 
-    if (step !== "home") {
+    if (launcher.step !== "home") {
       resetToHome();
       return;
     }
@@ -258,7 +144,7 @@
   }
 
   function handleMouseHistory(e: MouseEvent) {
-    if (!visible || step !== "browser") return;
+    if (!visible || launcher.step !== "browser") return;
     if (e.button === 3) {
       e.preventDefault();
       goBackHistory();
@@ -273,13 +159,13 @@
 
 <div
   class:overlay={!embedded}
-  class:browser-overlay={!embedded && step === "browser"}
+  class:browser-overlay={!embedded && launcher.step === "browser"}
   class:embedded-shell={embedded}
   data-testid={TEST_IDS.sessionLauncher}
   style:display={visible ? (embedded ? "block" : "flex") : "none"}
 >
-  <div class:panel={embedded} class:dialog={!embedded} class:browser-dialog={!embedded && step === "browser"}>
-    {#if step === "home"}
+  <div class:panel={embedded} class:dialog={!embedded} class:browser-dialog={!embedded && launcher.step === "browser"}>
+    {#if launcher.step === "home"}
       <div class="launcher-shell">
         <header class="hero">
           <div class="hero-copy">
@@ -385,17 +271,17 @@
                 <button
                   class="picker-badge agent-trigger"
                   data-testid={TEST_IDS.launcherAgentTrigger}
-                  onclick={() => { agentPickerOpen = true; }}
+                  onclick={launcherController.openAgentPicker}
                 >
-                  <AgentIcon agentId={selectedAgentId} size="sm" />
-                  <span>{getAgentLabel(selectedAgentId)}</span>
+                  <AgentIcon agentId={launcher.selectedAgentId} size="sm" />
+                  <span>{getAgentLabel(launcher.selectedAgentId)}</span>
                 </button>
                 <button
                   class="picker-badge distro-trigger"
                   data-testid={TEST_IDS.launcherDistroTrigger}
-                  onclick={() => { distroPickerOpen = true; }}
+                  onclick={launcherController.openDistroPicker}
                 >
-                  {selectedDistro}
+                  {launcher.selectedDistro}
                 </button>
               </div>
             </div>
@@ -408,7 +294,7 @@
                     class="path-input"
                     data-testid={TEST_IDS.launcherPathInput}
                     type="text"
-                    bind:value={pathInput}
+                    bind:value={launcher.pathInput}
                     onkeydown={handlePathKeydown}
                   />
                   <button class="path-btn primary" onclick={openSelectedDirectory}>
@@ -421,7 +307,7 @@
                     class="ghost-action secondary-action"
                     data-testid={TEST_IDS.launcherOpenSelection}
                     onclick={openSelectedDirectory}
-                    disabled={!selectedDistro}
+                    disabled={!launcher.selectedDistro}
                   >
                     {t("launcher.directory.openSelected")}
                   </button>
@@ -429,7 +315,7 @@
                     class="primary-action compact"
                     data-testid={TEST_IDS.launcherOpenHere}
                     onclick={confirmDirectory}
-                    disabled={!selectedDistro}
+                    disabled={!launcher.selectedDistro}
                   >
                     {t("launcher.directory.openHere")}
                   </button>
@@ -437,42 +323,38 @@
               </div>
             </div>
 
-            {#if loading}
+            {#if launcher.loading}
               <div class="status-card">{t("launcher.directory.loading")}</div>
-            {:else if error}
-              <div class="status-card error">{error}</div>
+            {:else if launcher.error}
+              <div class="status-card error">{launcher.error}</div>
             {:else}
               <div class="inset-surface list-frame">
                 <div class="list directory-list" data-testid={TEST_IDS.launcherDirectoryList}>
-                  {#if currentPath !== "/"}
+                  {#if launcher.currentPath !== "/"}
                     <button
                       class="list-item directory-item parent-item"
-                      data-testid={launcherDirectoryTestId(`${currentPath.replace(/\/[^/]+\/?$/, "") || "/"}`)}
+                      data-testid={launcherDirectoryTestId(getParentPath(launcher.currentPath))}
                       ondblclick={goUp}
                       onclick={() => {
-                        const parent = currentPath.replace(/\/[^/]+\/?$/, "") || "/";
-                        selectedPath = parent;
-                        pathInput = parent;
+                        launcherController.selectPath(getParentPath(launcher.currentPath));
                       }}
                     >
                       <span class="icon" aria-hidden="true">↰</span>
                       <span class="list-title">..</span>
-                      <span class="list-hint">{currentPath.replace(/\/[^/]+\/?$/, "") || "/"}</span>
+                      <span class="list-hint">{getParentPath(launcher.currentPath)}</span>
                     </button>
                   {/if}
-                  {#each directories as dir}
+                  {#each launcher.directories as dir}
                     <button
                       class="list-item directory-item"
-                      class:selected={dir.path === (pathInput.trim() || selectedPath)}
+                      class:selected={dir.path === (launcher.pathInput.trim() || launcher.selectedPath)}
                       data-testid={launcherDirectoryTestId(dir.path)}
                       ondblclick={() => {
-                        selectedPath = dir.path;
-                        pathInput = dir.path;
+                        launcherController.selectPath(dir.path);
                         openSelectedDirectory();
                       }}
                       onclick={() => {
-                        selectedPath = dir.path;
-                        pathInput = dir.path;
+                        launcherController.selectPath(dir.path);
                       }}
                     >
                       <span class="icon" aria-hidden="true">⌁</span>
@@ -480,7 +362,7 @@
                       <span class="list-hint" title={dir.path}>{dir.path}</span>
                     </button>
                   {/each}
-                  {#if directories.length === 0}
+                  {#if launcher.directories.length === 0}
                     <div class="empty-state compact">{t("launcher.directory.empty")}</div>
                   {/if}
                 </div>
@@ -494,7 +376,7 @@
 </div>
 
 <ModalShell
-  open={visible && pendingDeleteEntry !== null}
+  open={visible && launcher.pendingDeleteEntry !== null}
   size="sm"
   onClose={dismissDeleteHistoryDialog}
 >
@@ -503,37 +385,37 @@
     <p>
       {t("launcher.recent.deleteDescription", {
         values: {
-          title: pendingDeleteEntry?.title ?? "",
+          title: launcher.pendingDeleteEntry?.title ?? "",
         },
       })}
     </p>
 
-    {#if pendingDeleteEntry}
+    {#if launcher.pendingDeleteEntry}
       <div class="history-delete-entry">
         <span class="history-delete-meta">
-          {getAgentLabel(pendingDeleteEntry.agentId ?? "claude")} · {pendingDeleteEntry.distro}
+          {getAgentLabel(launcher.pendingDeleteEntry.agentId ?? "claude")} · {launcher.pendingDeleteEntry.distro}
         </span>
-        <span class="history-delete-path" title={pendingDeleteEntry.workDir}>
-          {pendingDeleteEntry.workDir}
+        <span class="history-delete-path" title={launcher.pendingDeleteEntry.workDir}>
+          {launcher.pendingDeleteEntry.workDir}
         </span>
       </div>
     {/if}
 
-    {#if historyDeleteError}
-      <p class="history-delete-error">{historyDeleteError}</p>
+    {#if launcher.historyDeleteError}
+      <p class="history-delete-error">{launcher.historyDeleteError}</p>
     {/if}
 
     <div class="history-delete-actions">
       <Button
         variant="danger"
-        busy={deletingHistoryEntry}
+        busy={launcher.deletingHistoryEntry}
         data-testid={TEST_IDS.launcherHistoryDeleteConfirm}
         onclick={confirmDeleteHistory}
       >
         {t("common.actions.delete")}
       </Button>
       <Button
-        disabled={deletingHistoryEntry}
+        disabled={launcher.deletingHistoryEntry}
         data-testid={TEST_IDS.launcherHistoryDeleteCancel}
         onclick={dismissDeleteHistoryDialog}
       >
@@ -543,14 +425,14 @@
   </div>
 </ModalShell>
 
-{#if visible && step === "browser" && agentPickerOpen}
+{#if visible && launcher.step === "browser" && launcher.agentPickerOpen}
   <div
     class="picker-overlay"
     role="presentation"
     tabindex="-1"
   >
     <div
-    class="picker-dialog surface"
+      class="picker-dialog surface"
       data-testid={TEST_IDS.launcherAgentPicker}
       role="dialog"
       aria-modal="true"
@@ -562,7 +444,7 @@
           <p class="section-kicker">{t("launcher.agent.eyebrow")}</p>
           <h3>{t("launcher.agent.title")}</h3>
         </div>
-        <button class="ghost-action" onclick={() => { agentPickerOpen = false; }}>
+        <button class="ghost-action" onclick={launcherController.closeAgentPicker}>
           {t("common.actions.close")}
         </button>
       </div>
@@ -572,12 +454,9 @@
           {#each builtinAgents as agent}
             <button
               class="list-item agent-picker-item"
-              class:selected={agent.id === selectedAgentId}
+              class:selected={agent.id === launcher.selectedAgentId}
               data-testid={launcherAgentTestId(agent.id)}
-              onclick={() => {
-                selectedAgentId = agent.id;
-                agentPickerOpen = false;
-              }}
+              onclick={() => launcherController.selectAgent(agent.id)}
             >
               <AgentIcon agentId={agent.id} size="md" />
               <span class="list-copy">
@@ -592,7 +471,7 @@
   </div>
 {/if}
 
-{#if visible && step === "browser" && distroPickerOpen}
+{#if visible && launcher.step === "browser" && launcher.distroPickerOpen}
   <div
     class="picker-overlay"
     role="presentation"
@@ -611,27 +490,24 @@
           <p class="section-kicker">{t("launcher.distro.eyebrow")}</p>
           <h3>{t("launcher.distro.title")}</h3>
         </div>
-        <button class="ghost-action" onclick={() => { distroPickerOpen = false; }}>
+        <button class="ghost-action" onclick={launcherController.closeDistroPicker}>
           {t("common.actions.close")}
         </button>
       </div>
 
-      {#if loading && distros.length === 0}
+      {#if launcher.loading && launcher.distros.length === 0}
         <div class="status-card">{t("launcher.distro.loading")}</div>
-      {:else if error && distros.length === 0}
-        <div class="status-card error">{error}</div>
+      {:else if launcher.error && launcher.distros.length === 0}
+        <div class="status-card error">{launcher.error}</div>
       {:else}
         <div class="inset-surface list-frame picker-list-frame">
           <div class="list distro-list" data-testid={TEST_IDS.launcherDistroList}>
-            {#each distros as distro}
+            {#each launcher.distros as distro}
               <button
                 class="list-item distro-item"
-                class:selected={distro === selectedDistro}
+                class:selected={distro === launcher.selectedDistro}
                 data-testid={launcherDistroTestId(distro)}
-                onclick={() => {
-                  void selectDistro(distro);
-                  distroPickerOpen = false;
-                }}
+                onclick={() => launcherController.selectDistroAndClose(distro)}
               >
                 <span class="icon" aria-hidden="true">⌘</span>
                 <span class="list-copy">
