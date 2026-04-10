@@ -14,6 +14,7 @@
     type DirtyStateQueryPayload,
     type DirtyStateResponsePayload,
   } from "./lib/features/app-shell/controller/window-close-orchestration-controller";
+  import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
   import { createWindowPlacementController } from "./lib/features/app-shell/controller/window-placement-controller";
   import {
     addSession,
@@ -144,7 +145,6 @@
   let previewFrameMode = $state<PreviewFrameMode>(getInitialPreviewFrameMode());
   let showPreviewControls = $state(getInitialPreviewControlsVisible());
   let terminalLoadPromise: Promise<void> | null = null;
-  let settingsLoadPromise: Promise<void> | null = null;
   let canonicalAuthorityCleanup: (() => void) | null = null;
   const previewFrameWidth = $derived(
     previewFrameMode === "desktop"
@@ -193,28 +193,18 @@
     await terminalLoadPromise;
   }
 
-  async function ensureSettingsModalComponent() {
-    if (SettingsModalComponent) return;
-    if (settingsLoadPromise) {
-      await settingsLoadPromise;
-      return;
-    }
-
-    settingsLoadPromise = import("./lib/components/SettingsModal.svelte")
-      .then((module) => {
-        SettingsModalComponent = module.default;
-      })
-      .finally(() => {
-        settingsLoadPromise = null;
-      });
-
-    await settingsLoadPromise;
-  }
-
   async function closeCurrentWindow() {
     allowNativeClose = true;
     await appWindow.close();
   }
+
+  const settingsModalLoader = createSettingsModalLoaderController({
+    getComponent: () => SettingsModalComponent,
+    setComponent: (component) => {
+      SettingsModalComponent = component;
+    },
+    loadComponent: async () => (await import("./lib/components/SettingsModal.svelte")).default,
+  });
 
   const windowPlacement = createWindowPlacementController({
     isMainWindow: () => isMainWindow,
@@ -840,7 +830,7 @@
   }
 
   async function openSettingsPanel() {
-    await ensureSettingsModalComponent();
+    await settingsModalLoader.ensureLoaded();
     showSettings = true;
   }
 </script>
