@@ -1,11 +1,5 @@
 import type { Terminal } from "@xterm/xterm";
-import {
-  formatPathForAgentInput,
-  getImageFromPasteEvent,
-  readImageFromClipboard,
-  revokePendingClipboardImage,
-  saveClipboardImage,
-} from "../../../clipboard";
+import type { PendingClipboardImage, SavedClipboardImage } from "../../../clipboard";
 import type {
   DetectedEditor,
   ResolvedTerminalPath,
@@ -13,6 +7,7 @@ import type {
 } from "../../../editors";
 import type { ContextMenuItem } from "../../../ui/context-menu";
 import type { OverlayInteractionState, LinkMenuTarget } from "../state/overlay-interaction-state.svelte";
+import { createOverlayClipboardImageController } from "./overlay-clipboard-image-controller";
 import {
   createOverlayFileLinkActions,
   getFilePathNotice,
@@ -47,12 +42,15 @@ interface OverlayInteractionDeps {
   openInEditor: (editorId: string, path: ResolvedTerminalPath) => Promise<void>;
   openInternalEditorForLinkPath: (path: ResolvedTerminalPath) => void;
   t: TranslateFn;
-  createPendingClipboardImage: typeof import("../../../clipboard").createPendingClipboardImage;
-  revokePendingClipboardImage: typeof revokePendingClipboardImage;
-  readImageFromClipboard: typeof readImageFromClipboard;
-  getImageFromPasteEvent: typeof getImageFromPasteEvent;
-  saveClipboardImage: typeof saveClipboardImage;
-  formatPathForAgentInput: typeof formatPathForAgentInput;
+  createPendingClipboardImage: (blob: Blob) => PendingClipboardImage;
+  revokePendingClipboardImage: (image: PendingClipboardImage | null) => void;
+  readImageFromClipboard: () => Promise<Blob | null>;
+  getImageFromPasteEvent: (event: ClipboardEvent) => Blob | null;
+  saveClipboardImage: (
+    image: PendingClipboardImage,
+    distro: string,
+  ) => Promise<SavedClipboardImage>;
+  formatPathForAgentInput: (path: string) => string;
 }
 
 function clearNoticeTimer(state: OverlayInteractionState) {
@@ -143,6 +141,22 @@ export function createOverlayInteractionController(
     },
     t: deps.t,
   });
+  const clipboardImageController = createOverlayClipboardImageController(state, {
+    getDistro: deps.getDistro,
+    getVisible: deps.getVisible,
+    getDraftOpen: deps.getDraftOpen,
+    focusDraft: deps.focusDraft,
+    focusOutput: deps.focusOutput,
+    routeInsertedText: deps.routeInsertedText,
+    setNotice: setClipboardNotice,
+    t: deps.t,
+    createPendingClipboardImage: deps.createPendingClipboardImage,
+    revokePendingClipboardImage: deps.revokePendingClipboardImage,
+    readImageFromClipboard: deps.readImageFromClipboard,
+    getImageFromPasteEvent: deps.getImageFromPasteEvent,
+    saveClipboardImage: deps.saveClipboardImage,
+    formatPathForAgentInput: deps.formatPathForAgentInput,
+  });
 
   const openFileLinkMenu = async (rawPath: string, event: MouseEvent) => {
     state.suppressSelectionUntilMouseUp = true;
@@ -222,93 +236,6 @@ export function createOverlayInteractionController(
     await fileLinkActions.handleLinkMenuSelect(state.linkMenuTarget, item);
   };
 
-  const resetClipboardImage = (restoreFocus = false) => {
-    const current = state.pendingClipboardImage;
-    state.pendingClipboardImage = null;
-    state.clipboardError = null;
-    revokePendingClipboardImage(current);
-
-    if (restoreFocus) {
-      if (deps.getDraftOpen()) {
-        deps.focusDraft();
-      } else {
-        deps.focusOutput();
-      }
-    }
-  };
-
-  const openClipboardPreview = (blob: Blob) => {
-    const nextImage = deps.createPendingClipboardImage(blob);
-    revokePendingClipboardImage(state.pendingClipboardImage);
-    state.pendingClipboardImage = nextImage;
-    state.clipboardError = null;
-  };
-
-  const handlePasteImageFromClipboard = async () => {
-    try {
-      const imageBlob = await deps.readImageFromClipboard();
-      if (!imageBlob) {
-        setClipboardNotice(deps.t("terminal.assist.clipboardNoImage"));
-        if (deps.getDraftOpen()) {
-          deps.focusDraft();
-        } else {
-          deps.focusOutput();
-        }
-        return;
-      }
-
-      openClipboardPreview(imageBlob);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setClipboardNotice(message);
-      if (deps.getDraftOpen()) {
-        deps.focusDraft();
-      } else {
-        deps.focusOutput();
-      }
-    }
-  };
-
-  const confirmClipboardImage = async () => {
-    if (!state.pendingClipboardImage) return;
-
-    state.clipboardBusy = true;
-    state.clipboardError = null;
-
-    try {
-      const savedImage = await deps.saveClipboardImage(state.pendingClipboardImage, deps.getDistro());
-      const text = deps.formatPathForAgentInput(savedImage.wslPath);
-      deps.routeInsertedText(text);
-      resetClipboardImage(true);
-    } catch (error) {
-      state.clipboardError = error instanceof Error ? error.message : String(error);
-    } finally {
-      state.clipboardBusy = false;
-    }
-  };
-
-  const handleDraftPaste = (event: ClipboardEvent) => {
-    const imageBlob = deps.getImageFromPasteEvent(event);
-    if (!imageBlob) {
-      return;
-    }
-
-    event.preventDefault();
-    openClipboardPreview(imageBlob);
-  };
-
-  const handleTerminalPaste = (event: ClipboardEvent) => {
-    if (!deps.getVisible()) return;
-
-    const imageBlob = deps.getImageFromPasteEvent(event);
-    if (!imageBlob) {
-      return;
-    }
-
-    event.preventDefault();
-    openClipboardPreview(imageBlob);
-  };
-
   const handleSelectionCopy = async () => {
     const term = deps.getTerminal();
     if (!term) return;
@@ -321,10 +248,8 @@ export function createOverlayInteractionController(
 
   const dispose = () => {
     clearNoticeTimer(state);
-    revokePendingClipboardImage(state.pendingClipboardImage);
-    state.pendingClipboardImage = null;
+    clipboardImageController.dispose();
     state.clipboardNotice = null;
-    state.clipboardError = null;
     state.linkMenuVisible = false;
     state.linkMenuTarget = null;
     state.editorPickerVisible = false;
@@ -349,12 +274,12 @@ export function createOverlayInteractionController(
     openUrlLinkMenuForTest,
     handleEditorSelect,
     handleLinkMenuSelect,
-    openClipboardPreview,
-    resetClipboardImage,
-    handlePasteImageFromClipboard,
-    confirmClipboardImage,
-    handleDraftPaste,
-    handleTerminalPaste,
+    openClipboardPreview: clipboardImageController.openClipboardPreview,
+    resetClipboardImage: clipboardImageController.resetClipboardImage,
+    handlePasteImageFromClipboard: clipboardImageController.handlePasteImageFromClipboard,
+    confirmClipboardImage: clipboardImageController.confirmClipboardImage,
+    handleDraftPaste: clipboardImageController.handleDraftPaste,
+    handleTerminalPaste: clipboardImageController.handleTerminalPaste,
     handleSelectionCopy,
     dispose,
   };
