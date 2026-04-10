@@ -15,6 +15,11 @@
     type DirtyStateResponsePayload,
   } from "./lib/features/app-shell/controller/window-close-orchestration-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
+  import {
+    createPreviewUrlStateController,
+    PREVIEW_FRAME_OPTIONS,
+    type PreviewFrameMode,
+  } from "./lib/features/app-shell/controller/preview-url-state-controller";
   import { createWindowPlacementController } from "./lib/features/app-shell/controller/window-placement-controller";
   import {
     addSession,
@@ -94,19 +99,20 @@
   } from "./lib/preview/runtime";
   import { createRuntimeId } from "./lib/ids";
 
-  type PreviewFrameMode = "fluid" | "desktop" | "narrow";
-
-  const PREVIEW_FRAME_OPTIONS = [
-    { id: "fluid", label: "Fluid" },
-    { id: "desktop", label: "Desktop" },
-    { id: "narrow", label: "Narrow" },
-  ] as const;
   const appWindow = getCurrentWindow();
   const currentWindowLabel = appWindow.label;
   const isMainWindow = currentWindowLabel === "main";
   const browserPreview = isBrowserPreview();
   const settings = getSettings();
   const previewPresetOptions = getAvailablePreviewPresets();
+  const previewUrlState = createPreviewUrlStateController({
+    isBrowserPreview: () => browserPreview,
+    getCurrentHref: () => (typeof window === "undefined" ? null : window.location.href),
+    replaceUrl: (url) => {
+      if (typeof window === "undefined") return;
+      window.history.replaceState(window.history.state, "", url);
+    },
+  });
   let bootstrap = $state(getBootstrap());
 
   $effect(() => {
@@ -142,8 +148,8 @@
   let SessionShellComponent = $state<Component<any> | null>(null);
   let SettingsModalComponent = $state<Component<any> | null>(null);
   let previewPresetId = $state<PreviewPresetId>(getActivePreviewPresetId());
-  let previewFrameMode = $state<PreviewFrameMode>(getInitialPreviewFrameMode());
-  let showPreviewControls = $state(getInitialPreviewControlsVisible());
+  let previewFrameMode = $state<PreviewFrameMode>(previewUrlState.getInitialFrameMode());
+  let showPreviewControls = $state(previewUrlState.getInitialControlsVisible());
   let terminalLoadPromise: Promise<void> | null = null;
   let canonicalAuthorityCleanup: (() => void) | null = null;
   const previewFrameWidth = $derived(
@@ -455,34 +461,6 @@
     showSessionLauncher = true;
   }
 
-  function normalizePreviewFrameMode(value: string | null): PreviewFrameMode {
-    return PREVIEW_FRAME_OPTIONS.some((option) => option.id === value)
-      ? (value as PreviewFrameMode)
-      : "desktop";
-  }
-
-  function getInitialPreviewFrameMode(): PreviewFrameMode {
-    if (!browserPreview || typeof window === "undefined") return "desktop";
-    const frame = new URL(window.location.href).searchParams.get("frame");
-    return normalizePreviewFrameMode(frame);
-  }
-
-  function getInitialPreviewControlsVisible() {
-    if (!browserPreview || typeof window === "undefined") return false;
-    return new URL(window.location.href).searchParams.get("controls") !== "hidden";
-  }
-
-  function setPreviewUrlParam(name: string, value: string | null) {
-    if (!browserPreview || typeof window === "undefined") return;
-    const url = new URL(window.location.href);
-    if (value && value.length > 0) {
-      url.searchParams.set(name, value);
-    } else {
-      url.searchParams.delete(name);
-    }
-    window.history.replaceState(window.history.state, "", url);
-  }
-
   function resetPreviewOverlays() {
     showSessionLauncher = false;
     showSettings = false;
@@ -493,7 +471,7 @@
 
   function setPreviewControlsVisible(visible: boolean) {
     showPreviewControls = visible;
-    setPreviewUrlParam("controls", visible ? null : "hidden");
+    previewUrlState.setControlsVisible(visible);
   }
 
   function applyPreviewBootstrap(nextBootstrap: AppBootstrap) {
@@ -514,11 +492,8 @@
   }
 
   function handlePreviewFrameModeChange(nextFrameMode: string) {
-    previewFrameMode = normalizePreviewFrameMode(nextFrameMode);
-    setPreviewUrlParam(
-      "frame",
-      previewFrameMode === "desktop" ? null : previewFrameMode,
-    );
+    previewFrameMode = previewUrlState.normalizeFrameMode(nextFrameMode);
+    previewUrlState.setFrameMode(previewFrameMode);
   }
 
   async function togglePreviewSettings() {
