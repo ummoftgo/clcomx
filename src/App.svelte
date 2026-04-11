@@ -87,8 +87,8 @@
   import type { AgentId } from "./lib/agents";
   import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
   import { createTabCloseOrchestrationController } from "./lib/features/session/controller/tab-close-orchestration-controller";
+  import { createTabRenameOrchestrationController } from "./lib/features/session/controller/tab-rename-orchestration-controller";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
-  import { resolveRenamedSessionTitle } from "./lib/features/session/service/session-tab-behavior";
   import { createTabOrganizationController } from "./lib/features/session-tabs/controller/tab-organization-controller";
   import { dispatchTerminalFocusRequest } from "./lib/features/terminal/controller/terminal-focus-bridge";
   import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
@@ -460,6 +460,12 @@
     }
   });
 
+  $effect(() => {
+    if (renameDialogKind === "tab" && renameTargetSessionId) {
+      tabRenameOrchestration.reconcilePendingRenameDialog();
+    }
+  });
+
   function requestNewTab() {
     if (sessions.length === 0) return;
     showSessionLauncher = true;
@@ -497,7 +503,7 @@
 
   function openPreviewRenameDialog() {
     if (!activeSessionId) return;
-    requestRenameTab(activeSessionId);
+    tabRenameOrchestration.requestRenameTab(activeSessionId);
   }
 
   function openPreviewCloseDialog() {
@@ -597,6 +603,24 @@
     closeTab: handleCloseTab,
   });
 
+  const tabRenameOrchestration = createTabRenameOrchestrationController({
+    getSession: (sessionId) => sessions.find((entry) => entry.id === sessionId) ?? null,
+    getRenameDialogKind: () => renameDialogKind,
+    getRenameDialogValue: () => renameDialogValue,
+    getRenameTargetSessionId: () => renameTargetSessionId,
+    setRenameDialogKind: (kind) => {
+      renameDialogKind = kind;
+    },
+    setRenameDialogValue: (value) => {
+      renameDialogValue = value;
+    },
+    setRenameTargetSessionId: (sessionId) => {
+      renameTargetSessionId = sessionId;
+    },
+    setSessionTitle,
+    recordTabHistory,
+  });
+
   const tabOrganizationController = createTabOrganizationController({
     getSessions: () => sessions,
     setActiveSession,
@@ -679,11 +703,7 @@
   }
 
   function requestRenameTab(sessionId: string) {
-    const session = sessions.find((entry) => entry.id === sessionId);
-    if (!session) return;
-    renameDialogKind = "tab";
-    renameTargetSessionId = sessionId;
-    renameDialogValue = session.title;
+    tabRenameOrchestration.requestRenameTab(sessionId);
   }
 
   function requestRenameWindow() {
@@ -693,31 +713,18 @@
   }
 
   function dismissRenameDialog() {
-    renameDialogKind = null;
-    renameDialogValue = "";
-    renameTargetSessionId = null;
+    tabRenameOrchestration.dismissRenameDialog();
   }
 
   function confirmRename() {
-    const trimmed = renameDialogValue.trim();
-
-    if (renameDialogKind === "tab" && renameTargetSessionId) {
-      const session = sessions.find((entry) => entry.id === renameTargetSessionId);
-      if (session) {
-        const nextTitle = resolveRenamedSessionTitle(session, trimmed);
-        setSessionTitle(renameTargetSessionId, nextTitle);
-        void recordTabHistory(
-          session.agentId,
-          session.distro,
-          session.workDir,
-          nextTitle,
-          session.resumeToken ?? null,
-        );
-      }
-    } else if (renameDialogKind === "window") {
-      setCurrentWindowName(trimmed || currentWindowLabel);
+    if (tabRenameOrchestration.confirmRename()) {
+      return;
     }
 
+    const trimmed = renameDialogValue.trim();
+    if (renameDialogKind === "window") {
+      setCurrentWindowName(trimmed || currentWindowLabel);
+    }
     dismissRenameDialog();
   }
 
