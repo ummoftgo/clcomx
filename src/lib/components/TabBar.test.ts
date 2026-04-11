@@ -1,10 +1,14 @@
 import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getActiveSessionId } from "../features/session/state/live-session-store.svelte";
+import {
+  getActiveSessionId,
+  getSessions,
+} from "../features/session/state/live-session-store.svelte";
 import { initializeSessionsFromWorkspace } from "../features/workspace/session-store.svelte";
 import { initializeI18n } from "../i18n";
 import { DEFAULT_SETTINGS, type WorkspaceSnapshot } from "../types";
 import { initializeSettings } from "../stores/settings.svelte";
+import TabBar from "./TabBar.svelte";
 import TabBarHarness from "./TabBarHarness.svelte";
 import {
   contextMenuItemTestId,
@@ -111,6 +115,36 @@ describe("TabBar", () => {
       availableWindows: [],
       ...overrides,
     });
+  }
+
+  function renderRawTabBar(overrides: Partial<TabBarProps> = {}) {
+    return render(TabBar, {
+      sessions: getSessions(),
+      activeSessionId: getActiveSessionId(),
+      onNewTab: vi.fn(),
+      onActivateTab: vi.fn(),
+      onReorderTab: vi.fn(),
+      onRequestSessionFocus: vi.fn(),
+      onCloseTab: vi.fn(),
+      availableWindows: [],
+      ...overrides,
+    });
+  }
+
+  function mockTabRect(
+    sessionId: string,
+    rect: Pick<DOMRect, "bottom" | "left" | "right" | "top">,
+  ) {
+    const element = screen.getByTestId(tabTestId(sessionId));
+    vi.spyOn(element, "getBoundingClientRect").mockReturnValue({
+      ...rect,
+      height: rect.bottom - rect.top,
+      width: rect.right - rect.left,
+      x: rect.left,
+      y: rect.top,
+      toJSON: () => ({}),
+    } as DOMRect);
+    return element;
   }
 
   it("keeps the active tab unchanged when opening a context menu on another tab", async () => {
@@ -260,6 +294,90 @@ describe("TabBar", () => {
     });
 
     expect(onRequestSessionFocus).toHaveBeenCalledWith("session-a");
+  });
+
+  it("reorders within the same pin group and restores focus on drag finish", async () => {
+    const onReorderTab = vi.fn();
+    const onActivateTab = vi.fn();
+    const onRequestSessionFocus = vi.fn();
+
+    renderRawTabBar({
+      onActivateTab,
+      onReorderTab,
+      onRequestSessionFocus,
+    });
+
+    const alphaTab = mockTabRect("session-a", {
+      left: 0,
+      right: 100,
+      top: 0,
+      bottom: 40,
+    });
+    const betaTab = mockTabRect("session-b", {
+      left: 100,
+      right: 200,
+      top: 0,
+      bottom: 40,
+    });
+
+    expect(alphaTab).toBeInTheDocument();
+
+    await fireEvent.pointerDown(betaTab, {
+      button: 0,
+      pointerId: 1,
+      clientX: 150,
+      clientY: 20,
+    });
+    await fireEvent.pointerMove(betaTab, {
+      pointerId: 1,
+      clientX: 50,
+      clientY: 20,
+    });
+    await fireEvent.pointerUp(betaTab, {
+      pointerId: 1,
+      clientX: 50,
+      clientY: 20,
+    });
+
+    expect(onReorderTab).toHaveBeenCalledWith("session-b", 0);
+    expect(onActivateTab).toHaveBeenCalledWith("session-b");
+    expect(onRequestSessionFocus).toHaveBeenCalledWith("session-b");
+  });
+
+  it("does not reorder across a pinned boundary", async () => {
+    const onReorderTab = vi.fn();
+    initializeSessionsFromWorkspace(COMPLEX_WORKSPACE, "main");
+
+    renderRawTabBar({
+      onReorderTab,
+    });
+
+    const betaTab = mockTabRect("session-b", {
+      left: 100,
+      right: 200,
+      top: 0,
+      bottom: 40,
+    });
+    mockTabRect("session-c", {
+      left: 200,
+      right: 300,
+      top: 0,
+      bottom: 40,
+    });
+
+    await fireEvent.pointerDown(betaTab, {
+      button: 0,
+      pointerId: 1,
+      clientX: 150,
+      clientY: 20,
+    });
+    await fireEvent.pointerMove(betaTab, {
+      pointerId: 1,
+      clientX: 250,
+      clientY: 20,
+    });
+
+    expect(onReorderTab).not.toHaveBeenCalled();
   });
 
   it("activates an inactive tab on Enter", async () => {

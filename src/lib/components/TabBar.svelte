@@ -4,14 +4,22 @@
   import type { TabBarProps } from "../features/session-tabs/contracts/tab-bar";
   import {
     activateSessionTab,
-    finalizeSessionTabPointerInteraction,
-    requestSessionTabFocus,
     scheduleSessionTabFocus,
   } from "../features/session-tabs/controller/tab-activation-controller";
   import {
     buildSessionTabMenuItems,
     handleSessionTabMenuSelect,
   } from "../features/session-tabs/controller/tab-context-menu-controller";
+  import {
+    beginSessionTabDrag,
+    cancelSessionTabDragInteraction,
+    createSessionTabDragState,
+    createSessionTabElementRegistry,
+    finalizeSessionTabDragInteraction,
+    getSessionTabDragPreviewStyle,
+    getSessionTabDragPreviewTitle,
+    updateSessionTabDrag,
+  } from "../features/session-tabs/controller/tab-drag-controller";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
   import AgentIcon from "./AgentIcon.svelte";
   import {
@@ -41,61 +49,11 @@
     availableWindows = [],
   }: TabBarProps = $props();
 
-  let dragCandidateId: string | null = null;
-  let draggingSessionId = $state<string | null>(null);
-  let dragPointerId: number | null = null;
-  let dragStartX = 0;
-  let dragStartY = 0;
-  let dragCurrentX = $state(0);
-  let dragCurrentY = $state(0);
-  let dragSourceElement: HTMLElement | null = null;
-  let tabElements = new Map<string, HTMLDivElement>();
+  let dragState = $state(createSessionTabDragState());
+  const tabElementRegistry = createSessionTabElementRegistry();
   let openMenuSessionId = $state<string | null>(null);
   let menuX = $state(0);
   let menuY = $state(0);
-
-  function trackTab(element: HTMLDivElement, sessionId: string) {
-    tabElements.set(sessionId, element);
-    return {
-      update(nextSessionId: string) {
-        if (nextSessionId !== sessionId) {
-          tabElements.delete(sessionId);
-          sessionId = nextSessionId;
-          tabElements.set(sessionId, element);
-        }
-      },
-      destroy() {
-        tabElements.delete(sessionId);
-      },
-    };
-  }
-
-  function getDraggingSessionTitle() {
-    if (!draggingSessionId) return "";
-    return sessions.find((session) => session.id === draggingSessionId)?.title ?? "";
-  }
-
-  function getDraggingPreviewStyle() {
-    const maxX = Math.max(10, window.innerWidth - 230);
-    const maxY = Math.max(8, window.innerHeight - 44);
-    const x = Math.min(maxX, Math.max(10, dragCurrentX + 14));
-    const y = Math.min(maxY, Math.max(8, dragCurrentY + 12));
-    return `left:${x}px;top:${y}px;`;
-  }
-
-  function releasePointerCapture() {
-    if (dragSourceElement && dragPointerId !== null && dragSourceElement.hasPointerCapture?.(dragPointerId)) {
-      dragSourceElement.releasePointerCapture(dragPointerId);
-    }
-  }
-
-  function resetDrag() {
-    releasePointerCapture();
-    dragCandidateId = null;
-    draggingSessionId = null;
-    dragPointerId = null;
-    dragSourceElement = null;
-  }
 
   function closeMenu() {
     openMenuSessionId = null;
@@ -135,85 +93,37 @@
   }
 
   function handlePointerDown(event: PointerEvent, id: string) {
-    if (event.button !== 0) return;
-    dragCandidateId = id;
-    dragPointerId = event.pointerId;
-    dragStartX = event.clientX;
-    dragStartY = event.clientY;
-    dragCurrentX = event.clientX;
-    dragCurrentY = event.clientY;
-    dragSourceElement = event.currentTarget as HTMLElement | null;
-    dragSourceElement?.setPointerCapture?.(event.pointerId);
-  }
-
-  function findHoveredSessionId(clientX: number, clientY: number) {
-    for (const session of sessions) {
-      const element = tabElements.get(session.id);
-      if (!element) continue;
-      const rect = element.getBoundingClientRect();
-      if (
-        clientX >= rect.left &&
-        clientX <= rect.right &&
-        clientY >= rect.top &&
-        clientY <= rect.bottom
-      ) {
-        return session.id;
-      }
-    }
-
-    return null;
+    beginSessionTabDrag(dragState, event, id);
   }
 
   function handlePointerMove(event: PointerEvent) {
-    if (!dragCandidateId || dragPointerId !== event.pointerId) return;
-
-    dragCurrentX = event.clientX;
-    dragCurrentY = event.clientY;
-
-    const moved = Math.hypot(event.clientX - dragStartX, event.clientY - dragStartY);
-    if (!draggingSessionId && moved < 6) {
+    const result = updateSessionTabDrag(
+      dragState,
+      event,
+      sessions,
+      tabElementRegistry.findHoveredSessionId,
+    );
+    if (!result || result.targetIndex === null) {
       return;
     }
 
-    draggingSessionId = dragCandidateId;
-
-    const hoveredSessionId = findHoveredSessionId(event.clientX, event.clientY);
-    const draggingSession = sessions.find((session) => session.id === draggingSessionId);
-    const hoveredSession = sessions.find((session) => session.id === hoveredSessionId);
-    if (
-      hoveredSessionId &&
-      hoveredSessionId !== draggingSessionId &&
-      draggingSession &&
-      hoveredSession &&
-      draggingSession.pinned === hoveredSession.pinned
-    ) {
-      const targetIndex = sessions.findIndex((session) => session.id === hoveredSessionId);
-      if (targetIndex >= 0) {
-        onReorderTab?.(draggingSessionId, targetIndex);
-      }
-    }
+    onReorderTab?.(result.draggingSessionId, result.targetIndex);
   }
 
   async function handlePointerUp(event: PointerEvent) {
-    if (!dragCandidateId || dragPointerId !== event.pointerId) return;
-
-    const focusedSessionId = finalizeSessionTabPointerInteraction(
-      dragCandidateId,
-      draggingSessionId,
-      onActivateTab,
-    );
-
-    resetDrag();
-    await tick();
-    requestSessionTabFocus(focusedSessionId, onRequestSessionFocus);
+    await finalizeSessionTabDragInteraction(dragState, event.pointerId, {
+      activateTab: onActivateTab,
+      requestSessionFocus: onRequestSessionFocus,
+      settleView: tick,
+    });
   }
 
   async function handlePointerCancel(event: PointerEvent) {
-    if (!dragCandidateId || dragPointerId !== event.pointerId) return;
-
-    resetDrag();
-    await tick();
-    requestSessionTabFocus(activeSessionId, onRequestSessionFocus);
+    await cancelSessionTabDragInteraction(dragState, event.pointerId, {
+      activeSessionId,
+      requestSessionFocus: onRequestSessionFocus,
+      settleView: tick,
+    });
   }
 
   function moveLeft(sessionId: string) {
@@ -267,18 +177,18 @@
         role="button"
         tabindex="0"
         class:active={session.id === activeSessionId}
-        class:dragging={session.id === draggingSessionId}
-        use:trackTab={session.id}
+        class:dragging={session.id === dragState.draggingSessionId}
+        use:tabElementRegistry.trackTab={session.id}
         onpointerdown={(event) => handlePointerDown(event, session.id)}
         onpointermove={handlePointerMove}
         onpointerup={handlePointerUp}
         onpointercancel={handlePointerCancel}
-        onclick={() => { activateSessionTab(session.id, draggingSessionId, onActivateTab); }}
+        onclick={() => { activateSessionTab(session.id, dragState.draggingSessionId, onActivateTab); }}
         oncontextmenu={(event) => openMenuFromContext(event, session.id)}
         onkeydown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            activateSessionTab(session.id, draggingSessionId, onActivateTab);
+            activateSessionTab(session.id, dragState.draggingSessionId, onActivateTab);
           }
         }}
       >
@@ -370,12 +280,12 @@
   onClose={closeMenu}
 />
 
-{#if draggingSessionId}
+{#if dragState.draggingSessionId}
   <div
     class="drag-preview"
-    style={getDraggingPreviewStyle()}
+    style={getSessionTabDragPreviewStyle(dragState, window)}
   >
-    <span class="drag-preview-title">{getDraggingSessionTitle()}</span>
+    <span class="drag-preview-title">{getSessionTabDragPreviewTitle(sessions, dragState.draggingSessionId)}</span>
     <span class="drag-preview-grip">&#8942;</span>
   </div>
 {/if}
