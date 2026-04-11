@@ -19,6 +19,7 @@
   import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
   import { createWindowRenameOrchestrationController } from "./lib/features/app-shell/controller/window-rename-orchestration-controller";
+  import { createWindowSessionMoveOrchestrationController } from "./lib/features/app-shell/controller/window-session-move-orchestration-controller";
   import {
     createPreviewUrlStateController,
     PREVIEW_FRAME_OPTIONS,
@@ -391,23 +392,6 @@
         };
   }
 
-  async function waitForWindowReady(targetLabel: string, timeoutMs = 8000): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      try {
-        if (await isWindowReady(targetLabel)) {
-          return true;
-        }
-      } catch (error) {
-        console.error("Failed to query window readiness", error);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-
-    return false;
-  }
-
   onMount(() => {
     void (async () => {
       await appWindowListeners.register();
@@ -639,6 +623,16 @@
     setCurrentWindowName,
   });
 
+  const windowSessionMoveOrchestration = createWindowSessionMoveOrchestrationController({
+    isWindowReady,
+    moveSessionToWindow,
+    reportError: (message, error) => {
+      console.error(message, error);
+    },
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
+  });
+
   const tabOrganizationController = createTabOrganizationController({
     getSessions: () => sessions,
     setActiveSession,
@@ -680,7 +674,7 @@
         defaultWindowSize.height,
       );
 
-      const ready = await waitForWindowReady(targetLabel);
+      const ready = await windowSessionMoveOrchestration.waitForWindowReady(targetLabel);
       if (!ready) {
         console.error("New window did not become ready", targetLabel);
         return;
@@ -693,19 +687,7 @@
   }
 
   async function handleMoveTabToWindow(sessionId: string, targetLabel: string) {
-    try {
-      if (targetLabel !== "main") {
-        const ready = await waitForWindowReady(targetLabel);
-        if (!ready) {
-          console.error("Target window did not become ready", targetLabel);
-          return;
-        }
-      }
-
-      await moveSessionToWindow(sessionId, targetLabel);
-    } catch (error) {
-      console.error("Failed to move session to window", error);
-    }
+    await windowSessionMoveOrchestration.moveSessionToExistingWindow(sessionId, targetLabel);
   }
 
   function handleActivateTab(sessionId: string) {

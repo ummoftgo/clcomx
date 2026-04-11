@@ -7,6 +7,7 @@ import { replaceLiveSessions, getSessions } from "./lib/features/session/state/l
 import { getCurrentWindowName, setCurrentWindowName } from "./lib/features/workspace/session-store.svelte";
 import { initializeSettings } from "./lib/stores/settings.svelte";
 import { DEFAULT_SETTINGS, type Session } from "./lib/types";
+import { isWindowReady, moveSessionToWindow } from "./lib/workspace";
 
 const { recordTabHistoryMock } = vi.hoisted(() => ({
   recordTabHistoryMock: vi.fn(async () => {}),
@@ -224,6 +225,8 @@ describe("App", () => {
     replaceLiveSessions([createSession()], "session-1");
     setCurrentWindowName("main");
     recordTabHistoryMock.mockClear();
+    vi.mocked(isWindowReady).mockClear();
+    vi.mocked(moveSessionToWindow).mockClear();
   });
 
   afterEach(() => {
@@ -271,5 +274,16 @@ describe("App", () => {
       expect(getCurrentWindowName()).toBe("workspace-2");
     });
     expect(document.getElementById("rename-input")).toBeNull();
+  });
+
+  it("routes move-to-window through the app-shell move orchestration", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByTestId("move-tab-window-trigger"));
+
+    await waitFor(() => {
+      expect(isWindowReady).toHaveBeenCalledWith("secondary");
+      expect(moveSessionToWindow).toHaveBeenCalledWith("session-1", "secondary");
+    });
   });
 });
