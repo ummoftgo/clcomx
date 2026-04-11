@@ -10,8 +10,32 @@ import { DEFAULT_SETTINGS, type Session } from "./lib/types";
 import { isWindowReady, moveSessionToWindow, openEmptyWindow } from "./lib/workspace";
 import { measureWindowSizeForTerminal } from "./lib/window-size";
 
-const { recordTabHistoryMock } = vi.hoisted(() => ({
+type CloseWindowSessionsResult =
+  | { kind: "show-dirty-window-dialog" }
+  | { kind: "closed" }
+  | { kind: "noop" };
+
+const {
+  recordTabHistoryMock,
+  appWindowListenerControllerRuntime,
+  windowCloseOrchestrationMock,
+} = vi.hoisted(() => ({
   recordTabHistoryMock: vi.fn(async () => {}),
+  appWindowListenerControllerRuntime: {
+    latestDeps: null as null | {
+      showDirtyAppDialog: (dirtyCount: number) => void;
+      showCloseWindowDialog: () => void;
+    },
+  },
+  windowCloseOrchestrationMock: {
+    handleCloseRequested: vi.fn(async () => ({ kind: "noop" as const })),
+    performAppClose: vi.fn(async () => true),
+    confirmDirtyWindowClose: vi.fn(async () => true),
+    moveWindowSessionsToMainAndClose: vi.fn(async () => true),
+    handleCloseWindowSessions: vi.fn(
+      async (): Promise<CloseWindowSessionsResult> => ({ kind: "closed" }),
+    ),
+  },
 }));
 
 vi.mock("./lib/features/session-tabs/view/TabBar.svelte", async () => {
@@ -62,20 +86,17 @@ vi.mock("./lib/tauri/window", () => ({
 vi.mock("./lib/features/app-shell/controller/window-close-orchestration-controller", () => ({
   DIRTY_STATE_QUERY_EVENT: "clcomx:dirty-state-query",
   DIRTY_STATE_RESPONSE_EVENT: "clcomx:dirty-state-response",
-  createWindowCloseOrchestrationController: vi.fn(() => ({
-    handleCloseRequested: vi.fn(async () => ({ kind: "noop" })),
-    performAppClose: vi.fn(async () => true),
-    confirmDirtyWindowClose: vi.fn(async () => true),
-    moveWindowSessionsToMainAndClose: vi.fn(async () => true),
-    handleCloseWindowSessions: vi.fn(async () => ({ kind: "closed" })),
-  })),
+  createWindowCloseOrchestrationController: vi.fn(() => windowCloseOrchestrationMock),
 }));
 
 vi.mock("./lib/features/app-shell/controller/app-window-listener-controller", () => ({
-  createAppWindowListenerController: vi.fn(() => ({
+  createAppWindowListenerController: vi.fn((deps) => {
+    appWindowListenerControllerRuntime.latestDeps = deps;
+    return {
     register: vi.fn(async () => {}),
     dispose: vi.fn(),
-  })),
+    };
+  }),
 }));
 
 vi.mock("./lib/features/app-shell/controller/app-startup-controller", () => ({
@@ -217,6 +238,11 @@ function createSession(overrides: Partial<Session> = {}): Session {
   };
 }
 
+function getAppWindowListenerDeps() {
+  expect(appWindowListenerControllerRuntime.latestDeps).not.toBeNull();
+  return appWindowListenerControllerRuntime.latestDeps!;
+}
+
 describe("App", () => {
   beforeEach(() => {
     initializeI18n("ko", "ko-KR");
@@ -233,6 +259,17 @@ describe("App", () => {
     replaceLiveSessions([createSession()], "session-1");
     setCurrentWindowName("main");
     recordTabHistoryMock.mockClear();
+    appWindowListenerControllerRuntime.latestDeps = null;
+    windowCloseOrchestrationMock.handleCloseRequested.mockReset();
+    windowCloseOrchestrationMock.performAppClose.mockReset();
+    windowCloseOrchestrationMock.confirmDirtyWindowClose.mockReset();
+    windowCloseOrchestrationMock.moveWindowSessionsToMainAndClose.mockReset();
+    windowCloseOrchestrationMock.handleCloseWindowSessions.mockReset();
+    windowCloseOrchestrationMock.handleCloseRequested.mockResolvedValue({ kind: "noop" });
+    windowCloseOrchestrationMock.performAppClose.mockResolvedValue(true);
+    windowCloseOrchestrationMock.confirmDirtyWindowClose.mockResolvedValue(true);
+    windowCloseOrchestrationMock.moveWindowSessionsToMainAndClose.mockResolvedValue(true);
+    windowCloseOrchestrationMock.handleCloseWindowSessions.mockResolvedValue({ kind: "closed" });
     vi.mocked(isWindowReady).mockClear();
     vi.mocked(moveSessionToWindow).mockClear();
     vi.mocked(openEmptyWindow).mockClear();
@@ -323,5 +360,46 @@ describe("App", () => {
     });
     expect(openEmptyWindow).not.toHaveBeenCalled();
     expect(moveSessionToWindow).not.toHaveBeenCalled();
+  });
+
+  it("shows dirty app close dialog from the window listener and confirms app close", async () => {
+    render(App);
+
+    getAppWindowListenerDeps().showDirtyAppDialog(3);
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Quit Anyway" }));
+
+    await waitFor(() => {
+      expect(windowCloseOrchestrationMock.performAppClose).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("button", { name: "Quit Anyway" })).toBeNull();
+  });
+
+  it("shows the close-window dialog from the window listener and routes move-to-main", async () => {
+    render(App);
+
+    getAppWindowListenerDeps().showCloseWindowDialog();
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Move Tabs To Main" }));
+
+    await waitFor(() => {
+      expect(windowCloseOrchestrationMock.moveWindowSessionsToMainAndClose).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("button", { name: "Move Tabs To Main" })).toBeNull();
+  });
+
+  it("shows dirty secondary-window confirmation when close-tabs reports dirty sessions", async () => {
+    windowCloseOrchestrationMock.handleCloseWindowSessions.mockResolvedValueOnce({
+      kind: "show-dirty-window-dialog",
+    });
+    render(App);
+
+    getAppWindowListenerDeps().showCloseWindowDialog();
+    await fireEvent.click(await screen.findByRole("button", { name: "Close Tabs" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Close Anyway" }));
+
+    await waitFor(() => {
+      expect(windowCloseOrchestrationMock.confirmDirtyWindowClose).toHaveBeenCalledTimes(1);
+    });
   });
 });

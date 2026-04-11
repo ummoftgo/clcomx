@@ -18,6 +18,7 @@
   import { createAppStartupController } from "./lib/features/app-shell/controller/app-startup-controller";
   import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
+  import { createWindowCloseDialogController } from "./lib/features/app-shell/controller/window-close-dialog-controller";
   import { createWindowRenameOrchestrationController } from "./lib/features/app-shell/controller/window-rename-orchestration-controller";
   import { createWindowSessionDetachOrchestrationController } from "./lib/features/app-shell/controller/window-session-detach-orchestration-controller";
   import { createWindowSessionMoveOrchestrationController } from "./lib/features/app-shell/controller/window-session-move-orchestration-controller";
@@ -280,49 +281,6 @@
     wait: (ms) => new Promise<void>((resolve) => {
       setTimeout(resolve, ms);
     }),
-  });
-
-  const appWindowListeners = createAppWindowListenerController({
-    onCloseRequested: (listener) => appWindow.onCloseRequested(listener),
-    onMoved: (listener) => appWindow.onMoved(listener),
-    onResized: (listener) => appWindow.onResized(listener),
-    listenWorkspaceUpdated: async (listener) => {
-      const unlisten = await listen<WorkspaceSnapshot>("workspace-updated", (event) => {
-        listener(event.payload);
-      });
-      return unlisten;
-    },
-    listenDirtyStateQuery: async (listener) => {
-      const unlisten = await listen<DirtyStateQueryPayload>(DIRTY_STATE_QUERY_EVENT, (event) => {
-        listener(event.payload);
-      });
-      return unlisten;
-    },
-    emitDirtyStateResponse: (label, payload) =>
-      emitTo<DirtyStateResponsePayload>(label, DIRTY_STATE_RESPONSE_EVENT, payload),
-    consumeNativeCloseAllowance: () => {
-      if (!allowNativeClose) return false;
-      allowNativeClose = false;
-      return true;
-    },
-    handleCloseRequested: () => windowCloseOrchestration.handleCloseRequested(),
-    showDirtyAppDialog: (dirtyCount) => {
-      dirtyAppCloseCount = dirtyCount;
-      showCloseTabDialog = false;
-      showDirtyTabDialog = false;
-      showCloseWindowDialog = false;
-      showDirtyWindowCloseDialog = false;
-      pendingCloseSessionId = null;
-      showDirtyAppDialog = true;
-    },
-    showCloseWindowDialog: () => {
-      showCloseWindowDialog = true;
-    },
-    schedulePlacementPersist: () => windowPlacement.schedulePersist(),
-    syncWorkspaceSnapshot,
-    syncSessionsFromWorkspace,
-    currentWindowLabel: () => currentWindowLabel,
-    getLocalDirtySessionCount,
   });
 
   const appStartup = createAppStartupController({
@@ -643,6 +601,63 @@
     },
   });
 
+  const windowCloseDialogController = createWindowCloseDialogController({
+    dismissPendingTabCloseUi: () => {
+      showCloseTabDialog = false;
+      showDirtyTabDialog = false;
+      pendingCloseSessionId = null;
+    },
+    setShowDirtyAppDialog: (open) => {
+      showDirtyAppDialog = open;
+    },
+    setDirtyAppCloseCount: (count) => {
+      dirtyAppCloseCount = count;
+    },
+    setShowCloseWindowDialog: (open) => {
+      showCloseWindowDialog = open;
+    },
+    setShowDirtyWindowCloseDialog: (open) => {
+      showDirtyWindowCloseDialog = open;
+    },
+    performAppClose: () => windowCloseOrchestration.performAppClose(),
+    confirmDirtyWindowClose: () => windowCloseOrchestration.confirmDirtyWindowClose(),
+    moveWindowSessionsToMainAndClose: () => windowCloseOrchestration.moveWindowSessionsToMainAndClose(),
+    handleCloseWindowSessions: () => windowCloseOrchestration.handleCloseWindowSessions(),
+  });
+
+  const appWindowListeners = createAppWindowListenerController({
+    onCloseRequested: (listener) => appWindow.onCloseRequested(listener),
+    onMoved: (listener) => appWindow.onMoved(listener),
+    onResized: (listener) => appWindow.onResized(listener),
+    listenWorkspaceUpdated: async (listener) => {
+      const unlisten = await listen<WorkspaceSnapshot>("workspace-updated", (event) => {
+        listener(event.payload);
+      });
+      return unlisten;
+    },
+    listenDirtyStateQuery: async (listener) => {
+      const unlisten = await listen<DirtyStateQueryPayload>(DIRTY_STATE_QUERY_EVENT, (event) => {
+        listener(event.payload);
+      });
+      return unlisten;
+    },
+    emitDirtyStateResponse: (label, payload) =>
+      emitTo<DirtyStateResponsePayload>(label, DIRTY_STATE_RESPONSE_EVENT, payload),
+    consumeNativeCloseAllowance: () => {
+      if (!allowNativeClose) return false;
+      allowNativeClose = false;
+      return true;
+    },
+    handleCloseRequested: () => windowCloseOrchestration.handleCloseRequested(),
+    showDirtyAppDialog: (dirtyCount) => windowCloseDialogController.showDirtyAppDialog(dirtyCount),
+    showCloseWindowDialog: () => windowCloseDialogController.showCloseWindowDialog(),
+    schedulePlacementPersist: () => windowPlacement.schedulePersist(),
+    syncWorkspaceSnapshot,
+    syncSessionsFromWorkspace,
+    currentWindowLabel: () => currentWindowLabel,
+    getLocalDirtySessionCount,
+  });
+
   const tabOrganizationController = createTabOrganizationController({
     getSessions: () => sessions,
     setActiveSession,
@@ -652,24 +667,19 @@
   });
 
   function dismissDirtyAppDialog() {
-    showDirtyAppDialog = false;
-    dirtyAppCloseCount = 0;
+    windowCloseDialogController.dismissDirtyAppDialog();
   }
 
   function confirmDirtyAppClose() {
-    showDirtyAppDialog = false;
-    dirtyAppCloseCount = 0;
-    void windowCloseOrchestration.performAppClose();
+    void windowCloseDialogController.confirmDirtyAppClose();
   }
 
   function dismissDirtyWindowCloseDialog() {
-    showDirtyWindowCloseDialog = false;
+    windowCloseDialogController.dismissDirtyWindowCloseDialog();
   }
 
   async function confirmDirtyWindowCloseDialog() {
-    showDirtyWindowCloseDialog = false;
-    showCloseWindowDialog = false;
-    await windowCloseOrchestration.confirmDirtyWindowClose();
+    await windowCloseDialogController.confirmDirtyWindowCloseDialog();
   }
 
   async function handleMoveTabToNewWindow(sessionId: string) {
@@ -728,17 +738,11 @@
   }
 
   async function handleMoveWindowToMain() {
-    await windowCloseOrchestration.moveWindowSessionsToMainAndClose();
-    showCloseWindowDialog = false;
+    await windowCloseDialogController.moveWindowToMainAndClose();
   }
 
   async function handleCloseWindowSessions() {
-    const result = await windowCloseOrchestration.handleCloseWindowSessions();
-    if (result.kind === "show-dirty-window-dialog") {
-      showDirtyWindowCloseDialog = true;
-      return;
-    }
-    showCloseWindowDialog = false;
+    await windowCloseDialogController.confirmCloseWindowSessions();
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -946,7 +950,7 @@
   <ModalShell
     open={showCloseWindowDialog && !showDirtyWindowCloseDialog}
     size="sm"
-    onClose={() => { showCloseWindowDialog = false; }}
+    onClose={windowCloseDialogController.dismissCloseWindowDialog}
   >
     <div class="window-close-panel" data-testid={TEST_IDS.closeWindowDialog}>
       <h2>{$t("app.closeWindow.title")}</h2>
@@ -958,7 +962,7 @@
         <Button variant="danger" onclick={handleCloseWindowSessions}>
           {$t("app.closeWindow.closeTabs")}
         </Button>
-        <Button onclick={() => { showCloseWindowDialog = false; }}>
+        <Button onclick={windowCloseDialogController.dismissCloseWindowDialog}>
           {$t("common.actions.cancel")}
         </Button>
       </div>
