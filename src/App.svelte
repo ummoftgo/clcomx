@@ -86,10 +86,10 @@
   import type { TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
   import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
+  import { createTabCloseOrchestrationController } from "./lib/features/session/controller/tab-close-orchestration-controller";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
   import {
     resolveAdjacentSessionMoveIndex,
-    resolveCloseTabRequest,
     resolveRenamedSessionTitle,
   } from "./lib/features/session/service/session-tab-behavior";
   import { dispatchTerminalFocusRequest } from "./lib/features/terminal/controller/terminal-focus-bridge";
@@ -457,8 +457,8 @@
   });
 
   $effect(() => {
-    if (showCloseTabDialog && pendingCloseSessionId && !pendingCloseSession) {
-      dismissCloseTabDialog();
+    if ((showCloseTabDialog || showDirtyTabDialog) && pendingCloseSessionId && !pendingCloseSession) {
+      tabCloseOrchestration.reconcilePendingCloseTab();
     }
   });
 
@@ -471,7 +471,7 @@
     showSessionLauncher = false;
     showSettings = false;
     showCloseWindowDialog = false;
-    dismissCloseTabDialog();
+    tabCloseOrchestration.dismissCloseTabDialog();
     dismissRenameDialog();
   }
 
@@ -504,8 +504,7 @@
 
   function openPreviewCloseDialog() {
     if (!activeSessionId) return;
-    pendingCloseSessionId = activeSessionId;
-    showCloseTabDialog = true;
+    tabCloseOrchestration.requestCloseTab(activeSessionId);
   }
 
   const reportSessionLifecycleError = (message: string, error: unknown) => {
@@ -583,60 +582,22 @@
     await sessionLifecycle.handleCloseTab(sessionId);
   }
 
-  function dismissCloseTabDialog() {
-    showCloseTabDialog = false;
-    pendingCloseSessionId = null;
-  }
-
-  function dismissDirtyTabDialog() {
-    showDirtyTabDialog = false;
-    pendingCloseSessionId = null;
-  }
-
-  function requestCloseTab(sessionId: string) {
-    const session = sessions.find((entry) => entry.id === sessionId);
-    switch (resolveCloseTabRequest(session)) {
-      case "blocked":
-        return;
-      case "dirty-warning":
-        pendingCloseSessionId = sessionId;
-        showDirtyTabDialog = true;
-        return;
-      case "close-confirm":
-        pendingCloseSessionId = sessionId;
-        showCloseTabDialog = true;
-        return;
-      case "close-now":
-        void handleCloseTab(sessionId);
-        return;
-    }
-  }
-
-  async function confirmCloseTab() {
-    if (!pendingCloseSessionId) return;
-    const sessionId = pendingCloseSessionId;
-    dismissCloseTabDialog();
-    await handleCloseTab(sessionId);
-  }
-
-  function continueCloseTabAfterDirtyWarning() {
-    if (!pendingCloseSessionId) return;
-    const sessionId = pendingCloseSessionId;
-    showDirtyTabDialog = false;
-    const session = sessions.find((entry) => entry.id === sessionId);
-    if (!session) {
-      pendingCloseSessionId = null;
-      return;
-    }
-
-    if (session.ptyId >= 0) {
-      showCloseTabDialog = true;
-      return;
-    }
-
-    pendingCloseSessionId = null;
-    void handleCloseTab(sessionId);
-  }
+  const tabCloseOrchestration = createTabCloseOrchestrationController({
+    getSession: (sessionId) => sessions.find((entry) => entry.id === sessionId) ?? null,
+    getPendingCloseSessionId: () => pendingCloseSessionId,
+    setPendingCloseSessionId: (sessionId) => {
+      pendingCloseSessionId = sessionId;
+    },
+    getShowCloseTabDialog: () => showCloseTabDialog,
+    getShowDirtyTabDialog: () => showDirtyTabDialog,
+    setShowCloseTabDialog: (open) => {
+      showCloseTabDialog = open;
+    },
+    setShowDirtyTabDialog: (open) => {
+      showDirtyTabDialog = open;
+    },
+    closeTab: handleCloseTab,
+  });
 
   function dismissDirtyAppDialog() {
     showDirtyAppDialog = false;
@@ -804,7 +765,7 @@
     if (e.ctrlKey && e.key === "w") {
       e.preventDefault();
       if (activeSessionId) {
-        requestCloseTab(activeSessionId);
+        tabCloseOrchestration.requestCloseTab(activeSessionId);
       }
     }
   }
@@ -866,7 +827,7 @@
       onReorderTab={handleReorderTab}
       onRequestSessionFocus={handleRequestTabSessionFocus}
       onSettings={() => { void openSettingsPanel(); }}
-      onCloseTab={requestCloseTab}
+      onCloseTab={tabCloseOrchestration.requestCloseTab}
       onRenameTab={requestRenameTab}
       onRenameWindow={requestRenameWindow}
       onTogglePinTab={handleTogglePinTab}
@@ -923,16 +884,16 @@
   <ModalShell
     open={showDirtyTabDialog && pendingCloseSession !== null}
     size="sm"
-    onClose={dismissDirtyTabDialog}
+    onClose={tabCloseOrchestration.dismissDirtyTabDialog}
   >
     <div class="window-close-panel" data-testid={TEST_IDS.closeTabDialog}>
       <h2>{getDirtyCloseDialogCopy("tab", { title: pendingCloseSession?.title ?? "" }).title}</h2>
       <p>{getDirtyCloseDialogCopy("tab", { title: pendingCloseSession?.title ?? "" }).description}</p>
       <div class="window-close-actions">
-        <Button variant="danger" onclick={continueCloseTabAfterDirtyWarning}>
+        <Button variant="danger" onclick={tabCloseOrchestration.continueCloseTabAfterDirtyWarning}>
           {getDirtyCloseDialogCopy("tab", { title: pendingCloseSession?.title ?? "" }).confirm}
         </Button>
-        <Button onclick={dismissDirtyTabDialog}>
+        <Button onclick={tabCloseOrchestration.dismissDirtyTabDialog}>
           {$t("common.actions.cancel")}
         </Button>
       </div>
@@ -942,7 +903,7 @@
   <ModalShell
     open={showCloseTabDialog && pendingCloseSession !== null}
     size="sm"
-    onClose={dismissCloseTabDialog}
+    onClose={tabCloseOrchestration.dismissCloseTabDialog}
   >
     <div class="window-close-panel" data-testid={TEST_IDS.closeTabDialog}>
       <h2>{$t("app.closeTab.title")}</h2>
@@ -950,10 +911,10 @@
         values: { title: pendingCloseSession?.title ?? "" },
       })}</p>
       <div class="window-close-actions">
-        <Button variant="danger" onclick={confirmCloseTab}>
+        <Button variant="danger" onclick={() => { void tabCloseOrchestration.confirmCloseTab(); }}>
           {$t("app.closeTab.confirm")}
         </Button>
-        <Button onclick={dismissCloseTabDialog}>
+        <Button onclick={tabCloseOrchestration.dismissCloseTabDialog}>
           {$t("common.actions.cancel")}
         </Button>
       </div>
