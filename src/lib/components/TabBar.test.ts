@@ -1,12 +1,17 @@
 import { fireEvent, render, screen, within } from "@testing-library/svelte";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getActiveSessionId } from "../features/session/state/live-session-store.svelte";
 import { initializeSessionsFromWorkspace } from "../features/workspace/session-store.svelte";
 import { initializeI18n } from "../i18n";
 import { DEFAULT_SETTINGS, type WorkspaceSnapshot } from "../types";
 import { initializeSettings } from "../stores/settings.svelte";
-import TabBar from "./TabBar.svelte";
-import { contextMenuItemTestId } from "../testids";
+import TabBarHarness from "./TabBarHarness.svelte";
+import {
+  contextMenuItemTestId,
+  tabMenuButtonTestId,
+  tabTestId,
+} from "../testids";
+import type { TabBarProps } from "../features/session-tabs/contracts/tab-bar";
 
 const EXAMPLE_DISTRO = "ExampleDistro";
 
@@ -93,10 +98,23 @@ describe("TabBar", () => {
     initializeSessionsFromWorkspace(BASE_WORKSPACE, "main");
   });
 
-  it("keeps the active tab unchanged when opening a context menu on another tab", async () => {
-    render(TabBar, {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function renderTabBar(overrides: Partial<TabBarProps> = {}) {
+    return render(TabBarHarness, {
       onNewTab: vi.fn(),
+      onRequestTerminalFocus: vi.fn(),
       onCloseTab: vi.fn(),
+      availableWindows: [],
+      ...overrides,
+    });
+  }
+
+  it("keeps the active tab unchanged when opening a context menu on another tab", async () => {
+    renderTabBar({
       availableWindows: [{ label: "window-1", name: "window-1" }],
     });
 
@@ -114,10 +132,8 @@ describe("TabBar", () => {
   it("routes close action from the context menu to the selected tab", async () => {
     const onCloseTab = vi.fn();
 
-    render(TabBar, {
-      onNewTab: vi.fn(),
+    renderTabBar({
       onCloseTab,
-      availableWindows: [],
     });
 
     const betaTab = screen.getByText("Beta").closest(".tab");
@@ -132,13 +148,11 @@ describe("TabBar", () => {
   });
 
   it("keeps the active tab unchanged when opening the menu from the tab menu button", async () => {
-    render(TabBar, {
-      onNewTab: vi.fn(),
-      onCloseTab: vi.fn(),
+    renderTabBar({
       availableWindows: [{ label: "window-1", name: "window-1" }],
     });
 
-    await fireEvent.click(screen.getByTestId("tab-menu-session-b"));
+    await fireEvent.click(screen.getByTestId(tabMenuButtonTestId("session-b")));
 
     const menu = screen.getByRole("menu");
     expect(menu).toBeInTheDocument();
@@ -149,9 +163,7 @@ describe("TabBar", () => {
   it("renders disabled close and move actions for a locked pinned edge tab", async () => {
     initializeSessionsFromWorkspace(COMPLEX_WORKSPACE, "main");
 
-    render(TabBar, {
-      onNewTab: vi.fn(),
-      onCloseTab: vi.fn(),
+    renderTabBar({
       availableWindows: [{ label: "window-1", name: "window-1" }],
     });
 
@@ -164,5 +176,78 @@ describe("TabBar", () => {
     expect(within(menu).getByTestId(contextMenuItemTestId("close-tab"))).toBeDisabled();
     expect(within(menu).getByTestId(contextMenuItemTestId("move-left"))).toBeDisabled();
     expect(within(menu).getByTestId(contextMenuItemTestId("move-right"))).toBeDisabled();
+  });
+
+  it("activates an inactive tab on click", async () => {
+    renderTabBar();
+
+    const betaTab = screen.getByTestId(tabTestId("session-b"));
+    await fireEvent.click(betaTab);
+
+    expect(getActiveSessionId()).toBe("session-b");
+    expect(betaTab).toHaveClass("active");
+  });
+
+  it("activates the pointed tab and requests terminal focus on pointer up", async () => {
+    const onRequestTerminalFocus = vi.fn();
+
+    renderTabBar({
+      onRequestTerminalFocus,
+    });
+
+    const betaTab = screen.getByTestId(tabTestId("session-b"));
+
+    await fireEvent.pointerDown(betaTab, {
+      button: 0,
+      pointerId: 1,
+      clientX: 120,
+      clientY: 20,
+    });
+    await fireEvent.pointerUp(betaTab, {
+      pointerId: 1,
+      clientX: 120,
+      clientY: 20,
+    });
+
+    expect(getActiveSessionId()).toBe("session-b");
+    expect(betaTab).toHaveClass("active");
+    expect(onRequestTerminalFocus).toHaveBeenCalledWith("session-b");
+  });
+
+  it("activates an inactive tab on Enter", async () => {
+    renderTabBar();
+
+    const betaTab = screen.getByTestId(tabTestId("session-b"));
+    await fireEvent.keyDown(betaTab, { key: "Enter" });
+
+    expect(getActiveSessionId()).toBe("session-b");
+    expect(betaTab).toHaveClass("active");
+  });
+
+  it("requests terminal focus after move-left tab action", async () => {
+    const onRequestTerminalFocus = vi.fn();
+    const onMoveTabLeft = vi.fn();
+
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(16);
+      return 1;
+    });
+
+    renderTabBar({
+      onRequestTerminalFocus,
+      onMoveTabLeft,
+      availableWindows: [{ label: "window-1", name: "window-1" }],
+    });
+
+    await fireEvent.contextMenu(screen.getByText("Beta").closest(".tab")!, {
+      clientX: 160,
+      clientY: 24,
+    });
+
+    const menu = screen.getByRole("menu");
+    await fireEvent.click(within(menu).getByTestId(contextMenuItemTestId("move-left")));
+
+    expect(onMoveTabLeft).toHaveBeenCalledWith("session-b");
+    expect(onRequestTerminalFocus).toHaveBeenCalledWith("session-b");
   });
 });

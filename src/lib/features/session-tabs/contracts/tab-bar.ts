@@ -5,8 +5,18 @@ export interface SessionTabWindowMenuItem {
   name: string;
 }
 
+export type SessionTabViewModel = Pick<
+  Session,
+  "agentId" | "id" | "locked" | "pinned" | "title"
+>;
+
 export interface TabBarProps {
+  sessions: SessionTabViewModel[];
+  activeSessionId: string | null;
   onNewTab: () => void;
+  onActivateTab?: (id: string) => void;
+  onReorderTab?: (id: string, toIndex: number) => void;
+  onRequestTerminalFocus?: (id: string) => void;
   onSettings?: () => void;
   onCloseTab?: (id: string) => void;
   onRenameTab?: (id: string) => void;

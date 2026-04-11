@@ -86,6 +86,7 @@
   import type { AgentId } from "./lib/agents";
   import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
+  import { dispatchSessionTabFocusRequest } from "./lib/features/session-tabs/controller/tab-activation-controller";
   import {
     resolveAdjacentSessionMoveIndex,
     resolveCloseTabRequest,
@@ -716,6 +717,18 @@
     setActiveSession(sessionId);
   }
 
+  function handleActivateTab(sessionId: string) {
+    setActiveSession(sessionId);
+  }
+
+  function handleReorderTab(sessionId: string, targetIndex: number) {
+    moveSession(sessionId, targetIndex);
+  }
+
+  function handleRequestTabTerminalFocus(sessionId: string) {
+    dispatchSessionTabFocusRequest(window, sessionId);
+  }
+
   function requestRenameTab(sessionId: string) {
     const session = sessions.find((entry) => entry.id === sessionId);
     if (!session) return;
@@ -850,7 +863,12 @@
     style:--preview-frame-width={browserPreview ? previewFrameWidth : undefined}
   >
     <TabBar
+      {sessions}
+      {activeSessionId}
       onNewTab={requestNewTab}
+      onActivateTab={handleActivateTab}
+      onReorderTab={handleReorderTab}
+      onRequestTerminalFocus={handleRequestTabTerminalFocus}
       onSettings={() => { void openSettingsPanel(); }}
       onCloseTab={requestCloseTab}
       onRenameTab={requestRenameTab}
