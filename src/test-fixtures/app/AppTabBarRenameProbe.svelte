@@ -3,11 +3,13 @@
     sessions = [],
     onRenameTab,
     onRenameWindow,
+    onMoveTabToNewWindow,
     onMoveTabToWindow,
   }: {
     sessions?: Array<{ id: string }>;
     onRenameTab?: (sessionId: string) => void;
     onRenameWindow?: () => void;
+    onMoveTabToNewWindow?: (sessionId: string) => void;
     onMoveTabToWindow?: (sessionId: string, targetLabel: string) => void;
   } = $props();
 </script>
@@ -26,6 +28,13 @@
     onclick={() => { onRenameWindow?.(); }}
   >
     Rename Window
+  </button>
+  <button
+    type="button"
+    data-testid="move-tab-new-window-trigger"
+    onclick={() => { onMoveTabToNewWindow?.(sessions[0].id); }}
+  >
+    Move Tab To New Window
   </button>
   <button
     type="button"

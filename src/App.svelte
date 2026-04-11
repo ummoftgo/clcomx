@@ -19,6 +19,7 @@
   import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
   import { createWindowRenameOrchestrationController } from "./lib/features/app-shell/controller/window-rename-orchestration-controller";
+  import { createWindowSessionDetachOrchestrationController } from "./lib/features/app-shell/controller/window-session-detach-orchestration-controller";
   import { createWindowSessionMoveOrchestrationController } from "./lib/features/app-shell/controller/window-session-move-orchestration-controller";
   import {
     createPreviewUrlStateController,
@@ -633,6 +634,15 @@
     now: () => Date.now(),
   });
 
+  const windowSessionDetachOrchestration = createWindowSessionDetachOrchestrationController({
+    openEmptyWindow,
+    waitForWindowReady: windowSessionMoveOrchestration.waitForWindowReady,
+    moveSessionToWindow,
+    reportError: (message, error) => {
+      console.error(message, error);
+    },
+  });
+
   const tabOrganizationController = createTabOrganizationController({
     getSessions: () => sessions,
     setActiveSession,
@@ -667,20 +677,12 @@
       const position = await appWindow.outerPosition();
       const { measureWindowSizeForTerminal } = await import("./lib/window-size");
       const defaultWindowSize = await measureWindowSizeForTerminal(settings);
-      const targetLabel = await openEmptyWindow(
-        Math.max(0, position.x + 72),
-        Math.max(0, position.y + 72),
-        defaultWindowSize.width,
-        defaultWindowSize.height,
-      );
-
-      const ready = await windowSessionMoveOrchestration.waitForWindowReady(targetLabel);
-      if (!ready) {
-        console.error("New window did not become ready", targetLabel);
-        return;
-      }
-
-      await moveSessionToWindow(sessionId, targetLabel);
+      await windowSessionDetachOrchestration.moveSessionToNewWindow(sessionId, {
+        x: Math.max(0, position.x + 72),
+        y: Math.max(0, position.y + 72),
+        width: defaultWindowSize.width,
+        height: defaultWindowSize.height,
+      });
     } catch (error) {
       console.error("Failed to detach tab", error);
     }

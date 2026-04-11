@@ -7,7 +7,8 @@ import { replaceLiveSessions, getSessions } from "./lib/features/session/state/l
 import { getCurrentWindowName, setCurrentWindowName } from "./lib/features/workspace/session-store.svelte";
 import { initializeSettings } from "./lib/stores/settings.svelte";
 import { DEFAULT_SETTINGS, type Session } from "./lib/types";
-import { isWindowReady, moveSessionToWindow } from "./lib/workspace";
+import { isWindowReady, moveSessionToWindow, openEmptyWindow } from "./lib/workspace";
+import { measureWindowSizeForTerminal } from "./lib/window-size";
 
 const { recordTabHistoryMock } = vi.hoisted(() => ({
   recordTabHistoryMock: vi.fn(async () => {}),
@@ -30,6 +31,13 @@ vi.mock("./lib/features/launcher/view/SessionLauncher.svelte", async () => {
   const module = await import("./test-fixtures/app/AppSessionLauncherStub.svelte");
   return { default: module.default };
 });
+
+vi.mock("./lib/window-size", () => ({
+  measureWindowSizeForTerminal: vi.fn(async () => ({
+    width: 900,
+    height: 700,
+  })),
+}));
 
 vi.mock("./lib/tauri/event", () => ({
   emitTo: vi.fn(async () => {}),
@@ -227,6 +235,8 @@ describe("App", () => {
     recordTabHistoryMock.mockClear();
     vi.mocked(isWindowReady).mockClear();
     vi.mocked(moveSessionToWindow).mockClear();
+    vi.mocked(openEmptyWindow).mockClear();
+    vi.mocked(measureWindowSizeForTerminal).mockClear();
   });
 
   afterEach(() => {
@@ -285,5 +295,33 @@ describe("App", () => {
       expect(isWindowReady).toHaveBeenCalledWith("secondary");
       expect(moveSessionToWindow).toHaveBeenCalledWith("session-1", "secondary");
     });
+  });
+
+  it("routes move-to-new-window through the app-shell detach orchestration", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByTestId("move-tab-new-window-trigger"));
+
+    await waitFor(() => {
+      expect(measureWindowSizeForTerminal).toHaveBeenCalled();
+      expect(openEmptyWindow).toHaveBeenCalledWith(112, 152, 900, 700);
+      expect(isWindowReady).toHaveBeenCalledWith("secondary");
+      expect(moveSessionToWindow).toHaveBeenCalledWith("session-1", "secondary");
+    });
+  });
+
+  it("does not open a new window when geometry preparation fails", async () => {
+    const measureError = new Error("measure failed");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(measureWindowSizeForTerminal).mockRejectedValueOnce(measureError);
+
+    render(App);
+    await fireEvent.click(screen.getByTestId("move-tab-new-window-trigger"));
+
+    await waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith("Failed to detach tab", measureError);
+    });
+    expect(openEmptyWindow).not.toHaveBeenCalled();
+    expect(moveSessionToWindow).not.toHaveBeenCalled();
   });
 });
