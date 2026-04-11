@@ -18,6 +18,7 @@
   import { createAppStartupController } from "./lib/features/app-shell/controller/app-startup-controller";
   import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
+  import { createWindowRenameOrchestrationController } from "./lib/features/app-shell/controller/window-rename-orchestration-controller";
   import {
     createPreviewUrlStateController,
     PREVIEW_FRAME_OPTIONS,
@@ -621,6 +622,23 @@
     recordTabHistory,
   });
 
+  const windowRenameOrchestration = createWindowRenameOrchestrationController({
+    getCurrentWindowName: () => currentWindowName,
+    getCurrentWindowLabel: () => currentWindowLabel,
+    getRenameDialogKind: () => renameDialogKind,
+    getRenameDialogValue: () => renameDialogValue,
+    setRenameDialogKind: (kind) => {
+      renameDialogKind = kind;
+    },
+    setRenameDialogValue: (value) => {
+      renameDialogValue = value;
+    },
+    setRenameTargetSessionId: (sessionId) => {
+      renameTargetSessionId = sessionId;
+    },
+    setCurrentWindowName,
+  });
+
   const tabOrganizationController = createTabOrganizationController({
     getSessions: () => sessions,
     setActiveSession,
@@ -707,13 +725,11 @@
   }
 
   function requestRenameWindow() {
-    renameDialogKind = "window";
-    renameTargetSessionId = null;
-    renameDialogValue = currentWindowName;
+    windowRenameOrchestration.requestRenameWindow();
   }
 
   function dismissRenameDialog() {
-    tabRenameOrchestration.dismissRenameDialog();
+    windowRenameOrchestration.dismissRenameDialog();
   }
 
   function confirmRename() {
@@ -721,9 +737,8 @@
       return;
     }
 
-    const trimmed = renameDialogValue.trim();
-    if (renameDialogKind === "window") {
-      setCurrentWindowName(trimmed || currentWindowLabel);
+    if (windowRenameOrchestration.confirmRename()) {
+      return;
     }
     dismissRenameDialog();
   }

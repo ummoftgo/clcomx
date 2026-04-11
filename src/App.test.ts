@@ -4,7 +4,7 @@ import App from "./App.svelte";
 import { setBootstrap } from "./lib/bootstrap";
 import { initializeI18n } from "./lib/i18n";
 import { replaceLiveSessions, getSessions } from "./lib/features/session/state/live-session-store.svelte";
-import { setCurrentWindowName } from "./lib/features/workspace/session-store.svelte";
+import { getCurrentWindowName, setCurrentWindowName } from "./lib/features/workspace/session-store.svelte";
 import { initializeSettings } from "./lib/stores/settings.svelte";
 import { DEFAULT_SETTINGS, type Session } from "./lib/types";
 
@@ -252,6 +252,24 @@ describe("App", () => {
       "Renamed",
       "resume-1",
     );
+    expect(document.getElementById("rename-input")).toBeNull();
+  });
+
+  it("opens the window rename dialog from the tab bar trigger and confirms the renamed window name", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByTestId("rename-window-trigger"));
+
+    const input = document.getElementById("rename-input") as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    expect(input?.value).toBe("main");
+
+    await fireEvent.input(input!, { target: { value: "  workspace-2  " } });
+    await fireEvent.keyDown(input!, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(getCurrentWindowName()).toBe("workspace-2");
+    });
     expect(document.getElementById("rename-input")).toBeNull();
   });
 });
