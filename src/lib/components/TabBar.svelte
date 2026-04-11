@@ -7,35 +7,19 @@
     moveSession,
     setActiveSession,
   } from "../features/session/state/live-session-store.svelte";
+  import type { TabBarProps } from "../features/session-tabs/contracts/tab-bar";
+  import {
+    buildSessionTabMenuItems,
+    handleSessionTabMenuSelect,
+  } from "../features/session-tabs/controller/tab-context-menu-controller";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
   import AgentIcon from "./AgentIcon.svelte";
-  import type { ContextMenuItem } from "../ui/context-menu";
   import {
     TEST_IDS,
     tabCloseButtonTestId,
     tabMenuButtonTestId,
     tabTestId,
   } from "../testids";
-
-  interface WindowMenuItem {
-    label: string;
-    name: string;
-  }
-
-  interface Props {
-    onNewTab: () => void;
-    onSettings?: () => void;
-    onCloseTab?: (id: string) => void;
-    onRenameTab?: (id: string) => void;
-    onRenameWindow?: () => void;
-    onTogglePinTab?: (id: string) => void;
-    onToggleLockTab?: (id: string) => void;
-    onMoveTabLeft?: (id: string) => void;
-    onMoveTabRight?: (id: string) => void;
-    onMoveTabToNewWindow?: (id: string) => void;
-    onMoveTabToWindow?: (sessionId: string, targetLabel: string) => void;
-    availableWindows?: WindowMenuItem[];
-  }
 
   let {
     onNewTab,
@@ -50,7 +34,7 @@
     onMoveTabToNewWindow,
     onMoveTabToWindow,
     availableWindows = [],
-  }: Props = $props();
+  }: TabBarProps = $props();
 
   const sessions = $derived(getSessions());
   const activeId = $derived(getActiveSessionId());
@@ -239,7 +223,6 @@
   }
 
   function moveLeft(sessionId: string) {
-    closeMenu();
     onMoveTabLeft?.(sessionId);
     requestAnimationFrame(() => {
       requestTerminalFocus(sessionId);
@@ -247,7 +230,6 @@
   }
 
   function moveRight(sessionId: string) {
-    closeMenu();
     onMoveTabRight?.(sessionId);
     requestAnimationFrame(() => {
       requestTerminalFocus(sessionId);
@@ -255,27 +237,22 @@
   }
 
   function moveToNewWindow(sessionId: string) {
-    closeMenu();
     onMoveTabToNewWindow?.(sessionId);
   }
 
   function moveToWindow(sessionId: string, targetLabel: string) {
-    closeMenu();
     onMoveTabToWindow?.(sessionId, targetLabel);
   }
 
   function renameTab(sessionId: string) {
-    closeMenu();
     onRenameTab?.(sessionId);
   }
 
   function renameWindow() {
-    closeMenu();
     onRenameWindow?.();
   }
 
   function togglePin(sessionId: string) {
-    closeMenu();
     onTogglePinTab?.(sessionId);
     requestAnimationFrame(() => {
       requestTerminalFocus(sessionId);
@@ -283,158 +260,12 @@
   }
 
   function toggleLock(sessionId: string) {
-    closeMenu();
     onToggleLockTab?.(sessionId);
     requestAnimationFrame(() => {
       requestTerminalFocus(sessionId);
     });
   }
 
-  function getSessionById(sessionId: string) {
-    return sessions.find((session) => session.id === sessionId);
-  }
-
-  function getSessionGroup(sessionId: string) {
-    const session = getSessionById(sessionId);
-    if (!session) return [];
-    return sessions.filter((entry) => entry.pinned === session.pinned);
-  }
-
-  function isFirstInGroup(sessionId: string) {
-    return getSessionGroup(sessionId)[0]?.id === sessionId;
-  }
-
-  function isLastInGroup(sessionId: string) {
-    const group = getSessionGroup(sessionId);
-    return group[group.length - 1]?.id === sessionId;
-  }
-
-  function buildMenuItems(sessionId: string): ContextMenuItem[] {
-    const session = getSessionById(sessionId);
-    const items: ContextMenuItem[] = [
-      {
-        id: "rename-tab",
-        kind: "item",
-        label: $t("tabs.menu.renameTab", { default: "Rename Tab" }),
-        value: sessionId,
-      },
-      {
-        id: "rename-window",
-        kind: "item",
-        label: $t("tabs.menu.renameWindow", { default: "Rename This Window" }),
-      },
-      { id: "rename-separator", kind: "separator" },
-      {
-        id: session?.pinned ? "unpin-tab" : "pin-tab",
-        kind: "item",
-        label: $t(session?.pinned ? "tabs.menu.unpinTab" : "tabs.menu.pinTab", {
-          default: session?.pinned ? "Unpin Tab" : "Pin Tab",
-        }),
-        value: sessionId,
-      },
-      {
-        id: session?.locked ? "unlock-tab" : "lock-tab",
-        kind: "item",
-        label: $t(session?.locked ? "tabs.menu.unlockTab" : "tabs.menu.lockTab", {
-          default: session?.locked ? "Unlock Tab Close" : "Lock Tab Close",
-        }),
-        value: sessionId,
-      },
-      { id: "organize-separator", kind: "separator" },
-      {
-        id: "move-left",
-        kind: "item",
-        label: $t("tabs.menu.moveLeft", { default: "Move left" }),
-        disabled: isFirstInGroup(sessionId),
-        value: sessionId,
-      },
-      {
-        id: "move-right",
-        kind: "item",
-        label: $t("tabs.menu.moveRight", { default: "Move right" }),
-        disabled: isLastInGroup(sessionId),
-        value: sessionId,
-      },
-      {
-        id: "move-new-window",
-        kind: "item",
-        label: $t("tabs.menu.moveToNewWindow", { default: "Move to new window" }),
-        value: sessionId,
-      },
-    ];
-
-    if (availableWindows.length > 0) {
-      items.push({
-        id: "move-window-header",
-        kind: "header",
-        label: $t("tabs.menu.moveToWindowSection", { default: "Move to other window" }),
-      });
-
-      for (const windowItem of availableWindows) {
-        items.push({
-          id: `move-window-${windowItem.label}`,
-          kind: "item",
-          label: $t("tabs.menu.moveToWindow", {
-            default: "Move to {name}",
-            values: { name: windowItem.name },
-          }),
-          value: windowItem.label,
-        });
-      }
-    }
-
-    items.push({ id: "close-separator", kind: "separator" });
-    items.push({
-      id: "close-tab",
-      kind: "item",
-      label: $t("tabs.menu.closeTab", { default: "Close tab" }),
-      disabled: Boolean(session?.locked),
-      danger: true,
-      value: sessionId,
-    });
-
-    return items;
-  }
-
-  function handleMenuSelect(item: Extract<ContextMenuItem, { kind: "item" }>) {
-    if (!openMenuSessionId) return;
-
-    const sessionId = openMenuSessionId;
-    closeMenu();
-
-    switch (item.id) {
-      case "rename-tab":
-        renameTab(sessionId);
-        return;
-      case "rename-window":
-        renameWindow();
-        return;
-      case "pin-tab":
-      case "unpin-tab":
-        togglePin(sessionId);
-        return;
-      case "lock-tab":
-      case "unlock-tab":
-        toggleLock(sessionId);
-        return;
-      case "move-left":
-        moveLeft(sessionId);
-        return;
-      case "move-right":
-        moveRight(sessionId);
-        return;
-      case "move-new-window":
-        moveToNewWindow(sessionId);
-        return;
-      case "close-tab":
-        onCloseTab?.(sessionId);
-        return;
-      default:
-        if (item.value) {
-          moveToWindow(sessionId, item.value);
-        }
-    }
-  }
 </script>
 
 <div class="tab-bar" data-testid={TEST_IDS.tabBar}>
@@ -526,8 +357,30 @@
   visible={openMenuSessionId !== null}
   x={menuX}
   y={menuY}
-  items={openMenuSessionId ? buildMenuItems(openMenuSessionId) : []}
-  onSelect={handleMenuSelect}
+  items={openMenuSessionId
+    ? buildSessionTabMenuItems({
+        sessions,
+        sessionId: openMenuSessionId,
+        availableWindows,
+        translate: (key, options) => $t(key, options),
+      })
+    : []}
+  onSelect={(item) => {
+    if (!openMenuSessionId) return;
+    handleSessionTabMenuSelect({
+      sessionId: openMenuSessionId,
+      item,
+      renameTab,
+      renameWindow,
+      togglePin,
+      toggleLock,
+      moveLeft,
+      moveRight,
+      moveToNewWindow,
+      moveToWindow,
+      closeTab: (sessionId) => onCloseTab?.(sessionId),
+    });
+  }}
   onClose={closeMenu}
 />
 
