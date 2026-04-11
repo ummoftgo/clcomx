@@ -23,33 +23,56 @@ function createWorkspace(label = "main"): WorkspaceSnapshot {
   };
 }
 
-function createController() {
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function createController(options: { deferRegistration?: boolean } = {}) {
   let closeListener: ((event: { preventDefault(): void }) => void | Promise<void>) | null = null;
   let movedListener: (() => void | Promise<void>) | null = null;
   let resizedListener: (() => void | Promise<void>) | null = null;
   let workspaceUpdatedListener: ((workspace: WorkspaceSnapshot) => void) | null = null;
   let dirtyStateQueryListener: ((payload: DirtyStateQueryPayload) => void) | null = null;
   const unlisteners = [vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn()];
+  const registrationGate = createDeferred<void>();
+
+  const waitForRegistration = async () => {
+    if (!options.deferRegistration) {
+      return;
+    }
+    await registrationGate.promise;
+  };
 
   const deps = {
     onCloseRequested: vi.fn(async (listener: typeof closeListener) => {
       closeListener = listener;
+      await waitForRegistration();
       return unlisteners[0];
     }),
     onMoved: vi.fn(async (listener: typeof movedListener) => {
       movedListener = listener;
+      await waitForRegistration();
       return unlisteners[1];
     }),
     onResized: vi.fn(async (listener: typeof resizedListener) => {
       resizedListener = listener;
+      await waitForRegistration();
       return unlisteners[2];
     }),
     listenWorkspaceUpdated: vi.fn(async (listener: typeof workspaceUpdatedListener) => {
       workspaceUpdatedListener = listener;
+      await waitForRegistration();
       return unlisteners[3];
     }),
     listenDirtyStateQuery: vi.fn(async (listener: typeof dirtyStateQueryListener) => {
       dirtyStateQueryListener = listener;
+      await waitForRegistration();
       return unlisteners[4];
     }),
     emitDirtyStateResponse: vi.fn(async () => {}),
@@ -82,6 +105,9 @@ function createController() {
     },
     emitDirtyStateQuery: (payload: DirtyStateQueryPayload) => {
       dirtyStateQueryListener?.(payload);
+    },
+    resolveRegistration: () => {
+      registrationGate.resolve();
     },
   };
 }
@@ -228,6 +254,21 @@ describe("app-window-listener-controller", () => {
 
     controller.dispose();
     controller.dispose();
+
+    for (const unlisten of unlisteners) {
+      expect(unlisten).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("cleans up listeners that finish registering after dispose", async () => {
+    const { controller, unlisteners, resolveRegistration } = createController({
+      deferRegistration: true,
+    });
+
+    const registerPromise = controller.register();
+    controller.dispose();
+    resolveRegistration();
+    await registerPromise;
 
     for (const unlisten of unlisteners) {
       expect(unlisten).toHaveBeenCalledTimes(1);

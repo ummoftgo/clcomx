@@ -15,6 +15,7 @@
     type DirtyStateResponsePayload,
   } from "./lib/features/app-shell/controller/window-close-orchestration-controller";
   import { createAppWindowListenerController } from "./lib/features/app-shell/controller/app-window-listener-controller";
+  import { createAppStartupController } from "./lib/features/app-shell/controller/app-startup-controller";
   import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
   import {
@@ -153,7 +154,6 @@
   let previewFrameMode = $state<PreviewFrameMode>(previewUrlState.getInitialFrameMode());
   let showPreviewControls = $state(previewUrlState.getInitialControlsVisible());
   let terminalLoadPromise: Promise<void> | null = null;
-  let canonicalAuthorityCleanup: (() => void) | null = null;
   const previewFrameWidth = $derived(
     previewFrameMode === "desktop"
       ? "1380px"
@@ -324,6 +324,20 @@
     getLocalDirtySessionCount,
   });
 
+  const appStartup = createAppStartupController({
+    isMainWindow: () => isMainWindow,
+    currentWindowLabel: () => currentWindowLabel,
+    installCanonicalScreenAuthority,
+    notifyWindowReady,
+    scheduleInitialPlacementPersist: () => {
+      windowPlacement.scheduleInitialPersist();
+    },
+    primeEditorsDetection,
+    reportError: (message, error) => {
+      console.error(message, error);
+    },
+  });
+
   function usesKoreanCopy() {
     if (settings.language === "ko") return true;
     if (settings.language === "en") return false;
@@ -398,32 +412,14 @@
   onMount(() => {
     void (async () => {
       await appWindowListeners.register();
-
-      if (isMainWindow) {
-        try {
-          canonicalAuthorityCleanup = await installCanonicalScreenAuthority();
-        } catch (error) {
-          console.error("Failed to install canonical screen authority", error);
-        }
-      }
-
-      try {
-        await notifyWindowReady(currentWindowLabel);
-      } catch (error) {
-        console.error("Failed to notify window readiness", error);
-      }
-
-      windowPlacement.scheduleInitialPersist();
-
-      primeEditorsDetection(1200);
+      await appStartup.start();
     })();
   });
 
   onDestroy(() => {
+    appStartup.dispose();
     windowPlacement.dispose();
     workspaceAutosave.dispose();
-    canonicalAuthorityCleanup?.();
-    canonicalAuthorityCleanup = null;
     appWindowListeners.dispose();
   });
 

@@ -47,6 +47,7 @@ export function createAppWindowListenerController(
   deps: AppWindowListenerControllerDeps,
 ) {
   let unlisteners: UnlistenFn[] = [];
+  let disposed = false;
 
   const handleCloseRequested = async (event: CloseRequestedEvent) => {
     if (deps.consumeNativeCloseAllowance()) {
@@ -84,7 +85,8 @@ export function createAppWindowListenerController(
   };
 
   const register = async () => {
-    unlisteners = await Promise.all([
+    disposed = false;
+    const nextUnlisteners = await Promise.all([
       deps.onCloseRequested(handleCloseRequested),
       deps.onMoved(() => deps.schedulePlacementPersist()),
       deps.onResized(() => deps.schedulePlacementPersist()),
@@ -92,10 +94,19 @@ export function createAppWindowListenerController(
       deps.listenDirtyStateQuery(handleDirtyStateQuery),
     ]);
 
+    if (disposed) {
+      for (const unlisten of nextUnlisteners) {
+        unlisten();
+      }
+      return nextUnlisteners;
+    }
+
+    unlisteners = nextUnlisteners;
     return unlisteners;
   };
 
   const dispose = () => {
+    disposed = true;
     for (const unlisten of unlisteners) {
       unlisten();
     }
