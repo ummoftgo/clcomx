@@ -16,7 +16,7 @@ export interface TabBarProps {
   onNewTab: () => void;
   onActivateTab?: (id: string) => void;
   onReorderTab?: (id: string, toIndex: number) => void;
-  onRequestTerminalFocus?: (id: string) => void;
+  onRequestSessionFocus?: (id: string) => void;
   onSettings?: () => void;
   onCloseTab?: (id: string) => void;
   onRenameTab?: (id: string) => void;

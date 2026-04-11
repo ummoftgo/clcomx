@@ -106,7 +106,7 @@ describe("TabBar", () => {
   function renderTabBar(overrides: Partial<TabBarProps> = {}) {
     return render(TabBarHarness, {
       onNewTab: vi.fn(),
-      onRequestTerminalFocus: vi.fn(),
+      onRequestSessionFocus: vi.fn(),
       onCloseTab: vi.fn(),
       availableWindows: [],
       ...overrides,
@@ -189,10 +189,10 @@ describe("TabBar", () => {
   });
 
   it("activates the pointed tab and requests terminal focus on pointer up", async () => {
-    const onRequestTerminalFocus = vi.fn();
+    const onRequestSessionFocus = vi.fn();
 
     renderTabBar({
-      onRequestTerminalFocus,
+      onRequestSessionFocus,
     });
 
     const betaTab = screen.getByTestId(tabTestId("session-b"));
@@ -211,7 +211,55 @@ describe("TabBar", () => {
 
     expect(getActiveSessionId()).toBe("session-b");
     expect(betaTab).toHaveClass("active");
-    expect(onRequestTerminalFocus).toHaveBeenCalledWith("session-b");
+    expect(onRequestSessionFocus).toHaveBeenCalledWith("session-b");
+  });
+
+  it("ignores pointercancel from a different pointer", async () => {
+    const onRequestSessionFocus = vi.fn();
+
+    renderTabBar({
+      onRequestSessionFocus,
+    });
+
+    const betaTab = screen.getByTestId(tabTestId("session-b"));
+
+    await fireEvent.pointerDown(betaTab, {
+      button: 0,
+      pointerId: 1,
+      clientX: 120,
+      clientY: 20,
+    });
+    await fireEvent.pointerCancel(betaTab, {
+      pointerId: 2,
+      clientX: 120,
+      clientY: 20,
+    });
+
+    expect(onRequestSessionFocus).not.toHaveBeenCalled();
+  });
+
+  it("restores focus on pointercancel for the active pointer", async () => {
+    const onRequestSessionFocus = vi.fn();
+
+    renderTabBar({
+      onRequestSessionFocus,
+    });
+
+    const betaTab = screen.getByTestId(tabTestId("session-b"));
+
+    await fireEvent.pointerDown(betaTab, {
+      button: 0,
+      pointerId: 1,
+      clientX: 120,
+      clientY: 20,
+    });
+    await fireEvent.pointerCancel(betaTab, {
+      pointerId: 1,
+      clientX: 120,
+      clientY: 20,
+    });
+
+    expect(onRequestSessionFocus).toHaveBeenCalledWith("session-a");
   });
 
   it("activates an inactive tab on Enter", async () => {
@@ -225,7 +273,7 @@ describe("TabBar", () => {
   });
 
   it("requests terminal focus after move-left tab action", async () => {
-    const onRequestTerminalFocus = vi.fn();
+    const onRequestSessionFocus = vi.fn();
     const onMoveTabLeft = vi.fn();
 
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
@@ -234,7 +282,7 @@ describe("TabBar", () => {
     });
 
     renderTabBar({
-      onRequestTerminalFocus,
+      onRequestSessionFocus,
       onMoveTabLeft,
       availableWindows: [{ label: "window-1", name: "window-1" }],
     });
@@ -248,6 +296,6 @@ describe("TabBar", () => {
     await fireEvent.click(within(menu).getByTestId(contextMenuItemTestId("move-left")));
 
     expect(onMoveTabLeft).toHaveBeenCalledWith("session-b");
-    expect(onRequestTerminalFocus).toHaveBeenCalledWith("session-b");
+    expect(onRequestSessionFocus).toHaveBeenCalledWith("session-b");
   });
 });

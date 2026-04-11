@@ -1,5 +1,3 @@
-export const ACTIVE_TERMINAL_FOCUS_EVENT = "clcomx:focus-active-terminal";
-
 type ActivateTabHandler = ((sessionId: string) => void) | undefined;
 type RequestFocusHandler = ((sessionId: string) => void) | undefined;
 type AnimationFrameScheduler = ((callback: FrameRequestCallback) => number) | undefined;
@@ -37,41 +35,27 @@ export function finalizeSessionTabPointerInteraction(
 
 export function requestSessionTabFocus(
   sessionId: string | null | undefined,
-  requestTerminalFocus: RequestFocusHandler,
+  requestSessionFocus: RequestFocusHandler,
 ) {
   if (!sessionId) {
     return false;
   }
 
-  requestTerminalFocus?.(sessionId);
+  requestSessionFocus?.(sessionId);
   return true;
 }
 
 export function scheduleSessionTabFocus(
   sessionId: string,
-  requestTerminalFocus: RequestFocusHandler,
+  requestSessionFocus: RequestFocusHandler,
   schedule: AnimationFrameScheduler = getDefaultScheduler(),
 ) {
   if (!schedule) {
-    requestTerminalFocus?.(sessionId);
+    requestSessionFocus?.(sessionId);
     return;
   }
 
   schedule(() => {
-    requestTerminalFocus?.(sessionId);
+    requestSessionFocus?.(sessionId);
   });
-}
-
-export function dispatchSessionTabFocusRequest(
-  target: Pick<Window, "dispatchEvent">,
-  sessionId: string | null | undefined,
-) {
-  if (!sessionId) {
-    return false;
-  }
-
-  target.dispatchEvent(new CustomEvent(ACTIVE_TERMINAL_FOCUS_EVENT, {
-    detail: { sessionId },
-  }));
-  return true;
 }

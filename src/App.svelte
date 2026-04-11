@@ -86,12 +86,12 @@
   import type { AgentId } from "./lib/agents";
   import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
-  import { dispatchSessionTabFocusRequest } from "./lib/features/session-tabs/controller/tab-activation-controller";
   import {
     resolveAdjacentSessionMoveIndex,
     resolveCloseTabRequest,
     resolveRenamedSessionTitle,
   } from "./lib/features/session/service/session-tab-behavior";
+  import { dispatchTerminalFocusRequest } from "./lib/features/terminal/controller/terminal-focus-bridge";
   import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
   import type { SessionShellAuxState } from "./lib/features/session/contracts/session-shell";
   import {
@@ -725,8 +725,8 @@
     moveSession(sessionId, targetIndex);
   }
 
-  function handleRequestTabTerminalFocus(sessionId: string) {
-    dispatchSessionTabFocusRequest(window, sessionId);
+  function handleRequestTabSessionFocus(sessionId: string) {
+    dispatchTerminalFocusRequest(window, sessionId);
   }
 
   function requestRenameTab(sessionId: string) {
@@ -868,7 +868,7 @@
       onNewTab={requestNewTab}
       onActivateTab={handleActivateTab}
       onReorderTab={handleReorderTab}
-      onRequestTerminalFocus={handleRequestTabTerminalFocus}
+      onRequestSessionFocus={handleRequestTabSessionFocus}
       onSettings={() => { void openSettingsPanel(); }}
       onCloseTab={requestCloseTab}
       onRenameTab={requestRenameTab}

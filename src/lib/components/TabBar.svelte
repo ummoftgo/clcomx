@@ -27,7 +27,7 @@
     onNewTab,
     onActivateTab,
     onReorderTab,
-    onRequestTerminalFocus,
+    onRequestSessionFocus,
     onSettings,
     onCloseTab,
     onRenameTab,
@@ -205,23 +205,25 @@
 
     resetDrag();
     await tick();
-    requestSessionTabFocus(focusedSessionId, onRequestTerminalFocus);
+    requestSessionTabFocus(focusedSessionId, onRequestSessionFocus);
   }
 
-  async function handlePointerCancel() {
+  async function handlePointerCancel(event: PointerEvent) {
+    if (!dragCandidateId || dragPointerId !== event.pointerId) return;
+
     resetDrag();
     await tick();
-    requestSessionTabFocus(activeSessionId, onRequestTerminalFocus);
+    requestSessionTabFocus(activeSessionId, onRequestSessionFocus);
   }
 
   function moveLeft(sessionId: string) {
     onMoveTabLeft?.(sessionId);
-    scheduleSessionTabFocus(sessionId, onRequestTerminalFocus);
+    scheduleSessionTabFocus(sessionId, onRequestSessionFocus);
   }
 
   function moveRight(sessionId: string) {
     onMoveTabRight?.(sessionId);
-    scheduleSessionTabFocus(sessionId, onRequestTerminalFocus);
+    scheduleSessionTabFocus(sessionId, onRequestSessionFocus);
   }
 
   function moveToNewWindow(sessionId: string) {
@@ -242,12 +244,12 @@
 
   function togglePin(sessionId: string) {
     onTogglePinTab?.(sessionId);
-    scheduleSessionTabFocus(sessionId, onRequestTerminalFocus);
+    scheduleSessionTabFocus(sessionId, onRequestSessionFocus);
   }
 
   function toggleLock(sessionId: string) {
     onToggleLockTab?.(sessionId);
-    scheduleSessionTabFocus(sessionId, onRequestTerminalFocus);
+    scheduleSessionTabFocus(sessionId, onRequestSessionFocus);
   }
 
 </script>

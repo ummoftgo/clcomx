@@ -70,6 +70,10 @@
   import { createMainTerminalRuntimeController } from "../features/terminal/controller/main-terminal-runtime-controller";
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
   import { createOverlayInteractionController } from "../features/terminal/controller/overlay-interaction-controller";
+  import {
+    addTerminalFocusRequestListener,
+    removeTerminalFocusRequestListener,
+  } from "../features/terminal/controller/terminal-focus-bridge";
   import { createTerminalTestBridgeController } from "../features/terminal/controller/terminal-test-bridge-controller";
   import { createAuxTerminalRuntimeState } from "../features/terminal/state/aux-terminal-runtime-state.svelte";
   import { createDraftComposerState } from "../features/terminal/state/draft-composer-state.svelte";
@@ -1114,7 +1118,7 @@
     window.addEventListener("blur", releaseLinkSelectionBlock);
     window.addEventListener("keydown", handleAuxShortcut, true);
     window.addEventListener("keydown", handleEditorShortcut, true);
-    window.addEventListener("clcomx:focus-active-terminal", handleFocusRequest);
+    addTerminalFocusRequestListener(window, handleFocusRequest);
     window.addEventListener(TEST_BRIDGE_EVENTS.openPendingImage, handleTestPendingImage as EventListener);
     if (isTestBridgeEnabled()) {
       registerTestHooks();
@@ -1268,7 +1272,7 @@
   });
 
   onDestroy(() => {
-    window.removeEventListener("clcomx:focus-active-terminal", handleFocusRequest);
+    removeTerminalFocusRequestListener(window, handleFocusRequest);
     window.removeEventListener(TEST_BRIDGE_EVENTS.openPendingImage, handleTestPendingImage as EventListener);
     window.removeEventListener("keydown", handleAuxShortcut, true);
     window.removeEventListener("keydown", handleEditorShortcut, true);

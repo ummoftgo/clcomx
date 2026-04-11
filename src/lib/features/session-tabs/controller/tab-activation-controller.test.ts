@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  ACTIVE_TERMINAL_FOCUS_EVENT,
   activateSessionTab,
-  dispatchSessionTabFocusRequest,
   finalizeSessionTabPointerInteraction,
   requestSessionTabFocus,
   scheduleSessionTabFocus,
@@ -61,23 +59,5 @@ describe("tab-activation-controller", () => {
     expect(requestSessionTabFocus("session-a", requestTerminalFocus)).toBe(true);
     expect(requestTerminalFocus).toHaveBeenCalledOnce();
     expect(requestTerminalFocus).toHaveBeenCalledWith("session-a");
-  });
-
-  it("dispatches the terminal focus request event", () => {
-    const dispatchedEvents: Event[] = [];
-    const target = {
-      dispatchEvent(event: Event) {
-        dispatchedEvents.push(event);
-        return true;
-      },
-    };
-
-    const dispatched = dispatchSessionTabFocusRequest(target, "session-a");
-
-    expect(dispatched).toBe(true);
-    expect(dispatchedEvents).toHaveLength(1);
-    expect(dispatchedEvents[0]).toBeInstanceOf(CustomEvent);
-    expect((dispatchedEvents[0] as CustomEvent).type).toBe(ACTIVE_TERMINAL_FOCUS_EVENT);
-    expect((dispatchedEvents[0] as CustomEvent).detail).toEqual({ sessionId: "session-a" });
   });
 });

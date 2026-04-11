@@ -15,7 +15,7 @@
 
   let {
     onNewTab,
-    onRequestTerminalFocus,
+    onRequestSessionFocus,
     onSettings,
     onCloseTab,
     onRenameTab,
@@ -39,7 +39,7 @@
   {onNewTab}
   onActivateTab={setActiveSession}
   onReorderTab={moveSession}
-  {onRequestTerminalFocus}
+  {onRequestSessionFocus}
   {onSettings}
   {onCloseTab}
   {onRenameTab}
