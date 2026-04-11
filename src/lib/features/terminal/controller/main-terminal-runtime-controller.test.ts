@@ -237,4 +237,36 @@ describe("main-terminal-runtime-controller", () => {
     expect(runtime.controller.handlePtyExit(42)).toBe(true);
     expect(runtime.onExit).toHaveBeenCalledWith(42);
   });
+
+  it("keeps loading visible until the ready signal is rendered", async () => {
+    vi.useFakeTimers();
+    const runtime = createController();
+    runtime.state.livePtyId = 42;
+    runtime.state.initialOutputReady = true;
+
+    await runtime.controller.showTerminalLoadingState("connecting");
+
+    runtime.controller.handleMainOutputChunk({
+      id: 42,
+      seq: 1,
+      data: "working...",
+    });
+    await Promise.resolve();
+    runtime.controller.handleTerminalRender();
+    await vi.advanceTimersByTimeAsync(1300);
+
+    expect(runtime.state.terminalLoadingState).toBe("connecting");
+
+    runtime.controller.handleMainOutputChunk({
+      id: 42,
+      seq: 2,
+      data: "\n❯ ",
+    });
+    await Promise.resolve();
+    runtime.controller.handleTerminalRender();
+    await vi.advanceTimersByTimeAsync(1300);
+
+    expect(runtime.state.terminalLoadingState).toBeNull();
+    runtime.controller.dispose();
+  });
 });

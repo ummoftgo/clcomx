@@ -8,13 +8,14 @@ import type {
   MainTerminalLoadingState,
   MainTerminalRuntimeState,
 } from "../state/main-terminal-runtime-state.svelte";
+import {
+  createTerminalLoadingLifecycle,
+  hasRenderableTerminalOutput,
+} from "./terminal-loading-lifecycle";
 
 const RESUME_FAILED_MARKER = "__CLCOMX_RESUME_FAILED__";
 const BOTTOM_LOCK_MAX_MS = 12000;
 const BOTTOM_LOCK_QUIET_MS = 1400;
-const MIN_TERMINAL_LOADING_MS = 360;
-const TERMINAL_LOADING_QUIET_MS = 1300;
-const TERMINAL_LOADING_MAX_MS = 8000;
 const DEFERRED_BOTTOM_SCROLL_MS = 60;
 const SYNC_OUTPUT_MODE_SEQUENCE = /\u001b\[\?2026[hl]/;
 const ABSOLUTE_CURSOR_POSITION_SEQUENCE = /\u001b\[\d+(?:;\d+)?[Hf]/;
@@ -66,6 +67,35 @@ interface MainTerminalRuntimeControllerDeps {
 
 export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeControllerDeps) {
   const { state } = deps;
+  const terminalLoadingLifecycle = createTerminalLoadingLifecycle({
+    getLoadingState: () => state.terminalLoadingState,
+    setLoadingState: (terminalLoadingState) => {
+      state.terminalLoadingState = terminalLoadingState;
+    },
+    getLoadingStartedAt: () => state.terminalLoadingStartedAt,
+    setLoadingStartedAt: (terminalLoadingStartedAt) => {
+      state.terminalLoadingStartedAt = terminalLoadingStartedAt;
+    },
+    getHasRenderableOutput: () => state.terminalLoadingHasRenderableOutput,
+    setHasRenderableOutput: (terminalLoadingHasRenderableOutput) => {
+      state.terminalLoadingHasRenderableOutput = terminalLoadingHasRenderableOutput;
+    },
+    getQuietTimer: () => state.terminalLoadingQuietTimer,
+    setQuietTimer: (terminalLoadingQuietTimer) => {
+      state.terminalLoadingQuietTimer = terminalLoadingQuietTimer;
+    },
+    getMaxTimer: () => state.terminalLoadingMaxTimer,
+    setMaxTimer: (terminalLoadingMaxTimer) => {
+      state.terminalLoadingMaxTimer = terminalLoadingMaxTimer;
+    },
+    shouldWaitForMinDuration: (force) => !force,
+    onShow: () => {
+      state.terminalLoadingReadySignalSeen = !requiresAgentReadySignal();
+    },
+    onClear: () => {
+      state.terminalLoadingReadySignalSeen = false;
+    },
+  });
 
   function getLivePtyId() {
     return state.livePtyId;
@@ -114,17 +144,6 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
   function writeMainTerminalData(term: Terminal, data: string) {
     const parsed = consumeMainTerminalMetadata(data);
     return deps.writeTerminalData(term, parsed.text);
-  }
-
-  function hasRenderableTerminalOutput(data: string) {
-    if (!data) {
-      return false;
-    }
-
-    const withoutOsc = data.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "");
-    const withoutCsi = withoutOsc.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
-    const withoutControl = withoutCsi.replace(/[\u0000-\u001f\u007f]/g, "");
-    return withoutControl.trim().length > 0;
   }
 
   function extractPrintableTerminalText(data: string) {
@@ -283,35 +302,8 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
   }
 
   async function showTerminalLoadingState(stateValue: MainTerminalLoadingState) {
-    clearTerminalLoadingTimers();
-    state.terminalLoadingState = stateValue;
-    state.terminalLoadingStartedAt = performance.now();
-    state.terminalLoadingHasRenderableOutput = false;
-    state.terminalLoadingReadySignalSeen = !requiresAgentReadySignal();
-    state.terminalLoadingMaxTimer = setTimeout(() => {
-      state.terminalLoadingMaxTimer = null;
-      void clearTerminalLoadingState(true);
-    }, TERMINAL_LOADING_MAX_MS);
+    terminalLoadingLifecycle.show(stateValue);
     await deps.waitForTerminalPaint();
-  }
-
-  function clearTerminalLoadingTimers() {
-    if (state.terminalLoadingQuietTimer) {
-      clearTimeout(state.terminalLoadingQuietTimer);
-      state.terminalLoadingQuietTimer = null;
-    }
-    if (state.terminalLoadingMaxTimer) {
-      clearTimeout(state.terminalLoadingMaxTimer);
-      state.terminalLoadingMaxTimer = null;
-    }
-  }
-
-  function noteTerminalLoadingActivity() {
-    if (state.terminalLoadingState === null) {
-      return;
-    }
-
-    state.terminalLoadingHasRenderableOutput = true;
   }
 
   function noteTerminalLoadingOutput(data: string) {
@@ -319,9 +311,7 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
       return;
     }
 
-    if (hasRenderableTerminalOutput(data)) {
-      noteTerminalLoadingActivity();
-    }
+    terminalLoadingLifecycle.noteRenderableOutput(data);
 
     if (!state.terminalLoadingReadySignalSeen && hasAgentReadySignal(data)) {
       state.terminalLoadingReadySignalSeen = true;
@@ -337,34 +327,11 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
       return;
     }
 
-    if (state.terminalLoadingQuietTimer) {
-      clearTimeout(state.terminalLoadingQuietTimer);
-    }
-    state.terminalLoadingQuietTimer = setTimeout(() => {
-      state.terminalLoadingQuietTimer = null;
-      void clearTerminalLoadingState();
-    }, TERMINAL_LOADING_QUIET_MS);
+    terminalLoadingLifecycle.scheduleQuietClear();
   }
 
   async function clearTerminalLoadingState(force = false) {
-    if (state.terminalLoadingState === null) {
-      return;
-    }
-
-    if (!force) {
-      const elapsed = performance.now() - state.terminalLoadingStartedAt;
-      const remaining = MIN_TERMINAL_LOADING_MS - elapsed;
-      if (remaining > 0) {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, remaining);
-        });
-      }
-    }
-
-    clearTerminalLoadingTimers();
-    state.terminalLoadingHasRenderableOutput = false;
-    state.terminalLoadingReadySignalSeen = false;
-    state.terminalLoadingState = null;
+    await terminalLoadingLifecycle.clear(force);
   }
 
   function handleViewportScroll(viewportY: number, baseY: number) {
@@ -594,7 +561,7 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
   }
 
   function dispose() {
-    clearTerminalLoadingTimers();
+    terminalLoadingLifecycle.dispose();
     clearDeferredBottomScrollTimer();
     releaseBottomLock();
     state.pendingPostWriteScroll = false;

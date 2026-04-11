@@ -5,10 +5,9 @@ import type {
   AuxTerminalLoadingState,
   AuxTerminalRuntimeState,
 } from "../state/aux-terminal-runtime-state.svelte";
-
-const MIN_TERMINAL_LOADING_MS = 360;
-const TERMINAL_LOADING_QUIET_MS = 1300;
-const TERMINAL_LOADING_MAX_MS = 8000;
+import {
+  createTerminalLoadingLifecycle,
+} from "./terminal-loading-lifecycle";
 
 interface AuxTerminalRuntimeControllerDeps {
   state: AuxTerminalRuntimeState;
@@ -33,17 +32,6 @@ interface AuxTerminalRuntimeControllerDeps {
 export function createAuxTerminalRuntimeController(deps: AuxTerminalRuntimeControllerDeps) {
   const { state } = deps;
 
-  function hasRenderableTerminalOutput(data: string) {
-    if (!data) {
-      return false;
-    }
-
-    const withoutOsc = data.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "");
-    const withoutCsi = withoutOsc.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
-    const withoutControl = withoutCsi.replace(/[\u0000-\u001f\u007f]/g, "");
-    return withoutControl.trim().length > 0;
-  }
-
   function writeAuxTerminalData(term: Terminal, data: string) {
     const parsed = consumeAuxShellMetadata(data, state.metadataRemainder);
     state.metadataRemainder = parsed.remainder;
@@ -53,62 +41,48 @@ export function createAuxTerminalRuntimeController(deps: AuxTerminalRuntimeContr
     return deps.writeTerminalData(term, parsed.text);
   }
 
+  const terminalLoadingLifecycle = createTerminalLoadingLifecycle({
+    getLoadingState: () => state.loadingState,
+    setLoadingState: (loadingState) => {
+      state.loadingState = loadingState;
+    },
+    getLoadingStartedAt: () => state.loadingStartedAt,
+    setLoadingStartedAt: (loadingStartedAt) => {
+      state.loadingStartedAt = loadingStartedAt;
+    },
+    getHasRenderableOutput: () => state.loadingHasRenderableOutput,
+    setHasRenderableOutput: (loadingHasRenderableOutput) => {
+      state.loadingHasRenderableOutput = loadingHasRenderableOutput;
+    },
+    getQuietTimer: () => state.loadingQuietTimer,
+    setQuietTimer: (loadingQuietTimer) => {
+      state.loadingQuietTimer = loadingQuietTimer;
+    },
+    getMaxTimer: () => state.loadingMaxTimer,
+    setMaxTimer: (loadingMaxTimer) => {
+      state.loadingMaxTimer = loadingMaxTimer;
+    },
+    shouldWaitForMinDuration: (force) => !force && state.loadingHasRenderableOutput,
+  });
+
   function clearLoadingTimers() {
-    if (state.loadingQuietTimer) {
-      clearTimeout(state.loadingQuietTimer);
-      state.loadingQuietTimer = null;
-    }
-    if (state.loadingMaxTimer) {
-      clearTimeout(state.loadingMaxTimer);
-      state.loadingMaxTimer = null;
-    }
+    terminalLoadingLifecycle.clearTimers();
   }
 
   function showLoadingState(stateValue: AuxTerminalLoadingState = "opening") {
-    clearLoadingTimers();
-    state.loadingState = stateValue;
-    state.loadingStartedAt = performance.now();
-    state.loadingHasRenderableOutput = false;
-    state.loadingMaxTimer = setTimeout(() => {
-      state.loadingMaxTimer = null;
-      void clearLoadingState(true);
-    }, TERMINAL_LOADING_MAX_MS);
+    terminalLoadingLifecycle.show(stateValue);
   }
 
   function noteLoadingOutput(data: string) {
-    if (state.loadingState === null || !hasRenderableTerminalOutput(data)) {
+    if (!terminalLoadingLifecycle.noteRenderableOutput(data)) {
       return;
     }
 
-    state.loadingHasRenderableOutput = true;
-
-    if (state.loadingQuietTimer) {
-      clearTimeout(state.loadingQuietTimer);
-    }
-    state.loadingQuietTimer = setTimeout(() => {
-      state.loadingQuietTimer = null;
-      void clearLoadingState();
-    }, TERMINAL_LOADING_QUIET_MS);
+    terminalLoadingLifecycle.scheduleQuietClear();
   }
 
   async function clearLoadingState(force = false) {
-    if (state.loadingState === null) {
-      return;
-    }
-
-    if (!force && state.loadingHasRenderableOutput) {
-      const elapsed = performance.now() - state.loadingStartedAt;
-      const remaining = MIN_TERMINAL_LOADING_MS - elapsed;
-      if (remaining > 0) {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, remaining);
-        });
-      }
-    }
-
-    clearLoadingTimers();
-    state.loadingState = null;
-    state.loadingHasRenderableOutput = false;
+    await terminalLoadingLifecycle.clear(force);
   }
 
   async function spawnShell(term: Terminal) {
@@ -230,7 +204,7 @@ export function createAuxTerminalRuntimeController(deps: AuxTerminalRuntimeContr
   }
 
   function dispose() {
-    clearLoadingTimers();
+    terminalLoadingLifecycle.dispose();
   }
 
   return {
