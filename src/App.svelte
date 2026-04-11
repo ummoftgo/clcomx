@@ -3,7 +3,7 @@
   import { onMount, onDestroy } from "svelte";
   import { emitTo, listen } from "./lib/tauri/event";
   import { currentMonitor, getCurrentWindow } from "./lib/tauri/window";
-  import TabBar from "./lib/components/TabBar.svelte";
+  import TabBar from "./lib/features/session-tabs/view/TabBar.svelte";
   import SessionLauncher from "./lib/features/launcher/view/SessionLauncher.svelte";
   import SessionViewport from "./lib/features/session/view/SessionViewport.svelte";
   import PreviewControlPanel from "./lib/components/PreviewControlPanel.svelte";

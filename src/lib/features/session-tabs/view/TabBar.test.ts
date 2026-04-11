@@ -1,21 +1,21 @@
-import { fireEvent, render, screen, within } from "@testing-library/svelte";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getActiveSessionId,
   getSessions,
-} from "../features/session/state/live-session-store.svelte";
-import { initializeSessionsFromWorkspace } from "../features/workspace/session-store.svelte";
-import { initializeI18n } from "../i18n";
-import { DEFAULT_SETTINGS, type WorkspaceSnapshot } from "../types";
-import { initializeSettings } from "../stores/settings.svelte";
-import TabBar from "./TabBar.svelte";
-import TabBarHarness from "./TabBarHarness.svelte";
+} from "../../session/state/live-session-store.svelte";
+import { initializeSessionsFromWorkspace } from "../../workspace/session-store.svelte";
+import { initializeI18n } from "../../../i18n";
+import { initializeSettings } from "../../../stores/settings.svelte";
 import {
   contextMenuItemTestId,
   tabMenuButtonTestId,
   tabTestId,
-} from "../testids";
-import type { TabBarProps } from "../features/session-tabs/contracts/tab-bar";
+} from "../../../testids";
+import { DEFAULT_SETTINGS, type WorkspaceSnapshot } from "../../../types";
+import TabBar from "./TabBar.svelte";
+import TabBarHarness from "./test-fixtures/TabBarHarness.svelte";
+import type { TabBarProps } from "../contracts/tab-bar";
 
 const EXAMPLE_DISTRO = "ExampleDistro";
 
@@ -145,6 +145,12 @@ describe("TabBar", () => {
       toJSON: () => ({}),
     } as DOMRect);
     return element;
+  }
+
+  function getRenderedTabOrder() {
+    return Array.from(document.querySelectorAll<HTMLElement>(".tab[data-testid]")).map(
+      (element) => element.dataset.testid,
+    );
   }
 
   it("keeps the active tab unchanged when opening a context menu on another tab", async () => {
@@ -341,6 +347,58 @@ describe("TabBar", () => {
 
     expect(onReorderTab).toHaveBeenCalledWith("session-b", 0);
     expect(onActivateTab).toHaveBeenCalledWith("session-b");
+    expect(onRequestSessionFocus).toHaveBeenCalledWith("session-b");
+  });
+
+  it("re-renders the harness with the reordered session sequence after drag finish", async () => {
+    const onRequestSessionFocus = vi.fn();
+
+    renderTabBar({
+      onRequestSessionFocus,
+    });
+
+    expect(getRenderedTabOrder()).toEqual([
+      tabTestId("session-a"),
+      tabTestId("session-b"),
+    ]);
+
+    mockTabRect("session-a", {
+      left: 0,
+      right: 100,
+      top: 0,
+      bottom: 40,
+    });
+    const betaTab = mockTabRect("session-b", {
+      left: 100,
+      right: 200,
+      top: 0,
+      bottom: 40,
+    });
+
+    await fireEvent.pointerDown(betaTab, {
+      button: 0,
+      pointerId: 1,
+      clientX: 150,
+      clientY: 20,
+    });
+    await fireEvent.pointerMove(betaTab, {
+      pointerId: 1,
+      clientX: 50,
+      clientY: 20,
+    });
+    await fireEvent.pointerUp(betaTab, {
+      pointerId: 1,
+      clientX: 50,
+      clientY: 20,
+    });
+
+    await waitFor(() => {
+      expect(getRenderedTabOrder()).toEqual([
+        tabTestId("session-b"),
+        tabTestId("session-a"),
+      ]);
+    });
+
     expect(onRequestSessionFocus).toHaveBeenCalledWith("session-b");
   });
 

@@ -1,15 +1,15 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { _ as t } from "svelte-i18n";
-  import type { TabBarProps } from "../features/session-tabs/contracts/tab-bar";
+  import type { TabBarProps } from "../contracts/tab-bar";
   import {
     activateSessionTab,
     scheduleSessionTabFocus,
-  } from "../features/session-tabs/controller/tab-activation-controller";
+  } from "../controller/tab-activation-controller";
   import {
     buildSessionTabMenuItems,
     handleSessionTabMenuSelect,
-  } from "../features/session-tabs/controller/tab-context-menu-controller";
+  } from "../controller/tab-context-menu-controller";
   import {
     beginSessionTabDrag,
     cancelSessionTabDragInteraction,
@@ -19,15 +19,15 @@
     getSessionTabDragPreviewStyle,
     getSessionTabDragPreviewTitle,
     updateSessionTabDrag,
-  } from "../features/session-tabs/controller/tab-drag-controller";
-  import ContextMenu from "../ui/components/ContextMenu.svelte";
-  import AgentIcon from "./AgentIcon.svelte";
+  } from "../controller/tab-drag-controller";
+  import AgentIcon from "../../../components/AgentIcon.svelte";
   import {
     TEST_IDS,
     tabCloseButtonTestId,
     tabMenuButtonTestId,
     tabTestId,
-  } from "../testids";
+  } from "../../../testids";
+  import ContextMenu from "../../../ui/components/ContextMenu.svelte";
 
   let {
     sessions,

@@ -4,9 +4,9 @@
     getSessions,
     moveSession,
     setActiveSession,
-  } from "../features/session/state/live-session-store.svelte";
-  import type { TabBarProps } from "../features/session-tabs/contracts/tab-bar";
-  import TabBar from "./TabBar.svelte";
+  } from "../../../session/state/live-session-store.svelte";
+  import type { TabBarProps } from "../../contracts/tab-bar";
+  import TabBar from "../TabBar.svelte";
 
   type TabBarHarnessProps = Omit<
     TabBarProps,
