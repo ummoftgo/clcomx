@@ -474,4 +474,31 @@ describe("TabBar", () => {
     expect(onMoveTabLeft).toHaveBeenCalledWith("session-b");
     expect(onRequestSessionFocus).toHaveBeenCalledWith("session-b");
   });
+
+  it("requests terminal focus after pin tab action", async () => {
+    const onRequestSessionFocus = vi.fn();
+    const onTogglePinTab = vi.fn();
+
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(16);
+      return 1;
+    });
+
+    renderTabBar({
+      onRequestSessionFocus,
+      onTogglePinTab,
+      availableWindows: [{ label: "window-1", name: "window-1" }],
+    });
+
+    await fireEvent.contextMenu(screen.getByText("Beta").closest(".tab")!, {
+      clientX: 160,
+      clientY: 24,
+    });
+
+    const menu = screen.getByRole("menu");
+    await fireEvent.click(within(menu).getByTestId(contextMenuItemTestId("pin-tab")));
+
+    expect(onTogglePinTab).toHaveBeenCalledWith("session-b");
+    expect(onRequestSessionFocus).toHaveBeenCalledWith("session-b");
+  });
 });

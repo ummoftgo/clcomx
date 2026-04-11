@@ -88,10 +88,8 @@
   import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
   import { createTabCloseOrchestrationController } from "./lib/features/session/controller/tab-close-orchestration-controller";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
-  import {
-    resolveAdjacentSessionMoveIndex,
-    resolveRenamedSessionTitle,
-  } from "./lib/features/session/service/session-tab-behavior";
+  import { resolveRenamedSessionTitle } from "./lib/features/session/service/session-tab-behavior";
+  import { createTabOrganizationController } from "./lib/features/session-tabs/controller/tab-organization-controller";
   import { dispatchTerminalFocusRequest } from "./lib/features/terminal/controller/terminal-focus-bridge";
   import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
   import type { SessionShellAuxState } from "./lib/features/session/contracts/session-shell";
@@ -599,6 +597,14 @@
     closeTab: handleCloseTab,
   });
 
+  const tabOrganizationController = createTabOrganizationController({
+    getSessions: () => sessions,
+    setActiveSession,
+    moveSession,
+    setSessionPinned,
+    setSessionLocked,
+  });
+
   function dismissDirtyAppDialog() {
     showDirtyAppDialog = false;
     dirtyAppCloseCount = 0;
@@ -660,20 +666,6 @@
     }
   }
 
-  function handleMoveTabLeft(sessionId: string) {
-    const targetIndex = resolveAdjacentSessionMoveIndex(sessions, sessionId, "left");
-    if (targetIndex === null) return;
-    moveSession(sessionId, targetIndex);
-    setActiveSession(sessionId);
-  }
-
-  function handleMoveTabRight(sessionId: string) {
-    const targetIndex = resolveAdjacentSessionMoveIndex(sessions, sessionId, "right");
-    if (targetIndex === null) return;
-    moveSession(sessionId, targetIndex);
-    setActiveSession(sessionId);
-  }
-
   function handleActivateTab(sessionId: string) {
     setActiveSession(sessionId);
   }
@@ -727,20 +719,6 @@
     }
 
     dismissRenameDialog();
-  }
-
-  function handleTogglePinTab(sessionId: string) {
-    const session = sessions.find((entry) => entry.id === sessionId);
-    if (!session) return;
-    setSessionPinned(sessionId, !session.pinned);
-    setActiveSession(sessionId);
-  }
-
-  function handleToggleLockTab(sessionId: string) {
-    const session = sessions.find((entry) => entry.id === sessionId);
-    if (!session) return;
-    setSessionLocked(sessionId, !session.locked);
-    setActiveSession(sessionId);
   }
 
   async function handleMoveWindowToMain() {
@@ -830,10 +808,10 @@
       onCloseTab={tabCloseOrchestration.requestCloseTab}
       onRenameTab={requestRenameTab}
       onRenameWindow={requestRenameWindow}
-      onTogglePinTab={handleTogglePinTab}
-      onToggleLockTab={handleToggleLockTab}
-      onMoveTabLeft={handleMoveTabLeft}
-      onMoveTabRight={handleMoveTabRight}
+      onTogglePinTab={tabOrganizationController.togglePin}
+      onToggleLockTab={tabOrganizationController.toggleLock}
+      onMoveTabLeft={tabOrganizationController.moveLeft}
+      onMoveTabRight={tabOrganizationController.moveRight}
       onMoveTabToNewWindow={handleMoveTabToNewWindow}
       onMoveTabToWindow={handleMoveTabToWindow}
       availableWindows={otherWindows.map((window) => ({
