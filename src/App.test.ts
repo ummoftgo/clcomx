@@ -401,6 +401,18 @@ describe("App", () => {
       expect(screen.getByTestId("preview-control-panel-stub")).toHaveAttribute("data-settings-open", "true");
     });
 
+    await fireEvent.click(screen.getByTestId("rename-tab-trigger"));
+    expect(document.getElementById("rename-input")).not.toBeNull();
+
+    await fireEvent.click(screen.getByTestId("preview-reset-overlays"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("session-launcher-stub")).toBeNull();
+      expect(screen.queryByTestId("settings-modal-stub")).toBeNull();
+      expect(document.getElementById("rename-input")).toBeNull();
+      expect(screen.getByTestId("preview-control-panel-stub")).toHaveAttribute("data-launcher-open", "false");
+      expect(screen.getByTestId("preview-control-panel-stub")).toHaveAttribute("data-settings-open", "false");
+    });
+
     await fireEvent.click(screen.getByTestId("preview-toggle-visibility"));
     await waitFor(() => {
       expect(screen.queryByTestId("preview-control-panel-stub")).not.toBeInTheDocument();

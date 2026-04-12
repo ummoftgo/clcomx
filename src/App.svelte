@@ -18,6 +18,7 @@
   import { createAppWindowListenerController } from "./lib/features/app-shell/controller/app-window-listener-controller";
   import { createAppStartupController } from "./lib/features/app-shell/controller/app-startup-controller";
   import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
+  import { createPreviewOverlayResetController } from "./lib/features/app-shell/controller/preview-overlay-reset-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
   import { createWindowCloseDialogController } from "./lib/features/app-shell/controller/window-close-dialog-controller";
   import { createWindowRenameOrchestrationController } from "./lib/features/app-shell/controller/window-rename-orchestration-controller";
@@ -253,7 +254,7 @@
     initializeTabHistory,
     initializeWorkspaceSnapshot,
     initializeSessionsFromWorkspace,
-    resetOverlays: resetPreviewOverlays,
+    resetOverlays: () => previewOverlayReset.resetOverlays(),
   });
 
   const windowCloseOrchestration = createWindowCloseOrchestrationController({
@@ -315,6 +316,16 @@
       previewUrlState.setControlsVisible(visible);
     },
     ensureSettingsLoaded: () => settingsModalLoader.ensureLoaded(),
+  });
+
+  const previewOverlayReset = createPreviewOverlayResetController({
+    hideSessionLauncher: appOverlayVisibility.hideSessionLauncher,
+    closeSettingsPanel: appOverlayVisibility.closeSettingsPanel,
+    closeWindowDialog: () => {
+      showCloseWindowDialog = false;
+    },
+    dismissCloseTabDialog: () => tabCloseOrchestration.dismissCloseTabDialog(),
+    dismissRenameDialog: () => dismissRenameDialog(),
   });
 
   function usesKoreanCopy() {
@@ -429,14 +440,6 @@
       tabRenameOrchestration.reconcilePendingRenameDialog();
     }
   });
-
-  function resetPreviewOverlays() {
-    appOverlayVisibility.hideSessionLauncher();
-    appOverlayVisibility.closeSettingsPanel();
-    showCloseWindowDialog = false;
-    tabCloseOrchestration.dismissCloseTabDialog();
-    dismissRenameDialog();
-  }
 
   function handlePreviewPresetChange(nextPresetId: PreviewPresetId) {
     previewBootstrapController.handlePresetChange(nextPresetId);
@@ -786,7 +789,7 @@
       onToggleSettings={() => { void appOverlayVisibility.togglePreviewSettings(); }}
       onOpenRename={openPreviewRenameDialog}
       onOpenCloseDialog={openPreviewCloseDialog}
-      onResetOverlays={resetPreviewOverlays}
+      onResetOverlays={previewOverlayReset.resetOverlays}
       onToggleVisibility={() => { appOverlayVisibility.setPreviewControlsVisible(false); }}
     />
   {:else if browserPreview}
