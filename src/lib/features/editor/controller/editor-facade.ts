@@ -9,6 +9,7 @@ import type {
 } from "../../../editors";
 import type { SessionEditorSnapshot, SessionEditorState, SessionViewMode } from "../../../types";
 import { createEditorDocumentController } from "./editor-document-controller";
+import { createEditorModeTransitionController } from "./editor-mode-transition-controller";
 import { createEditorSessionHydrationController } from "./editor-session-hydration-controller";
 import { createEditorNavigationAdapterController } from "./editor-navigation-adapter-controller";
 import { createEditorOpenLoadController } from "./editor-open-load-controller";
@@ -74,24 +75,6 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     reportForegroundError: deps.reportForegroundError,
   });
 
-  function ensureEditorViewMode() {
-    if (deps.getViewMode() === "editor") {
-      return;
-    }
-
-    deps.prepareForEditorMode();
-    deps.setViewMode("editor");
-    runtimeController.syncSessionState();
-  }
-
-  function switchToTerminalView() {
-    deps.setViewMode("terminal");
-    quickOpenController.closeQuickOpen();
-    deps.runtimeState.closeConfirmVisible = false;
-    deps.runtimeState.closeConfirmPath = null;
-    runtimeController.syncSessionState();
-  }
-
   let hydrationController: ReturnType<typeof createEditorSessionHydrationController> | null = null;
   const runtimeController = createEditorRuntimeController(deps.runtimeState, {
     getSessionId: deps.getSessionId,
@@ -128,13 +111,21 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     closeQuickOpen: quickOpenController.closeQuickOpen,
     syncSessionState: runtimeController.syncSessionState,
   });
+  const modeTransitionController = createEditorModeTransitionController({
+    state: deps.runtimeState,
+    getViewMode: deps.getViewMode,
+    setViewMode: deps.setViewMode,
+    prepareForEditorMode: deps.prepareForEditorMode,
+    closeQuickOpen: quickOpenController.closeQuickOpen,
+    syncSessionState: runtimeController.syncSessionState,
+  });
   const viewController = createEditorViewController(deps.runtimeState, {
     getWorkDir: deps.getWorkDir,
     getEditorRootDir: deps.getRootDir,
     getQuickOpenVisible: () => deps.quickOpenState.visible,
     setEditorRootDir: deps.setRootDir,
     setEditorViewMode: deps.setViewMode,
-    ensureEditorViewMode,
+    ensureEditorViewMode: modeTransitionController.ensureEditorViewMode,
     primeMonacoRuntime: quickOpenController.primeMonacoRuntime,
     primeWorkspaceFiles: quickOpenController.primeWorkspaceFiles,
     openQuickOpen: quickOpenController.openQuickOpen,
@@ -158,7 +149,7 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     options?: OpenEditorPathOptions,
   ) {
     deps.prepareForEditorPathOpen();
-    ensureEditorViewMode();
+    modeTransitionController.ensureEditorViewMode();
     quickOpenController.primeMonacoRuntime();
 
     if ("isDirectory" in path && path.isDirectory) {
@@ -233,7 +224,7 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     scheduleQuickOpenPrewarm: quickOpenController.schedulePrewarm,
     setStatus: runtimeController.setStatus,
     setTabs: runtimeController.setTabs,
-    switchToTerminalView,
+    switchToTerminalView: modeTransitionController.switchToTerminalView,
     syncSessionState: runtimeController.syncSessionState,
     upsertQuickOpenEntry: quickOpenController.upsertEntry,
     closeQuickOpen: quickOpenController.closeQuickOpen,
