@@ -7,31 +7,17 @@ import type {
   ResolvedTerminalPath,
   WriteSessionFileResult,
 } from "../../../editors";
-import type {
-  SessionEditorSnapshot,
-  SessionEditorState,
-  SessionViewMode,
-} from "../../../types";
+import type { SessionEditorSnapshot, SessionEditorState, SessionViewMode } from "../../../types";
 import { createEditorDocumentController } from "./editor-document-controller";
+import { createEditorSessionHydrationController } from "./editor-session-hydration-controller";
 import { createEditorNavigationAdapterController } from "./editor-navigation-adapter-controller";
 import { createEditorOpenLoadController } from "./editor-open-load-controller";
 import { createEditorOpenStateController } from "./editor-open-state-controller";
 import { createEditorQuickOpenController } from "./editor-quick-open-controller";
 import { createEditorRuntimeController } from "./editor-runtime-controller";
 import { createEditorViewController } from "./editor-view-controller";
-import {
-  buildEditorHydrationPlaceholderTabs,
-  loadHydratedEditorTabs,
-  resolveHydratedActivePath,
-  splitHydratedEditorTabs,
-} from "../service/editor-session-hydration";
 import type { EditorQuickOpenState } from "../state/editor-quick-open-state.svelte";
 import type { EditorRuntimeState } from "../state/editor-runtime-state.svelte";
-
-type EditorHydrationSource = Pick<
-  SessionEditorSnapshot,
-  "viewMode" | "editorRootDir" | "openEditorTabs" | "activeEditorPath"
->;
 
 interface OpenEditorPathOptions {
   rootDir?: string;
@@ -43,7 +29,7 @@ interface EditorFacadeDependencies {
   runtimeState: EditorRuntimeState;
   quickOpenState: EditorQuickOpenState;
   getSessionId: () => string;
-  getSessionSnapshot: () => EditorHydrationSource | null;
+  getSessionSnapshot: () => SessionEditorSnapshot | null;
   getWorkDir: () => string;
   getViewMode: () => SessionViewMode;
   setViewMode: (viewMode: SessionViewMode) => void;
@@ -75,33 +61,6 @@ interface EditorFacadeDependencies {
 }
 
 export function createEditorFacade(deps: EditorFacadeDependencies) {
-  let hydratedSessionId: string | null = null;
-  let hydratedSessionSnapshotKey: string | null = null;
-  let hydrationToken = 0;
-
-  function buildHydrationSourceKey(source: EditorHydrationSource | null) {
-    return JSON.stringify({
-      sessionId: deps.getSessionId(),
-      viewMode: source?.viewMode ?? "terminal",
-      editorRootDir: source?.editorRootDir || deps.getWorkDir(),
-      openEditorTabs: (source?.openEditorTabs ?? []).map((entry) => ({
-        wslPath: entry.wslPath,
-        line: entry.line ?? null,
-        column: entry.column ?? null,
-      })),
-      activeEditorPath: source?.activeEditorPath ?? null,
-    });
-  }
-
-  function buildSessionStateHydrationKey(sessionState: SessionEditorState) {
-    return buildHydrationSourceKey({
-      viewMode: sessionState.viewMode,
-      editorRootDir: sessionState.editorRootDir,
-      openEditorTabs: sessionState.openEditorTabs,
-      activeEditorPath: sessionState.activeEditorPath,
-    });
-  }
-
   const quickOpenController = createEditorQuickOpenController(deps.quickOpenState, {
     getSessionId: deps.getSessionId,
     getWorkDir: deps.getWorkDir,
@@ -133,13 +92,13 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     runtimeController.syncSessionState();
   }
 
+  let hydrationController: ReturnType<typeof createEditorSessionHydrationController> | null = null;
   const runtimeController = createEditorRuntimeController(deps.runtimeState, {
     getSessionId: deps.getSessionId,
     getViewMode: deps.getViewMode,
     getRootDir: deps.getRootDir,
     syncSessionState: (sessionId, sessionState) => {
-      hydratedSessionId = sessionId;
-      hydratedSessionSnapshotKey = buildSessionStateHydrationKey(sessionState);
+      hydrationController?.markSessionStateSynced(sessionId, sessionState);
       deps.syncSessionState(sessionId, sessionState);
     },
   });
@@ -181,58 +140,18 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     openQuickOpen: quickOpenController.openQuickOpen,
     syncSessionState: runtimeController.syncSessionState,
   });
-
-  async function hydrateFromSession() {
-    const session = deps.getSessionSnapshot();
-    const token = ++hydrationToken;
-    hydratedSessionId = deps.getSessionId();
-    hydratedSessionSnapshotKey = buildHydrationSourceKey(session);
-    deps.setViewMode(session?.viewMode ?? "terminal");
-    deps.setRootDir(session?.editorRootDir || deps.getWorkDir());
-    deps.quickOpenState.rootDir = deps.getRootDir();
-    deps.runtimeState.activePath = session?.activeEditorPath ?? null;
-    deps.runtimeState.savedContentByPath = {};
-    deps.runtimeState.mtimeByPath = {};
-
-    const refs = session?.openEditorTabs ?? [];
-    if (refs.length === 0) {
-      runtimeController.setTabs([]);
-      return;
-    }
-
-    runtimeController.setTabs(buildEditorHydrationPlaceholderTabs(refs));
-
-    const loadedTabs = await loadHydratedEditorTabs(
-      { readSessionFile: deps.readSessionFile },
-      deps.getSessionId(),
-      refs,
-    );
-
-    if (token !== hydrationToken) {
-      return;
-    }
-
-    const { tabs, savedContentByPath, mtimeByPath } = splitHydratedEditorTabs(loadedTabs);
-    deps.runtimeState.savedContentByPath = savedContentByPath;
-    deps.runtimeState.mtimeByPath = mtimeByPath;
-    deps.runtimeState.tabs = tabs;
-    deps.runtimeState.activePath = resolveHydratedActivePath(deps.runtimeState.activePath, tabs);
-
-    runtimeController.syncSessionState();
-  }
-
-  async function ensureRuntimeReady() {
-    const nextSessionId = deps.getSessionId();
-    const nextSessionSnapshotKey = buildHydrationSourceKey(deps.getSessionSnapshot());
-    if (
-      hydratedSessionId === nextSessionId
-      && hydratedSessionSnapshotKey === nextSessionSnapshotKey
-    ) {
-      return;
-    }
-
-    await hydrateFromSession();
-  }
+  hydrationController = createEditorSessionHydrationController({
+    runtimeState: deps.runtimeState,
+    quickOpenState: deps.quickOpenState,
+    getSessionId: deps.getSessionId,
+    getSessionSnapshot: deps.getSessionSnapshot,
+    getWorkDir: deps.getWorkDir,
+    setViewMode: deps.setViewMode,
+    setRootDir: deps.setRootDir,
+    readSessionFile: deps.readSessionFile,
+    setTabs: runtimeController.setTabs,
+    syncSessionState: runtimeController.syncSessionState,
+  });
 
   async function openPath(
     path: ResolvedTerminalPath | EditorSearchResult,
@@ -292,7 +211,7 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     cancelMonacoPrewarm: quickOpenController.cancelMonacoPrewarm,
     cancelQuickOpenPrewarm: quickOpenController.cancelPrewarm,
     confirmCloseTab: runtimeController.confirmCloseTab,
-    ensureRuntimeReady,
+    ensureRuntimeReady: hydrationController.ensureRuntimeReady,
     handleActivePathChange: viewController.handleActivePathChange,
     handleContentChange: runtimeController.handleContentChange,
     invalidateQuickOpenRequest: quickOpenController.invalidateRequest,
