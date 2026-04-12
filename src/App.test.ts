@@ -18,7 +18,9 @@ type CloseWindowSessionsResult =
 const {
   recordTabHistoryMock,
   appWindowListenerControllerRuntime,
+  previewRuntimeMock,
   windowCloseOrchestrationMock,
+  settingsModalLoaderRuntime,
 } = vi.hoisted(() => ({
   recordTabHistoryMock: vi.fn(async () => {}),
   appWindowListenerControllerRuntime: {
@@ -26,6 +28,9 @@ const {
       showDirtyAppDialog: (dirtyCount: number) => void;
       showCloseWindowDialog: () => void;
     },
+  },
+  previewRuntimeMock: {
+    isBrowserPreview: false,
   },
   windowCloseOrchestrationMock: {
     handleCloseRequested: vi.fn(async () => ({ kind: "noop" as const })),
@@ -35,6 +40,14 @@ const {
     handleCloseWindowSessions: vi.fn(
       async (): Promise<CloseWindowSessionsResult> => ({ kind: "closed" }),
     ),
+  },
+  settingsModalLoaderRuntime: {
+    latestDeps: null as null | {
+      getComponent: () => unknown;
+      setComponent: (component: unknown) => void;
+      loadComponent: () => Promise<unknown>;
+    },
+    ensureLoaded: vi.fn(async () => {}),
   },
 }));
 
@@ -53,6 +66,12 @@ vi.mock("./lib/features/session/view/SessionViewport.svelte", async () => {
 vi.mock("./lib/features/launcher/view/SessionLauncher.svelte", async () => {
   // @ts-ignore test fixture Svelte component import
   const module = await import("./test-fixtures/app/AppSessionLauncherStub.svelte");
+  return { default: module.default };
+});
+
+vi.mock("./lib/components/PreviewControlPanel.svelte", async () => {
+  // @ts-ignore test fixture Svelte component import
+  const module = await import("./test-fixtures/app/AppPreviewControlPanelStub.svelte");
   return { default: module.default };
 });
 
@@ -112,11 +131,20 @@ vi.mock("./lib/features/app-shell/controller/preview-bootstrap-controller", () =
   })),
 }));
 
-vi.mock("./lib/features/app-shell/controller/settings-modal-loader-controller", () => ({
-  createSettingsModalLoaderController: vi.fn(() => ({
-    ensureLoaded: vi.fn(async () => {}),
-  })),
-}));
+vi.mock("./lib/features/app-shell/controller/settings-modal-loader-controller", async () => {
+  // @ts-ignore test fixture Svelte component import
+  const module = await import("./test-fixtures/app/AppSettingsModalStub.svelte");
+  return {
+    createSettingsModalLoaderController: vi.fn((deps) => {
+      settingsModalLoaderRuntime.latestDeps = deps;
+      return {
+        ensureLoaded: settingsModalLoaderRuntime.ensureLoaded.mockImplementation(async () => {
+          deps.setComponent(module.default);
+        }),
+      };
+    }),
+  };
+});
 
 vi.mock("./lib/features/app-shell/controller/preview-url-state-controller", () => ({
   PREVIEW_FRAME_OPTIONS: [],
@@ -212,7 +240,7 @@ vi.mock("./lib/preview/runtime", () => ({
   applyPreviewPreset: vi.fn(),
   getActivePreviewPresetId: () => "default",
   getAvailablePreviewPresets: () => [],
-  isBrowserPreview: () => false,
+  isBrowserPreview: () => previewRuntimeMock.isBrowserPreview,
 }));
 
 function createSession(overrides: Partial<Session> = {}): Session {
@@ -258,6 +286,7 @@ describe("App", () => {
     });
     replaceLiveSessions([createSession()], "session-1");
     setCurrentWindowName("main");
+    previewRuntimeMock.isBrowserPreview = false;
     recordTabHistoryMock.mockClear();
     appWindowListenerControllerRuntime.latestDeps = null;
     windowCloseOrchestrationMock.handleCloseRequested.mockReset();
@@ -270,6 +299,13 @@ describe("App", () => {
     windowCloseOrchestrationMock.confirmDirtyWindowClose.mockResolvedValue(true);
     windowCloseOrchestrationMock.moveWindowSessionsToMainAndClose.mockResolvedValue(true);
     windowCloseOrchestrationMock.handleCloseWindowSessions.mockResolvedValue({ kind: "closed" });
+    settingsModalLoaderRuntime.latestDeps = null;
+    settingsModalLoaderRuntime.ensureLoaded.mockReset();
+    settingsModalLoaderRuntime.ensureLoaded.mockImplementation(async () => {
+      settingsModalLoaderRuntime.latestDeps?.setComponent(
+        (await import("./test-fixtures/app/AppSettingsModalStub.svelte")).default,
+      );
+    });
     vi.mocked(isWindowReady).mockClear();
     vi.mocked(moveSessionToWindow).mockClear();
     vi.mocked(openEmptyWindow).mockClear();
@@ -303,6 +339,78 @@ describe("App", () => {
       "resume-1",
     );
     expect(document.getElementById("rename-input")).toBeNull();
+  });
+
+  it("opens and closes the session launcher from the tab bar trigger", async () => {
+    render(App);
+
+    expect(screen.queryByTestId("session-launcher-stub")).toBeNull();
+
+    await fireEvent.click(screen.getByTestId("new-tab-trigger"));
+    expect(await screen.findByTestId("session-launcher-stub")).not.toBeNull();
+
+    await fireEvent.click(screen.getByTestId("session-launcher-cancel"));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("session-launcher-stub")).toBeNull();
+    });
+  });
+
+  it("opens and closes the settings modal from the tab bar trigger", async () => {
+    render(App);
+
+    expect(screen.queryByTestId("settings-modal-stub")).toBeNull();
+
+    await fireEvent.click(screen.getByTestId("settings-trigger"));
+
+    await waitFor(() => {
+      expect(settingsModalLoaderRuntime.ensureLoaded).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("settings-modal-stub")).toBeInTheDocument();
+    });
+
+    await fireEvent.click(screen.getByTestId("settings-modal-close"));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("settings-modal-stub")).toBeNull();
+    });
+  });
+
+  it("wires preview overlay visibility, launcher, and settings through the overlay controller", async () => {
+    previewRuntimeMock.isBrowserPreview = true;
+    render(App);
+
+    expect(screen.queryByTestId("preview-control-panel-stub")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview Tools" })).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Preview Tools" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("preview-control-panel-stub")).toBeInTheDocument();
+    });
+
+    await fireEvent.click(screen.getByTestId("preview-toggle-launcher"));
+    expect(await screen.findByTestId("session-launcher-stub")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("preview-control-panel-stub")).toHaveAttribute("data-launcher-open", "true");
+    });
+
+    await fireEvent.click(screen.getByTestId("preview-toggle-settings"));
+    await waitFor(() => {
+      expect(settingsModalLoaderRuntime.ensureLoaded).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("settings-modal-stub")).toBeInTheDocument();
+      expect(screen.getByTestId("preview-control-panel-stub")).toHaveAttribute("data-settings-open", "true");
+    });
+
+    await fireEvent.click(screen.getByTestId("preview-toggle-visibility"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("preview-control-panel-stub")).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "Preview Tools" })).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Preview Tools" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("preview-control-panel-stub")).toBeInTheDocument();
+    });
   });
 
   it("opens the window rename dialog from the tab bar trigger and confirms the renamed window name", async () => {

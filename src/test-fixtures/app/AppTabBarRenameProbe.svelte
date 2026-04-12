@@ -1,12 +1,16 @@
 <script lang="ts">
   let {
     sessions = [],
+    onNewTab,
+    onSettings,
     onRenameTab,
     onRenameWindow,
     onMoveTabToNewWindow,
     onMoveTabToWindow,
   }: {
     sessions?: Array<{ id: string }>;
+    onNewTab?: () => void;
+    onSettings?: () => void;
     onRenameTab?: (sessionId: string) => void;
     onRenameWindow?: () => void;
     onMoveTabToNewWindow?: (sessionId: string) => void;
@@ -15,6 +19,20 @@
 </script>
 
 {#if sessions.length > 0}
+  <button
+    type="button"
+    data-testid="new-tab-trigger"
+    onclick={() => { onNewTab?.(); }}
+  >
+    New Tab
+  </button>
+  <button
+    type="button"
+    data-testid="settings-trigger"
+    onclick={() => { onSettings?.(); }}
+  >
+    Settings
+  </button>
   <button
     type="button"
     data-testid="rename-tab-trigger"

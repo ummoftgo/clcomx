@@ -14,6 +14,7 @@
     type DirtyStateQueryPayload,
     type DirtyStateResponsePayload,
   } from "./lib/features/app-shell/controller/window-close-orchestration-controller";
+  import { createAppOverlayVisibilityController } from "./lib/features/app-shell/controller/app-overlay-visibility-controller";
   import { createAppWindowListenerController } from "./lib/features/app-shell/controller/app-window-listener-controller";
   import { createAppStartupController } from "./lib/features/app-shell/controller/app-startup-controller";
   import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
@@ -297,6 +298,25 @@
     },
   });
 
+  const appOverlayVisibility = createAppOverlayVisibilityController({
+    getSessionsCount: () => sessions.length,
+    getShowSessionLauncher: () => showSessionLauncher,
+    setShowSessionLauncher: (open) => {
+      showSessionLauncher = open;
+    },
+    getShowSettings: () => showSettings,
+    setShowSettings: (open) => {
+      showSettings = open;
+    },
+    setShowPreviewControls: (open) => {
+      showPreviewControls = open;
+    },
+    syncPreviewControlsVisible: (visible) => {
+      previewUrlState.setControlsVisible(visible);
+    },
+    ensureSettingsLoaded: () => settingsModalLoader.ensureLoaded(),
+  });
+
   function usesKoreanCopy() {
     if (settings.language === "ko") return true;
     if (settings.language === "en") return false;
@@ -410,22 +430,12 @@
     }
   });
 
-  function requestNewTab() {
-    if (sessions.length === 0) return;
-    showSessionLauncher = true;
-  }
-
   function resetPreviewOverlays() {
-    showSessionLauncher = false;
-    showSettings = false;
+    appOverlayVisibility.hideSessionLauncher();
+    appOverlayVisibility.closeSettingsPanel();
     showCloseWindowDialog = false;
     tabCloseOrchestration.dismissCloseTabDialog();
     dismissRenameDialog();
-  }
-
-  function setPreviewControlsVisible(visible: boolean) {
-    showPreviewControls = visible;
-    previewUrlState.setControlsVisible(visible);
   }
 
   function handlePreviewPresetChange(nextPresetId: PreviewPresetId) {
@@ -435,14 +445,6 @@
   function handlePreviewFrameModeChange(nextFrameMode: string) {
     previewFrameMode = previewUrlState.normalizeFrameMode(nextFrameMode);
     previewUrlState.setFrameMode(previewFrameMode);
-  }
-
-  async function togglePreviewSettings() {
-    if (showSettings) {
-      showSettings = false;
-      return;
-    }
-    await openSettingsPanel();
   }
 
   function openPreviewRenameDialog() {
@@ -461,9 +463,7 @@
 
   const sessionLifecycle = createSessionLifecycleController({
     addSession,
-    hideSessionLauncher: () => {
-      showSessionLauncher = false;
-    },
+    hideSessionLauncher: appOverlayVisibility.hideSessionLauncher,
     ensureSessionShellComponent,
     persistWorkspace,
     getSession: (sessionId) => sessions.find((entry) => entry.id === sessionId) ?? null,
@@ -748,7 +748,7 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.ctrlKey && e.key === "t") {
       e.preventDefault();
-      requestNewTab();
+      appOverlayVisibility.requestNewTab();
     }
     if (e.ctrlKey && e.key === "w") {
       e.preventDefault();
@@ -756,11 +756,6 @@
         tabCloseOrchestration.requestCloseTab(activeSessionId);
       }
     }
-  }
-
-  async function openSettingsPanel() {
-    await settingsModalLoader.ensureLoaded();
-    showSettings = true;
   }
 </script>
 
@@ -787,16 +782,20 @@
       hasSessions={sessions.length > 0}
       onPresetChange={handlePreviewPresetChange}
       onFrameModeChange={handlePreviewFrameModeChange}
-      onToggleLauncher={() => { showSessionLauncher = !showSessionLauncher; }}
-      onToggleSettings={() => { void togglePreviewSettings(); }}
+      onToggleLauncher={appOverlayVisibility.toggleSessionLauncher}
+      onToggleSettings={() => { void appOverlayVisibility.togglePreviewSettings(); }}
       onOpenRename={openPreviewRenameDialog}
       onOpenCloseDialog={openPreviewCloseDialog}
       onResetOverlays={resetPreviewOverlays}
-      onToggleVisibility={() => { setPreviewControlsVisible(false); }}
+      onToggleVisibility={() => { appOverlayVisibility.setPreviewControlsVisible(false); }}
     />
   {:else if browserPreview}
     <div class="preview-control-toggle">
-      <Button size="sm" variant="secondary" onclick={() => { setPreviewControlsVisible(true); }}>
+      <Button
+        size="sm"
+        variant="secondary"
+        onclick={() => { appOverlayVisibility.setPreviewControlsVisible(true); }}
+      >
         Preview Tools
       </Button>
     </div>
@@ -810,11 +809,11 @@
     <TabBar
       {sessions}
       {activeSessionId}
-      onNewTab={requestNewTab}
+      onNewTab={appOverlayVisibility.requestNewTab}
       onActivateTab={handleActivateTab}
       onReorderTab={handleReorderTab}
       onRequestSessionFocus={handleRequestTabSessionFocus}
-      onSettings={() => { void openSettingsPanel(); }}
+      onSettings={() => { void appOverlayVisibility.openSettingsPanel(); }}
       onCloseTab={tabCloseOrchestration.requestCloseTab}
       onRenameTab={requestRenameTab}
       onRenameWindow={requestRenameWindow}
@@ -859,13 +858,13 @@
     historyEntries={historyEntries}
     onOpenHistory={openHistoryEntry}
     onConfirm={createSession}
-    onCancel={() => { showSessionLauncher = false; }}
+    onCancel={appOverlayVisibility.hideSessionLauncher}
   />
 
   {#if SettingsModalComponent}
     <SettingsModalComponent
       visible={showSettings}
-      onClose={() => { showSettings = false; }}
+      onClose={appOverlayVisibility.closeSettingsPanel}
     />
   {/if}
 
