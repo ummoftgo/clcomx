@@ -19,6 +19,7 @@
   import { createAppStartupController } from "./lib/features/app-shell/controller/app-startup-controller";
   import { createPreviewBootstrapController } from "./lib/features/app-shell/controller/preview-bootstrap-controller";
   import { createPreviewOverlayResetController } from "./lib/features/app-shell/controller/preview-overlay-reset-controller";
+  import { createPreviewPanelSessionActionController } from "./lib/features/app-shell/controller/preview-panel-session-action-controller";
   import { createSettingsModalLoaderController } from "./lib/features/app-shell/controller/settings-modal-loader-controller";
   import { createWindowCloseDialogController } from "./lib/features/app-shell/controller/window-close-dialog-controller";
   import { createWindowRenameOrchestrationController } from "./lib/features/app-shell/controller/window-rename-orchestration-controller";
@@ -450,16 +451,6 @@
     previewUrlState.setFrameMode(previewFrameMode);
   }
 
-  function openPreviewRenameDialog() {
-    if (!activeSessionId) return;
-    tabRenameOrchestration.requestRenameTab(activeSessionId);
-  }
-
-  function openPreviewCloseDialog() {
-    if (!activeSessionId) return;
-    tabCloseOrchestration.requestCloseTab(activeSessionId);
-  }
-
   const reportSessionLifecycleError = (message: string, error: unknown) => {
     console.error(message, error);
   };
@@ -566,6 +557,14 @@
     },
     setSessionTitle,
     recordTabHistory,
+  });
+
+  const previewPanelSessionActions = createPreviewPanelSessionActionController({
+    getActiveSessionId: () => activeSessionId,
+    requestRenameTab: (sessionId) => tabRenameOrchestration.requestRenameTab(sessionId),
+    requestCloseTab: (sessionId) => {
+      tabCloseOrchestration.requestCloseTab(sessionId);
+    },
   });
 
   const windowRenameOrchestration = createWindowRenameOrchestrationController({
@@ -787,8 +786,8 @@
       onFrameModeChange={handlePreviewFrameModeChange}
       onToggleLauncher={appOverlayVisibility.toggleSessionLauncher}
       onToggleSettings={() => { void appOverlayVisibility.togglePreviewSettings(); }}
-      onOpenRename={openPreviewRenameDialog}
-      onOpenCloseDialog={openPreviewCloseDialog}
+      onOpenRename={previewPanelSessionActions.openRenameDialog}
+      onOpenCloseDialog={previewPanelSessionActions.openCloseDialog}
       onResetOverlays={previewOverlayReset.resetOverlays}
       onToggleVisibility={() => { appOverlayVisibility.setPreviewControlsVisible(false); }}
     />

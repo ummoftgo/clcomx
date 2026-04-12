@@ -2,6 +2,8 @@
   let {
     launcherOpen = false,
     settingsOpen = false,
+    onOpenCloseDialog,
+    onOpenRename,
     onResetOverlays,
     onToggleLauncher,
     onToggleSettings,
@@ -9,6 +11,8 @@
   } = $props<{
     launcherOpen?: boolean;
     settingsOpen?: boolean;
+    onOpenCloseDialog?: () => void;
+    onOpenRename?: () => void;
     onResetOverlays?: () => void;
     onToggleLauncher?: () => void;
     onToggleSettings?: () => void;
@@ -23,6 +27,12 @@
 >
   <button type="button" data-testid="preview-reset-overlays" onclick={() => { onResetOverlays?.(); }}>
     Reset Overlays
+  </button>
+  <button type="button" data-testid="preview-open-rename" onclick={() => { onOpenRename?.(); }}>
+    Preview Rename
+  </button>
+  <button type="button" data-testid="preview-open-close-dialog" onclick={() => { onOpenCloseDialog?.(); }}>
+    Preview Close
   </button>
   <button type="button" data-testid="preview-toggle-launcher" onclick={() => { onToggleLauncher?.(); }}>
     Toggle Launcher

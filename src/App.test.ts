@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.svelte";
 import { setBootstrap } from "./lib/bootstrap";
@@ -375,7 +375,7 @@ describe("App", () => {
     });
   });
 
-  it("wires preview overlay visibility, launcher, and settings through the overlay controller", async () => {
+  it("wires preview overlay visibility and session actions through preview controllers", async () => {
     previewRuntimeMock.isBrowserPreview = true;
     render(App);
 
@@ -401,8 +401,21 @@ describe("App", () => {
       expect(screen.getByTestId("preview-control-panel-stub")).toHaveAttribute("data-settings-open", "true");
     });
 
-    await fireEvent.click(screen.getByTestId("rename-tab-trigger"));
+    await fireEvent.click(screen.getByTestId("preview-open-rename"));
     expect(document.getElementById("rename-input")).not.toBeNull();
+
+    await fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(document.getElementById("rename-input")).toBeNull();
+    });
+
+    await fireEvent.click(screen.getByTestId("preview-open-close-dialog"));
+    expect(await screen.findByTestId("close-tab-dialog")).toBeInTheDocument();
+
+    await fireEvent.click(within(screen.getByTestId("close-tab-dialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("close-tab-dialog")).toBeNull();
+    });
 
     await fireEvent.click(screen.getByTestId("preview-reset-overlays"));
     await waitFor(() => {
