@@ -61,7 +61,6 @@
   } from "../terminal/claude-footer-ghosting";
   import { TEST_IDS } from "../testids";
   import { openExternalUrl } from "../workspace";
-  import { createEditorFacade } from "../features/editor/controller/editor-facade";
   import type { SessionHostProps } from "../features/session/contracts/session-shell";
   import { createEditorQuickOpenState } from "../features/editor/state/editor-quick-open-state.svelte";
   import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
@@ -70,6 +69,8 @@
   import { createMainTerminalRuntimeController } from "../features/terminal/controller/main-terminal-runtime-controller";
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
   import { createOverlayInteractionController } from "../features/terminal/controller/overlay-interaction-controller";
+  import { createTerminalEditorIntegrationController } from "../features/terminal/controller/terminal-editor-integration-controller";
+  import { createTerminalEditorPreflightController } from "../features/terminal/controller/terminal-editor-preflight-controller";
   import {
     addTerminalFocusRequestListener,
     removeTerminalFocusRequestListener,
@@ -158,71 +159,6 @@
       bootstrap.softFollowExperiment,
     ),
   );
-  const {
-    cancelCloseTab: cancelCloseEditorTab,
-    confirmCloseTab: confirmCloseEditorTab,
-    handleActivePathChange: handleEditorActivePathChange,
-    handleContentChange: handleEditorContentChange,
-    invalidateQuickOpenRequest: invalidateEditorQuickOpenRequest,
-    listWorkspaceFiles: listEditorWorkspaceFiles,
-    openInternalEditorForLinkPath,
-    openNavigationLocation: openEditorNavigationLocation,
-    openPathFromQuickResult: openEditorPathFromQuickResult,
-    openQuickOpen: openEditorQuickOpen,
-    readNavigationFile: readEditorNavigationFile,
-    refreshQuickOpenEntries: refreshEditorQuickOpenEntries,
-    requestCloseTab: closeEditorTab,
-    requestSwitchToEditorMode,
-    saveTab: saveEditorTab,
-    scheduleMonacoPrewarm: scheduleEditorMonacoPrewarm,
-    scheduleQuickOpenPrewarm: scheduleEditorQuickOpenPrewarm,
-    switchToTerminalView,
-    cancelMonacoPrewarm: cancelEditorMonacoPrewarm,
-    cancelQuickOpenPrewarm: cancelEditorQuickOpenPrewarm,
-    closeQuickOpen: closeEditorQuickOpen,
-    ensureRuntimeReady: ensureEditorRuntimeReady,
-  } = createEditorFacade({
-    runtimeState: editorRuntimeState,
-    quickOpenState: editorQuickOpenState,
-    getSessionId: () => sessionId,
-    getSessionSnapshot: () => sessionSnapshot,
-    getWorkDir: () => workDir,
-    getViewMode: () => editorViewMode,
-    setViewMode: (viewMode) => {
-      editorViewMode = viewMode;
-    },
-    getRootDir: () => editorRootDir,
-    setRootDir: (rootDir) => {
-      editorRootDir = rootDir;
-    },
-    syncSessionState: (_id, sessionState) => {
-      void onEditorSessionStateChange?.(sessionState);
-    },
-    prepareForEditorMode: () => {
-      if (auxVisible) {
-        hideAuxTerminal({ restoreFocus: false });
-      }
-      if (draftComposerState.draftOpen) {
-        closeDraft({ restoreFocus: false });
-      }
-    },
-    prepareForEditorPathOpen: () => {
-      if (draftComposerState.draftOpen) {
-        closeDraft({ restoreFocus: false });
-      }
-    },
-    getLoadingStatusLabel: () => $t("common.labels.loading"),
-    getSaveStatusLabel: () => $t("common.actions.save"),
-    readSessionFile,
-    writeSessionFile,
-    getVisible: () => visible,
-    getTerminalReady: () => terminalReady,
-    getTerminalStartupSettled: () => terminalStartupSettled,
-    getThemeDefinition: () => getThemeById(settings.interface.theme) ?? null,
-    warmMonacoRuntime: warmMonacoEditorRuntime,
-    listSessionFiles,
-    reportForegroundError: (message) => setClipboardNotice(message),
-  });
   const mainTerminalRuntime = createMainTerminalRuntimeController({
     state: mainTerminalRuntimeState,
     getSessionId: () => sessionId,
@@ -277,6 +213,66 @@
     handleDraftInput,
     toggleDraft,
   } = draftComposer;
+  const terminalEditorPreflight = createTerminalEditorPreflightController({
+    getAuxVisible: () => auxVisible,
+    getDraftOpen: () => draftComposerState.draftOpen,
+    hideAuxTerminal,
+    closeDraft,
+  });
+  const {
+    cancelCloseTab: cancelCloseEditorTab,
+    confirmCloseTab: confirmCloseEditorTab,
+    handleActivePathChange: handleEditorActivePathChange,
+    handleContentChange: handleEditorContentChange,
+    invalidateQuickOpenRequest: invalidateEditorQuickOpenRequest,
+    listWorkspaceFiles: listEditorWorkspaceFiles,
+    openInternalEditorForLinkPath,
+    openNavigationLocation: openEditorNavigationLocation,
+    openPathFromQuickResult: openEditorPathFromQuickResult,
+    openQuickOpen: openEditorQuickOpen,
+    readNavigationFile: readEditorNavigationFile,
+    refreshQuickOpenEntries: refreshEditorQuickOpenEntries,
+    requestCloseTab: closeEditorTab,
+    requestSwitchToEditorMode,
+    saveTab: saveEditorTab,
+    scheduleMonacoPrewarm: scheduleEditorMonacoPrewarm,
+    scheduleQuickOpenPrewarm: scheduleEditorQuickOpenPrewarm,
+    switchToTerminalView,
+    cancelMonacoPrewarm: cancelEditorMonacoPrewarm,
+    cancelQuickOpenPrewarm: cancelEditorQuickOpenPrewarm,
+    closeQuickOpen: closeEditorQuickOpen,
+    ensureRuntimeReady: ensureEditorRuntimeReady,
+  } = createTerminalEditorIntegrationController({
+    runtimeState: editorRuntimeState,
+    quickOpenState: editorQuickOpenState,
+    getSessionId: () => sessionId,
+    getSessionSnapshot: () => sessionSnapshot,
+    getWorkDir: () => workDir,
+    getViewMode: () => editorViewMode,
+    setViewMode: (viewMode) => {
+      editorViewMode = viewMode;
+    },
+    getRootDir: () => editorRootDir,
+    setRootDir: (rootDir) => {
+      editorRootDir = rootDir;
+    },
+    onEditorSessionStateChange: (sessionState) => {
+      void onEditorSessionStateChange?.(sessionState);
+    },
+    prepareForEditorMode: terminalEditorPreflight.prepareForEditorMode,
+    prepareForEditorPathOpen: terminalEditorPreflight.prepareForEditorPathOpen,
+    getLoadingStatusLabel: () => $t("common.labels.loading"),
+    getSaveStatusLabel: () => $t("common.actions.save"),
+    readSessionFile,
+    writeSessionFile,
+    getVisible: () => visible,
+    getTerminalReady: () => terminalReady,
+    getTerminalStartupSettled: () => terminalStartupSettled,
+    getThemeDefinition: () => getThemeById(settings.interface.theme) ?? null,
+    warmMonacoRuntime: warmMonacoEditorRuntime,
+    listSessionFiles,
+    reportForegroundError: (message) => setClipboardNotice(message),
+  });
   const auxTerminalRuntime = createAuxTerminalRuntimeController({
     state: auxTerminalRuntimeState,
     getDistro: () => distro,

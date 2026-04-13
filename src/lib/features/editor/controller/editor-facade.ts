@@ -17,7 +17,7 @@ import { createEditorViewController } from "./editor-view-controller";
 import type { EditorQuickOpenState } from "../state/editor-quick-open-state.svelte";
 import type { EditorRuntimeState } from "../state/editor-runtime-state.svelte";
 
-interface EditorFacadeDependencies {
+export interface EditorFacadeDependencies {
   runtimeState: EditorRuntimeState;
   quickOpenState: EditorQuickOpenState;
   getSessionId: () => string;
