@@ -1,10 +1,6 @@
-import { tick } from "svelte";
-import type { NavigationFileSnapshot } from "../../../editor/navigation";
 import type {
-  EditorSearchResult,
   ListSessionFilesResult,
   ReadSessionFileResult,
-  ResolvedTerminalPath,
   WriteSessionFileResult,
 } from "../../../editors";
 import type { SessionEditorSnapshot, SessionEditorState, SessionViewMode } from "../../../types";
@@ -13,18 +9,13 @@ import { createEditorModeTransitionController } from "./editor-mode-transition-c
 import { createEditorSessionHydrationController } from "./editor-session-hydration-controller";
 import { createEditorNavigationAdapterController } from "./editor-navigation-adapter-controller";
 import { createEditorOpenLoadController } from "./editor-open-load-controller";
+import { createEditorPathOpenController } from "./editor-path-open-controller";
 import { createEditorOpenStateController } from "./editor-open-state-controller";
 import { createEditorQuickOpenController } from "./editor-quick-open-controller";
 import { createEditorRuntimeController } from "./editor-runtime-controller";
 import { createEditorViewController } from "./editor-view-controller";
 import type { EditorQuickOpenState } from "../state/editor-quick-open-state.svelte";
 import type { EditorRuntimeState } from "../state/editor-runtime-state.svelte";
-
-interface OpenEditorPathOptions {
-  rootDir?: string;
-  focusExisting?: boolean;
-  prefetchedFile?: NavigationFileSnapshot;
-}
 
 interface EditorFacadeDependencies {
   runtimeState: EditorRuntimeState;
@@ -143,50 +134,20 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     setTabs: runtimeController.setTabs,
     syncSessionState: runtimeController.syncSessionState,
   });
-
-  async function openPath(
-    path: ResolvedTerminalPath | EditorSearchResult,
-    options?: OpenEditorPathOptions,
-  ) {
-    deps.prepareForEditorPathOpen();
-    modeTransitionController.ensureEditorViewMode();
-    quickOpenController.primeMonacoRuntime();
-
-    if ("isDirectory" in path && path.isDirectory) {
-      await viewController.openDirectory(path.wslPath);
-      return;
-    }
-
-    const wslPath = path.wslPath;
-    const nextRootDir = options?.rootDir || deps.getRootDir() || deps.getWorkDir();
-    quickOpenController.primeWorkspaceFiles(nextRootDir);
-    const nextLine = "line" in path ? path.line ?? null : null;
-    const nextColumn = "column" in path ? path.column ?? null : null;
-
-    const preparedOpenPath = openStateController.prepareOpenPath({
-      wslPath,
-      line: nextLine,
-      column: nextColumn,
-      rootDir: options?.rootDir,
-    });
-
-    if (preparedOpenPath.kind === "existing") {
-      quickOpenController.closeQuickOpen();
-      void tick().then(() => {
-        if (deps.getViewMode() === "editor" && !preparedOpenPath.wasLoading) {
-          deps.runtimeState.statusText = null;
-        }
-      });
-      return;
-    }
-
-    await openLoadController.loadPreparedOpenPath({
-      wslPath,
-      line: nextLine,
-      column: nextColumn,
-      prefetchedFile: options?.prefetchedFile,
-    });
-  }
+  const pathOpenController = createEditorPathOpenController({
+    prepareForEditorPathOpen: deps.prepareForEditorPathOpen,
+    getWorkDir: deps.getWorkDir,
+    getEditorRootDir: deps.getRootDir,
+    getViewMode: deps.getViewMode,
+    ensureEditorViewMode: modeTransitionController.ensureEditorViewMode,
+    primeMonacoRuntime: quickOpenController.primeMonacoRuntime,
+    primeWorkspaceFiles: quickOpenController.primeWorkspaceFiles,
+    openEditorDirectory: viewController.openDirectory,
+    prepareOpenPath: openStateController.prepareOpenPath,
+    loadPreparedOpenPath: openLoadController.loadPreparedOpenPath,
+    closeQuickOpen: quickOpenController.closeQuickOpen,
+    clearStatus: () => runtimeController.setStatus(null),
+  });
 
   const navigationController = createEditorNavigationAdapterController({
     getEditorRootDir: deps.getRootDir,
@@ -194,7 +155,7 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     getWorkDir: deps.getWorkDir,
     computeQuickOpenEntryForRoot: quickOpenController.computeEntryForRoot,
     openEditorDirectory: viewController.openDirectory,
-    openEditorPath: openPath,
+    openEditorPath: pathOpenController.openPath,
   });
 
   return {
@@ -210,7 +171,7 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     openDirectory: viewController.openDirectory,
     openInternalEditorForLinkPath: navigationController.openInternalEditorForLinkPath,
     openNavigationLocation: navigationController.openNavigationLocation,
-    openPath,
+    openPath: pathOpenController.openPath,
     openPathFromQuickResult: navigationController.openPathFromQuickResult,
     openQuickOpen: quickOpenController.openQuickOpen,
     primeMonacoRuntime: quickOpenController.primeMonacoRuntime,

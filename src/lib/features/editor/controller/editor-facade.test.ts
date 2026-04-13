@@ -263,6 +263,54 @@ describe("editor-facade", () => {
     expect(runtimeState.activePath).toBeNull();
   });
 
+  it("routes directory opens through the editor directory flow without reading a file", async () => {
+    const { facade, quickOpenState, readSessionFile, getRootDir } = createFacade();
+
+    await facade.openPath({
+      raw: "src",
+      wslPath: "/workspace/src",
+      copyText: "/workspace/src",
+      windowsPath: "C:\\workspace\\src",
+      line: null,
+      column: null,
+      isDirectory: true,
+    });
+
+    expect(getRootDir()).toBe("/workspace/src");
+    expect(quickOpenState.visible).toBe(true);
+    expect(readSessionFile).not.toHaveBeenCalled();
+  });
+
+  it("prefers prefetched file content when opening a new path through the facade", async () => {
+    const { facade, runtimeState, readSessionFile } = createFacade();
+
+    await facade.openPath(
+      {
+        wslPath: "/workspace/prefetched.ts",
+        relativePath: "prefetched.ts",
+        basename: "prefetched.ts",
+      },
+      {
+        prefetchedFile: {
+          wslPath: "/workspace/prefetched.ts",
+          content: "prefetched",
+          languageId: "typescript",
+        },
+      },
+    );
+
+    expect(readSessionFile).not.toHaveBeenCalled();
+    expect(runtimeState.tabs).toMatchObject([
+      {
+        wslPath: "/workspace/prefetched.ts",
+        content: "prefetched",
+        languageId: "typescript",
+        loading: false,
+        error: null,
+      },
+    ]);
+  });
+
   it("keeps editor-mode path opens from requesting a full editor-mode transition", async () => {
     const { facade, prepareForEditorMode, prepareForEditorPathOpen, readSessionFile } =
       createFacade();
