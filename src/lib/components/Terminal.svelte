@@ -4,14 +4,12 @@
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { WebglAddon } from "@xterm/addon-webgl";
-  import InternalEditor from "./InternalEditor.svelte";
-  import EditorQuickOpenModal from "./EditorQuickOpenModal.svelte";
   import ImagePasteModal from "./ImagePasteModal.svelte";
   import EditorPickerModal from "./EditorPickerModal.svelte";
   import TerminalAssistPanel from "./TerminalAssistPanel.svelte";
   import TerminalAuxPanel from "./TerminalAuxPanel.svelte";
   import TerminalDraftPanel from "./TerminalDraftPanel.svelte";
-  import TerminalEditorCloseConfirmModal from "../features/terminal/view/TerminalEditorCloseConfirmModal.svelte";
+  import TerminalEmbeddedEditorSurface from "../features/terminal/view/TerminalEmbeddedEditorSurface.svelte";
   import TerminalInterruptConfirmModal from "../features/terminal/view/TerminalInterruptConfirmModal.svelte";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
   import { listen, type UnlistenFn } from "../tauri/event";
@@ -362,9 +360,27 @@
   } = terminalTestBridge;
   const preferredRenderer = $derived(settings.terminal.renderer);
   const editorBusy = $derived(editorRuntimeState.tabs.some((tab) => tab.loading || tab.saving));
+  const editorSurfaceRootDir = $derived(editorRootDir || workDir);
   const editorCloseConfirmLabel = $derived(
     editorRuntimeState.closeConfirmPath ? editorRuntimeState.closeConfirmPath.split("/").pop() || editorRuntimeState.closeConfirmPath : "",
   );
+  const editorSurfaceLabels = $derived({
+    title: $t("terminal.editor.title"),
+    emptyTitle: $t("terminal.editor.emptyTitle"),
+    emptyDescription: $t("terminal.editor.emptyDescription"),
+    saveLabel: $t("common.actions.save"),
+    openFileLabel: $t("terminal.editor.openFile"),
+    switchToTerminalLabel: $t("terminal.editor.switchToTerminal"),
+    quickOpenTitle: $t("terminal.editor.quickOpenTitle"),
+    quickOpenDescription: $t("terminal.editor.quickOpenDescription"),
+    quickOpenPlaceholder: $t("terminal.editor.quickOpenPlaceholder"),
+    quickOpenIdleLabel: $t("terminal.editor.quickOpenIdle"),
+    quickOpenEmptyLabel: $t("terminal.editor.quickOpenEmpty"),
+    quickOpenLoadingLabel: $t("terminal.editor.quickOpenLoading"),
+    refreshLabel: $t("common.actions.refresh"),
+    closeLabel: $t("common.actions.close"),
+    keyboardHintLabel: $t("terminal.editor.quickOpenKeyboardHint"),
+  });
   const terminalFontFamily = $derived(
     buildFontStack(
       serializeFontFamilyList(
@@ -1327,30 +1343,29 @@
   class:hidden={!visible}
   bind:this={shellEl}
 >
-  {#if editorViewMode === "editor"}
-    <InternalEditor
-      tabs={editorRuntimeState.tabs}
-      activePath={editorRuntimeState.activePath}
-      rootDir={editorRootDir || workDir}
-      busy={editorBusy}
-      statusText={editorRuntimeState.statusText}
-      title={$t("terminal.editor.title")}
-      emptyTitle={$t("terminal.editor.emptyTitle")}
-      emptyDescription={$t("terminal.editor.emptyDescription")}
-      saveLabel={$t("common.actions.save")}
-      openFileLabel={$t("terminal.editor.openFile")}
-      switchToTerminalLabel={$t("terminal.editor.switchToTerminal")}
-      onActivePathChange={handleEditorActivePathChange}
-      onCloseTab={closeEditorTab}
-      onContentChange={handleEditorContentChange}
-      onSaveRequest={(wslPath) => void saveEditorTab(wslPath)}
-      onOpenFile={() => void openEditorQuickOpen(editorRootDir || workDir)}
-      onSwitchToTerminal={requestSwitchToTerminalMode}
-      onListWorkspaceFiles={listEditorWorkspaceFiles}
-      onReadWorkspaceFile={readEditorNavigationFile}
-      onOpenLocation={openEditorNavigationLocation}
-    />
-  {/if}
+  <TerminalEmbeddedEditorSurface
+    viewMode={editorViewMode}
+    runtimeState={editorRuntimeState}
+    quickOpenState={editorQuickOpenState}
+    rootDir={editorSurfaceRootDir}
+    busy={editorBusy}
+    closeConfirmTitle={editorCloseConfirmLabel}
+    labels={editorSurfaceLabels}
+    onActivePathChange={handleEditorActivePathChange}
+    onCloseTab={closeEditorTab}
+    onContentChange={handleEditorContentChange}
+    onSaveRequest={(wslPath) => void saveEditorTab(wslPath)}
+    onOpenFile={() => void openEditorQuickOpen(editorSurfaceRootDir)}
+    onSwitchToTerminal={requestSwitchToTerminalMode}
+    onListWorkspaceFiles={listEditorWorkspaceFiles}
+    onReadWorkspaceFile={readEditorNavigationFile}
+    onOpenLocation={openEditorNavigationLocation}
+    onRefreshQuickOpen={(forceRefresh) => void refreshEditorQuickOpenEntries(forceRefresh)}
+    onSelectQuickOpenResult={openEditorPathFromQuickResult}
+    onCloseQuickOpen={closeEditorQuickOpen}
+    onCancelCloseConfirm={cancelCloseEditorTab}
+    onConfirmCloseConfirm={confirmCloseEditorTab}
+  />
 
   <div
     class="terminal-runtime"
@@ -1463,7 +1478,7 @@
       draftValue={draftComposerState.draftValue}
       showEditorActions={true}
       onPasteImage={handlePasteImageFromClipboard}
-      onOpenFile={() => void openEditorQuickOpen(editorRootDir || workDir)}
+      onOpenFile={() => void openEditorQuickOpen(editorSurfaceRootDir)}
       onOpenEditor={requestSwitchToEditorMode}
       onToggleAux={() => {
         document.activeElement instanceof HTMLElement && document.activeElement.blur();
@@ -1502,34 +1517,6 @@
   editors={detectedEditors}
   onSelect={handleEditorSelect}
   onClose={closeEditorPicker}
-/>
-
-<EditorQuickOpenModal
-  visible={editorQuickOpenState.visible}
-  openKey={editorQuickOpenState.openKey}
-  initialQuery={editorQuickOpenState.query}
-  rootDir={editorQuickOpenState.rootDir || editorRootDir || workDir}
-  entries={editorQuickOpenState.entries}
-  title={$t("terminal.editor.quickOpenTitle")}
-  description={$t("terminal.editor.quickOpenDescription")}
-  placeholder={$t("terminal.editor.quickOpenPlaceholder")}
-  idleLabel={$t("terminal.editor.quickOpenIdle")}
-  emptyLabel={$t("terminal.editor.quickOpenEmpty")}
-  loadingLabel={$t("terminal.editor.quickOpenLoading")}
-  refreshLabel={$t("common.actions.refresh")}
-  closeLabel={$t("common.actions.close")}
-  keyboardHintLabel={$t("terminal.editor.quickOpenKeyboardHint")}
-  busy={editorQuickOpenState.busy}
-  onRefresh={() => void refreshEditorQuickOpenEntries(true)}
-  onSelect={openEditorPathFromQuickResult}
-  onClose={closeEditorQuickOpen}
-/>
-
-<TerminalEditorCloseConfirmModal
-  open={editorRuntimeState.closeConfirmVisible}
-  title={editorCloseConfirmLabel}
-  onClose={cancelCloseEditorTab}
-  onConfirm={confirmCloseEditorTab}
 />
 
 <TerminalInterruptConfirmModal
