@@ -6,9 +6,7 @@
   import { WebglAddon } from "@xterm/addon-webgl";
   import ImagePasteModal from "./ImagePasteModal.svelte";
   import EditorPickerModal from "./EditorPickerModal.svelte";
-  import TerminalAssistPanel from "./TerminalAssistPanel.svelte";
-  import TerminalAuxPanel from "./TerminalAuxPanel.svelte";
-  import TerminalDraftPanel from "./TerminalDraftPanel.svelte";
+  import TerminalAssistStack from "../features/terminal/view/TerminalAssistStack.svelte";
   import TerminalEmbeddedEditorSurface from "../features/terminal/view/TerminalEmbeddedEditorSurface.svelte";
   import TerminalInterruptConfirmModal from "../features/terminal/view/TerminalInterruptConfirmModal.svelte";
   import ContextMenu from "../ui/components/ContextMenu.svelte";
@@ -1409,84 +1407,43 @@
     {/if}
   </div>
 
-  {#if draftComposerState.draftOpen}
-    <TerminalDraftPanel
-      title={$t("terminal.assist.draftTitle")}
-      draftValue={draftComposerState.draftValue}
-      fixedHeightPx={draftComposerState.draftHeightPx}
-      bind:draftElement={draftComposerState.draftEl}
-      bind:panelElement={draftComposerState.draftPanelEl}
-      onResizeStart={handleDraftResizeStart}
-      onClose={toggleDraft}
-      onDraftInput={handleDraftInput}
-      onDraftKeydown={handleDraftKeydown}
-      onDraftPaste={handleDraftPaste}
-      onInsertDraft={() => void insertDraftIntoTerminal(false)}
-      onSendDraft={() => void insertDraftIntoTerminal(true)}
-    />
-  {/if}
-
-  {#if auxInitialized}
-    {#snippet liveAuxBody()}
-      {#if auxTerminalRuntimeState.spawnError}
-        <div class="terminal-error">
-          {$t("terminal.aux.startFailed", { values: { message: auxTerminalRuntimeState.spawnError } })}
-        </div>
-      {/if}
-    {/snippet}
-
-    {#snippet liveAuxOverlay()}
-      {#if auxTerminalRuntimeState.loadingState !== null && !auxTerminalRuntimeState.spawnError}
-        <div class="terminal-connect-overlay terminal-connect-overlay--subpanel terminal-connect-overlay--aux-panel">
-          <div class="terminal-connect-card terminal-connect-card--compact">
-            <div class="terminal-connect-eyebrow">CLCOMX</div>
-            <div class="terminal-connect-title">{auxLoadingLabel}</div>
-            <div class="terminal-connect-hint">{$t("terminal.aux.loadingHint")}</div>
-            <div class="terminal-connect-dots" aria-hidden="true">
-              <span></span>
-              <span></span>
-              <span></span>
-            </div>
-          </div>
-        </div>
-      {/if}
-    {/snippet}
-
-    <TerminalAuxPanel
-      visible={auxVisible}
-      heightPercent={auxHeightPercent}
-      title={$t("terminal.aux.title")}
-      currentPath={auxTerminalRuntimeState.currentPath}
-      pathLabel={$t("terminal.aux.currentPath")}
-      outputTestId={TEST_IDS.auxTerminalShell}
-      resizable={true}
-      onResizeStart={handleAuxResizeStart}
-      onClose={hideAuxTerminal}
-      body={liveAuxBody}
-      overlay={liveAuxOverlay}
-      onOutputElementChange={(element) => {
-        auxOutputEl = element;
-      }}
-    />
-  {/if}
-
-  <div bind:this={assistPanelEl}>
-    <TerminalAssistPanel
-      auxVisible={auxVisible}
-      auxBusy={auxTerminalRuntimeState.busy}
-      draftOpen={draftComposerState.draftOpen}
-      draftValue={draftComposerState.draftValue}
-      showEditorActions={true}
-      onPasteImage={handlePasteImageFromClipboard}
-      onOpenFile={() => void openEditorQuickOpen(editorSurfaceRootDir)}
-      onOpenEditor={requestSwitchToEditorMode}
-      onToggleAux={() => {
-        document.activeElement instanceof HTMLElement && document.activeElement.blur();
-        void toggleAuxTerminal();
-      }}
-      onToggleDraft={toggleDraft}
-    />
-  </div>
+  <TerminalAssistStack
+    draftOpen={draftComposerState.draftOpen}
+    draftTitle={$t("terminal.assist.draftTitle")}
+    draftValue={draftComposerState.draftValue}
+    draftHeightPx={draftComposerState.draftHeightPx}
+    bind:draftElement={draftComposerState.draftEl}
+    bind:draftPanelElement={draftComposerState.draftPanelEl}
+    auxInitialized={auxInitialized}
+    auxVisible={auxVisible}
+    auxBusy={auxTerminalRuntimeState.busy}
+    auxHeightPercent={auxHeightPercent}
+    auxCurrentPath={auxTerminalRuntimeState.currentPath}
+    auxSpawnError={auxTerminalRuntimeState.spawnError}
+    auxLoadingState={auxTerminalRuntimeState.loadingState}
+    auxLoadingLabel={auxLoadingLabel}
+    auxTitle={$t("terminal.aux.title")}
+    auxPathLabel={$t("terminal.aux.currentPath")}
+    bind:auxOutputElement={auxOutputEl}
+    bind:assistPanelElement={assistPanelEl}
+    onDraftResizeStart={handleDraftResizeStart}
+    onCloseDraft={toggleDraft}
+    onDraftInput={handleDraftInput}
+    onDraftKeydown={handleDraftKeydown}
+    onDraftPaste={handleDraftPaste}
+    onInsertDraft={() => void insertDraftIntoTerminal(false)}
+    onSendDraft={() => void insertDraftIntoTerminal(true)}
+    onAuxResizeStart={handleAuxResizeStart}
+    onCloseAux={hideAuxTerminal}
+    onPasteImage={handlePasteImageFromClipboard}
+    onOpenFile={() => void openEditorQuickOpen(editorSurfaceRootDir)}
+    onOpenEditor={requestSwitchToEditorMode}
+    onToggleAux={() => {
+      document.activeElement instanceof HTMLElement && document.activeElement.blur();
+      void toggleAuxTerminal();
+    }}
+    onToggleDraft={toggleDraft}
+  />
   </div>
 </div>
 
@@ -1587,12 +1544,6 @@
     box-shadow: 0 18px 40px rgba(var(--ui-shadow-rgb, 15, 23, 42), 0.24);
   }
 
-  .terminal-connect-card--compact {
-    min-width: min(280px, 100%);
-    gap: var(--ui-space-2);
-    padding: clamp(16px, 2vw, 20px);
-  }
-
   .terminal-connect-eyebrow {
     font-size: 11px;
     font-weight: 700;
@@ -1656,17 +1607,6 @@
     border-radius: inherit;
     background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ui-accent, var(--tab-accent, #6ea8ff)) 92%, white 8%), transparent);
     animation: terminal-loading-sweep 1.5s ease-in-out infinite;
-  }
-
-  .terminal-connect-overlay--subpanel {
-    inset: 0;
-    padding: var(--ui-space-3);
-    border-radius: var(--ui-radius-md);
-  }
-
-  .terminal-connect-overlay--aux-panel {
-    z-index: 24;
-    border-radius: inherit;
   }
 
   @keyframes terminal-loading-bounce {
