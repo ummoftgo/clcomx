@@ -1,6 +1,6 @@
 [package]
 name = "clcomx"
-version = "0.5.2"
+version = "0.5.3"
 description = "A lightweight multi-agent GUI wrapper for terminal coding assistants"
 authors = ["CLCOMX"]
 edition = "2021"
