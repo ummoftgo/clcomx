@@ -34,7 +34,7 @@ echo "[Windows] Building Tauri app..."
 powershell.exe -NoProfile -Command "
   $WIN_ENV_CMD
   Set-Location '$WIN_PATH'
-  cargo tauri build
+  cargo.exe tauri build
 "
 
 echo "[Windows] Creating portable zip..."

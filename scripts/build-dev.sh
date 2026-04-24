@@ -32,7 +32,7 @@ powershell.exe -NoProfile -Command "
   $WIN_ENV_CMD
   \$env:CARGO_INCREMENTAL = '0'
   Set-Location '$WIN_PATH'
-  cargo tauri build --debug
+  cargo.exe tauri build --debug
 "
 
 echo ""

@@ -26,7 +26,10 @@ _normalize_override_dir() {
 
 _normalize_windows_dir() {
   local value="$1"
-  printf '%s' "$value" | sed 's|\\|/|g' | sed 's|/$||'
+  value="${value%$'\r'}"
+  value="${value%\\}"
+  value="${value%/}"
+  printf '%s' "$value"
 }
 
 _resolve_win_bin_dir() {
