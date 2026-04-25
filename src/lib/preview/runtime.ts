@@ -11,6 +11,11 @@ import {
   type PreviewCachedFileList,
   type PreviewEditorFile,
 } from "./editor-files";
+import {
+  recordPreviewHistoryEntry,
+  removePreviewHistoryEntry,
+  trimPreviewHistory,
+} from "./history";
 
 export type PreviewUnlistenFn = () => void;
 export type PreviewPresetId = "workspace" | "dense" | "empty" | "editor";
@@ -678,78 +683,6 @@ function createPreviewState(presetId: PreviewPresetId = DEFAULT_PREVIEW_PRESET_I
   };
 }
 
-function sameHistoryEntry(left: TabHistoryEntry, right: TabHistoryEntry) {
-  return (
-    left.agentId === right.agentId &&
-    left.distro === right.distro &&
-    left.workDir === right.workDir &&
-    left.title === right.title &&
-    (left.resumeToken ?? null) === (right.resumeToken ?? null) &&
-    left.lastOpenedAt === right.lastOpenedAt
-  );
-}
-
-function normalizeHistoryLimit(value: unknown) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return previewState.bootstrap.settings?.history?.tabLimit ?? DEFAULT_SETTINGS.history.tabLimit;
-  }
-  return Math.max(1, Math.trunc(value));
-}
-
-function applyHistoryLimit(entries: TabHistoryEntry[]) {
-  const limit = normalizeHistoryLimit(previewState.bootstrap.settings?.history?.tabLimit);
-  return entries.slice(0, limit);
-}
-
-function recordPreviewHistoryEntry(args?: Record<string, unknown>) {
-  const entry: TabHistoryEntry = {
-    agentId: (args?.agentId as TabHistoryEntry["agentId"]) ?? "claude",
-    distro: String(args?.distro ?? "Ubuntu-24.04"),
-    workDir: String(args?.workDir ?? PREVIEW_PROJECT_PATH),
-    title: String(args?.title ?? "workspace"),
-    resumeToken: (args?.resumeToken as string | null | undefined) ?? null,
-    lastOpenedAt: new Date().toISOString(),
-  };
-
-  const deduped = previewState.bootstrap.tabHistory.filter((existing) => {
-    return !(
-      existing.agentId === entry.agentId &&
-      existing.distro === entry.distro &&
-      existing.workDir === entry.workDir &&
-      (existing.resumeToken ?? null) === (entry.resumeToken ?? null)
-    );
-  });
-
-  previewState.bootstrap.tabHistory = applyHistoryLimit([entry, ...deduped]);
-  return clone(previewState.bootstrap.tabHistory);
-}
-
-function removePreviewHistoryEntry(args?: Record<string, unknown>) {
-  const candidate = (args?.entry ?? null) as TabHistoryEntry | null;
-  if (!candidate) {
-    return clone(previewState.bootstrap.tabHistory);
-  }
-
-  previewState.bootstrap.tabHistory = previewState.bootstrap.tabHistory.filter(
-    (entry) => !sameHistoryEntry(entry, candidate),
-  );
-  return clone(previewState.bootstrap.tabHistory);
-}
-
-function trimPreviewHistory(args?: Record<string, unknown>) {
-  const limit = normalizeHistoryLimit(args?.limit);
-  previewState.bootstrap.settings = {
-    ...previewState.bootstrap.settings,
-    history: {
-      ...DEFAULT_SETTINGS.history,
-      ...(previewState.bootstrap.settings?.history ?? {}),
-      tabLimit: limit,
-    },
-  };
-  previewState.bootstrap.tabHistory = previewState.bootstrap.tabHistory.slice(0, limit);
-  return clone(previewState.bootstrap.tabHistory);
-}
-
 function listPreviewDirectories(path: string) {
   const normalized = path.trim() || "/home";
   const directChildren = PREVIEW_DISTRO_TREE[normalized];
@@ -806,11 +739,11 @@ export async function previewInvoke<T>(command: string, args?: Record<string, un
       }
       return undefined as T;
     case "record_tab_history":
-      return recordPreviewHistoryEntry(args) as T;
+      return recordPreviewHistoryEntry(previewState.bootstrap, PREVIEW_PROJECT_PATH, args) as T;
     case "remove_tab_history_entry":
-      return removePreviewHistoryEntry(args) as T;
+      return removePreviewHistoryEntry(previewState.bootstrap, args) as T;
     case "trim_tab_history":
-      return trimPreviewHistory(args) as T;
+      return trimPreviewHistory(previewState.bootstrap, args) as T;
     case "list_wsl_distros":
       return ["Ubuntu-24.04", "Debian", "Arch"] as T;
     case "list_wsl_directories":

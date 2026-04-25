@@ -305,3 +305,125 @@ describe("previewInvoke editor commands", () => {
     );
   });
 });
+
+describe("previewInvoke history commands", () => {
+  it("records history at the front, dedupes by session identity, and applies the current limit", async () => {
+    applyPreviewPreset("workspace");
+    await previewInvoke("trim_tab_history", { limit: 2.8 });
+
+    const first = await previewInvoke<Array<{
+      agentId: string;
+      distro: string;
+      workDir: string;
+      title: string;
+      resumeToken?: string | null;
+    }>>("record_tab_history", {
+      agentId: "claude",
+      distro: "Ubuntu-24.04",
+      workDir: "/home/user/work/project",
+      title: "Updated title",
+      resumeToken: "resume-preview-1",
+    });
+
+    expect(first).toHaveLength(2);
+    expect(first[0]).toMatchObject({
+      agentId: "claude",
+      distro: "Ubuntu-24.04",
+      workDir: "/home/user/work/project",
+      title: "Updated title",
+      resumeToken: "resume-preview-1",
+    });
+    expect(first.some((entry) => entry.title === "claudemx")).toBe(false);
+
+    const second = await previewInvoke<typeof first>("record_tab_history", {
+      agentId: "codex",
+      distro: "Ubuntu-24.04",
+      workDir: "/home/user/work/project",
+      title: "Second entry",
+      resumeToken: null,
+    });
+
+    expect(second).toHaveLength(2);
+    expect(second[0]).toMatchObject({
+      agentId: "codex",
+      title: "Second entry",
+      resumeToken: null,
+    });
+    expect(second[1]).toMatchObject({
+      agentId: "claude",
+      title: "Updated title",
+    });
+  });
+
+  it("removes only exact history entry matches", async () => {
+    applyPreviewPreset("workspace");
+
+    const before = await previewInvoke<{
+      tabHistory: Array<{
+        agentId: string;
+        distro: string;
+        workDir: string;
+        title: string;
+        resumeToken?: string | null;
+        lastOpenedAt: string;
+      }>;
+    }>("bootstrap_app").then((bootstrap) => bootstrap.tabHistory);
+    const target = before[0];
+
+    const unchanged = await previewInvoke<typeof before>("remove_tab_history_entry", {
+      entry: {
+        ...target,
+        lastOpenedAt: "2099-01-01T00:00:00.000Z",
+      },
+    });
+
+    expect(unchanged).toHaveLength(before.length);
+    expect(unchanged).toEqual(before);
+
+    const after = await previewInvoke<typeof before>("remove_tab_history_entry", {
+      entry: target,
+    });
+
+    expect(after).toHaveLength(before.length - 1);
+    expect(after).not.toContainEqual(target);
+  });
+
+  it("trims history and stores a normalized limit in preview settings", async () => {
+    applyPreviewPreset("workspace");
+
+    const trimmedToOne = await previewInvoke<Array<unknown>>("trim_tab_history", { limit: 0 });
+    expect(trimmedToOne).toHaveLength(1);
+
+    let bootstrap = await previewInvoke<{
+      settings: { history: { tabLimit: number } };
+      tabHistory: unknown[];
+    }>("bootstrap_app");
+    expect(bootstrap.settings.history.tabLimit).toBe(1);
+    expect(bootstrap.tabHistory).toHaveLength(1);
+
+    await previewInvoke("trim_tab_history", { limit: 2.8 });
+    bootstrap = await previewInvoke<typeof bootstrap>("bootstrap_app");
+    expect(bootstrap.settings.history.tabLimit).toBe(2);
+  });
+
+  it("returns cloned history arrays from history commands", async () => {
+    applyPreviewPreset("workspace");
+
+    const result = await previewInvoke<Array<{
+      title: string;
+    }>>("record_tab_history", {
+      agentId: "claude",
+      distro: "Ubuntu-24.04",
+      workDir: "/home/user/work/project",
+      title: "Mutable return",
+      resumeToken: "resume-mutable",
+    });
+    result[0].title = "Mutated outside";
+
+    const bootstrap = await previewInvoke<{
+      tabHistory: Array<{ title: string }>;
+    }>("bootstrap_app");
+
+    expect(bootstrap.tabHistory[0]?.title).toBe("Mutable return");
+  });
+});
