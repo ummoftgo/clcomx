@@ -63,6 +63,14 @@
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
   import { createOverlayInteractionController } from "../features/terminal/controller/overlay-interaction-controller";
   import {
+    focusTerminalSurface,
+    isEditableTarget,
+    isInsideInternalEditor,
+    shouldInterceptTerminalCtrlC,
+    waitForStableTerminalLayout,
+    writeTerminalData,
+  } from "../features/terminal/controller/terminal-dom-helpers";
+  import {
     createTerminalRendererController,
     releaseTerminalRendererController,
     syncTerminalRendererPreference,
@@ -442,29 +450,6 @@
     };
   }
 
-  async function waitForStableTerminalLayout() {
-    await tick();
-    if (document.fonts?.ready) {
-      await document.fonts.ready.catch(() => {});
-    }
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => resolve());
-      });
-    });
-  }
-
-  function writeTerminalData(term: Terminal, data: string) {
-    return new Promise<void>((resolve) => {
-      if (!data) {
-        resolve();
-        return;
-      }
-
-      term.write(data, () => resolve());
-    });
-  }
-
   function scrollTerminalToBottom() {
     requestAnimationFrame(() => {
       terminal?.scrollToBottom();
@@ -486,7 +471,11 @@
       ?? (mainTerminalRuntimeState.followTail || mainTerminalRuntime.isBottomLockActive());
     const refresh = options?.refresh ?? false;
 
-    await waitForStableTerminalLayout();
+    await waitForStableTerminalLayout({
+      tick,
+      getFontsReady: () => document.fonts?.ready,
+      requestAnimationFrame: (callback) => requestAnimationFrame(callback),
+    });
 
     if (terminal !== term || fitAddon !== fit) {
       return;
@@ -517,19 +506,6 @@
     syncAssistPanelHeight();
   }
 
-  function focusTerminalSurface(term: Terminal | null, container: HTMLElement | null) {
-    if (!term || !container) {
-      return;
-    }
-
-    term.focus();
-
-    const helperTextarea = container.querySelector(
-      ".xterm-helper-textarea",
-    ) as HTMLTextAreaElement | null;
-    helperTextarea?.focus({ preventScroll: true });
-  }
-
   function focusOutput() {
     if (!terminalReady || !visible || editorViewMode !== "terminal") return;
 
@@ -557,14 +533,6 @@
     }
   }
 
-  function isEditableTarget(target: EventTarget | null) {
-    if (!(target instanceof Element)) {
-      return false;
-    }
-
-    return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
-  }
-
   function handleAuxOutputPointerDown() {
     focusAuxTerminal();
   }
@@ -583,7 +551,11 @@
 
     const term = auxTerminal;
     const fit = auxFitAddon;
-    await waitForStableTerminalLayout();
+    await waitForStableTerminalLayout({
+      tick,
+      getFontsReady: () => document.fonts?.ready,
+      requestAnimationFrame: (callback) => requestAnimationFrame(callback),
+    });
 
     if (!fit || auxTerminal !== term || auxFitAddon !== fit) {
       return;
@@ -643,17 +615,6 @@
     void toggleAuxTerminal();
   }
 
-  function isInsideInternalEditor(target: EventTarget | null) {
-    if (!(target instanceof Element)) {
-      return false;
-    }
-
-    return Boolean(
-      target.closest(`[data-testid="${TEST_IDS.internalEditorShell}"]`) ||
-        target.closest(`[data-testid="${TEST_IDS.internalEditorQuickOpenModal}"]`),
-    );
-  }
-
   function handleEditorShortcut(event: KeyboardEvent) {
     if (!visible || !matchesShortcut(event, "Ctrl+P")) {
       return;
@@ -679,17 +640,6 @@
     }
 
     void openEditorQuickOpen(editorRootDir);
-  }
-
-  function shouldInterceptTerminalCtrlC(event: KeyboardEvent) {
-    return (
-      event.type === "keydown" &&
-      event.key.toLowerCase() === "c" &&
-      event.ctrlKey &&
-      !event.shiftKey &&
-      !event.altKey &&
-      !event.metaKey
-    );
   }
 
   async function copyTerminalSelection() {
