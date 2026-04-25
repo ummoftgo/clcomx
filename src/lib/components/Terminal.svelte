@@ -69,6 +69,7 @@
     isInsideInternalEditor,
     shouldInterceptTerminalCtrlC,
     waitForStableTerminalLayout,
+    waitForTerminalPaint as waitForTerminalPaintFrame,
     writeTerminalData,
   } from "../features/terminal/controller/terminal-dom-helpers";
   import {
@@ -175,7 +176,11 @@
     getEditorViewMode: () => editorViewMode,
     getInitialPtySize,
     writeTerminalData,
-    waitForTerminalPaint,
+    waitForTerminalPaint: () =>
+      waitForTerminalPaintFrame({
+        tick,
+        requestAnimationFrame: (callback) => requestAnimationFrame(callback),
+      }),
     syncLayoutToPty: syncMainTerminalLayoutToPty,
     scrollTerminalToBottom,
     requestCanonicalScreenSnapshot,
@@ -588,15 +593,6 @@
       auxLayoutSettleTimer = null;
       void settleAuxTerminalLayout();
     }, delay);
-  }
-
-  async function waitForTerminalPaint() {
-    await tick();
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => resolve());
-      });
-    });
   }
 
   function handleAuxShortcut(event: KeyboardEvent) {

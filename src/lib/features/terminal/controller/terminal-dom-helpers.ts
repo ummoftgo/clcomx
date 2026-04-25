@@ -7,6 +7,11 @@ export interface StableTerminalLayoutDeps {
   requestAnimationFrame: (callback: FrameRequestCallback) => number;
 }
 
+export interface TerminalPaintDeps {
+  tick: () => Promise<void>;
+  requestAnimationFrame: (callback: FrameRequestCallback) => number;
+}
+
 function waitForAnimationFrame(requestAnimationFrame: StableTerminalLayoutDeps["requestAnimationFrame"]) {
   return new Promise<void>((resolve) => {
     requestAnimationFrame(() => resolve());
@@ -23,6 +28,15 @@ export async function waitForStableTerminalLayout({
   if (fontsReady) {
     await fontsReady.catch(() => {});
   }
+  await waitForAnimationFrame(requestAnimationFrame);
+  await waitForAnimationFrame(requestAnimationFrame);
+}
+
+export async function waitForTerminalPaint({
+  tick,
+  requestAnimationFrame,
+}: TerminalPaintDeps) {
+  await tick();
   await waitForAnimationFrame(requestAnimationFrame);
   await waitForAnimationFrame(requestAnimationFrame);
 }

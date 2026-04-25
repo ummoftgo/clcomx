@@ -7,6 +7,7 @@ import {
   isInsideInternalEditor,
   shouldInterceptTerminalCtrlC,
   waitForStableTerminalLayout,
+  waitForTerminalPaint,
   writeTerminalData,
 } from "./terminal-dom-helpers";
 
@@ -56,6 +57,38 @@ describe("terminal-dom-helpers", () => {
     expect(getFontsReady).toHaveBeenCalledTimes(1);
     expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(["tick", "fonts", "raf"]);
+
+    frames.shift()?.(0);
+    for (let index = 0; index < 5 && requestAnimationFrame.mock.calls.length === 1; index += 1) {
+      await Promise.resolve();
+    }
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(2);
+
+    frames.shift()?.(16);
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it("waits for tick and two animation frames before paint-sensitive work continues", async () => {
+    const calls: string[] = [];
+    const tick = vi.fn(async () => {
+      calls.push("tick");
+    });
+    const frames: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      calls.push("raf");
+      frames.push(callback);
+      return frames.length;
+    });
+
+    const pending = waitForTerminalPaint({
+      tick,
+      requestAnimationFrame,
+    });
+
+    await Promise.resolve();
+    expect(tick).toHaveBeenCalledTimes(1);
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["tick", "raf"]);
 
     frames.shift()?.(0);
     for (let index = 0; index < 5 && requestAnimationFrame.mock.calls.length === 1; index += 1) {
