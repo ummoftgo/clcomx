@@ -3,7 +3,6 @@
   import { Terminal, type IDisposable } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { WebLinksAddon } from "@xterm/addon-web-links";
-  import { WebglAddon } from "@xterm/addon-webgl";
   import TerminalEmbeddedEditorSurface from "../features/terminal/view/TerminalEmbeddedEditorSurface.svelte";
   import TerminalOverlayStack from "../features/terminal/view/TerminalOverlayStack.svelte";
   import TerminalRuntimeSurface from "../features/terminal/view/TerminalRuntimeSurface.svelte";
@@ -59,9 +58,15 @@
   import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
   import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
   import { createAuxTerminalRuntimeController } from "../features/terminal/controller/aux-terminal-runtime-controller";
+  import { applyTerminalCompositionViewTheme } from "../features/terminal/controller/composition-view-theme";
   import { createMainTerminalRuntimeController } from "../features/terminal/controller/main-terminal-runtime-controller";
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
   import { createOverlayInteractionController } from "../features/terminal/controller/overlay-interaction-controller";
+  import {
+    createTerminalRendererController,
+    releaseTerminalRendererController,
+    syncTerminalRendererPreference,
+  } from "../features/terminal/controller/terminal-renderer-controller";
   import { createTerminalEditorIntegrationController } from "../features/terminal/controller/terminal-editor-integration-controller";
   import { createTerminalEditorPreflightController } from "../features/terminal/controller/terminal-editor-preflight-controller";
   import {
@@ -423,94 +428,11 @@
     };
   }
 
-  interface RendererController {
-    addon: WebglAddon | null;
-    contextLossDisposable: IDisposable | null;
-  }
-
-  const mainRendererController: RendererController = {
-    addon: null,
-    contextLossDisposable: null,
-  };
-
-  const auxRendererController: RendererController = {
-    addon: null,
-    contextLossDisposable: null,
-  };
-
-  function releaseRendererController(controller: RendererController) {
-    controller.contextLossDisposable?.dispose();
-    controller.contextLossDisposable = null;
-    controller.addon?.dispose();
-    controller.addon = null;
-  }
-
-  function syncRendererPreference(
-    term: Terminal,
-    controller: RendererController,
-    preferred: TerminalRendererPreference,
-    updateActiveRenderer: (value: TerminalRendererPreference) => void,
-  ) {
-    if (preferred === "dom") {
-      releaseRendererController(controller);
-      updateActiveRenderer("dom");
-      return;
-    }
-
-    if (controller.addon) {
-      updateActiveRenderer("webgl");
-      return;
-    }
-
-    try {
-      const addon = new WebglAddon();
-      controller.contextLossDisposable = addon.onContextLoss(() => {
-        console.warn("WebGL terminal renderer context lost, falling back to DOM");
-        releaseRendererController(controller);
-        updateActiveRenderer("dom");
-      });
-      term.loadAddon(addon);
-      controller.addon = addon;
-      updateActiveRenderer("webgl");
-    } catch (error) {
-      releaseRendererController(controller);
-      updateActiveRenderer("dom");
-      console.warn("Failed to activate WebGL terminal renderer, falling back to DOM", error);
-    }
-  }
-
-  function hexToRgba(color: string | undefined, alpha: number, fallback: string) {
-    if (!color) return fallback;
-
-    const normalized = color.trim();
-    const shortHex = /^#([\da-f]{3})$/i.exec(normalized);
-    if (shortHex) {
-      const [r, g, b] = shortHex[1].split("").map((value) => Number.parseInt(value + value, 16));
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-    }
-
-    const longHex = /^#([\da-f]{6})$/i.exec(normalized);
-    if (longHex) {
-      const hex = longHex[1];
-      const r = Number.parseInt(hex.slice(0, 2), 16);
-      const g = Number.parseInt(hex.slice(2, 4), 16);
-      const b = Number.parseInt(hex.slice(4, 6), 16);
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-    }
-
-    return fallback;
-  }
+  const mainRendererController = createTerminalRendererController();
+  const auxRendererController = createTerminalRendererController();
 
   function applyCompositionViewTheme() {
-    if (!shellEl) return;
-
-    const themeDef = getThemeById(settings.interface.theme)?.theme;
-    const foreground = themeDef?.foreground ?? "#f8fafc";
-    const emphasis = themeDef?.selectionBackground ?? themeDef?.cursor ?? "#64748b";
-    const background = hexToRgba(emphasis, 0.18, "rgba(15, 23, 42, 0.18)");
-
-    shellEl.style.setProperty("--ime-composition-fg", foreground);
-    shellEl.style.setProperty("--ime-composition-bg", background);
+    applyTerminalCompositionViewTheme(shellEl, getThemeById(settings.interface.theme)?.theme);
   }
 
   function getInitialPtySize(term: Terminal) {
@@ -834,7 +756,7 @@
     auxResizeObserver = null;
     auxOutputPointerCleanup?.();
     auxOutputPointerCleanup = null;
-    releaseRendererController(auxRendererController);
+    releaseTerminalRendererController(auxRendererController);
     auxTerminal?.dispose();
     auxTerminal = null;
     auxFitAddon = null;
@@ -854,7 +776,7 @@
     const auxFit = new FitAddon();
     auxTerm.loadAddon(auxFit);
     auxTerm.open(auxOutputEl);
-    syncRendererPreference(auxTerm, auxRendererController, preferredRenderer, () => {});
+    syncTerminalRendererPreference(auxTerm, auxRendererController, preferredRenderer, () => {});
     auxOutputEl.addEventListener("pointerdown", handleAuxOutputPointerDown, true);
     auxOutputPointerCleanup = () => {
       auxOutputEl?.removeEventListener("pointerdown", handleAuxOutputPointerDown, true);
@@ -1042,7 +964,7 @@
 
     term.open(outputEl);
     term.attachCustomKeyEventHandler(handleMainTerminalKey);
-    syncRendererPreference(term, mainRendererController, preferredRenderer, (value) => {
+    syncTerminalRendererPreference(term, mainRendererController, preferredRenderer, (value) => {
       activeRenderer = value;
     });
     inputTextarea = term.textarea;
@@ -1221,11 +1143,11 @@
 
   $effect(() => {
     if (!terminalReady || !terminal || editorViewMode !== "terminal") return;
-    syncRendererPreference(terminal, mainRendererController, preferredRenderer, (value) => {
+    syncTerminalRendererPreference(terminal, mainRendererController, preferredRenderer, (value) => {
       activeRenderer = value;
     });
     if (auxTerminal) {
-      syncRendererPreference(auxTerminal, auxRendererController, preferredRenderer, () => {});
+      syncTerminalRendererPreference(auxTerminal, auxRendererController, preferredRenderer, () => {});
     }
   });
 
@@ -1307,7 +1229,7 @@
     fileLinkProviderDisposable?.dispose();
     writeParsedDisposable?.dispose();
     disposeAuxTerminalInstance();
-    releaseRendererController(mainRendererController);
+    releaseTerminalRendererController(mainRendererController);
     terminal?.dispose();
     fitAddon = null;
     terminal = null;
