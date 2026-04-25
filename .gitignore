@@ -9,6 +9,7 @@ coverage/
 
 # Rust / Tauri build outputs
 src-tauri/target/
+src-tauri/target-linux/
 src-tauri/gen/
 src-tauri/.tauri/
 
@@ -24,6 +25,7 @@ tab_history.json
 temp/
 
 # Local assistant / developer state
+.codex
 .claude/
 .worktrees/
 HANDOVER.md

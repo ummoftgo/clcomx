@@ -25,6 +25,7 @@
   import { createWindowRenameOrchestrationController } from "./lib/features/app-shell/controller/window-rename-orchestration-controller";
   import { createWindowSessionDetachOrchestrationController } from "./lib/features/app-shell/controller/window-session-detach-orchestration-controller";
   import { createWindowSessionMoveOrchestrationController } from "./lib/features/app-shell/controller/window-session-move-orchestration-controller";
+  import AppDialogStack from "./lib/features/app-shell/view/AppDialogStack.svelte";
   import {
     createPreviewUrlStateController,
     PREVIEW_FRAME_OPTIONS,
@@ -67,10 +68,10 @@
   } from "./lib/stores/tab-history.svelte";
   import { primeEditorsDetection } from "./lib/stores/editors.svelte";
   import { getBootstrap, setBootstrap } from "./lib/bootstrap";
-  import { setLanguagePreference, t } from "./lib/i18n";
+  import { setLanguagePreference } from "./lib/i18n";
   import { TEST_IDS } from "./lib/testids";
   import { getThemeById } from "./lib/themes";
-  import { applyRuntimeStyleLayer, Button, ModalShell } from "./lib/ui";
+  import { applyRuntimeStyleLayer, Button } from "./lib/ui";
   import {
     closeApp,
     closeSessionByPtyId,
@@ -333,54 +334,6 @@
     if (settings.language === "ko") return true;
     if (settings.language === "en") return false;
     return typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("ko");
-  }
-
-  function getDirtyCloseDialogCopy(
-    kind: "tab" | "app" | "window",
-    options: { title?: string; count?: number } = {},
-  ) {
-    const isKo = usesKoreanCopy();
-    const count = Math.max(0, options.count ?? 0);
-
-    if (kind === "tab") {
-      return isKo
-        ? {
-            title: "저장되지 않은 변경 사항",
-            description: `"${options.title || "이 탭"}"에 저장되지 않은 편집 내용이 있습니다. 닫으면 변경 사항이 버려집니다.`,
-            confirm: "그대로 닫기",
-          }
-        : {
-            title: "Unsaved Changes",
-            description: `"${options.title || "This tab"}" has unsaved editor changes. Closing it will discard them.`,
-            confirm: "Close Anyway",
-          };
-    }
-
-    if (kind === "window") {
-      return isKo
-        ? {
-            title: "저장되지 않은 변경 사항",
-            description: `이 창에는 저장되지 않은 편집 내용이 있는 세션이 ${count}개 있습니다. 닫으면 모두 버려집니다.`,
-            confirm: "그대로 닫기",
-          }
-        : {
-            title: "Unsaved Changes",
-            description: `This window has ${count} session${count === 1 ? "" : "s"} with unsaved editor changes. Closing it will discard them.`,
-            confirm: "Close Anyway",
-          };
-    }
-
-    return isKo
-      ? {
-          title: "저장되지 않은 변경 사항",
-          description: `저장되지 않은 편집 내용이 있는 세션이 ${count}개 있습니다. 앱을 닫으면 모두 버려집니다.`,
-          confirm: "그대로 종료",
-        }
-      : {
-          title: "Unsaved Changes",
-          description: `There ${count === 1 ? "is" : "are"} ${count} dirty editor session${count === 1 ? "" : "s"}. Closing the app will discard them.`,
-          confirm: "Quit Anyway",
-        };
   }
 
   onMount(() => {
@@ -870,141 +823,33 @@
     />
   {/if}
 
-  <ModalShell
-    open={showDirtyTabDialog && pendingCloseSession !== null}
-    size="sm"
-    onClose={tabCloseOrchestration.dismissDirtyTabDialog}
-  >
-    <div class="window-close-panel" data-testid={TEST_IDS.closeTabDialog}>
-      <h2>{getDirtyCloseDialogCopy("tab", { title: pendingCloseSession?.title ?? "" }).title}</h2>
-      <p>{getDirtyCloseDialogCopy("tab", { title: pendingCloseSession?.title ?? "" }).description}</p>
-      <div class="window-close-actions">
-        <Button variant="danger" onclick={tabCloseOrchestration.continueCloseTabAfterDirtyWarning}>
-          {getDirtyCloseDialogCopy("tab", { title: pendingCloseSession?.title ?? "" }).confirm}
-        </Button>
-        <Button onclick={tabCloseOrchestration.dismissDirtyTabDialog}>
-          {$t("common.actions.cancel")}
-        </Button>
-      </div>
-    </div>
-  </ModalShell>
-
-  <ModalShell
-    open={showCloseTabDialog && pendingCloseSession !== null}
-    size="sm"
-    onClose={tabCloseOrchestration.dismissCloseTabDialog}
-  >
-    <div class="window-close-panel" data-testid={TEST_IDS.closeTabDialog}>
-      <h2>{$t("app.closeTab.title")}</h2>
-      <p>{$t("app.closeTab.description", {
-        values: { title: pendingCloseSession?.title ?? "" },
-      })}</p>
-      <div class="window-close-actions">
-        <Button variant="danger" onclick={() => { void tabCloseOrchestration.confirmCloseTab(); }}>
-          {$t("app.closeTab.confirm")}
-        </Button>
-        <Button onclick={tabCloseOrchestration.dismissCloseTabDialog}>
-          {$t("common.actions.cancel")}
-        </Button>
-      </div>
-    </div>
-  </ModalShell>
-
-  <ModalShell
-    open={showDirtyAppDialog}
-    size="sm"
-    onClose={dismissDirtyAppDialog}
-  >
-    <div class="window-close-panel" data-testid={TEST_IDS.closeWindowDialog}>
-      <h2>{getDirtyCloseDialogCopy("app", { count: dirtyAppCloseCount }).title}</h2>
-      <p>{getDirtyCloseDialogCopy("app", { count: dirtyAppCloseCount }).description}</p>
-      <div class="window-close-actions">
-        <Button variant="danger" onclick={confirmDirtyAppClose}>
-          {getDirtyCloseDialogCopy("app", { count: dirtyAppCloseCount }).confirm}
-        </Button>
-        <Button onclick={dismissDirtyAppDialog}>
-          {$t("common.actions.cancel")}
-        </Button>
-      </div>
-    </div>
-  </ModalShell>
-
-  <ModalShell
-    open={showDirtyWindowCloseDialog && showCloseWindowDialog}
-    size="sm"
-    onClose={dismissDirtyWindowCloseDialog}
-  >
-    <div class="window-close-panel" data-testid={TEST_IDS.closeWindowDialog}>
-      <h2>{getDirtyCloseDialogCopy("window", { count: dirtySessions.length }).title}</h2>
-      <p>{getDirtyCloseDialogCopy("window", { count: dirtySessions.length }).description}</p>
-      <div class="window-close-actions">
-        <Button variant="danger" onclick={confirmDirtyWindowCloseDialog}>
-          {getDirtyCloseDialogCopy("window", { count: dirtySessions.length }).confirm}
-        </Button>
-        <Button onclick={dismissDirtyWindowCloseDialog}>
-          {$t("common.actions.cancel")}
-        </Button>
-      </div>
-    </div>
-  </ModalShell>
-
-  <ModalShell
-    open={showCloseWindowDialog && !showDirtyWindowCloseDialog}
-    size="sm"
-    onClose={windowCloseDialogController.dismissCloseWindowDialog}
-  >
-    <div class="window-close-panel" data-testid={TEST_IDS.closeWindowDialog}>
-      <h2>{$t("app.closeWindow.title")}</h2>
-      <p>{$t("app.closeWindow.description")}</p>
-      <div class="window-close-actions">
-        <Button variant="primary" onclick={handleMoveWindowToMain}>
-          {$t("app.closeWindow.moveTabsToMain")}
-        </Button>
-        <Button variant="danger" onclick={handleCloseWindowSessions}>
-          {$t("app.closeWindow.closeTabs")}
-        </Button>
-        <Button onclick={windowCloseDialogController.dismissCloseWindowDialog}>
-          {$t("common.actions.cancel")}
-        </Button>
-      </div>
-    </div>
-  </ModalShell>
-
-  <ModalShell
-    open={renameDialogKind !== null}
-    size="sm"
-    onClose={dismissRenameDialog}
-  >
-    <div class="window-close-panel rename-panel">
-      <h2>{$t(renameDialogKind === "window" ? "rename.window.title" : "rename.tab.title")}</h2>
-      <p>{$t(renameDialogKind === "window" ? "rename.window.description" : "rename.tab.description")}</p>
-      <div class="rename-field">
-        <label for="rename-input">
-          {$t(renameDialogKind === "window" ? "rename.window.label" : "rename.tab.label")}
-        </label>
-        <input
-          id="rename-input"
-          class="rename-input"
-          type="text"
-          bind:value={renameDialogValue}
-          onkeydown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              confirmRename();
-            }
-          }}
-        />
-      </div>
-      <div class="window-close-actions">
-        <Button variant="primary" onclick={confirmRename}>
-          {$t(renameDialogKind === "window" ? "rename.window.confirm" : "rename.tab.confirm")}
-        </Button>
-        <Button onclick={dismissRenameDialog}>
-          {$t("common.actions.cancel")}
-        </Button>
-      </div>
-    </div>
-  </ModalShell>
+  <AppDialogStack
+    {showDirtyTabDialog}
+    {showCloseTabDialog}
+    {showDirtyAppDialog}
+    {showDirtyWindowCloseDialog}
+    {showCloseWindowDialog}
+    hasPendingCloseSession={pendingCloseSession !== null}
+    pendingCloseSessionTitle={pendingCloseSession?.title ?? ""}
+    {dirtyAppCloseCount}
+    dirtyWindowCloseCount={dirtySessions.length}
+    {renameDialogKind}
+    bind:renameDialogValue
+    useKoreanDirtyCopy={usesKoreanCopy()}
+    onDismissDirtyTab={tabCloseOrchestration.dismissDirtyTabDialog}
+    onContinueDirtyTabClose={tabCloseOrchestration.continueCloseTabAfterDirtyWarning}
+    onDismissCloseTab={tabCloseOrchestration.dismissCloseTabDialog}
+    onConfirmCloseTab={tabCloseOrchestration.confirmCloseTab}
+    onDismissDirtyApp={dismissDirtyAppDialog}
+    onConfirmDirtyAppClose={confirmDirtyAppClose}
+    onDismissDirtyWindowClose={dismissDirtyWindowCloseDialog}
+    onConfirmDirtyWindowClose={confirmDirtyWindowCloseDialog}
+    onDismissCloseWindow={windowCloseDialogController.dismissCloseWindowDialog}
+    onMoveWindowToMain={handleMoveWindowToMain}
+    onCloseWindowSessions={handleCloseWindowSessions}
+    onDismissRename={dismissRenameDialog}
+    onConfirmRename={confirmRename}
+  />
 </div>
 
 <style>
@@ -1050,56 +895,6 @@
     box-shadow:
       0 28px 70px rgba(var(--ui-shadow-rgb), 0.24),
       inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  }
-
-  .window-close-panel {
-    padding: 24px;
-    color: var(--ui-text-primary);
-  }
-
-  .window-close-panel h2 {
-    margin: 0 0 10px;
-    font-size: 19px;
-    line-height: 1.2;
-  }
-
-  .window-close-panel p {
-    margin: 0 0 18px;
-    color: var(--ui-text-muted);
-    font-size: 14px;
-    line-height: 1.55;
-  }
-
-  .window-close-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    justify-content: flex-end;
-  }
-
-  .rename-panel {
-    display: grid;
-    gap: 16px;
-  }
-
-  .rename-field {
-    display: grid;
-    gap: 8px;
-  }
-
-  .rename-field label {
-    font-size: 14px;
-    color: var(--ui-text-secondary);
-  }
-
-  .rename-input {
-    min-height: 42px;
-    padding: 0 14px;
-    border: 1px solid var(--ui-border-subtle);
-    border-radius: var(--ui-radius-md);
-    background: color-mix(in srgb, var(--ui-bg-elevated) 90%, transparent);
-    color: var(--ui-text-primary);
-    font-size: var(--ui-font-size-base);
   }
 
   @media (max-width: 960px) {
