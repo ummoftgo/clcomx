@@ -1,5 +1,51 @@
 import { describe, expect, it } from "vitest";
-import { applyPreviewPreset, getAvailablePreviewPresets, previewInvoke } from "./runtime";
+import {
+  applyPreviewPreset,
+  getActivePreviewPresetId,
+  getAvailablePreviewPresets,
+  previewInvoke,
+} from "./runtime";
+
+describe("preview presets", () => {
+  it("keeps preset selection and representative bootstrap shapes behind the runtime facade", async () => {
+    expect(getAvailablePreviewPresets().map((preset) => preset.id)).toEqual([
+      "workspace",
+      "dense",
+      "empty",
+      "editor",
+    ]);
+
+    applyPreviewPreset("dense");
+    expect(getActivePreviewPresetId()).toBe("dense");
+    let bootstrap = await previewInvoke<{
+      settings: { history: { tabLimit: number } };
+      workspace: { windows: Array<{ tabs: unknown[] }> };
+    }>("bootstrap_app");
+    expect(bootstrap.settings.history.tabLimit).toBe(12);
+    expect(bootstrap.workspace.windows[0]?.tabs.length).toBeGreaterThan(1);
+
+    applyPreviewPreset("empty");
+    expect(getActivePreviewPresetId()).toBe("empty");
+    bootstrap = await previewInvoke<typeof bootstrap>("bootstrap_app");
+    expect(bootstrap.workspace.windows[0]?.tabs).toEqual([]);
+
+    applyPreviewPreset("editor");
+    expect(getActivePreviewPresetId()).toBe("editor");
+    const editorBootstrap = await previewInvoke<{
+      settings: { interface: { fileOpenTarget?: string } };
+      workspace: {
+        windows: Array<{
+          activeSessionId: string | null;
+          tabs: Array<{ sessionId: string; viewMode?: string }>;
+        }>;
+      };
+    }>("bootstrap_app");
+    const mainWindow = editorBootstrap.workspace.windows[0];
+    const activeTab = mainWindow.tabs.find((tab) => tab.sessionId === mainWindow.activeSessionId);
+    expect(editorBootstrap.settings.interface.fileOpenTarget).toBe("internal");
+    expect(activeTab?.viewMode).toBe("editor");
+  });
+});
 
 describe("previewInvoke resolve_terminal_path", () => {
   it("returns candidates for bare filenames", async () => {
