@@ -1,4 +1,5 @@
 import type { AppBootstrap } from "../types";
+import { invokePreviewBridgeCommand } from "./bridge";
 import {
   createPreviewEditorFiles,
   listPreviewEditorFiles,
@@ -16,10 +17,7 @@ import {
 import {
   DEFAULT_PREVIEW_PRESET_ID,
   PREVIEW_PRESET_OPTIONS,
-  PREVIEW_PROJECT_FILE,
   PREVIEW_PROJECT_PATH,
-  PREVIEW_USER_HOME,
-  PREVIEW_WORK_ROOT,
   createPreviewBootstrap,
   normalizePreviewPresetId,
   type PreviewPresetId,
@@ -64,30 +62,6 @@ interface PreviewState {
   editorFiles: Map<string, PreviewEditorFile>;
   fileListCache: Map<string, PreviewCachedFileList>;
   fileListClock: number;
-}
-
-const PREVIEW_DISTRO_TREE: Record<string, string[]> = {
-  "/home": [PREVIEW_USER_HOME],
-  [PREVIEW_USER_HOME]: [PREVIEW_WORK_ROOT],
-  [PREVIEW_WORK_ROOT]: [PREVIEW_PROJECT_PATH],
-  [PREVIEW_PROJECT_PATH]: [
-    `${PREVIEW_PROJECT_PATH}/src`,
-    `${PREVIEW_PROJECT_PATH}/src-tauri`,
-    `${PREVIEW_PROJECT_PATH}/docs`,
-  ],
-};
-
-function normalizePreviewHomeDir(homeDir: unknown) {
-  if (typeof homeDir !== "string") {
-    return PREVIEW_USER_HOME;
-  }
-
-  const trimmed = homeDir.trim();
-  return trimmed || PREVIEW_USER_HOME;
-}
-
-function toPreviewWindowsPath(wslPath: string) {
-  return `\\\\wsl.localhost\\Ubuntu-24.04${wslPath.replace(/\//g, "\\")}`;
 }
 
 const previewWindow: PreviewWindowHandle = {
@@ -153,19 +127,6 @@ function createPreviewState(presetId: PreviewPresetId = DEFAULT_PREVIEW_PRESET_I
   };
 }
 
-function listPreviewDirectories(path: string) {
-  const normalized = path.trim() || "/home";
-  const directChildren = PREVIEW_DISTRO_TREE[normalized];
-  const nextPaths =
-    directChildren ??
-    [1, 2, 3].map((index) => `${normalized.replace(/\/$/, "")}/sample-${index}`);
-
-  return nextPaths.map((entryPath) => ({
-    name: entryPath.split("/").pop() || entryPath,
-    path: entryPath,
-  }));
-}
-
 export function installBrowserPreviewRuntime() {
   window.__CLCOMX_BROWSER_PREVIEW__ = true;
   previewState = createPreviewState(normalizePreviewPresetId(getPreviewUrlParam("preset")));
@@ -214,18 +175,6 @@ export async function previewInvoke<T>(command: string, args?: Record<string, un
       return removePreviewHistoryEntry(previewState.bootstrap, args) as T;
     case "trim_tab_history":
       return trimPreviewHistory(previewState.bootstrap, args) as T;
-    case "list_wsl_distros":
-      return ["Ubuntu-24.04", "Debian", "Arch"] as T;
-    case "list_wsl_directories":
-      return listPreviewDirectories(String(args?.path ?? "/home")) as T;
-    case "list_available_editors":
-      return [
-        { id: "vscode", label: "VS Code" },
-        { id: "cursor", label: "Cursor" },
-        { id: "windsurf", label: "Windsurf" },
-      ] as T;
-    case "list_monospace_fonts":
-      return ["JetBrains Mono", "Cascadia Code", "IBM Plex Mono", "Fira Code"] as T;
     case "search_session_files":
       return searchPreviewEditorFiles(previewState, PREVIEW_PROJECT_PATH, args) as T;
     case "list_session_files":
@@ -234,102 +183,15 @@ export async function previewInvoke<T>(command: string, args?: Record<string, un
       return readPreviewEditorFile(previewState, args) as T;
     case "write_session_file":
       return writePreviewEditorFile(previewState, PREVIEW_PROJECT_PATH, args) as T;
-    case "resolve_terminal_path": {
-      const raw = String(args?.raw ?? "");
-      const homeDir = normalizePreviewHomeDir(args?.homeDirHint ?? args?.homeDir);
-
-      if (raw === "~" || raw.startsWith("~/")) {
-        const wslPath = raw === "~" ? homeDir : `${homeDir}${raw.slice(1)}`;
-        return {
-          kind: "resolved",
-          path: {
-            raw,
-            wslPath,
-            copyText: wslPath,
-            windowsPath: toPreviewWindowsPath(wslPath),
-            line: null,
-            column: null,
-            isDirectory: raw === "~" || raw.endsWith("/"),
-          },
-        } as T;
-      }
-
-      if (raw === "index.ts") {
-        return {
-          kind: "candidates",
-          raw: "index.ts",
-          candidates: [
-            {
-              raw: "index.ts",
-              wslPath: `${PREVIEW_PROJECT_PATH}/src/front/index.ts`,
-              copyText: `${PREVIEW_PROJECT_PATH}/src/front/index.ts:12:3`,
-              windowsPath:
-                "\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\work\\project\\src\\front\\index.ts",
-              line: 12,
-              column: 3,
-              isDirectory: false,
-            },
-            {
-              raw: "index.ts",
-              wslPath: `${PREVIEW_PROJECT_PATH}/src/shared/index.ts`,
-              copyText: `${PREVIEW_PROJECT_PATH}/src/shared/index.ts:8:1`,
-              windowsPath:
-                "\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\work\\project\\src\\shared\\index.ts",
-              line: 8,
-              column: 1,
-              isDirectory: false,
-            },
-          ],
-        } as T;
-      }
-
-      return {
-        kind: "resolved",
-        path: {
-          raw,
-          wslPath: PREVIEW_PROJECT_FILE,
-          copyText: `${PREVIEW_PROJECT_FILE}:12:3`,
-          windowsPath:
-            "\\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\work\\project\\src\\App.svelte",
-          line: 12,
-          column: 3,
-          isDirectory: false,
-        },
-      } as T;
-    }
-    case "open_in_editor":
-    case "set_session_pty":
-    case "set_session_aux_terminal_state":
-    case "set_session_resume_token":
-    case "clear_session_pty":
-    case "close_session":
-    case "close_session_by_pty":
-    case "update_window_geometry":
-    case "move_window_sessions_to_main":
-    case "close_window_sessions":
-    case "remove_window":
-    case "close_app":
-    case "save_clipboard_image":
-    case "open_image_cache_folder":
-    case "clear_image_cache":
-    case "notify_window_ready":
-      return undefined as T;
     case "window_ready":
       previewState.readyWindows.add(String(args?.label ?? "main"));
       return undefined as T;
     case "is_window_ready":
       return previewState.readyWindows.has(String(args?.label ?? "main")) as T;
-    case "get_image_cache_stats":
-      return { path: "/tmp/clcomx-preview-image-cache", files: 0, bytes: 0 } as T;
-    case "open_external_url":
-      if (typeof args?.url === "string") {
-        window.open(args.url, "_blank", "noopener,noreferrer");
-      }
-      return undefined as T;
-    case "load_custom_css":
-      return "" as T;
-    default:
-      return undefined as T;
+    default: {
+      const bridgeResult = invokePreviewBridgeCommand<T>(command, args);
+      return bridgeResult.handled ? (bridgeResult.value as T) : (undefined as T);
+    }
   }
 }
 

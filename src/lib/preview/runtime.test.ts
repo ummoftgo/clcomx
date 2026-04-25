@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyPreviewPreset,
   getActivePreviewPresetId,
@@ -84,6 +84,75 @@ describe("previewInvoke resolve_terminal_path", () => {
     expect(result.kind).toBe("resolved");
     expect(result.path?.wslPath).toBe("/home/user/.claude/skills/code-quality-review/SKILL.md");
     expect(result.path?.copyText).toBe("/home/user/.claude/skills/code-quality-review/SKILL.md");
+  });
+});
+
+describe("previewInvoke bridge commands", () => {
+  it("lists preview directories from the fixture tree and fallback paths", async () => {
+    const home = await previewInvoke<Array<{ name: string; path: string }>>(
+      "list_wsl_directories",
+      { path: "/home" },
+    );
+    expect(home).toEqual([{ name: "user", path: "/home/user" }]);
+
+    const project = await previewInvoke<typeof home>("list_wsl_directories", {
+      path: "/home/user/work/project",
+    });
+    expect(project).toEqual([
+      { name: "src", path: "/home/user/work/project/src" },
+      { name: "src-tauri", path: "/home/user/work/project/src-tauri" },
+      { name: "docs", path: "/home/user/work/project/docs" },
+    ]);
+
+    const fallback = await previewInvoke<typeof home>("list_wsl_directories", {
+      path: "/tmp/missing",
+    });
+    expect(fallback).toEqual([
+      { name: "sample-1", path: "/tmp/missing/sample-1" },
+      { name: "sample-2", path: "/tmp/missing/sample-2" },
+      { name: "sample-3", path: "/tmp/missing/sample-3" },
+    ]);
+  });
+
+  it("returns static preview bridge command values through the runtime facade", async () => {
+    await expect(previewInvoke("open_in_editor")).resolves.toBeUndefined();
+    await expect(previewInvoke("load_custom_css")).resolves.toBe("");
+    await expect(previewInvoke("list_wsl_distros")).resolves.toEqual([
+      "Ubuntu-24.04",
+      "Debian",
+      "Arch",
+    ]);
+    await expect(previewInvoke("list_available_editors")).resolves.toEqual([
+      { id: "vscode", label: "VS Code" },
+      { id: "cursor", label: "Cursor" },
+      { id: "windsurf", label: "Windsurf" },
+    ]);
+    await expect(previewInvoke("list_monospace_fonts")).resolves.toEqual([
+      "JetBrains Mono",
+      "Cascadia Code",
+      "IBM Plex Mono",
+      "Fira Code",
+    ]);
+    await expect(previewInvoke("get_image_cache_stats")).resolves.toEqual({
+      path: "/tmp/clcomx-preview-image-cache",
+      files: 0,
+      bytes: 0,
+    });
+  });
+
+  it("opens external urls with the existing preview isolation flags", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    try {
+      await previewInvoke("open_external_url", { url: "https://example.test/docs" });
+      expect(openSpy).toHaveBeenCalledWith(
+        "https://example.test/docs",
+        "_blank",
+        "noopener,noreferrer",
+      );
+    } finally {
+      openSpy.mockRestore();
+    }
   });
 });
 
