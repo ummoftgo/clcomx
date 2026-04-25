@@ -58,6 +58,7 @@
   import { createEditorRuntimeState } from "../features/editor/state/editor-runtime-state.svelte";
   import { createDraftComposerController } from "../features/terminal/controller/draft-composer-controller";
   import { createAuxTerminalRuntimeController } from "../features/terminal/controller/aux-terminal-runtime-controller";
+  import { createAuxTerminalResizeController } from "../features/terminal/controller/aux-terminal-resize-controller";
   import { applyTerminalCompositionViewTheme } from "../features/terminal/controller/composition-view-theme";
   import { createMainTerminalRuntimeController } from "../features/terminal/controller/main-terminal-runtime-controller";
   import { buildOverlayLinkMenuItems } from "../features/terminal/controller/overlay-link-menu-items";
@@ -144,10 +145,6 @@
   let auxStateHydrated = false;
   let auxLayoutSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let assistPanelHeight = $state(0);
-  let resizingAux = false;
-  let auxResizePointerId: number | null = null;
-  let auxResizeStartY = 0;
-  let auxResizeStartPercent = 0;
   let testHookRegistered = $state(false);
   let writeParsedDisposable: IDisposable | null = null;
   let editorViewMode = $state<"terminal" | "editor">("terminal");
@@ -293,6 +290,25 @@
     writePty,
     resizePty,
   });
+  const auxTerminalResize = createAuxTerminalResizeController({
+    getAuxVisible: () => auxVisible,
+    getDefaultHeightPercent: () => settings.terminal.auxTerminalDefaultHeight,
+    getShellHeight: () => shellEl?.clientHeight ?? null,
+    getAssistPanelHeight: () => assistPanelHeight,
+    getHeightPercent: () => auxHeightPercent,
+    setHeightPercent: (value) => {
+      auxHeightPercent = value;
+    },
+    markHeightCustomized: () => {
+      auxHeightCustomized = true;
+    },
+  });
+  const {
+    cancelResizeTracking: cancelAuxResizeTracking,
+    clampHeightPercent: clampAuxHeightPercent,
+    handleResizeStart: handleAuxResizeStart,
+    stopResize: stopAuxResize,
+  } = auxTerminalResize;
   const overlayInteractionState = createOverlayInteractionState();
   const overlayInteraction = createOverlayInteractionController(overlayInteractionState, {
     getSessionId: () => sessionId,
@@ -415,13 +431,6 @@
       : $t("terminal.loading.connecting"),
   );
   const auxLoadingLabel = $derived($t("terminal.aux.loadingTitle"));
-
-  function clampAuxHeightPercent(value: number) {
-    if (!Number.isFinite(value)) {
-      return clampAuxHeightPercent(settings.terminal.auxTerminalDefaultHeight);
-    }
-    return Math.min(70, Math.max(18, Math.round(value)));
-  }
 
   function buildTerminalOptions(theme = getThemeById(settings.interface.theme)?.theme) {
     return {
@@ -799,7 +808,7 @@
 
   function hideAuxTerminal(options?: { restoreFocus?: boolean }) {
     auxVisible = false;
-    resizingAux = false;
+    cancelAuxResizeTracking();
     clearAuxLayoutSettleTimer();
     if (options?.restoreFocus ?? true) {
       focusOutput();
@@ -817,46 +826,6 @@
     }
 
     await ensureAuxTerminalVisible();
-  }
-
-  function stopAuxResize() {
-    resizingAux = false;
-    auxResizePointerId = null;
-    window.removeEventListener("pointermove", handleAuxResizeMove, true);
-    window.removeEventListener("pointerup", stopAuxResize, true);
-    window.removeEventListener("pointercancel", stopAuxResize, true);
-    document.body.style.removeProperty("cursor");
-    document.body.style.removeProperty("user-select");
-  }
-
-  function handleAuxResizeMove(event: PointerEvent) {
-    if (!resizingAux || auxResizePointerId !== event.pointerId || !shellEl) {
-      return;
-    }
-
-    event.preventDefault();
-    const delta = auxResizeStartY - event.clientY;
-    const availableHeight = Math.max(shellEl.clientHeight - assistPanelHeight - 12, 1);
-    const percentDelta = (delta / availableHeight) * 100;
-    auxHeightPercent = clampAuxHeightPercent(auxResizeStartPercent + percentDelta);
-    auxHeightCustomized = true;
-  }
-
-  function handleAuxResizeStart(event: PointerEvent) {
-    if (event.button !== 0 || !auxVisible) {
-      return;
-    }
-
-    event.preventDefault();
-    resizingAux = true;
-    auxResizePointerId = event.pointerId;
-    auxResizeStartY = event.clientY;
-    auxResizeStartPercent = auxHeightPercent;
-    document.body.style.cursor = "ns-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("pointermove", handleAuxResizeMove, true);
-    window.addEventListener("pointerup", stopAuxResize, true);
-    window.addEventListener("pointercancel", stopAuxResize, true);
   }
 
   function handleOutputChunk(event: PtyOutputChunk) {
