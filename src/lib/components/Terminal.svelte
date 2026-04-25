@@ -36,7 +36,6 @@
   import { getThemeById } from "../themes";
   import type { ContextMenuItem } from "../ui/context-menu";
   import { buildFontStack, serializeFontFamilyList } from "../font-family";
-  import { matchesShortcut } from "../hotkeys";
   import type { TerminalRendererPreference } from "../types";
   import {
     listSessionFiles,
@@ -65,13 +64,15 @@
   import { createOverlayInteractionController } from "../features/terminal/controller/overlay-interaction-controller";
   import {
     focusTerminalSurface,
-    isEditableTarget,
-    isInsideInternalEditor,
     shouldInterceptTerminalCtrlC,
     waitForStableTerminalLayout,
     waitForTerminalPaint as waitForTerminalPaintFrame,
     writeTerminalData,
   } from "../features/terminal/controller/terminal-dom-helpers";
+  import {
+    shouldHandleAuxShortcut,
+    shouldHandleEditorShortcut,
+  } from "../features/terminal/controller/terminal-shortcut-routing";
   import {
     createTerminalRendererController,
     releaseTerminalRendererController,
@@ -596,22 +597,15 @@
   }
 
   function handleAuxShortcut(event: KeyboardEvent) {
-    if (!visible || !matchesShortcut(event, settings.terminal.auxTerminalShortcut)) {
-      return;
-    }
-
-    const targetNode = event.target instanceof Node ? event.target : null;
-
-    if (
-      (overlayInteractionState.pendingClipboardImage !== null ||
-        overlayInteractionState.editorPickerVisible) &&
-      targetNode !== null &&
-      !shellEl.contains(targetNode)
-    ) {
-      return;
-    }
-
-    if (isEditableTarget(event.target) && targetNode !== null && !shellEl.contains(targetNode)) {
+    if (!shouldHandleAuxShortcut({
+      event,
+      visible,
+      shortcut: settings.terminal.auxTerminalShortcut,
+      shellElement: shellEl,
+      hasBlockingOverlay:
+        overlayInteractionState.pendingClipboardImage !== null ||
+        overlayInteractionState.editorPickerVisible,
+    })) {
       return;
     }
 
@@ -621,19 +615,11 @@
   }
 
   function handleEditorShortcut(event: KeyboardEvent) {
-    if (!visible || !matchesShortcut(event, "Ctrl+P")) {
-      return;
-    }
-
-    const targetNode = event.target instanceof Node ? event.target : null;
-    const insideTerminalShell = targetNode !== null && shellEl.contains(targetNode);
-    const insideEditorSurface = isInsideInternalEditor(targetNode);
-
-    if (targetNode !== null && !insideTerminalShell && !insideEditorSurface) {
-      return;
-    }
-
-    if (isEditableTarget(event.target) && !insideTerminalShell && !insideEditorSurface) {
+    if (!shouldHandleEditorShortcut({
+      event,
+      visible,
+      shellElement: shellEl,
+    })) {
       return;
     }
 
