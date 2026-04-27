@@ -83,6 +83,46 @@ describe("editor navigation heuristics", () => {
     });
   });
 
+  it("resolves aliased PHP use bindings through the full definition path", async () => {
+    const readWorkspaceFile = vi.fn<
+      (wslPath: string) => Promise<NavigationFileSnapshot>
+    >(async (wslPath) => ({
+      wslPath,
+      languageId: "php",
+      content:
+        "<?php\n" +
+        "namespace App\\Support;\n\n" +
+        "class GreetingService\n" +
+        "{\n}\n",
+    }));
+
+    const location = await findHeuristicDefinition({
+      modelPath: "/home/user/work/project/app/Http/Controller.php",
+      languageId: "php",
+      content:
+        "<?php\n" +
+        "use App\\Support\\GreetingService as Greeter;\n\n" +
+        "$service = new Greeter();\n",
+      lineNumber: 4,
+      column: 20,
+      workspaceRoot: "/home/user/work/project",
+      workspaceFiles: [
+        {
+          wslPath: "/home/user/work/project/app/Support/GreetingService.php",
+          relativePath: "app/Support/GreetingService.php",
+          basename: "GreetingService.php",
+        },
+      ],
+      readWorkspaceFile,
+    });
+
+    expect(location).toEqual({
+      wslPath: "/home/user/work/project/app/Support/GreetingService.php",
+      line: 4,
+      column: 7,
+    });
+  });
+
   it("finds current-file PHP function definitions without reading another file", async () => {
     const readWorkspaceFile = vi.fn();
     const location = await findHeuristicDefinition({

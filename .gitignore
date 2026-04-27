@@ -27,6 +27,7 @@ temp/
 # Local assistant / developer state
 .codex
 .claude/
+.agent-works/
 .worktrees/
 HANDOVER.md
 docs/plans/
