@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "clcomx"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "portable-pty",
  "serde",
