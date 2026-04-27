@@ -8,11 +8,9 @@ import {
   SVELTE_LANGUAGE_IDS,
   type HeuristicDefinitionRequest,
   type HeuristicDocumentSymbol,
-  type JSImportBinding,
   type NavigationLocation,
   type PHPUseBinding,
   type PhpExpressionToken,
-  type ScriptBlock,
 } from "../features/editor/navigation/contracts";
 import {
   escapeRegExp,
@@ -26,6 +24,8 @@ import {
   joinWslPath,
   normalizeWslPath,
 } from "../features/editor/navigation/wsl-path-utils";
+import { parseJsImports as parseJsImportsFromModule } from "./navigation/js-imports";
+import { extractScriptBlocks as extractScriptBlocksFromModule } from "./navigation/script-blocks";
 import { basenameFromPath, directoryFromPath } from "./path";
 export type {
   HeuristicDefinitionRequest,
@@ -180,7 +180,7 @@ function findJsTsDefinition(
   request: HeuristicDefinitionRequest,
   symbol: string,
 ): Promise<NavigationLocation | null> | NavigationLocation | null {
-  const imports = parseJsImports(request.content, request.languageId);
+  const imports = parseJsImportsFromModule(request.content, request.languageId);
   const binding = imports.find((entry) => entry.localName === symbol);
   if (!binding) {
     return null;
@@ -265,7 +265,7 @@ async function findSvelteDefinition(
     };
   }
 
-  const imports = parseJsImports(request.content, request.languageId);
+  const imports = parseJsImportsFromModule(request.content, request.languageId);
   const binding = imports.find((entry) => entry.localName === symbol);
   if (!binding) {
     return null;
@@ -333,7 +333,7 @@ async function resolveImportedDefinition(
 }
 
 function findJsLikeExportedSymbol(content: string, symbolName: string): NavigationLocation | null {
-  const blocks = extractScriptBlocks(content, false);
+  const blocks = extractScriptBlocksFromModule(content, false);
   for (const block of blocks) {
     const exact =
       findNamedExportLocation(block.content, symbolName, block.lineOffset) ??
@@ -556,7 +556,7 @@ function collectPhpSymbols(content: string): HeuristicDocumentSymbol[] {
 
 function collectSvelteSymbols(content: string): HeuristicDocumentSymbol[] {
   const symbols: HeuristicDocumentSymbol[] = [];
-  for (const block of extractScriptBlocks(content, true)) {
+  for (const block of extractScriptBlocksFromModule(content, true)) {
     symbols.push(...collectJsLikeSymbols(block.content, block.lineOffset));
   }
   return dedupeSymbols(symbols);
@@ -637,130 +637,6 @@ function dedupeSymbols(symbols: HeuristicDocumentSymbol[]) {
     seen.add(key);
     return true;
   });
-}
-
-function parseJsImports(content: string, languageId: string): JSImportBinding[] {
-  const blocks = extractScriptBlocks(content, SVELTE_LANGUAGE_IDS.has(languageId));
-  const bindings: JSImportBinding[] = [];
-
-  for (const block of blocks) {
-    for (const match of block.content.matchAll(
-      /^\s*import\s+(type\s+)?(.+?)\s+from\s+["']([^"']+)["'];?/gm,
-    )) {
-      const specifier = match[2]?.trim();
-      const source = match[3]?.trim();
-      if (!specifier || !source) {
-        continue;
-      }
-
-      bindings.push(...parseJsImportSpecifier(specifier, source));
-    }
-
-    for (const match of block.content.matchAll(
-      /^\s*export\s+\{([^}]+)\}\s+from\s+["']([^"']+)["'];?/gm,
-    )) {
-      const source = match[2]?.trim();
-      if (!source) {
-        continue;
-      }
-      for (const part of match[1].split(",")) {
-        const normalized = part.trim();
-        if (!normalized) {
-          continue;
-        }
-        const aliasMatch = /^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/.exec(
-          normalized,
-        );
-        if (!aliasMatch) {
-          continue;
-        }
-
-        bindings.push({
-          localName: aliasMatch[2] || aliasMatch[1],
-          importedName: aliasMatch[1],
-          source,
-        });
-      }
-    }
-  }
-
-  return bindings;
-}
-
-function parseJsImportSpecifier(specifier: string, source: string): JSImportBinding[] {
-  const bindings: JSImportBinding[] = [];
-  const trimmed = specifier.trim();
-  if (!trimmed) {
-    return bindings;
-  }
-
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    return parseNamedJsImports(trimmed.slice(1, -1), source);
-  }
-
-  if (trimmed.startsWith("* as ")) {
-    const localName = trimmed.slice(5).trim();
-    if (localName) {
-      bindings.push({ localName, importedName: "*", source });
-    }
-    return bindings;
-  }
-
-  if (trimmed.includes(",")) {
-    const [defaultImport, remainder] = trimmed.split(/,(.+)/, 2);
-    if (defaultImport?.trim()) {
-      bindings.push({
-        localName: defaultImport.trim(),
-        importedName: "default",
-        source,
-      });
-    }
-
-    if (remainder?.trim()) {
-      if (remainder.trim().startsWith("{")) {
-        bindings.push(...parseNamedJsImports(remainder.trim().slice(1, -1), source));
-      } else if (remainder.trim().startsWith("* as ")) {
-        bindings.push({
-          localName: remainder.trim().slice(5).trim(),
-          importedName: "*",
-          source,
-        });
-      }
-    }
-
-    return bindings;
-  }
-
-  bindings.push({
-    localName: trimmed,
-    importedName: "default",
-    source,
-  });
-  return bindings;
-}
-
-function parseNamedJsImports(specifierBody: string, source: string): JSImportBinding[] {
-  const bindings: JSImportBinding[] = [];
-  for (const part of specifierBody.split(",")) {
-    const normalized = part.trim();
-    if (!normalized) {
-      continue;
-    }
-
-    const aliasMatch = /^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/.exec(
-      normalized,
-    );
-    if (!aliasMatch) {
-      continue;
-    }
-
-    bindings.push({
-      localName: aliasMatch[2] || aliasMatch[1],
-      importedName: aliasMatch[1],
-      source,
-    });
-  }
-  return bindings;
 }
 
 function parsePhpUses(content: string): PHPUseBinding[] {
@@ -874,28 +750,6 @@ function findDefaultExportLocation(content: string, lineOffset = 0): NavigationL
   }
 
   return null;
-}
-
-function extractScriptBlocks(content: string, svelteAware: boolean): ScriptBlock[] {
-  if (!svelteAware) {
-    return [{ content, lineOffset: 0 }];
-  }
-
-  const blocks: ScriptBlock[] = [];
-  for (const match of content.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gm)) {
-    const innerContent = match[1] ?? "";
-    const fullMatch = match[0] ?? "";
-    const matchIndex = match.index ?? 0;
-    const openTagEnd = fullMatch.indexOf(">") + 1;
-    const innerStartIndex = matchIndex + Math.max(openTagEnd, 0);
-    const startPosition = offsetToLineColumn(content, innerStartIndex);
-    blocks.push({
-      content: innerContent,
-      lineOffset: startPosition.line - 1,
-    });
-  }
-
-  return blocks.length > 0 ? blocks : [{ content, lineOffset: 0 }];
 }
 
 function looksLikeFileSpecifier(value: string) {
