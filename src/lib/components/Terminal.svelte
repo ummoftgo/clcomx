@@ -2,7 +2,6 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { Terminal, type IDisposable } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
-  import { WebLinksAddon } from "@xterm/addon-web-links";
   import TerminalEmbeddedEditorSurface from "../features/terminal/view/TerminalEmbeddedEditorSurface.svelte";
   import TerminalOverlayStack from "../features/terminal/view/TerminalOverlayStack.svelte";
   import TerminalRuntimeSurface from "../features/terminal/view/TerminalRuntimeSurface.svelte";
@@ -45,7 +44,7 @@
     writeSessionFile,
   } from "../editors";
   import { warmMonacoEditorRuntime } from "../editor/monaco-host";
-  import { createTerminalFileLinks } from "../terminal/file-links";
+  import { createTerminalLinks } from "../terminal/file-links";
   import {
     isClaudeFooterGhostingMitigationEnabled,
     syncTerminalUnicodeWidth,
@@ -153,8 +152,6 @@
   let editorRootDir = $state("");
   const editorQuickOpenState = createEditorQuickOpenState();
   const editorRuntimeState = createEditorRuntimeState();
-  const WEB_LINK_REGEX = /(?:https?|ftp):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/i;
-
   const settings = getSettings();
   const bootstrap = getBootstrap();
   const softFollowExperimentEnabled = $derived(
@@ -824,30 +821,21 @@
 
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon(
-      (event, url) => {
-        if (event.button !== 0) {
-          return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-        terminal?.clearSelection();
-        openContextMenu({ kind: "url", url }, event.clientX, event.clientY);
-      },
-      {
-        urlRegex: WEB_LINK_REGEX,
-        hover: handleLinkHover,
-        leave: handleLinkLeave,
-      },
-    ));
     fileLinkProviderDisposable = term.registerLinkProvider({
       provideLinks(bufferLineNumber, callback) {
         callback(
-          createTerminalFileLinks(
-            term,
-            bufferLineNumber,
-            (event, text) => {
+          createTerminalLinks(term, bufferLineNumber, {
+            onUrlActivate: (event, url) => {
+              if (event.button !== 0) {
+                return;
+              }
+
+              event.preventDefault();
+              event.stopPropagation();
+              terminal?.clearSelection();
+              openContextMenu({ kind: "url", url }, event.clientX, event.clientY);
+            },
+            onFileActivate: (event, text) => {
               if (event.button !== 0) {
                 return;
               }
@@ -856,9 +844,9 @@
               event.stopPropagation();
               void openFileLinkMenu(text, event);
             },
-            handleLinkHover,
-            handleLinkLeave,
-          ),
+            onHover: handleLinkHover,
+            onLeave: handleLinkLeave,
+          }),
         );
       },
     });
