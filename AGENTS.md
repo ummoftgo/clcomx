@@ -28,3 +28,10 @@ Do not continue iterative patching until that review loop is complete.
 - If implementation is likely to continue after discussion or documentation, finish that work first and launch only once the current slice is actually ready for runtime verification.
 - When multiple agents are involved, do not treat one finished code path as permission to launch early; wait until the shared conclusion and required follow-up edits are complete.
 - Before reporting that the app has been launched, verify that the intended build command has fully completed and that the launch corresponds to the final artifact for the current slice.
+
+## Review Guidelines
+
+- When leaving review feedback, comments, findings, or inline code-review notes, write them in Korean by default.
+- Keep review comments actionable: include the affected file or line, the observed issue, why it matters, and the recommended fix.
+- Order review findings by severity when multiple issues are reported: Critical, High, Medium, Low, Info.
+- Use English technical identifiers, API names, command names, and exact code symbols as written in the source when translating them would reduce precision.
