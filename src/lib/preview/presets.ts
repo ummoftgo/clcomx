@@ -55,7 +55,7 @@ function createHistoryEntry(
   distro: string,
   workDir: string,
   title: string,
-  resumeToken: string | null,
+  _resumeToken: string | null,
   lastOpenedAt: string,
 ): TabHistoryEntry {
   return {
@@ -63,7 +63,7 @@ function createHistoryEntry(
     distro,
     workDir,
     title,
-    resumeToken,
+    resumeToken: null,
     lastOpenedAt,
   };
 }

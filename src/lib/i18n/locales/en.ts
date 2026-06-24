@@ -313,6 +313,7 @@ const en = {
       draftPlaceholder: "Keep live typing in the terminal. Use this draft only when you need multiline staging or image paths.",
       draftHint: "Ctrl+Enter sends draft. Enter adds a newline.",
       clipboardNoImage: "Clipboard does not contain an image.",
+      clipboardTooLarge: "Clipboard image is too large ({size}). The limit is {limit}.",
       startFailed: "Failed to start terminal: {message}",
     },
     editor: {

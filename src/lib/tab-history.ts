@@ -7,14 +7,14 @@ export async function recordTabHistoryEntry(
   distro: string,
   workDir: string,
   title: string,
-  resumeToken?: string | null,
+  _resumeToken?: string | null,
 ): Promise<TabHistoryEntry[]> {
   return invoke<TabHistoryEntry[]>("record_tab_history", {
     agentId,
     distro,
     workDir,
     title,
-    resumeToken,
+    resumeToken: null,
   });
 }
 

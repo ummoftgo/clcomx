@@ -446,7 +446,7 @@ describe("previewInvoke history commands", () => {
       distro: "Ubuntu-24.04",
       workDir: "/home/user/work/project",
       title: "Updated title",
-      resumeToken: "resume-preview-1",
+      resumeToken: null,
     });
     expect(first.some((entry) => entry.title === "claudemx")).toBe(false);
 
@@ -540,5 +540,6 @@ describe("previewInvoke history commands", () => {
     }>("bootstrap_app");
 
     expect(bootstrap.tabHistory[0]?.title).toBe("Mutable return");
+    expect(bootstrap.tabHistory[0]).toMatchObject({ resumeToken: null });
   });
 });

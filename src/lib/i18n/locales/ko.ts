@@ -313,6 +313,7 @@ const ko = {
       draftPlaceholder: "기본 입력은 터미널에 직접 하세요. 드래프트는 멀티라인 입력이나 이미지 경로 보관이 필요할 때만 사용하세요.",
       draftHint: "Ctrl+Enter 로 전송합니다. Enter 는 줄바꿈입니다.",
       clipboardNoImage: "클립보드에 이미지가 없습니다.",
+      clipboardTooLarge: "클립보드 이미지가 너무 큽니다({size}). 제한은 {limit}입니다.",
       startFailed: "터미널 시작 실패: {message}",
     },
     editor: {

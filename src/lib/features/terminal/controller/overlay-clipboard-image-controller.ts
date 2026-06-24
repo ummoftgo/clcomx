@@ -2,6 +2,7 @@ import type {
   PendingClipboardImage,
   SavedClipboardImage,
 } from "../../../clipboard";
+import { formatImageSize, MAX_CLIPBOARD_IMAGE_BYTES } from "../../../clipboard";
 import type { OverlayInteractionState } from "../state/overlay-interaction-state.svelte";
 
 type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
@@ -75,6 +76,14 @@ export function createOverlayClipboardImageController(
 
   const confirmClipboardImage = async () => {
     if (!state.pendingClipboardImage) return;
+
+    if (state.pendingClipboardImage.size > MAX_CLIPBOARD_IMAGE_BYTES) {
+      state.clipboardError = deps.t("terminal.assist.clipboardTooLarge", {
+        size: formatImageSize(state.pendingClipboardImage.size),
+        limit: formatImageSize(MAX_CLIPBOARD_IMAGE_BYTES),
+      });
+      return;
+    }
 
     state.clipboardBusy = true;
     state.clipboardError = null;

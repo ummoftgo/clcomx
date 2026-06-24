@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PendingClipboardImage, SavedClipboardImage } from "../../../clipboard";
+import {
+  MAX_CLIPBOARD_IMAGE_BYTES,
+  type PendingClipboardImage,
+  type SavedClipboardImage,
+} from "../../../clipboard";
 import { createOverlayClipboardImageController } from "./overlay-clipboard-image-controller";
 import { createOverlayInteractionState } from "../state/overlay-interaction-state.svelte";
 
@@ -152,6 +156,20 @@ describe("overlay-clipboard-image-controller", () => {
     expect(state.pendingClipboardImage).toBeNull();
     expect(state.clipboardBusy).toBe(false);
     expect(deps.focusOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects oversized images with a translated error before saving", async () => {
+    const { controller, deps, state } = createController();
+    state.pendingClipboardImage = {
+      ...createPending("blob:large"),
+      size: MAX_CLIPBOARD_IMAGE_BYTES + 1,
+    };
+
+    await controller.confirmClipboardImage();
+
+    expect(state.clipboardError).toBe("terminal.assist.clipboardTooLarge");
+    expect(deps.saveClipboardImage).not.toHaveBeenCalled();
+    expect(state.clipboardBusy).toBe(false);
   });
 
   it("keeps the pending image and surfaces an error when save fails", async () => {

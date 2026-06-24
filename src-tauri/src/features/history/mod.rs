@@ -103,17 +103,31 @@ fn read_tab_history() -> Result<Vec<TabHistoryEntry>, String> {
 
     let contents = fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-    let history = serde_json::from_str::<TabHistoryFile>(&contents)
+    let mut history = serde_json::from_str::<TabHistoryFile>(&contents)
         .map_err(|e| format!("Invalid tab_history.json: {}", e))?;
+    for entry in &mut history.items {
+        entry.resume_token = None;
+    }
 
     Ok(history.items)
+}
+
+fn sanitize_tab_history_entries(entries: &[TabHistoryEntry]) -> Vec<TabHistoryEntry> {
+    entries
+        .iter()
+        .cloned()
+        .map(|mut entry| {
+            entry.resume_token = None;
+            entry
+        })
+        .collect()
 }
 
 fn write_tab_history(entries: &[TabHistoryEntry]) -> Result<(), String> {
     let path = tab_history_path()?;
     ensure_parent_dir(&path)?;
     let contents = serde_json::to_string_pretty(&TabHistoryFile {
-        items: entries.to_vec(),
+        items: sanitize_tab_history_entries(entries),
     })
     .map_err(|e| format!("Failed to serialize tab history: {}", e))?;
 
@@ -130,27 +144,11 @@ fn trim_tab_history_entries(entries: &mut Vec<TabHistoryEntry>, limit: u16) -> b
     true
 }
 
-fn normalize_resume_token(resume_token: Option<String>) -> Option<String> {
-    resume_token
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-}
-
-fn normalized_resume_token_ref<'a>(resume_token: Option<&'a str>) -> Option<&'a str> {
-    resume_token
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-}
-
 fn tab_history_entries_match(left: &TabHistoryEntry, right: &TabHistoryEntry) -> bool {
     normalize_agent_id(&left.agent_id) == normalize_agent_id(&right.agent_id)
         && left.distro == right.distro
         && left.work_dir == right.work_dir
         && left.title == right.title
-        && normalized_resume_token_ref(left.resume_token.as_deref())
-            == normalized_resume_token_ref(right.resume_token.as_deref())
         && left.last_opened_at == right.last_opened_at
 }
 
@@ -175,26 +173,13 @@ fn upsert_tab_history_entry(
     distro: String,
     work_dir: String,
     title: String,
-    resume_token: Option<String>,
+    _resume_token: Option<String>,
 ) {
     let normalized_agent_id = normalize_agent_id(&agent_id);
-    let normalized_resume_token = normalize_resume_token(resume_token);
-
     entries.retain(|entry| {
-        if let Some(resume_token) = &normalized_resume_token {
-            return !(entry.agent_id == normalized_agent_id
-                && entry.resume_token.as_ref() == Some(resume_token));
-        }
-
-        !(entry.agent_id == normalized_agent_id
+        !(normalize_agent_id(&entry.agent_id) == normalized_agent_id
             && entry.distro == distro
-            && entry.work_dir == work_dir
-            && entry
-                .resume_token
-                .as_ref()
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty())
-                .is_none())
+            && entry.work_dir == work_dir)
     });
 
     entries.insert(
@@ -204,7 +189,7 @@ fn upsert_tab_history_entry(
             distro,
             work_dir,
             title,
-            resume_token: normalized_resume_token,
+            resume_token: None,
             last_opened_at: now_timestamp(),
         },
     );
@@ -265,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_tab_history_keeps_distinct_resume_sessions_for_same_path() {
+    fn upsert_tab_history_coalesces_resume_sessions_for_same_path() {
         let mut entries = vec![
             TabHistoryEntry {
                 agent_id: "claude".into(),
@@ -302,10 +287,8 @@ mod tests {
             Some("resume-a".into()),
         );
 
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].resume_token.as_deref(), Some("resume-a"));
-        assert_eq!(entries[1].resume_token.as_deref(), Some("resume-b"));
-        assert_eq!(entries[2].resume_token, None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].resume_token, None);
 
         upsert_tab_history_entry(
             &mut entries,
@@ -316,10 +299,8 @@ mod tests {
             None,
         );
 
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].resume_token, None);
-        assert_eq!(entries[1].resume_token.as_deref(), Some("resume-a"));
-        assert_eq!(entries[2].resume_token.as_deref(), Some("resume-b"));
     }
 
     #[test]
@@ -345,6 +326,23 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].agent_id, "codex");
         assert_eq!(entries[1].agent_id, "claude");
+    }
+
+    #[test]
+    fn upsert_tab_history_does_not_store_resume_tokens() {
+        let mut entries = Vec::new();
+
+        upsert_tab_history_entry(
+            &mut entries,
+            "claude".into(),
+            EXAMPLE_DISTRO.into(),
+            "/same".into(),
+            "same".into(),
+            Some("resume-secret".into()),
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].resume_token, None);
     }
 
     #[test]

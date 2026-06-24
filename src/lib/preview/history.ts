@@ -10,7 +10,6 @@ function sameHistoryEntry(left: TabHistoryEntry, right: TabHistoryEntry) {
     left.distro === right.distro &&
     left.workDir === right.workDir &&
     left.title === right.title &&
-    (left.resumeToken ?? null) === (right.resumeToken ?? null) &&
     left.lastOpenedAt === right.lastOpenedAt
   );
 }
@@ -37,7 +36,7 @@ export function recordPreviewHistoryEntry(
     distro: String(args?.distro ?? "Ubuntu-24.04"),
     workDir: String(args?.workDir ?? defaultWorkDir),
     title: String(args?.title ?? "workspace"),
-    resumeToken: (args?.resumeToken as string | null | undefined) ?? null,
+    resumeToken: null,
     lastOpenedAt: new Date().toISOString(),
   };
 
@@ -45,8 +44,7 @@ export function recordPreviewHistoryEntry(
     return !(
       existing.agentId === entry.agentId &&
       existing.distro === entry.distro &&
-      existing.workDir === entry.workDir &&
-      (existing.resumeToken ?? null) === (entry.resumeToken ?? null)
+      existing.workDir === entry.workDir
     );
   });
 

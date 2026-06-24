@@ -1,5 +1,8 @@
 import { invoke } from "./tauri/core";
 
+export const MAX_CLIPBOARD_IMAGE_BYTES = 25 * 1024 * 1024;
+export const CLIPBOARD_IMAGE_TOO_LARGE_ERROR = "CLCOMX_CLIPBOARD_IMAGE_TOO_LARGE";
+
 export interface SavedClipboardImage {
   hostPath: string;
   wslPath: string;
@@ -68,6 +71,10 @@ export async function saveClipboardImage(
   image: PendingClipboardImage,
   distro: string,
 ): Promise<SavedClipboardImage> {
+  if (image.size > MAX_CLIPBOARD_IMAGE_BYTES) {
+    throw new Error(CLIPBOARD_IMAGE_TOO_LARGE_ERROR);
+  }
+
   const bytes = Array.from(new Uint8Array(await image.blob.arrayBuffer()));
   return await invoke<SavedClipboardImage>("save_clipboard_image", {
     bytes,

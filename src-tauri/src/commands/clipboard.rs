@@ -3,7 +3,16 @@ use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const MAX_CLIPBOARD_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_IMAGE_CACHE_BYTES: u64 = 250 * 1024 * 1024;
+
+fn image_cache_save_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +64,32 @@ fn accumulate_cache_stats(path: &Path) -> Result<(u64, u64), String> {
     }
 
     Ok((files, bytes))
+}
+
+fn validate_clipboard_image_request(
+    cache_dir: &Path,
+    incoming_bytes: usize,
+    max_image_bytes: usize,
+    max_cache_bytes: u64,
+) -> Result<(), String> {
+    if incoming_bytes > max_image_bytes {
+        return Err(format!(
+            "Clipboard image is too large: {} bytes exceeds the {} byte limit",
+            incoming_bytes, max_image_bytes
+        ));
+    }
+
+    let incoming_bytes = u64::try_from(incoming_bytes)
+        .map_err(|_| "Clipboard image is too large to process".to_string())?;
+    let (_, cache_bytes) = accumulate_cache_stats(cache_dir)?;
+    if cache_bytes.saturating_add(incoming_bytes) > max_cache_bytes {
+        return Err(format!(
+            "Image cache quota exceeded: {} existing bytes plus {} incoming bytes exceeds the {} byte cache limit",
+            cache_bytes, incoming_bytes, max_cache_bytes
+        ));
+    }
+
+    Ok(())
 }
 
 fn extension_for_mime(mime_type: &str) -> &'static str {
@@ -156,6 +191,15 @@ pub fn save_clipboard_image(
     let cache_dir = image_cache_dir()?;
     fs::create_dir_all(&cache_dir)
         .map_err(|e| format!("Failed to create {}: {}", cache_dir.display(), e))?;
+    let _save_guard = image_cache_save_lock()
+        .lock()
+        .map_err(|_| "Image cache lock is poisoned".to_string())?;
+    validate_clipboard_image_request(
+        &cache_dir,
+        bytes.len(),
+        MAX_CLIPBOARD_IMAGE_BYTES,
+        MAX_IMAGE_CACHE_BYTES,
+    )?;
 
     let extension = extension_for_mime(mime_type.as_deref().unwrap_or("image/png"));
     let path = next_timestamped_path(&cache_dir, extension)?;
@@ -283,5 +327,34 @@ mod tests {
         let path = PathBuf::from(&wsl_path);
         let result = host_path_to_wsl(&path, EXAMPLE_DISTRO).unwrap();
         assert_eq!(result, wsl_path);
+    }
+
+    #[test]
+    fn rejects_clipboard_images_above_the_per_image_limit() {
+        let err = validate_clipboard_image_request(
+            Path::new("/unused"),
+            11,
+            10,
+            100,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("too large"));
+    }
+
+    #[test]
+    fn rejects_clipboard_images_that_would_exceed_the_cache_quota() {
+        let cache_dir = std::env::temp_dir().join(format!(
+            "clcomx-clipboard-cache-quota-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&cache_dir);
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(cache_dir.join("existing.png"), [0u8; 8]).unwrap();
+
+        let err = validate_clipboard_image_request(&cache_dir, 3, 10, 10).unwrap_err();
+
+        let _ = fs::remove_dir_all(&cache_dir);
+        assert!(err.contains("cache"));
     }
 }

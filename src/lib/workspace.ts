@@ -8,7 +8,23 @@ export interface PtyResumeCaptureResult {
 export async function saveWorkspaceSnapshot(
   workspace: WorkspaceSnapshot,
 ): Promise<void> {
-  await invoke("save_workspace", { workspace });
+  await invoke("save_workspace", { workspace: sanitizeWorkspaceSnapshotForSave(workspace) });
+}
+
+export function sanitizeWorkspaceSnapshotForSave(
+  workspace: WorkspaceSnapshot,
+): WorkspaceSnapshot {
+  return {
+    ...workspace,
+    windows: workspace.windows.map((window) => ({
+      ...window,
+      tabs: window.tabs.map((tab) => ({
+        ...tab,
+        ptyId: null,
+        resumeToken: null,
+      })),
+    })),
+  };
 }
 
 export async function setSessionPty(

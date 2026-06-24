@@ -227,7 +227,7 @@
                     </div>
                     <span class="recent-path" title={entry.workDir}>{entry.workDir}</span>
                     {#if entry.resumeToken}
-                      <span class="recent-token" title={entry.resumeToken}>
+                      <span class="recent-token">
                         {getAgentLabel(entry.agentId ?? "claude")} · {getAgentDefinition(entry.agentId ?? "claude").resumeTokenLabel} · {summarizeResumeToken(entry.resumeToken)}
                       </span>
                     {/if}

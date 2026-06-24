@@ -1,5 +1,11 @@
 use std::process::Command;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalUrlCommand {
+    program: &'static str,
+    args: Vec<String>,
+}
+
 fn validate_external_url(value: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -19,32 +25,56 @@ fn validate_external_url(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+fn external_url_command_for_target(
+    target_os: &str,
+    validated_url: &str,
+) -> Result<ExternalUrlCommand, String> {
+    match target_os {
+        "windows" => Ok(ExternalUrlCommand {
+            program: "rundll32.exe",
+            args: vec![
+                "url.dll,FileProtocolHandler".to_string(),
+                validated_url.to_string(),
+            ],
+        }),
+        "macos" => Ok(ExternalUrlCommand {
+            program: "open",
+            args: vec![validated_url.to_string()],
+        }),
+        "unix" => Ok(ExternalUrlCommand {
+            program: "xdg-open",
+            args: vec![validated_url.to_string()],
+        }),
+        _ => Err(format!("Unsupported URL opener target: {target_os}")),
+    }
+}
+
+fn spawn_external_url_command(command: ExternalUrlCommand) -> Result<(), String> {
+    Command::new(command.program)
+        .args(&command.args)
+        .spawn()
+        .map_err(|error| format!("Failed to open URL: {error}"))?;
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
     let validated = validate_external_url(&url)?;
 
     #[cfg(target_os = "windows")]
     {
-        Command::new("cmd")
-            .args(["/C", "start", "", &validated])
-            .spawn()
-            .map_err(|error| format!("Failed to open URL: {error}"))?;
+        spawn_external_url_command(external_url_command_for_target("windows", &validated)?)?;
     }
 
     #[cfg(target_os = "macos")]
     {
-        Command::new("open")
-            .arg(&validated)
-            .spawn()
-            .map_err(|error| format!("Failed to open URL: {error}"))?;
+        spawn_external_url_command(external_url_command_for_target("macos", &validated)?)?;
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        Command::new("xdg-open")
-            .arg(&validated)
-            .spawn()
-            .map_err(|error| format!("Failed to open URL: {error}"))?;
+        spawn_external_url_command(external_url_command_for_target("unix", &validated)?)?;
     }
 
     Ok(())
@@ -52,7 +82,7 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_external_url;
+    use super::{external_url_command_for_target, validate_external_url};
 
     #[test]
     fn accepts_supported_url_schemes() {
@@ -76,5 +106,15 @@ mod tests {
         assert!(validate_external_url("javascript:alert(1)").is_err());
         assert!(validate_external_url("https://").is_err());
         assert!(validate_external_url("not-a-url").is_err());
+    }
+
+    #[test]
+    fn windows_opener_keeps_urls_out_of_cmd_shell_parsing() {
+        let url = "https://example.test/path?x=1&echo=not-a-command";
+        let command = external_url_command_for_target("windows", url).unwrap();
+
+        assert_ne!(command.program, "cmd");
+        assert!(!command.args.iter().any(|arg| arg == "/C"));
+        assert!(command.args.iter().any(|arg| arg == url));
     }
 }
