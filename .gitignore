@@ -31,7 +31,9 @@ temp/
 .agent-works/
 .worktrees/
 HANDOVER.md
-docs/plans/
+docs/plans/*
+!docs/plans/agent-direct-runtime/
+!docs/plans/agent-direct-runtime/*.md
 docs/subtasks/
 
 # Logs and temp files
