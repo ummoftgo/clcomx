@@ -23,4 +23,5 @@ export interface AgentDefinition {
 
 export interface AgentCommandOptions {
   extraArgs?: readonly string[];
+  envVars?: Readonly<Record<string, string>>;
 }

@@ -94,12 +94,25 @@ function getAgentCommandOptions(agentId: AgentId): AgentCommandOptions | undefin
     return undefined;
   }
 
-  const flags = buildClaudeCliFlags(getSettings().terminal.claudeCliFlags);
-  if (flags.length === 0) {
+  const terminal = getSettings().terminal;
+  const extraArgs = buildClaudeCliFlags(terminal.claudeCliFlags);
+  const envVars: Record<string, string> = {};
+  if (terminal.claudeTui === "fullscreen") {
+    envVars.CLAUDE_CODE_NO_FLICKER = "1";
+  } else if (terminal.claudeTui === "default") {
+    envVars.CLAUDE_CODE_NO_FLICKER = "0";
+  }
+
+  const hasArgs = extraArgs.length > 0;
+  const hasEnv = Object.keys(envVars).length > 0;
+  if (!hasArgs && !hasEnv) {
     return undefined;
   }
 
-  return { extraArgs: flags };
+  return {
+    ...(hasArgs ? { extraArgs } : {}),
+    ...(hasEnv ? { envVars } : {}),
+  };
 }
 
 export async function spawnShellPty(

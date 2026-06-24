@@ -4,7 +4,7 @@
   import FontPicker from "../../FontPicker.svelte";
   import { eventToShortcut, normalizeShortcut } from "../../../hotkeys";
   import { getSettings, updateSettings } from "../../../stores/settings.svelte";
-  import type { TerminalRendererPreference } from "../../../types";
+  import type { ClaudeTuiPreference, TerminalRendererPreference } from "../../../types";
 
   const settings = getSettings();
 
@@ -37,6 +37,14 @@
     updateSettings({
       terminal: {
         renderer: (event.target as HTMLSelectElement).value as TerminalRendererPreference,
+      },
+    });
+  }
+
+  function handleClaudeTuiInput(event: Event) {
+    updateSettings({
+      terminal: {
+        claudeTui: (event.target as HTMLSelectElement).value as ClaudeTuiPreference,
       },
     });
   }
@@ -132,6 +140,20 @@
         <span class="toggle-copy">{$t("settings.fields.claudeFooterGhostingMitigationLabel")}</span>
       </label>
       <p class="field-message toggle-message">{$t("settings.fields.claudeFooterGhostingMitigationHint")}</p>
+    </div>
+    <div class="field">
+      <label for="claude-tui">{$t("settings.fields.claudeTui")}</label>
+      <select
+        id="claude-tui"
+        class="number-input"
+        value={settings.terminal.claudeTui}
+        onchange={handleClaudeTuiInput}
+      >
+        <option value="auto">{$t("settings.claudeTui.modes.auto")}</option>
+        <option value="fullscreen">{$t("settings.claudeTui.modes.fullscreen")}</option>
+        <option value="default">{$t("settings.claudeTui.modes.default")}</option>
+      </select>
+      <p class="field-message">{$t("settings.fields.claudeTuiHint")}</p>
     </div>
   </div>
 

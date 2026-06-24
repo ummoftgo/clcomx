@@ -176,6 +176,8 @@ const en = {
       claudeEnableAutoModeHint: "Adds --enable-auto-mode at startup so Shift+Tab can include auto mode when your Claude plan and model support it. This does not start the session in auto mode by itself.",
       claudeFooterGhostingMitigationHint: "Reduces cases where footer or status fragments bleed into terminal content during heavy redraws. Disable this only if it causes a regression in your environment.",
       claudeFooterGhostingMitigationLabel: "Keep the Claude ghosting mitigation enabled",
+      claudeTui: "Claude screen rendering",
+      claudeTuiHint: "Controls how new Claude sessions launch. Fullscreen sets CLAUDE_CODE_NO_FLICKER=1 to use the flicker-free alt-screen renderer; Classic output forces the inline renderer; Follow Claude's setting injects nothing and lets Claude decide. You can still switch in-session with /tui. Research preview.",
       terminalScrollback: "Terminal scrollback",
       terminalScrollbackHint: "Controls how many lines the terminal keeps in memory for scrolling. Restored sessions reopen at the latest output.",
       auxTerminalShortcut: "Aux terminal shortcut",
@@ -234,6 +236,13 @@ const en = {
       modes: {
         dom: "DOM (stable default)",
         webgl: "WebGL (opt-in)",
+      },
+    },
+    claudeTui: {
+      modes: {
+        auto: "Follow Claude's setting",
+        fullscreen: "Fullscreen (alt-screen)",
+        default: "Classic output",
       },
     },
     inputAssist: {

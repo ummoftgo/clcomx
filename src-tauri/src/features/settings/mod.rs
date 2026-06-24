@@ -17,6 +17,7 @@ const MAX_EDITOR_FONT_SIZE: u16 = 24;
 const DEFAULT_TERMINAL_RENDERER: &str = "dom";
 const DEFAULT_CLAUDE_FOOTER_GHOSTING_MITIGATION: bool = true;
 const DEFAULT_CLAUDE_ENABLE_AUTO_MODE: bool = true;
+const DEFAULT_CLAUDE_TUI: &str = "auto";
 const DEFAULT_AUX_TERMINAL_SHORTCUT: &str = "Ctrl+`";
 const DEFAULT_AUX_TERMINAL_HEIGHT: u16 = 28;
 const MIN_AUX_TERMINAL_HEIGHT: u16 = 18;
@@ -111,6 +112,7 @@ pub struct TerminalSettingsPayload {
     pub renderer: String,
     pub claude_footer_ghosting_mitigation: bool,
     pub claude_cli_flags: ClaudeCliFlagsPayload,
+    pub claude_tui: String,
     pub scrollback: u32,
     pub draft_max_rows: u16,
     pub aux_terminal_shortcut: String,
@@ -126,6 +128,7 @@ impl Default for TerminalSettingsPayload {
             renderer: DEFAULT_TERMINAL_RENDERER.into(),
             claude_footer_ghosting_mitigation: DEFAULT_CLAUDE_FOOTER_GHOSTING_MITIGATION,
             claude_cli_flags: ClaudeCliFlagsPayload::default(),
+            claude_tui: DEFAULT_CLAUDE_TUI.into(),
             scrollback: DEFAULT_SCROLLBACK,
             draft_max_rows: DEFAULT_DRAFT_MAX_ROWS,
             aux_terminal_shortcut: DEFAULT_AUX_TERMINAL_SHORTCUT.into(),
@@ -291,6 +294,14 @@ fn normalize_terminal_renderer(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "webgl" => "webgl".into(),
         _ => DEFAULT_TERMINAL_RENDERER.into(),
+    }
+}
+
+fn normalize_claude_tui(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fullscreen" => "fullscreen".into(),
+        "default" => "default".into(),
+        _ => DEFAULT_CLAUDE_TUI.into(),
     }
 }
 
@@ -523,6 +534,11 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         &[&["terminal", "claudeCliFlags", "enableAutoMode"]],
         settings.terminal.claude_cli_flags.enable_auto_mode,
     );
+    settings.terminal.claude_tui = normalize_claude_tui(&string_from_paths(
+        value,
+        &[&["terminal", "claudeTui"]],
+        &settings.terminal.claude_tui,
+    ));
     settings.terminal.scrollback = clamp_scrollback(u32_from_paths(
         value,
         &[&["terminal", "scrollback"]],
@@ -625,6 +641,7 @@ fn normalize_settings_payload(mut settings: SettingsPayload) -> SettingsPayload 
     );
     settings.terminal.draft_max_rows = clamp_draft_max_rows(settings.terminal.draft_max_rows);
     settings.terminal.renderer = normalize_terminal_renderer(&settings.terminal.renderer);
+    settings.terminal.claude_tui = normalize_claude_tui(&settings.terminal.claude_tui);
     settings.terminal.scrollback = clamp_scrollback(settings.terminal.scrollback);
     settings.terminal.aux_terminal_shortcut =
         normalize_aux_terminal_shortcut(&settings.terminal.aux_terminal_shortcut);
@@ -808,6 +825,25 @@ mod tests {
         let parsed = parse_settings_value(&raw).unwrap();
 
         assert!(!parsed.terminal.claude_cli_flags.enable_auto_mode);
+    }
+
+    #[test]
+    fn parse_settings_value_normalizes_claude_tui() {
+        let raw = json!({
+            "terminal": {
+                "claudeTui": "FULLSCREEN"
+            }
+        });
+        let parsed = parse_settings_value(&raw).unwrap();
+        assert_eq!(parsed.terminal.claude_tui, "fullscreen");
+
+        let invalid = json!({
+            "terminal": {
+                "claudeTui": "wat"
+            }
+        });
+        let invalid_parsed = parse_settings_value(&invalid).unwrap();
+        assert_eq!(invalid_parsed.terminal.claude_tui, DEFAULT_CLAUDE_TUI);
     }
 
     #[test]

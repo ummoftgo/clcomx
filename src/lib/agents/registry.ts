@@ -13,6 +13,14 @@ function joinShellCommand(parts: readonly string[]) {
   return parts.map(shellQuote).join(" ");
 }
 
+function buildEnvPrefix(envVars?: Readonly<Record<string, string>>) {
+  const entries = Object.entries(envVars ?? {});
+  if (entries.length === 0) {
+    return "";
+  }
+  return entries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ") + " ";
+}
+
 const BUILTIN_AGENTS: AgentDefinition[] = [
   {
     id: "claude",
@@ -22,10 +30,13 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
     resumeTokenLabel: "Session ID",
     icon: getBuiltinAgentIcon("claude"),
     buildStartCommand(options) {
-      return joinShellCommand(["claude", ...(options?.extraArgs ?? [])]);
+      return buildEnvPrefix(options?.envVars) + joinShellCommand(["claude", ...(options?.extraArgs ?? [])]);
     },
     buildResumeCommand(token: string, options) {
-      return joinShellCommand(["claude", "--resume", token, ...(options?.extraArgs ?? [])]);
+      return (
+        buildEnvPrefix(options?.envVars) +
+        joinShellCommand(["claude", "--resume", token, ...(options?.extraArgs ?? [])])
+      );
     },
   },
   {
@@ -73,10 +84,13 @@ export function getAgentDefinition(agentId: AgentId): AgentDefinition {
     resumeTokenLabel: "Session ID",
     icon: getBuiltinAgentIcon(agentId),
     buildStartCommand(options) {
-      return joinShellCommand([agentId, ...(options?.extraArgs ?? [])]);
+      return buildEnvPrefix(options?.envVars) + joinShellCommand([agentId, ...(options?.extraArgs ?? [])]);
     },
     buildResumeCommand(token: string, options) {
-      return joinShellCommand([agentId, "--resume", token, ...(options?.extraArgs ?? [])]);
+      return (
+        buildEnvPrefix(options?.envVars) +
+        joinShellCommand([agentId, "--resume", token, ...(options?.extraArgs ?? [])])
+      );
     },
   };
 }

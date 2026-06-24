@@ -41,6 +41,7 @@ describe("settings store", () => {
     expect(settings.terminal.claudeCliFlags.enableAutoMode).toBe(
       DEFAULT_SETTINGS.terminal.claudeCliFlags.enableAutoMode,
     );
+    expect(settings.terminal.claudeTui).toBe(DEFAULT_SETTINGS.terminal.claudeTui);
     expect(settings.editor.fontFamily).toBe(DEFAULT_SETTINGS.terminal.fontFamily);
     expect(settings.editor.fontFamilyFallback).toBe(DEFAULT_SETTINGS.terminal.fontFamilyFallback);
     expect(settings.editor.fontSize).toBe(16);
@@ -66,6 +67,7 @@ describe("settings store", () => {
         claudeCliFlags: {
           enableAutoMode: false,
         },
+        claudeTui: "fullscreen",
       },
       editor: {
         fontFamily: "Fira Code",
@@ -97,6 +99,7 @@ describe("settings store", () => {
             claudeCliFlags: expect.objectContaining({
               enableAutoMode: false,
             }),
+            claudeTui: "fullscreen",
           }),
           editor: expect.objectContaining({
             fontFamily: "Fira Code",
@@ -112,6 +115,7 @@ describe("settings store", () => {
     expect(getSettings().terminal.renderer).toBe("webgl");
     expect(getSettings().terminal.claudeFooterGhostingMitigation).toBe(false);
     expect(getSettings().terminal.claudeCliFlags.enableAutoMode).toBe(false);
+    expect(getSettings().terminal.claudeTui).toBe("fullscreen");
     expect(getSettings().editor.fontFamily).toBe("Fira Code");
     expect(getSettings().editor.fontFamilyFallback).toBe("monospace");
     expect(getSettings().editor.fontSize).toBe(15);

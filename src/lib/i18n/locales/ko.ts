@@ -176,6 +176,8 @@ const ko = {
       claudeEnableAutoModeHint: "시작 시 --enable-auto-mode를 붙여 Shift+Tab 순환에 auto가 포함되도록 합니다. 이 플래그만으로 auto mode로 바로 시작되지는 않으며, 실제 사용 가능 여부는 Claude 플랜과 모델 조건에 따라 달라집니다.",
       claudeFooterGhostingMitigationHint: "redraw가 많은 상황에서 footer나 상태 조각이 본문에 섞이는 현상을 줄입니다. 현재 환경에서 회귀가 있을 때만 끄는 것을 권장합니다.",
       claudeFooterGhostingMitigationLabel: "Claude ghosting 완화를 계속 사용",
+      claudeTui: "Claude 화면 렌더링",
+      claudeTuiHint: "새 Claude 세션이 어떻게 시작될지 정합니다. '전체 터미널 화면'은 CLAUDE_CODE_NO_FLICKER=1로 깜빡임 없는 alt-screen 렌더러를 사용하고, '기본 출력'은 인라인 렌더러를 강제하며, '설정을 따름'은 아무것도 주입하지 않고 Claude 자체 설정에 맡깁니다. 세션 안에서 /tui로 언제든 전환할 수 있습니다. (연구 프리뷰)",
       terminalScrollback: "터미널 스크롤백",
       terminalScrollbackHint: "스크롤을 위해 메모리에 유지할 줄 수를 설정합니다. 복구된 세션은 항상 최신 출력 위치에서 다시 열립니다.",
       auxTerminalShortcut: "보조 터미널 단축키",
@@ -234,6 +236,13 @@ const ko = {
       modes: {
         dom: "DOM (안정 기본값)",
         webgl: "WebGL (opt-in)",
+      },
+    },
+    claudeTui: {
+      modes: {
+        auto: "설정을 따름",
+        fullscreen: "전체 터미널 화면",
+        default: "기본 출력",
       },
     },
     inputAssist: {

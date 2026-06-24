@@ -84,6 +84,7 @@ export interface TerminalSettings {
   renderer: TerminalRendererPreference;
   claudeFooterGhostingMitigation: boolean;
   claudeCliFlags: ClaudeCliFlagsSettings;
+  claudeTui: ClaudeTuiPreference;
   scrollback: number;
   draftMaxRows: number;
   auxTerminalShortcut: string;
@@ -101,6 +102,8 @@ export interface ClaudeCliFlagsSettings {
 }
 
 export type TerminalRendererPreference = "dom" | "webgl";
+
+export type ClaudeTuiPreference = "auto" | "fullscreen" | "default";
 
 export interface WorkspaceSettings {
   defaultAgentId: AgentId;
@@ -204,6 +207,7 @@ export const DEFAULT_SETTINGS: Settings = {
     claudeCliFlags: {
       enableAutoMode: true,
     },
+    claudeTui: "auto",
     scrollback: 10000,
     draftMaxRows: 5,
     auxTerminalShortcut: "Ctrl+`",
