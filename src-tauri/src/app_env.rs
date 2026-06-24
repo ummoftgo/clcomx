@@ -81,6 +81,44 @@ pub fn test_home_path() -> String {
 }
 
 #[cfg(test)]
+pub mod test_support {
+    use super::STATE_DIR_ENV;
+    use std::ffi::OsString;
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    pub struct StateDirEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        previous: Option<OsString>,
+    }
+
+    impl Drop for StateDirEnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(STATE_DIR_ENV, value);
+            } else {
+                std::env::remove_var(STATE_DIR_ENV);
+            }
+        }
+    }
+
+    fn state_dir_env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    pub fn set_state_dir_env(path: &Path) -> StateDirEnvGuard {
+        let lock = state_dir_env_lock().lock().unwrap();
+        let previous = std::env::var_os(STATE_DIR_ENV);
+        std::env::set_var(STATE_DIR_ENV, path);
+        StateDirEnvGuard {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::optional_bool_env_var;
 

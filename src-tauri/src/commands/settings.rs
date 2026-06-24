@@ -75,17 +75,10 @@ pub fn load_custom_css() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_env::test_support::set_state_dir_env;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    const STATE_DIR_ENV: &str = "CLCOMX_STATE_DIR";
-
-    fn env_lock() -> &'static Mutex<()> {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     fn unique_test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -101,11 +94,9 @@ mod tests {
 
     #[test]
     fn save_settings_retrims_persisted_tab_history_after_limit_changes() {
-        let _guard = env_lock().lock().unwrap();
         let state_dir = unique_test_dir("save-settings-history-trim");
         let _ = fs::create_dir_all(&state_dir);
-        let previous = std::env::var(STATE_DIR_ENV).ok();
-        std::env::set_var(STATE_DIR_ENV, &state_dir);
+        let _guard = set_state_dir_env(&state_dir);
 
         fs::write(
             state_dir.join("tab_history.json"),
@@ -145,11 +136,6 @@ mod tests {
             .cloned()
             .unwrap_or_default();
 
-        if let Some(value) = previous {
-            std::env::set_var(STATE_DIR_ENV, value);
-        } else {
-            std::env::remove_var(STATE_DIR_ENV);
-        }
         let _ = fs::remove_dir_all(&state_dir);
 
         assert_eq!(items.len(), 1);

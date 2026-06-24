@@ -13,12 +13,21 @@ function joinShellCommand(parts: readonly string[]) {
   return parts.map(shellQuote).join(" ");
 }
 
+function assertValidEnvKey(key: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    throw new Error(`Invalid environment variable name: ${key}`);
+  }
+}
+
 function buildEnvPrefix(envVars?: Readonly<Record<string, string>>) {
   const entries = Object.entries(envVars ?? {});
   if (entries.length === 0) {
     return "";
   }
-  return entries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ") + " ";
+  return entries.map(([key, value]) => {
+    assertValidEnvKey(key);
+    return `${key}=${shellQuote(value)}`;
+  }).join(" ") + " ";
 }
 
 const BUILTIN_AGENTS: AgentDefinition[] = [

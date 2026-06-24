@@ -12,6 +12,24 @@ describe("agent registry", () => {
     );
   });
 
+  it("prefixes Claude commands with validated environment variables", () => {
+    const agent = getAgentDefinition("claude");
+    const options = { envVars: { CLAUDE_CODE_NO_FLICKER: "1" } };
+
+    expect(agent.buildStartCommand(options)).toBe("CLAUDE_CODE_NO_FLICKER='1' 'claude'");
+    expect(agent.buildResumeCommand("session-123", options)).toBe(
+      "CLAUDE_CODE_NO_FLICKER='1' 'claude' '--resume' 'session-123'",
+    );
+  });
+
+  it("rejects invalid environment variable names", () => {
+    const agent = getAgentDefinition("claude");
+
+    expect(() => agent.buildStartCommand({ envVars: { "BAD KEY": "1" } })).toThrow(
+      "Invalid environment variable name",
+    );
+  });
+
   it("keeps Codex resume commands unchanged without extra args", () => {
     const agent = getAgentDefinition("codex");
 

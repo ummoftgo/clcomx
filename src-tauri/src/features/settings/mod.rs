@@ -663,25 +663,18 @@ fn normalize_settings_payload(mut settings: SettingsPayload) -> SettingsPayload 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_env::test_support::set_state_dir_env;
     use crate::features::history::MIN_TAB_HISTORY_LIMIT;
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const EXAMPLE_DISTRO: &str = "ExampleDistro";
     const SECOND_DISTRO: &str = "SecondDistro";
     const EXAMPLE_PATH: &str = "/home/tester/work";
     const SECOND_PATH: &str = "/srv/app";
-    const STATE_DIR_ENV: &str = "CLCOMX_STATE_DIR";
-
-    fn env_lock() -> &'static Mutex<()> {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     fn unique_test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "clcomx-settings-tests-{}-{}-{}",
@@ -904,11 +897,9 @@ mod tests {
 
     #[test]
     fn load_settings_or_default_reads_and_normalizes_settings_from_disk() {
-        let _guard = env_lock().lock().unwrap();
         let state_dir = unique_test_dir("load-settings");
         let _ = fs::create_dir_all(&state_dir);
-        let previous = std::env::var(STATE_DIR_ENV).ok();
-        std::env::set_var(STATE_DIR_ENV, &state_dir);
+        let _guard = set_state_dir_env(&state_dir);
 
         let path = state_dir.join("setting.json");
         fs::write(
@@ -954,11 +945,6 @@ mod tests {
 
         let loaded = load_settings_or_default();
 
-        if let Some(value) = previous {
-            std::env::set_var(STATE_DIR_ENV, value);
-        } else {
-            std::env::remove_var(STATE_DIR_ENV);
-        }
         let _ = fs::remove_dir_all(&state_dir);
 
         assert_eq!(loaded.language, "ko");
@@ -1003,11 +989,9 @@ mod tests {
 
     #[test]
     fn save_settings_payload_normalizes_before_persisting_to_disk() {
-        let _guard = env_lock().lock().unwrap();
         let state_dir = unique_test_dir("save-settings");
         let _ = fs::create_dir_all(&state_dir);
-        let previous = std::env::var(STATE_DIR_ENV).ok();
-        std::env::set_var(STATE_DIR_ENV, &state_dir);
+        let _guard = set_state_dir_env(&state_dir);
 
         let mut settings = SettingsPayload::default();
         settings.language = "en-US".into();
@@ -1035,11 +1019,6 @@ mod tests {
         let saved = save_settings_payload(settings).unwrap();
         let persisted = read_settings().unwrap().unwrap();
 
-        if let Some(value) = previous {
-            std::env::set_var(STATE_DIR_ENV, value);
-        } else {
-            std::env::remove_var(STATE_DIR_ENV);
-        }
         let _ = fs::remove_dir_all(&state_dir);
 
         assert_eq!(saved.language, "en");

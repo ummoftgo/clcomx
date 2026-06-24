@@ -9,8 +9,18 @@ vi.mock("./tauri/core", () => ({
 }));
 
 import { resolvePtyHomeDir, spawnPty } from "./pty";
+import { initializeSettings } from "./stores/settings.svelte";
 
 describe("spawnPty", () => {
+  function lastSpawnCommand() {
+    const call = mocks.invokeMock.mock.calls[mocks.invokeMock.mock.calls.length - 1] as unknown as [unknown, {
+      command: string;
+      args: string[];
+    }];
+    const payload = call[1];
+    return String(payload.args[payload.args.length - 1] ?? "");
+  }
+
   it("emits a one-shot HOME metadata marker before launching the shell", async () => {
     await spawnPty(120, 40, "codex", "Ubuntu-24.04", "/home/tester/workspace", null);
 
@@ -26,6 +36,42 @@ describe("spawnPty", () => {
     expect(command).toContain("CLCOMX_HOME");
     expect(command).toContain("printf '\\033]633;CLCOMX_HOME;%s\\007'");
     expect(command).toContain("cd '/home/tester/workspace'");
+  });
+
+  it("maps Claude TUI settings to launch environment variables", async () => {
+    initializeSettings({
+      terminal: {
+        claudeCliFlags: {
+          enableAutoMode: false,
+        },
+        claudeTui: "auto",
+      },
+    });
+    await spawnPty(120, 40, "claude", "Ubuntu-24.04", "/home/tester/workspace", null);
+    expect(lastSpawnCommand()).toContain("cd '/home/tester/workspace' && 'claude'");
+    expect(lastSpawnCommand()).not.toContain("CLAUDE_CODE_NO_FLICKER");
+
+    initializeSettings({
+      terminal: {
+        claudeCliFlags: {
+          enableAutoMode: false,
+        },
+        claudeTui: "fullscreen",
+      },
+    });
+    await spawnPty(120, 40, "claude", "Ubuntu-24.04", "/home/tester/workspace", null);
+    expect(lastSpawnCommand()).toContain("CLAUDE_CODE_NO_FLICKER='1' 'claude'");
+
+    initializeSettings({
+      terminal: {
+        claudeCliFlags: {
+          enableAutoMode: false,
+        },
+        claudeTui: "default",
+      },
+    });
+    await spawnPty(120, 40, "claude", "Ubuntu-24.04", "/home/tester/workspace", null);
+    expect(lastSpawnCommand()).toContain("CLAUDE_CODE_NO_FLICKER='0' 'claude'");
   });
 });
 

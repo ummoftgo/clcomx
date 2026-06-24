@@ -377,15 +377,8 @@ fn backup_theme_pack_file(path: &PathBuf) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_env::test_support::set_state_dir_env;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
-
-    const STATE_DIR_ENV: &str = "CLCOMX_STATE_DIR";
-
-    fn env_lock() -> &'static Mutex<()> {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     fn unique_test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -564,19 +557,12 @@ mod tests {
 
     #[test]
     fn load_custom_css_returns_empty_string_when_file_is_missing() {
-        let _guard = env_lock().lock().unwrap();
         let state_dir = unique_test_dir("missing-custom-css");
         let _ = fs::create_dir_all(&state_dir);
-        let previous = std::env::var(STATE_DIR_ENV).ok();
-        std::env::set_var(STATE_DIR_ENV, &state_dir);
+        let _guard = set_state_dir_env(&state_dir);
 
         let result = load_custom_css_or_default();
 
-        if let Some(value) = previous {
-            std::env::set_var(STATE_DIR_ENV, value);
-        } else {
-            std::env::remove_var(STATE_DIR_ENV);
-        }
         let _ = fs::remove_dir_all(&state_dir);
 
         assert_eq!(result.unwrap(), "");
