@@ -30,7 +30,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/api": "^2.11.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/addon-unicode11": "^0.9.0",
@@ -41,17 +41,17 @@
     "svelte-i18n": "^4.0.1"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^7.0.0",
-    "@tauri-apps/cli": "^2.10.1",
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@tauri-apps/cli": "^2.11.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/svelte": "^5.3.1",
     "@testing-library/user-event": "^14.6.1",
     "jsdom": "^29.0.1",
     "selenium-webdriver": "^4.41.0",
-    "svelte": "^5.55.0",
+    "svelte": "^5.56.4",
     "svelte-check": "^4.4.5",
-    "typescript": "^6.0.2",
-    "vite": "^8.0.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.0",
     "vitest": "^4.1.2"
   }
 }
