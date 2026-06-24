@@ -2,21 +2,27 @@ import { describe, expect, it } from "vitest";
 import {
   applyTerminalCompositionViewTheme,
   getCompositionViewThemeVars,
-  hexToRgba,
+  toOpaqueColor,
 } from "./composition-view-theme";
 
 describe("composition-view-theme", () => {
-  it("converts short and long hex colors to rgba", () => {
-    expect(hexToRgba("#abc", 0.18, "fallback")).toBe("rgba(170, 187, 204, 0.18)");
-    expect(hexToRgba("#aabbcc", 0.18, "fallback")).toBe("rgba(170, 187, 204, 0.18)");
+  it("keeps opaque hex colors as-is", () => {
+    expect(toOpaqueColor("#abc", "fallback")).toBe("#abc");
+    expect(toOpaqueColor("#aabbcc", "fallback")).toBe("#aabbcc");
   });
 
-  it("uses fallback colors for invalid or missing hex input", () => {
-    expect(hexToRgba(undefined, 0.18, "fallback")).toBe("fallback");
-    expect(hexToRgba("not-a-color", 0.18, "fallback")).toBe("fallback");
+  it("strips the alpha channel from colors", () => {
+    expect(toOpaqueColor("#aabbcc80", "fallback")).toBe("#aabbcc");
+    expect(toOpaqueColor("rgba(170, 187, 204, 0.18)", "fallback")).toBe("rgb(170, 187, 204)");
+    expect(toOpaqueColor("rgb(1, 2, 3)", "fallback")).toBe("rgb(1, 2, 3)");
   });
 
-  it("keeps selection background ahead of cursor for composition emphasis", () => {
+  it("uses fallback colors for invalid or missing input", () => {
+    expect(toOpaqueColor(undefined, "fallback")).toBe("fallback");
+    expect(toOpaqueColor("not-a-color", "fallback")).toBe("fallback");
+  });
+
+  it("keeps selection background ahead of cursor for composition emphasis (opaque)", () => {
     expect(
       getCompositionViewThemeVars({
         foreground: "#eeeeee",
@@ -25,7 +31,7 @@ describe("composition-view-theme", () => {
       }),
     ).toEqual({
       foreground: "#eeeeee",
-      background: "rgba(18, 52, 86, 0.18)",
+      background: "#123456",
     });
   });
 
@@ -36,13 +42,26 @@ describe("composition-view-theme", () => {
       }),
     ).toEqual({
       foreground: "#f8fafc",
-      background: "rgba(171, 205, 239, 0.18)",
+      background: "#abcdef",
     });
 
     expect(getCompositionViewThemeVars(null)).toEqual({
       foreground: "#f8fafc",
-      background: "rgba(100, 116, 139, 0.18)",
+      background: "#64748b",
     });
+  });
+
+  it("produces a fully opaque composition background (no alpha)", () => {
+    for (const theme of [
+      { selectionBackground: "#44475a" },
+      { cursor: "#f8f8f2" },
+      { background: "#101820" },
+      null,
+    ]) {
+      const { background } = getCompositionViewThemeVars(theme);
+      expect(background).not.toMatch(/rgba\(/i);
+      expect(background).not.toMatch(/^#[\da-f]{8}$/i);
+    }
   });
 
   it("applies composition CSS variables to the terminal shell element", () => {
@@ -54,6 +73,6 @@ describe("composition-view-theme", () => {
     });
 
     expect(element.style.getPropertyValue("--ime-composition-fg")).toBe("#fdfdfd");
-    expect(element.style.getPropertyValue("--ime-composition-bg")).toBe("rgba(1, 2, 3, 0.18)");
+    expect(element.style.getPropertyValue("--ime-composition-bg")).toBe("#010203");
   });
 });

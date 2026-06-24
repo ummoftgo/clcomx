@@ -1264,7 +1264,9 @@
     padding: 0 1px;
     border-radius: 2px;
     color: var(--ime-composition-fg, #f8fafc);
-    background: var(--ime-composition-bg, rgba(15, 23, 42, 0.18));
+    /* Fallback must be fully opaque so the box masks the block cursor underneath
+       during IME composition. The CSS var is normally set from the active theme. */
+    background: var(--ime-composition-bg, #0f172a);
     box-shadow: none;
     border: none;
   }
