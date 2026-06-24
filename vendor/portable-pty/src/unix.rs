@@ -5,9 +5,13 @@ use anyhow::{bail, Error};
 use filedescriptor::FileDescriptor;
 use libc::{self, winsize};
 use std::cell::RefCell;
+use std::ffi::OsStr;
 use std::io::{Read, Write};
+use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::{io, mem, ptr};
 
 pub use std::os::unix::io::RawFd;
@@ -28,7 +32,7 @@ fn openpty(size: PtySize) -> anyhow::Result<(UnixMasterPty, UnixSlavePty)> {
 
     let result = unsafe {
         // BSDish systems may require mut pointers to some args
-        #[cfg_attr(feature = "cargo-clippy", allow(clippy::unnecessary_mut_passed))]
+        #[allow(clippy::unnecessary_mut_passed)]
         libc::openpty(
             &mut master,
             &mut slave,
@@ -42,9 +46,12 @@ fn openpty(size: PtySize) -> anyhow::Result<(UnixMasterPty, UnixSlavePty)> {
         bail!("failed to openpty: {:?}", io::Error::last_os_error());
     }
 
+    let tty_name = tty_name(slave);
+
     let master = UnixMasterPty {
         fd: PtyFd(unsafe { FileDescriptor::from_raw_fd(master) }),
         took_writer: RefCell::new(false),
+        tty_name,
     };
     let slave = UnixSlavePty {
         fd: PtyFd(unsafe { FileDescriptor::from_raw_fd(slave) }),
@@ -95,6 +102,33 @@ impl Read for PtyFd {
             }
             x => x,
         }
+    }
+}
+
+fn tty_name(fd: RawFd) -> Option<PathBuf> {
+    let mut buf = vec![0 as std::ffi::c_char; 128];
+
+    loop {
+        let res = unsafe { libc::ttyname_r(fd, buf.as_mut_ptr(), buf.len()) };
+
+        if res == libc::ERANGE {
+            if buf.len() > 64 * 1024 {
+                // on macOS, if the buf is "too big", ttyname_r can
+                // return ERANGE, even though that is supposed to
+                // indicate buf is "too small".
+                return None;
+            }
+            buf.resize(buf.len() * 2, 0 as std::ffi::c_char);
+            continue;
+        }
+
+        return if res == 0 {
+            let cstr = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+            let osstr = OsStr::from_bytes(cstr.to_bytes());
+            Some(PathBuf::from(osstr))
+        } else {
+            None
+        };
     }
 }
 
@@ -216,6 +250,9 @@ impl PtyFd {
                         libc::signal(*signo, libc::SIG_DFL);
                     }
 
+                    let empty_set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigprocmask(libc::SIG_SETMASK, &empty_set, std::ptr::null_mut());
+
                     // Establish ourselves as a session leader.
                     if libc::setsid() == -1 {
                         return Err(io::Error::last_os_error());
@@ -225,7 +262,7 @@ impl PtyFd {
                     // type::from(), but the size and potentially signedness
                     // are system dependent, which is why we're using `as _`.
                     // Suppress this lint for this section of code.
-                    #[cfg_attr(feature = "cargo-clippy", allow(clippy::cast_lossless))]
+                    #[allow(clippy::cast_lossless)]
                     if controlling_tty {
                         // Set the pty as the controlling terminal.
                         // Failure to do this means that delivery of
@@ -266,6 +303,7 @@ impl PtyFd {
 struct UnixMasterPty {
     fd: PtyFd,
     took_writer: RefCell<bool>,
+    tty_name: Option<PathBuf>,
 }
 
 /// Represents the slave end of a pty.
@@ -329,6 +367,10 @@ impl MasterPty for UnixMasterPty {
         Some(self.fd.0.as_raw_fd())
     }
 
+    fn tty_name(&self) -> Option<PathBuf> {
+        self.tty_name.clone()
+    }
+
     fn process_group_leader(&self) -> Option<libc::pid_t> {
         match unsafe { libc::tcgetpgrp(self.fd.0.as_raw_fd()) } {
             pid if pid > 0 => Some(pid),
@@ -337,7 +379,7 @@ impl MasterPty for UnixMasterPty {
     }
 
     fn get_termios(&self) -> Option<nix::sys::termios::Termios> {
-        nix::sys::termios::tcgetattr(self.fd.0.as_raw_fd()).ok()
+        nix::sys::termios::tcgetattr(self.fd.0.as_fd()).ok()
     }
 }
 

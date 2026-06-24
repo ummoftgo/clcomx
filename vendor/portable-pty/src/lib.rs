@@ -3,7 +3,7 @@
 //! Unlike other crates in this space, this crate provides a set
 //! of traits that allow selecting from different implementations
 //! at runtime.
-//! This crate is part of [wezterm](https://github.com/wez/wezterm).
+//! This crate is part of [wezterm](https://github.com/wezterm/wezterm).
 //!
 //! ```no_run
 //! use portable_pty::{CommandBuilder, PtySize, native_pty_system, PtySystem};
@@ -85,7 +85,7 @@ impl Default for PtySize {
 }
 
 /// Represents the master/control end of the pty
-pub trait MasterPty {
+pub trait MasterPty: Downcast + Send {
     /// Inform the kernel and thus the child process that the window resized.
     /// It will update the winsize information maintained by the kernel,
     /// and generate a signal for the child to notice and update its state.
@@ -113,6 +113,9 @@ pub trait MasterPty {
     #[cfg(unix)]
     fn as_raw_fd(&self) -> Option<unix::RawFd>;
 
+    #[cfg(unix)]
+    fn tty_name(&self) -> Option<std::path::PathBuf>;
+
     /// If applicable to the type of the tty, return the termios
     /// associated with the stream
     #[cfg(unix)]
@@ -120,10 +123,11 @@ pub trait MasterPty {
         None
     }
 }
+impl_downcast!(MasterPty);
 
 /// Represents a child process spawned into the pty.
 /// This handle can be used to wait for or terminate that child process.
-pub trait Child: std::fmt::Debug + ChildKiller {
+pub trait Child: std::fmt::Debug + ChildKiller + Downcast + Send {
     /// Poll the child to see if it has completed.
     /// Does not block.
     /// Returns None if the child has not yet terminated,
@@ -140,9 +144,10 @@ pub trait Child: std::fmt::Debug + ChildKiller {
     #[cfg(windows)]
     fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle>;
 }
+impl_downcast!(Child);
 
 /// Represents the ability to signal a Child to terminate
-pub trait ChildKiller: std::fmt::Debug {
+pub trait ChildKiller: std::fmt::Debug + Downcast + Send {
     /// Terminate the child process
     fn kill(&mut self) -> IoResult<()>;
 
@@ -151,6 +156,7 @@ pub trait ChildKiller: std::fmt::Debug {
     /// blocked in `.wait`.
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync>;
 }
+impl_downcast!(ChildKiller);
 
 /// Represents the slave side of a pty.
 /// Can be used to spawn processes into the pty.
@@ -191,6 +197,11 @@ impl ExitStatus {
     /// Returns the exit code that this ExitStatus was constructed with
     pub fn exit_code(&self) -> u32 {
         self.code
+    }
+
+    /// Returns the signal if present that this ExitStatus was constructed with
+    pub fn signal(&self) -> Option<&str> {
+        self.signal.as_deref()
     }
 }
 
