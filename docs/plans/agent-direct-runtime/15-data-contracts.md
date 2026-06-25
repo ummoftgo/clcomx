@@ -6,10 +6,10 @@
 >
 > **provider 매핑 정본**: Codex/ACP wire → normalized 변환표는 protocol ref 문서에 있다. 이 문서는 타입만 정의하고 매핑은 ref로 교차 참조한다.
 > - Codex: [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §8 (매핑표), §6 (핵심 타입), §7 (reconcile 규칙). pinned ref `rust-v0.142.0`.
-> - ACP: [`ref-acp-protocol.md`](ref-acp-protocol.md) §13 (매핑표), §4–§6 (content/tool/permission). pinned ref `schema-v1.16.0`, wire `protocolVersion = 1`.
+> - ACP: [`ref-acp-protocol.md`](ref-acp-protocol.md) §13 (매핑표), §4–§6 (content/tool/permission). wire `protocolVersion = 1`; schema artifact는 T0.0/OQ-41에서 확정(`schema-v1.16.0`은 baseline 후보, 구현 핀 아님).
 > - Claude ACP 구현체: [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md). pinned `@agentclientprotocol/claude-agent-acp@0.51.0` (commit `23626c9`).
 
-조사 시점: 2026-06-25. 코드 정합 기준: 브랜치 `feat/claude-tui-fullscreen-option`. 실제 코드 타입 컨벤션 출처: `src/lib/types.ts`, `src/lib/agents/types.ts`, `src/lib/pty.ts`.
+조사 시점: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조. 실제 코드 타입 컨벤션 출처: `src/lib/types.ts`, `src/lib/agents/types.ts`, `src/lib/pty.ts`.
 
 ---
 
@@ -225,6 +225,12 @@ export interface ApprovalRequest {
   body?: string;
   toolCallId?: string;
   options: ApprovalOption[];
+  /**
+   * UI 표현 분기 신호: "normal"(기본) = inline 카드, "escalation" = blocking modal.
+   * adapter가 provider escalation 신호(Codex sandbox 우회/danger-full-access,
+   * Claude bypassPermissions/ExitPlanMode)로 채운다. v1 매핑은 보수적(전부 normal),
+   * 정밀 매핑은 OQ-47 확정 후. 08 §4.4(inline vs modal 분기)·05/06 approval 매핑이 사용. */
+  severity?: "normal" | "escalation";
 }
 
 /** 승인 선택지. kind로 의미를 정규화(provider 원본 label은 label에 보존). */
@@ -262,6 +268,11 @@ export interface TokenUsage {
   cachedInputTokens?: number;
   outputTokens?: number;
   reasoningOutputTokens?: number;
+  /** ACP usage_update `{used,size}` 매핑(context window 축, Codex 토큰 축과 분리).
+   *  06 §3.6이 매핑, 08 contextUsage 게이지가 사용. OQ-02 해소. */
+  contextUsed?: number;
+  /** ACP usage_update `{used,size}`의 size(context window 총량). OQ-02 해소. */
+  contextSize?: number;
 }
 ```
 
@@ -271,7 +282,7 @@ export interface TokenUsage {
 - `ApprovalOption.kind`: ACP `PermissionOptionKind`는 4종(`allow_once`/`allow_always`/`reject_once`/`reject_always`)으로 1:1 (ref-acp §6). `cancel`/`other`는 Codex/내부용. Codex decision → kind는 ref-codex §8.1 표.
 - `ApprovalDecision.outcome`: ACP wire는 `selected`/`cancelled`만(ref-acp §6). `failed`는 CLCOMX 내부 전용.
 - `AgentPlanEntry.status`: Codex `TurnPlanStepStatus`는 `inProgress`(camelCase) → `in_progress` (ref-codex §6.8). ACP `PlanEntryStatus`는 이미 snake_case (ref-acp §10).
-- `TokenUsage`: Codex `TokenUsageBreakdown`의 `inputTokens`/`cachedInputTokens`/`outputTokens`/`reasoningOutputTokens` 직접 매핑(`totalTokens`는 버림) (ref-codex §6.7). ACP `UsageUpdate{used,size}`는 inputTokens 등으로 직접 매핑되지 않으므로 `used`만 보강하거나 raw 보존(ref-acp §10).
+- `TokenUsage`: Codex `TokenUsageBreakdown`의 `inputTokens`/`cachedInputTokens`/`outputTokens`/`reasoningOutputTokens` 직접 매핑(`totalTokens`는 버림) (ref-codex §6.7). ACP `UsageUpdate{used,size}`는 Codex 토큰 축과 분리된 context window 축이므로 `used`→`contextUsed`, `size`→`contextSize`로 매핑한다(ref-acp §10, 06 §3.6, 08 contextUsage 게이지; **OQ-02 해소**). `cost` 등 잔여 필드는 raw 보존.
 - **`agent_message`/`agent_message_delta`의 `channel` 누적·권위 (reconcile)**: `channel` 미지정은 `"response"`로 간주한다. `"response"`와 `"thought"`는 **별도 스트림**으로, 같은 messageId/contentIndex 안에서 각 채널별로 독립 append한다(두 채널을 한 본문에 섞지 않는다). `"thought"` 채널은 streaming delta를 점진 렌더용으로만 쓰고, completed reasoning item(`agent_message{channel:"thought", mode:"replace"}`)이 **권위**다 — delta 누적과 일치를 가정하지 않는다(메시지 reconcile 규칙은 `"response"` 한정). 누적·권위 규칙 정본은 04 §3.2.2/§3.2.5, provider 매핑은 Codex 05 §5.2 / ACP 06 §5.
 
 ---

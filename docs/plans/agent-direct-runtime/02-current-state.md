@@ -1,6 +1,6 @@
 # Current State
 
-> 이 문서는 CLCOMX의 **현재 PTY/xterm 중심 구조**를 코드 사실에 근거해 정밀 기술한다. 모든 경로/함수명/이벤트/타입은 `research/codebase-backend.md`·`research/codebase-frontend.md`가 확인한 commit(`e7a5f9e`, 브랜치 `feat/claude-tui-fullscreen-option`)에서 직접 읽은 것이다. direct runtime 설계의 출발점이자 "보존/분리 경계"의 권위 기준이다.
+> 이 문서는 CLCOMX의 **현재 PTY/xterm 중심 구조**를 코드 사실에 근거해 정밀 기술한다. 모든 경로/함수명/이벤트/타입은 `research/codebase-backend.md`·`research/codebase-frontend.md`가 확인한 commit `e7a5f9e`에서 직접 읽은 것이다. direct runtime 설계의 출발점이자 "보존/분리 경계"의 권위 기준이다. 구현 전에는 반드시 현재 작업트리의 실제 코드와 대조한다.
 >
 > **역할 분리**: 본 문서는 *현재 상태*를 기술한다. 목표 아키텍처는 [03](03-target-architecture.md), 공통 모델 규칙은 [04](04-normalized-agent-model.md), 타입 정본은 [15](15-data-contracts.md), backend runtime 계약은 [07](07-tauri-process-runtime.md)에 있다. 코드 1차 근거는 [`research/codebase-backend.md`](research/codebase-backend.md)·[`research/codebase-frontend.md`](research/codebase-frontend.md)이며, 본 문서는 그 사실을 direct runtime 관점에서 요약·해석한다.
 
@@ -204,8 +204,8 @@ invoke("pty_spawn", {
 
 | 시퀀스 | 의미 | emit 위치 | parse 위치 |
 | --- | --- | --- | --- |
-| `\033]633;CLCOMX_HOME;<base64>\007` | $HOME | pty.ts:66-69 (spawn 직후 1회) | Rust `consume_home_dir_osc`(parsing.rs); frontend `aux-shell-metadata.ts` |
-| `\033]633;CLCOMX_CWD;<base64>\007` | 보조 셸 cwd | pty.ts:133 (PROMPT_COMMAND마다) | frontend `aux-shell-metadata.ts` |
+| `\033]633;CLCOMX_HOME;<base64>\007` | $HOME | pty.ts:66-69 (spawn 직후 1회) | Rust `consume_home_dir_osc`(parsing.rs); frontend `src/lib/terminal/aux-shell-metadata.ts:3` |
+| `\033]633;CLCOMX_CWD;<base64>\007` | 보조 셸 cwd | pty.ts:133 (PROMPT_COMMAND마다) | frontend `src/lib/terminal/aux-shell-metadata.ts:2` |
 
 prefix 상수: Rust `HOME_DIR_OSC_PREFIX = "\u{1b}]633;CLCOMX_HOME;"`. base64 payload는 `decode_base64_utf8`로 디코딩. 부분 시퀀스는 `home_dir_osc_remainder`에 carry over.
 
@@ -232,7 +232,7 @@ state는 `main-terminal-runtime-state.svelte.ts`(`MainTerminalRuntimeState`). DO
 
 ### 5.3 host 조립부와 탭 전환 무재mount 계약
 
-`src/lib/components/Terminal.svelte`가 host다. `$props()`로 `SessionHostProps`(`sessionId, visible, agentId, distro, workDir, ptyId, resumeToken, sessionSnapshot, onPtyId, onAuxStateChange, onExit, onResumeFallback, onEditorSessionStateChange`)를 받는다. `onMount`에서 xterm 생성 → `term.open(outputEl)` → `listen("pty-output", ...)` + `listen("pty-exit", ...)` → `attachOrSpawnPty(...)`. template은 `TerminalEmbeddedEditorSurface`(Monaco)와 `TerminalRuntimeSurface`(xterm)를 **둘 다 mount**하고 `editorViewMode`로 하나만 보이게 한다(`Terminal.svelte:1152/1176`).
+`src/lib/components/Terminal.svelte`가 host다. `$props()`로 `SessionHostProps`(`sessionId, visible, agentId, distro, workDir, ptyId, resumeToken, sessionSnapshot, onPtyId, onAuxStateChange, onExit, onResumeFallback, onEditorSessionStateChange`)를 받는다(구조분해 `Terminal.svelte:98–115`). `onMount`에서 xterm 생성 → `term.open(outputEl)` → `listen("pty-output", ...)` + `listen("pty-exit", ...)` → `attachOrSpawnPty(...)`. template은 `TerminalEmbeddedEditorSurface`(Monaco)와 `TerminalRuntimeSurface`(xterm)를 **둘 다 mount**하고 `editorViewMode`로 하나만 보이게 한다(`Terminal.svelte:1152/1176`).
 
 핵심 계약(§3.3 frontend research): `SessionViewport`는 **모든 세션 host를 계속 mount**한 채 `visible`만 바꾼다. 비활성 host는 `.hidden` CSS로 숨겨지고 PTY/xterm 인스턴스는 살아있다 → **탭 전환이 host 재mount를 일으키지 않는다.** direct runtime의 transcript host도 이 계약(visible prop만 받고 자체 숨김, 비활성에서도 transport 유지)을 지켜야 한다.
 
@@ -302,7 +302,7 @@ direct runtime은 기존 `spawnPty`를 대체하지 않고 **새 runtime family*
 **direct runtime이 붙는 자리(integration points)** — [`research/codebase-backend.md`](research/codebase-backend.md) §9의 "연동 지점"과 [`research/codebase-frontend.md`](research/codebase-frontend.md) §10 체크리스트 인용:
 
 - backend: `commands/mod.rs`에 `pub mod agent_runtime;`, `lib.rs`에 `use` + `.manage(AgentRuntimeState::default())` + `generate_handler![]` 등록(3곳). 신설 모듈은 `features/agent_runtime/{mod,transport,process,tests}.rs` + `commands/agent_runtime.rs`([`research/codebase-backend.md`](research/codebase-backend.md) §9 표).
-- frontend host 분기: **옵션 B(권장)** — `SessionShell.svelte`(11줄 thin wrapper)에서 `session.runtimeKind`로 `<Terminal>` vs `<AgentRuntimeShell>` 분기. `SessionViewportProps`/`App.svelte`/`session-shell-loader` 변경 0([`research/codebase-frontend.md`](research/codebase-frontend.md) §9 옵션 B).
+- frontend host 분기: **옵션 B(권장)** — `SessionShell.svelte`(10줄 thin wrapper)에서 `session.runtimeKind`로 `<Terminal>` vs `<AgentRuntimeShell>` 분기. `SessionViewportProps`/`App.svelte`/`session-shell-loader` 변경 0([`research/codebase-frontend.md`](research/codebase-frontend.md) §9 옵션 B).
 - 타입/persistence: `SessionCore`/`WorkspaceTabSnapshot`에 `runtimeKind` optional 추가([15](15-data-contracts.md) §7.2), `session-factory.buildSession`·`createSessionHostProps` 전파.
 - callback 흐름: direct runtime은 ptyId가 없으므로 `onPtyId`/`onAuxStateChange`/`onResumeFallback` 흐름을 우회/대체해야 한다([`research/codebase-frontend.md`](research/codebase-frontend.md) §11 위험) — workspace autosave `$effect`가 transcript 세션을 죽은 세션으로 오인하지 않도록 검증 필요([13](13-risks-open-questions.md)).
 

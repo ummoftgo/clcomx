@@ -9,7 +9,7 @@
 > - **코드 현실**은 [`research/codebase-frontend.md`](research/codebase-frontend.md) / [`research/codebase-backend.md`](research/codebase-backend.md)의 §번호로 인용한다.
 > - **데이터 흐름 다이어그램(시퀀스/상태)**은 [`14-sequence-and-state.md`](14-sequence-and-state.md)에 있다. 이 문서는 흐름을 **요약**하고 세부 다이어그램은 14로 링크한다.
 
-조사 시점: 2026-06-25. 코드 정합 기준: 브랜치 `feat/claude-tui-fullscreen-option`.
+조사 시점: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조.
 
 ---
 
@@ -33,7 +33,7 @@ flowchart TB
   end
 
   subgraph Store["Session Store (state, 세션 단위 격리)"]
-    RtState["agent-runtime-state.svelte.ts<br/>transcript[], status, pendingApproval"]
+    RtState["agent-runtime-state.svelte.ts<br/>transcript[], status, pendingApprovals[] (파생)"]
     Composer["composer-state.svelte.ts"]
   end
 
@@ -102,21 +102,23 @@ flowchart TB
 ### 2.1 UI Layer (view)
 
 - **responsibility**: 렌더링만. transcript 항목·tool card·approval dialog·composer를 그리고, 사용자 입력을 controller 콜백으로 위임한다. 로직을 두지 않는다 (`research/codebase-frontend.md` §1.2 view 규약).
-- **in**: Store(`agent-runtime-state`)의 reactive 값(`transcript[]`, `status`, `pendingApproval`), host props `SessionHostProps`(`sessionId`/`visible`/`agentId`/`distro`/`workDir` 등, `research/codebase-frontend.md` §2.4).
+- **in**: Store(`agent-runtime-state`)의 reactive 값(`transcript[]`, `status`, `pendingApprovals[]`/`escalationApproval`), host props `SessionHostProps`(`sessionId`/`visible`/`agentId`/`distro`/`workDir` 등, `research/codebase-frontend.md` §2.4).
 - **out**: 사용자 의도(prompt submit, approval 선택, cancel)를 controller 콜백으로.
 - **owns**: 소유 상태 없음. DOM ref와 `$derived` 표시 값만. 비활성 탭에서도 unmount하지 않고 `visible` prop으로 CSS 토글한다 (`research/codebase-frontend.md` §3.3 무재mount 계약).
 - **핵심 컴포넌트**: host `AgentRuntimeShell.svelte`(= `Terminal.svelte` 대응), `AgentTranscriptSurface.svelte`, `tool-cards/*.svelte`, `ApprovalModal.svelte`(+ `ApprovalInlineCard.svelte`), `AgentComposer.svelte`. 컴포넌트명 정본은 [`08`](08-ui-composition.md) §10.
 
 ### 2.2 Session Store (state, 세션 단위 격리)
 
-- **responsibility**: 한 세션의 transcript·세션 상태·pending approval을 **권위 있게 보관**한다. UI는 이 store만 읽는다. transcript item 상태(message/tool card/command output/diff/approval/error)와 provider 원본 id(`ProviderRef`)를 보존한다.
+- **responsibility**: 한 세션의 transcript·세션 상태를 **권위 있게 보관**한다(approval 권위는 Event Router의 pending table — `owns` 주의 참조). UI는 이 store만 읽는다. transcript item 상태(message/tool card/command output/diff/approval/error)와 provider 원본 id(`ProviderRef`)를 보존한다.
 - **in**: Event Router가 적용하는 mutation(reducer 결과).
 - **out**: reactive 값(view가 구독).
-- **owns(소유 상태)**:
+- **owns(소유 상태)** (정본 view-model은 [`08`](08-ui-composition.md) §5 `AgentRuntimeViewState` — 아래는 그 요약):
   - `transcript: TranscriptItem[]` — message/tool/command/diff/error 항목. 각 항목은 [`15`](15-data-contracts.md) §1 `ProviderRef`를 보존.
   - `status: AgentSessionStatus` — [`15`](15-data-contracts.md) §2. 전이 규칙은 [`04`](04-normalized-agent-model.md) §2.
-  - `pendingApproval` / pending table — [`15`](15-data-contracts.md) §5 `ApprovalRequest`. 생명주기는 [`04`](04-normalized-agent-model.md) §4.
+  - `pendingApprovals: ApprovalRequest[]` / `escalationApproval: ApprovalRequest | null` — [`15`](15-data-contracts.md) §5 `ApprovalRequest`. inline(복수) vs modal(단수) **표시용 파생**(아래 주의). 생명주기는 [`04`](04-normalized-agent-model.md) §4.
+  - `capabilities` / `providerLabel` — composer feature gating·provider indicator용([`08`](08-ui-composition.md) §6.4·§6.5). adapter가 `initialize`에서 채움.
   - `agentRuntime` metadata(provider session/thread id 등, resume용) — [`15`](15-data-contracts.md) §7.1 `AgentRuntimeMetadata`.
+- **approval 상태 단일 소유(주의)**: approval 요청의 **권위 보관처는 Event Router의 pending request table**(`requestId → ApprovalRequest`, §2.3)이다. store의 `pendingApprovals`/`escalationApproval`은 그 table을 [`15`](15-data-contracts.md) §5 `ApprovalRequest.severity`로 분류해 view에 노출하는 **파생 표시 값**일 뿐, 별도 권위 store가 아니다(§5 원칙4 "같은 상태를 두 곳에서 쓰지 않는다"와 정합). `severity==="escalation"`만 `escalationApproval`(modal), 그 외 inline(기본값 `normal`, [`08`](08-ui-composition.md) §4.4, [`13`](13-risks-open-questions.md) OQ-47).
 - **규약**: 세션 인스턴스마다 격리돼야 하므로 **state class**(`createAgentRuntimeState()`)로 만든다. 윈도우 전역 상태(전역 approval queue 등)는 모듈 store(`*.svelte.ts`)로 분리한다 (`research/codebase-frontend.md` §1.3·§1.4 규약 결론).
 - **주의**: 기존 `live-session-store`는 세션 목록/활성 탭의 single source of truth를 그대로 유지한다. agent-runtime state는 그 위에 얹히는 **세션별 transcript 상태**다. `SessionViewMode`(`"terminal"|"editor"`)는 `"agent"`로 확장하지 **않는다** — host 종류는 `runtimeKind`로 구분한다 ([`15`](15-data-contracts.md) §7.2 주의, `research/codebase-frontend.md` §5).
 
@@ -166,7 +168,7 @@ flowchart TB
 - **in**: `agent_runtime_start`/`send`/`cancel`/`shutdown`/`get_snapshot` command([`15`](15-data-contracts.md) §8.2). `send`는 raw `JsonRpcMessage`를 받아 그대로 stdin에 framing해 쓴다.
 - **out**: `agent-runtime-message`(raw JSON-RPC)/`-stderr`/`-exit`/`-error`/`-backpressure` event([`15`](15-data-contracts.md) §8.3). message는 **변환 없이** 그대로 올린다.
 - **owns(소유 상태)**: `AgentRuntimeState`(`Mutex<HashMap<RuntimeId, AgentRuntime>>` + `next_id`). PTY `PtyState`와 **별도** state로 manage한다 — RuntimeId 공간을 PTY `u32` 세션 ID와 섞지 않는다 (`research/codebase-backend.md` §10 권고 1, [`07`](07-tauri-process-runtime.md) `transportKind` vs `SessionRuntimeKind` 구분).
-- **경계 강화(신규)**: `command`/`args`/`env`는 adapter 생성 값만 허용하고, Rust handler가 provider별 allowlist로 재검증한다. PTY의 자유 shell 문자열 모델을 따르지 않는다 — 현 코드에 선례 없는 의도적 강화 지점 ([`07`](07-tauri-process-runtime.md) §Tauri command v1 계약, `research/codebase-backend.md` §6·§10 권고 6, [`15`](15-data-contracts.md) §8.1 주석).
+- **경계 강화(신규)**: executable `command`는 renderer 입력에서 제거하고 backend가 provider로 신뢰 절대경로를 resolve한다. `args`/`env`는 adapter 생성 값만 허용하고, Rust handler가 provider별 allowlist로 재검증한다. PTY의 자유 shell 문자열 모델을 따르지 않는다 — 현 코드에 선례 없는 의도적 강화 지점 ([`07`](07-tauri-process-runtime.md) §Tauri command v1 계약, `research/codebase-backend.md` §6·§10 권고 6, [`15`](15-data-contracts.md) §8.1 주석).
 - **상세 설계**: framing/lifecycle/WSL 경계/logging은 전부 [`07`](07-tauri-process-runtime.md)에 정의된다. 동시성 모델(`std::thread` vs tokio)은 `research/codebase-backend.md` §7과 [`adr-001`](adr-001-direct-agent-runtime.md) 참조.
 
 ### 2.8 책임 매트릭스 (한눈에)
@@ -316,7 +318,7 @@ backend `agent-runtime-exit`/`-error` → Transport Client → Adapter가 `proce
 
 7. **terminal UI는 삭제하지 않는다.** legacy PTY는 `pty_*` command/`pty-*` event를 그대로 유지하고, explicit terminal card와 fallback runtime으로 남긴다([`04`](04-normalized-agent-model.md) §3.5, `research/codebase-backend.md` §10 권고 1·2). transcript와 terminal의 공존은 `SessionShell.svelte` 옵션 B 분기로 회귀를 최소화한다(§3.3).
 
-8. **보안 경계를 강화·유지한다.** (a) backend가 provider allowlist로 `command`/`args`를 검증한다(신규 강화, [`07`](07-tauri-process-runtime.md), `research/codebase-backend.md` §6·§10 권고 6). (b) provider session/thread/resume id는 기존 `pty_id`/`resume_token`과 동일하게 디스크 저장 직전 scrub한다([`15`](15-data-contracts.md) §7.3, `research/codebase-backend.md` §10 권고 7). (c) raw protocol log는 기본 비활성, redacted debug mode만([`13`](13-risks-open-questions.md) §Resolved defaults, [`07`](07-tauri-process-runtime.md) §Logging).
+8. **보안 경계를 강화·유지한다.** (a) backend가 provider allowlist로 backend-resolved executable과 `args`/`env`를 검증한다(신규 강화, [`07`](07-tauri-process-runtime.md), `research/codebase-backend.md` §6·§10 권고 6). renderer/adapter는 executable `command`를 넘기지 않는다. (b) provider session/thread/resume id는 기존 `pty_id`/`resume_token`과 동일하게 디스크 저장 직전 scrub한다([`15`](15-data-contracts.md) §7.3, `research/codebase-backend.md` §10 권고 7). (c) raw protocol log는 기본 비활성, redacted debug mode만([`13`](13-risks-open-questions.md) §Resolved defaults, [`07`](07-tauri-process-runtime.md) §Logging).
 
 9. **app launch 전에 protocol mapping을 검증한다.** adapter fixture(provider wire 샘플 → 기대 `AgentEvent`)와 reducer/store 단위 테스트로 매핑을 먼저 검증한다(`research/codebase-frontend.md` §8 테스트, `research/codebase-backend.md` §8 fixture replay). 수용 기준은 [`11`](11-testing-acceptance.md).
 

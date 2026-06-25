@@ -6,7 +6,7 @@
 >
 > **코드 현실 정합**: 본 규약은 새로 만든 규칙이 아니라, 현 코드(`src/`·`src-tauri/`)가 이미 따르는 구조를 명문화한 것이다. 코드 인용은 [`research/codebase-frontend.md`](research/codebase-frontend.md)(이하 FE §)·[`research/codebase-backend.md`](research/codebase-backend.md)(이하 BE §)를 따르되, **충돌 시 실제 코드가 정본**이며 대조 후 사용한다.
 
-확인일: 2026-06-25. 코드 정합 기준: 브랜치 `feat/claude-tui-fullscreen-option`.
+확인일: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조.
 
 ---
 

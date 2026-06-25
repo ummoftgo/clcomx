@@ -16,8 +16,8 @@
 
 | 자료 | URL | 버전/ref (확인일 2026-06-25) | 비고 |
 |---|---|---|---|
-| ACP 문서 | https://agentclientprotocol.com/protocol/overview | 문서 site, schema `schema-v1.16.0` (2026-06-24) | CLCOMX Claude adapter의 1차 protocol |
-| ACP releases | https://github.com/agentclientprotocol/agent-client-protocol/releases | `schema-v1.16.0` (2026-06-24T14:10Z), `schema-v1.15.0`, `schema-v1.14.0` | schema 태그는 문서 protocol version과 별개 축 (doc 01 주의) |
+| ACP 문서 | https://agentclientprotocol.com/protocol/overview | 문서 site, schema baseline 후보 `schema-v1.16.0` (2026-06-24 조사값, 구현 핀 아님) | CLCOMX Claude adapter의 1차 protocol. 실제 schema artifact는 T0.0/OQ-41에서 확정 |
+| ACP releases | https://github.com/agentclientprotocol/agent-client-protocol/releases | 작성 당시 조사값: `schema-v1.16.0`, `schema-v1.15.0`, `schema-v1.14.0`; 구현 전 public releases 재확인 필수 | schema 태그는 문서 protocol version과 별개 축 (doc 01/OQ-41 주의) |
 | ACP tool calls | https://agentclientprotocol.com/protocol/tool-calls | site | tool call kind/status/content/permission |
 | ACP content | https://agentclientprotocol.com/protocol/content | site | content block 5종 |
 | ACP terminals | https://agentclientprotocol.com/protocol/terminals | site | command output embed |
@@ -422,9 +422,9 @@ doc 08 Composer 절을 다음으로 구체화:
 ## 12. 미해결/재확인 필요 (open questions)
 
 1. **doc 04 `TokenUsage` vs ACP `usage_update`** — context gauge(`used`/`size`/`cost`)를 표현하려면 doc 04에 필드 추가가 필요한가? 현재 `TokenUsage`는 Codex 축(input/output/cached/reasoning)만 있다. (결정필요)
-2. **`agent_thought_chunk` / `user_message_chunk` 정확한 discriminator** — fetch 요약에서 누락. `schema/v1`(`schema-v1.16.0`) JSON Schema로 확정 필요(doc 01 재확인 체크).
+2. **`agent_thought_chunk` / `user_message_chunk` 정확한 discriminator** — fetch 요약에서 누락. T0.0/OQ-41에서 확정한 `schema/v1` JSON Schema로 확정 필요(doc 01 재확인 체크; `schema-v1.16.0`은 baseline 후보).
 3. **ACP diff content 필드(`oldText`/`newText`) vs doc 04 `diff`(`patch`)** — adapter에서 patch 변환 규칙 확정 필요.
 4. **`audio` content** — v1 미지원 결정 시 강등/표시 정책 확정(§3.2).
 5. **send/개행 키 바인딩** — Enter=전송 vs Shift+Enter=전송. 기존 CLCOMX UX 컨벤션과 통일 필요(§9.2).
 6. **session/thread 목록 UI** — Zed식 sidebar/switcher를 도입할지, 기존 CLCOMX 탭 모델에 turn status badge만 얹을지(§6.2).
-7. **claude-agent-acp 버전** — 로컬 npm latest는 0.51.0, doc 01은 0.50.0. ACP schema(`schema-v1.16.0`)와 호환 protocol version을 어댑터 의존성 고정 시 재확인(doc 01).
+7. **claude-agent-acp 버전** — 로컬 npm latest는 0.51.0, doc 01은 0.50.0. T0.0/OQ-41에서 확정한 ACP schema artifact와 호환 protocol version을 어댑터 의존성 고정 시 재확인(doc 01).

@@ -3,8 +3,8 @@
 > **⚠️ 스냅샷 — 코드 현실의 *시점* 매핑**: 이 문서는 아래 git ref 시점의 backend 코드 구조를 박제한 조사 스냅샷이다. 코드가 바뀌면 낡을 수 있으므로 **충돌 시 실제 코드(`src-tauri/`)가 정본이고 이 문서가 아니다.** 인용된 경로·심볼·줄번호는 실제 코드와 대조한 뒤 사용한다.
 
 조사일: 2026-06-25
-대상 git ref: 브랜치 `codex/direct-agent-runtime-docs`, commit `e7a5f9e4291bf24b9109948063f1581fc01f8208` (태그 없음)
-저장소: `/home/melbin/work/clcomx`
+대상 git ref: commit `e7a5f9e4291bf24b9109948063f1581fc01f8208` (태그 없음)
+저장소: 작업 시작 시 `pwd`와 `git rev-parse --show-toplevel`로 재확인한다. 2026-06-25 문서 정리 시 확인한 루트는 `/home/xenia/work/claudemx`다.
 스택: Tauri v2, Svelte 5, Rust PTY backend (`portable-pty` 0.9.0 vendored), `serde`/`serde_json`, `tauri-plugin-shell`
 
 > 본 문서는 "Direct Agent Runtime"(`codex app-server` / Claude ACP와 JSON-RPC로 직접 통신하는 새 런타임)을 추가하기 전에, 새 런타임이 공존/연동해야 할 백엔드 측 현실을 코드 사실에 근거하여 매핑한다. 모든 경로/함수명/타입은 위 commit에서 직접 읽고 확인한 것이다. 외부 protocol 근거는 [`01-source-map.md`](../01-source-map.md)에, 목표 command 계약은 [`07-tauri-process-runtime.md`](../07-tauri-process-runtime.md)에 정의되어 있으며 본 문서는 그것이 현재 코드와 어떻게 들어맞는지를 다룬다.
@@ -286,8 +286,8 @@ invoke("pty_spawn", {
 
 | 시퀀스 | 의미 | emit 위치 | parse 위치 |
 | --- | --- | --- | --- |
-| `\033]633;CLCOMX_HOME;<base64>\007` | $HOME 디렉터리 | pty.ts:66-69 (spawn 직후 1회) | Rust `consume_home_dir_osc` (parsing.rs:228); frontend `aux-shell-metadata.ts:3` |
-| `\033]633;CLCOMX_CWD;<base64>\007` | 보조 셸 현재 cwd | pty.ts:133 (PROMPT_COMMAND마다) | frontend `aux-shell-metadata.ts:2` |
+| `\033]633;CLCOMX_HOME;<base64>\007` | $HOME 디렉터리 | pty.ts:66-69 (spawn 직후 1회) | Rust `consume_home_dir_osc` (parsing.rs:228); frontend `src/lib/terminal/aux-shell-metadata.ts:3` |
+| `\033]633;CLCOMX_CWD;<base64>\007` | 보조 셸 현재 cwd | pty.ts:133 (PROMPT_COMMAND마다) | frontend `src/lib/terminal/aux-shell-metadata.ts:2` |
 
 prefix 상수: Rust `HOME_DIR_OSC_PREFIX = "\u{1b}]633;CLCOMX_HOME;"` (parsing.rs:1), terminator는 BEL(``) 또는 ST(`\\`). base64 payload는 `decode_base64_utf8`로 디코딩(parsing.rs:151-199, 표준 라이브러리 외부 의존 없이 직접 구현). 부분 시퀀스는 `home_dir_osc_remainder`에 carry over한다.
 
@@ -321,7 +321,7 @@ interface AgentCommandOptions { extraArgs?: readonly string[]; envVars?: Record<
 - `assertValidEnvKey`(registry.ts:16-20)가 env key를 `^[A-Za-z_][A-Za-z0-9_]*$`로 검증 — 잘못된 키는 throw.
 - claude 전용 옵션은 `pty.ts:getAgentCommandOptions`(pty.ts:92-116)가 settings에서 `claudeCliFlags`(`buildClaudeCliFlags`)와 `claudeTui`(`CLAUDE_CODE_NO_FLICKER` env)로 생성.
 
-**allowlist 관점(direct runtime 핵심)**: 현재는 frontend가 자유롭게 shell 문자열을 만들어 backend `pty_spawn`에 넘긴다 — backend에는 **executable allowlist 검증이 없다**. [`07-tauri-process-runtime.md`](../07-tauri-process-runtime.md) §Tauri command v1 계약은 direct runtime에서는 "provider별 allowlist를 Rust command handler가 검증하고, renderer가 임의 executable/shell string을 넘길 수 없게 한다"고 명시한다. 즉 **direct runtime은 PTY의 자유 shell 모델을 따르지 말고**, `AgentRuntimeStartParams`의 `provider` enum(`codex`|`claude`)에 따라 backend가 `command`/`args`를 검증·제한해야 한다. 이는 PTY 대비 의도적인 강화 지점이며, 현재 코드에 선례가 없으므로 새로 구현해야 한다.
+**allowlist 관점(direct runtime 핵심)**: 현재는 frontend가 자유롭게 shell 문자열을 만들어 backend `pty_spawn`에 넘긴다 — backend에는 **executable allowlist 검증이 없다**. [`07-tauri-process-runtime.md`](../07-tauri-process-runtime.md) §Tauri command v1 계약은 direct runtime에서는 "provider별 allowlist를 Rust command handler가 검증하고, renderer가 임의 executable/shell string을 넘길 수 없게 한다"고 명시한다. 즉 **direct runtime은 PTY의 자유 shell 모델을 따르지 말고**, `AgentRuntimeStartParams`의 `provider` enum(`codex`|`claude`)에 따라 backend가 executable을 직접 resolve하고 `args`/`env`를 검증·제한해야 한다. renderer/adapter는 executable `command`를 넘기지 않는다. 이는 PTY 대비 의도적인 강화 지점이며, 현재 코드에 선례가 없으므로 새로 구현해야 한다.
 
 ---
 
@@ -393,7 +393,7 @@ interface AgentCommandOptions { extraArgs?: readonly string[]; envVars?: Record<
 3. **transport는 byte stream이 아니라 framed message다.** PTY의 `output_log`/`output_chunks`는 raw 터미널 텍스트지만, direct runtime은 JSON-RPC message 단위로 보존해야 한다. 단, **seq + delta + complete late-attach 메커니즘(§2.3)은 동일 원리로 재사용**하라 — message에 단조 증가 seq를 붙이고, snapshot/delta-since를 같은 형태로 제공하면 frontend transcript 재접속이 PTY와 같은 신뢰성을 얻는다.
 4. **UTF-8 framing 유틸을 공유하라.** `decode_utf8_stream_chunk`(parsing.rs:101)는 stdio reader가 그대로 필요로 한다. terminal 모듈에 가둬두지 말고 공용 위치로 추출하되 terminal 테스트 import를 갱신한다.
 5. **process 모델은 PTY와 다르게 명시적 kill을 가져라.** PTY는 `HashMap::remove` + Drop에 의존하지만(§2.4), direct runtime은 graceful shutdown(stdin EOF → timeout → kill)과 "process exit이 모든 pending request를 실패로 닫음"을 직접 구현해야 한다([`07-tauri-process-runtime.md`](../07-tauri-process-runtime.md) §Process lifecycle).
-6. **executable allowlist를 backend에 추가하라(신규).** PTY는 frontend가 임의 shell 문자열을 넘기지만(§6), direct runtime은 `provider` enum 기반으로 backend가 `command`/`args`를 검증해야 한다. 현 코드에 선례가 없는 강화 지점이다.
+6. **executable allowlist를 backend에 추가하라(신규).** PTY는 frontend가 임의 shell 문자열을 넘기지만(§6), direct runtime은 `provider` enum 기반으로 backend가 executable을 직접 resolve하고 `args`/`env`를 검증해야 한다. renderer/adapter는 executable `command`를 넘기지 않는다. 현 코드에 선례가 없는 강화 지점이다.
 7. **영속화 보안 경계를 유지하라.** resume용 protocol session id도 `pty_id`/`resume_token`과 동일하게 `sanitize_workspace_for_persist`/history scrub 대상으로 다룬다(§4.2, §4.4). 새 비밀을 평문 영속화하면 기존 경계가 깨진다.
 8. **test-mode mock을 1급으로 제공하라.** `is_test_mode()` 분기로 가짜 JSON-RPC 응답 스트림을 만들어, WSL/실제 CLI 없이 E2E와 단위 테스트가 돌게 한다. PTY의 `create_mock_session`(terminal/mod.rs:290-353)이 직접 본뜰 모델이다.
 

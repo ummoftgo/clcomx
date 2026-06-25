@@ -12,7 +12,7 @@
 
 ## 0. 모듈 배치표 (정본 — research 경로로 확정)
 
-다운스트림이 파일을 만들 때 **이 표가 위치의 단일 출처**다. 모든 경로는 저장소 루트(`/home/melbin/work/clcomx`) 기준. 신설(new)/수정(edit)을 표기한다. 이 표의 책임 단위 분리(특히 adapter를 `*-adapter`/`*-wire-mapper`/`*-launch`/`*-routing`으로 나눈 것, backend `agent_runtime/{mod,transport,process,...}`)는 도메인 단위 파일 분리 규약(17 §A.2)의 적용 사례다.
+다운스트림이 파일을 만들 때 **이 표가 위치의 단일 출처**다. 모든 경로는 작업 시작 시 `pwd`와 `git rev-parse --show-toplevel`로 확인한 저장소 루트 기준 상대경로다. 이 문서 정리 시점(2026-06-25)에 확인한 루트는 `/home/xenia/work/claudemx`이며, 이전 작성 환경의 절대경로가 보이면 현재 명령 출력이 우선한다. 신설(new)/수정(edit)을 표기한다. 이 표의 책임 단위 분리(특히 adapter를 `*-adapter`/`*-wire-mapper`/`*-launch`/`*-routing`으로 나눈 것, backend `agent_runtime/{mod,transport,process,...}`)는 도메인 단위 파일 분리 규약(17 §A.2)의 적용 사례다.
 
 ### 0.1 Frontend — contracts / state / controller / service / adapters / view
 
@@ -58,7 +58,7 @@
 | 8 | `src/lib/i18n/locales/{en,ko}.ts` | edit | `agentRuntime.*` namespace (en/ko 동시) (FE §6) |
 | 9 | `src/lib/testids.ts` `TEST_IDS` | edit | transcript/composer/approval testid (FE §1.6, §10-9) |
 | 10 | `src/lib/stores/settings.svelte.ts` + `components/settings/registry.ts` | edit | 새 설정 섹션 시 `cloneDefaults`/`normalizeSettings`/`updateSettings` 3함수 동기화 (FE §7.3, §11) |
-| 11 | `src/lib/features/workspace/session-store-snapshot.ts` | edit | `runtimeKind`/`agentRuntime` snapshot 직렬화 (FE §10-11, 추정 — 파일 미독) |
+| 11 | `src/lib/features/workspace/session-store-snapshot.ts` + `src/lib/features/session/service/live-session-workspace-sync.ts` | edit | 저장은 `createWorkspaceTabSnapshot`, 복원은 `createSessionCore`/`createRuntimeSession` 및 기존 세션 갱신은 `applyWorkspaceWindowSnapshot`에서 `runtimeKind`/`agentRuntime` 전파 |
 | 12 | `App.svelte` live-session-store mutator wiring | edit | direct runtime은 `onPtyId` 흐름 우회/대체 (FE §10-12, §11 위험) |
 
 ### 0.3 Backend — features / commands
@@ -85,19 +85,29 @@
 |---|---|---|
 | i18n namespace | `src/lib/i18n/locales/en.ts`, `ko.ts` | `agentRuntime.status.*`/`.approval.*`/`.toolKind.*`/`.errors.*`/`.fallback.*` (08에서 예약, FE §6.2) |
 | Codex 타입 생성 | `codex app-server generate-ts` → `generated/codex-app-server/` | pinned ref `rust-v0.142.0` (15 머리말, [01](01-source-map.md)) |
-| ACP/Claude 핀 | `@agentclientprotocol/claude-agent-acp@0.51.0` (commit `23626c9`), ACP `schema-v1.16.0`, wire `protocolVersion=1` | 15 머리말, [01](01-source-map.md) |
+| ACP/Claude 기준 | `@agentclientprotocol/claude-agent-acp@0.51.0` (commit `23626c9`), ACP wire `protocolVersion=1`; schema artifact는 T0.0/OQ-41에서 확정(`schema-v1.16.0`은 baseline 후보, 구현 핀 아님) | 15 머리말, [01](01-source-map.md) |
 
 ---
 
 ## Phase 0: 준비 (Foundation & Pinning)
 
-선행: 없음. 목표: 후속 모든 Phase가 의존하는 타입·생성 코드·fixture 포맷·migration 계획을 고정. **이 Phase는 코드 동작을 만들지 않으므로 app launch 없음.**
+선행: 없음. 목표: 후속 모든 Phase가 의존하는 타입·생성 코드·fixture 포맷·migration 계획을 고정. **T0.0은 hard gate**다. T0.0 완료 전에는 T0.1 스캐폴드, generated 타입 생성, Claude dependency 추가를 시작하지 않는다. **이 Phase는 코드 동작을 만들지 않으므로 app launch 없음.**
+
+### T0.0 — 작업 루트·브랜치·baseline preflight
+
+- 대상: 로컬 작업 환경 + 본 문서 집합.
+- 선행: 없음.
+- 산출물: 구현 로그 또는 PR 설명에 `pwd`, `git rev-parse --show-toplevel`, `git status --short --branch`, `codex --version`(가능 시), `npm view @agentclientprotocol/claude-agent-acp version`(가능 시) 결과를 기록. 경로는 확인된 저장소 루트 기준 상대경로로만 사용한다.
+- DoD: 문서 baseline(`e7a5f9e`, Codex `rust-v0.142.0`, ACP schema baseline 후보 `schema-v1.16.0`, Claude adapter `0.51.0`)과 현재 환경의 차이를 확인하고, 차이가 있으면 [01](01-source-map.md) §4와 [13](13-risks-open-questions.md) OQ-41 절차로 diff 검토 범위를 적는다. ACP는 public release/tag 목록과 패키지 내 schema artifact를 대조해 **실제 생성 타입 정본**을 확정해야 한다. 네트워크가 없으면 "미확인"으로 남기고 schema/runtime 생성 전 gate로 유지한다.
+- 테스트(11): 없음(preflight).
+- 계약(15 §): 없음.
+- ref §: 01 §4, 13 OQ-41.
 
 ### T0.1 — 모듈 스캐폴드 생성
 
 - 대상: §0.1/§0.3 표의 디렉토리만 빈 파일/`mod.rs` 선언으로 생성. 기존 파일 수정 없음.
-- 선행: 없음.
-- 산출물: `src/lib/features/agent-runtime/{contracts,state,controller,service,adapters,view,generated}/` 디렉토리, `src-tauri/src/features/agent_runtime/{mod,transport,process,types,allowlist,tests}.rs` 스텁(빈 `pub fn` 또는 `// TODO`).
+- 선행: T0.0.
+- 산출물: `src/lib/features/agent-runtime/{contracts,state,controller,service,adapters,view,generated}/` 디렉토리, `src-tauri/src/features/agent_runtime/{mod,transport,process,types,allowlist,tests}.rs` 스텁(빈 `pub fn` 또는 `// TODO`). `mod.rs`에 서브모듈 mod 선언(스텁) 포함: `mod transport; mod process; mod types; mod allowlist;` + `#[cfg(test)] mod tests;`(스캐폴드 컴파일 통과의 전제 — 선언 없으면 미참조 파일은 빌드에 포함되지 않음).
 - DoD: `npm run check:frontend`와 `npm run check:rust`가 빈 스캐폴드 상태에서 통과(미참조 모듈은 컴파일에 영향 없음). `mod.rs`는 아직 `lib.rs`에 등록하지 않는다. 디렉토리·파일 분할은 도메인 단위 분리 규약(17 §A)을 따른다(이후 task의 공통 DoD 적용 시작점).
 - 테스트(11): 없음(스캐폴드).
 - 계약(15 §): §9 type 인덱스(어떤 파일에 무엇이 들어갈지).
@@ -106,7 +116,7 @@
 ### T0.2 — normalized 타입 정본 복사
 
 - 대상: `src/lib/features/agent-runtime/contracts/normalized.ts`, `runtime-port.ts`.
-- 선행: T0.1.
+- 선행: T0.0, T0.1.
 - 산출물: 15 §1–§6 타입을 **그대로** 복사. 재정의·축약 금지. `UnlistenFn`은 `$lib/tauri/event`에서 import(15 §6 주석).
 - DoD: 15 §9 인덱스의 모든 normalized/port 이름이 export됨. `svelte-check` 통과. 다른 모듈이 `import type { AgentEvent } from "../contracts/normalized"`로 참조 가능.
 - 테스트(11): 없음(타입 선언).
@@ -116,20 +126,20 @@
 ### T0.3 — Codex 타입 생성 + 핀
 
 - 대상: `src/lib/features/agent-runtime/generated/codex-app-server/`.
-- 선행: T0.1.
-- 산출물: `codex app-server generate-ts` 실행 결과를 그대로 배치. 생성 명령·버전을 디렉토리 `README` 또는 헤더 주석에 기록(pinned `rust-v0.142.0`). 이 디렉토리는 **수동 수정 금지**.
-- DoD: generated 타입이 import 가능하고 `svelte-check` 통과. 생성 버전이 [01](01-source-map.md)의 핀과 일치.
+- 선행: T0.0, T0.1.
+- 산출물: `codex app-server generate-ts` 실행 결과를 그대로 배치. 생성 명령·버전을 디렉토리 `README` 또는 헤더 주석에 기록(T0.0에서 확정한 Codex ref/CLI 버전). 이 디렉토리는 **수동 수정 금지**.
+- DoD: generated 타입이 import 가능하고 `svelte-check` 통과. 생성 버전이 T0.0에서 확정한 핀과 일치. **generate-ts 미제공 시 fallback**: `codex` 바이너리가 `generate-ts` subcommand를 제공하지 않으면 ref-codex §6 핵심 타입을 **수기 미러**한다 — `generated/` 대신 `src/lib/features/agent-runtime/contracts/codex-wire.ts`(수기 표시·핀 주석)에 두고, generate-ts 미제공 사실과 미러 출처(ref-codex §6 버전)를 [13](13-risks-open-questions.md)에 기록한다. 이때 Phase 3 입력은 수기 미러가 정본이 된다.
 - 테스트(11): 없음.
-- 계약(15 §): §3 매핑이 generated 타입을 사용함을 명시.
+- 계약(15 §): §3 매핑이 generated 타입(또는 fallback 수기 미러 `contracts/codex-wire.ts`)을 사용함을 명시.
 - ref §: ref-codex §6(핵심 타입), §1.2(envelope).
-- 미확정: `codex` 바이너리가 generate-ts subcommand를 제공하는지 환경 검증 필요 → [13](13-risks-open-questions.md).
+- 미확정: `codex` 바이너리가 generate-ts subcommand를 제공하는지 환경 검증 필요 → [13](13-risks-open-questions.md). T0.0이 "미확인"이면 이 task는 시작하지 않는다(단 generate-ts 미제공이 확인되면 위 fallback 수기 미러 경로로 진행).
 
 ### T0.4 — Claude ACP 의존성 고정
 
 - 대상: `package.json`.
-- 선행: 없음.
+- 선행: T0.0.
 - 산출물: `@agentclientprotocol/claude-agent-acp@0.51.0` dependency 추가(commit `23626c9`). launch bin은 `claude-agent-acp`(ref-claude §2).
-- DoD: `npm install` 성공, lockfile에 정확한 버전 핀. `node_modules/.bin/claude-agent-acp` 존재 확인.
+- DoD: `npm install` 성공, lockfile에 T0.0에서 확정한 정확한 버전 핀. `node_modules/.bin/claude-agent-acp` 존재 확인. npm 최신/현재 package가 baseline과 다르면 OQ-41 diff 결론 전에는 임의로 올리지 않는다.
 - 테스트(11): 없음.
 - 계약(15 §): 머리말 핀.
 - ref §: ref-claude §1(capability), §2(launch).
@@ -186,8 +196,9 @@
   - `approval_resolved`→pending 제거 + status 복귀.
   - `turn_completed{cancelled}`/`cancelTurn`→해당 turn pending approval 전부 `cancelled`로 닫기(04 §4.2 불변식).
   - `process_exited`→모든 pending 실패로 닫기(04 §5).
-- DoD: 아래 lifecycle 테스트 통과. cancelled turn이 pending approval을 닫는지 검증.
-- 테스트(11): "approval request/resolution lifecycle", "cancelled turn이 pending approval을 닫는지".
+  - **닫힌 requestId 멱등 추적**: 이미 닫힌(resolved/cancelled/failed) requestId에 대한 중복 close는 no-op이고, 각 pending은 **정확히 1회만** 종료 emit(이중 종료·누락 없음). exit/shutdown으로 인한 pending 종료가 멱등하도록 닫힌 id 집합을 추적한다(04 §4.2 규칙 4 멱등 무시, §5).
+- DoD: 아래 lifecycle 테스트 통과. cancelled turn이 pending approval을 닫는지 검증. 늦은 `process_exited`(이미 닫힌 후 도착)가 재차 닫지 않고 `approval_resolved`가 정확히 1회만 emit되는지(NM-18c/18d) 검증.
+- 테스트(11): "approval request/resolution lifecycle", "cancelled turn이 pending approval을 닫는지", NM-18c/18d(늦은 `process_exited` 멱등 — 정확히 1회 emit).
 - 계약(15 §): §2 `AgentSessionStatus`, §5 `Approval*`.
 - ref §: ref-acp §3.8(cancel MUST), ref-codex §4.4(serverRequest/resolved).
 
@@ -205,11 +216,11 @@
 
 - 대상: `src/lib/features/agent-runtime/controller/agent-event-router.ts` + `state/agent-runtime-store.svelte.ts`의 module-level registry.
 - 선행: T1.3.
-- 산출물: router는 `AgentEvent`를 `ref`(provider/sessionId/threadId/turnId/messageId/itemId/toolCallId/requestId) 기준으로 올바른 세션 state로 dispatch(03 §Event Router). module-level registry는 handle→runtimeId/port 매핑과 전역 pending request table(FE §1.4 module store).
-- DoD: 라우팅 키 표(15 §1.1)대로 Codex 삼중 키·ACP `(sessionId,messageId)`/`(sessionId,toolCallId)` 분기 동작. co-located 테스트 통과.
-- 테스트(11): "interleaved turn stream이 turn id별로 분리되는지"의 store 측(adapter는 Phase 3).
+- 산출물: router는 `AgentEvent`를 `ref`(provider/sessionId/threadId/turnId/messageId/itemId/toolCallId/requestId) 기준으로 올바른 세션 state로 dispatch(03 §Event Router). module-level registry는 handle→runtimeId/port 매핑과 전역 pending request table(FE §1.4 module store). **윈도우 소유권/수명 모델은 13 OQ-48/위험 §1.11의 선행 gate**: registry 단일 윈도우 소유 + `runtimeId`↔window 바인딩 + window-close 시 소유 엔트리만 정리 + cross-window dispatch 금지(불변식). 구현 전 OQ-48 확정.
+- DoD: 라우팅 키 표(15 §1.1)대로 Codex 삼중 키·ACP `(sessionId,messageId)`/`(sessionId,toolCallId)` 분기 동작. co-located 테스트 통과. window-close 격리·cross-window dispatch 차단(OQ-48/§1.11) 동작.
+- 테스트(11): "interleaved turn stream이 turn id별로 분리되는지"의 store 측(adapter는 Phase 3). window-close 시 소유 엔트리만 정리되는지(OQ-48).
 - 계약(15 §): §1.1 라우팅 키.
-- ref §: ref-codex §7.1(삼중 키).
+- ref §: ref-codex §7.1(삼중 키), 13 OQ-48·위험 §1.11(멀티 윈도우 registry 소유권/수명).
 
 ### T1.5 — legacy PTY 래핑 어댑터
 
@@ -229,6 +240,22 @@
 
 선행: Phase 0(타입 핀). **Phase 1과 병렬 가능**(interface 합의=15 §8 고정 후). 목표: stdio subprocess 기동·framing·event emit. 이 Phase는 protocol 의미를 모름 — raw JSON-RPC만 다룬다(15 §8.3 주석).
 
+> **Phase 2 진입 gate**: T2.2/T2.4 구현 전 OQ-36(command/entry resolve owner/cache/entry 탐색)과 OQ-38(provider별 non-secret env key allowlist)을 확정한다. T2.3 구현 전 OQ-39(backpressure cap/line cap/notify interval)를 확정한다. mock 테스트는 가능하지만 실제 allowlist/backpressure 코드는 이 세 결정 없이 작성하지 않는다. **이 gate를 닫는 task가 아래 T2.0**이다.
+
+### T2.0 — Phase 2 진입 결정 게이트
+
+- 대상: 결정 산출물 + 문서 동기화([13](13-risks-open-questions.md)/[07](07-tauri-process-runtime.md)/[11](11-testing-acceptance.md)/[15](15-data-contracts.md)). 코드 미작성(결정 task).
+- 선행: T0.0.
+- 산출물: 위 Phase 2 진입 gate의 미결정 OQ를 확정해 각 결정값을 산출한다.
+  - **OQ-36**: `resolve_trusted_executable(provider,distro)`/`resolve_trusted_adapter_entry(provider,distro)`의 owner 모듈(`agent_runtime/allowlist.rs` 또는 별도 `resolver.rs`), npm 설치 위치 탐색 방식, WSL distro별 cache key/TTL/clear(무효화 트리거) 조건, resolve 실패 에러 문구.
+  - **OQ-37**: `src-tauri/Cargo.toml`·lockfile의 serde 버전을 확인해 `#[serde(rename_all_fields="camelCase")]` 사용 가능(≥1.0.181) 여부 또는 필드별 `#[serde(rename)]` 대체 방식 확정(15 §8, T2.1 직렬화 방식 결정).
+  - **OQ-38**: Codex/Claude 각각의 non-secret env key allowlist 집합(05/06/07/09 동일 이름).
+  - **OQ-39**: `MAX_MESSAGE_LOG_BYTES`/single-line cap/`BACKPRESSURE_NOTIFY_INTERVAL`/drop-vs-block 수치 정책.
+- DoD: 위 4개 결정 결론을 [13](13-risks-open-questions.md) 해당 OQ(OQ-36/37/38/39)에 기록하고, 동기화한다 — 07 §8.1(resolve owner·env key allowlist)·§7.2/§7.3(backpressure 상수명), 11 RS-8..RS-10c(resolve)·RS-12b(env key)·RS-16/17(backpressure 기대값)·RS-21..RS-25(serde round-trip), 15 §8(serde 직렬화 방식). 결정값이 07 상수명·allowlist 집합·기대값과 1:1로 일치함을 확인. 결정이 안 닫히면 T2.2/T2.3/T2.4를 시작하지 않는다(gate 유지).
+- 테스트(11): 없음(결정 task). 단 11 RS-12b/RS-16/RS-17 기대값이 OQ-38/OQ-39 결정으로 고정된다.
+- 계약(15 §): §8(serde 직렬화 방식 결정 반영).
+- ref §: 13 OQ-36/OQ-37/OQ-38/OQ-39, 07 §7.2·§7.3·§8.1.
+
 ### T2.1 — Rust wire 타입 미러
 
 - 대상: `src-tauri/src/features/agent_runtime/types.rs`.
@@ -242,22 +269,22 @@
 ### T2.2 — process spawn + graceful shutdown
 
 - 대상: `src-tauri/src/features/agent_runtime/process.rs`.
-- 선행: T2.1.
+- 선행: T2.0, T2.1 (OQ-36/OQ-38 결정 = T2.0).
 - 산출물: 07 §5.1 launch 정본 형태 `wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY1=V1 KEY2=V2 <backend-resolved-exe> <argv...>`로 child spawn(stdin/stdout/stderr piped, `CREATE_NO_WINDOW`). 로그인 셸 비경유 직접 실행(`-e env` 바이너리 주입 → `<executable>` exec)으로 rc 파일 stdout 오염 원천 차단(07 §5.1, 06 §2.3). **executable은 renderer가 넘기지 않고 backend가 provider로 신뢰 절대경로를 resolve한다**(S1: codex→resolve된 codex 절대경로, claude→resolve된 node 절대경로; 동명 바이너리 `/tmp/codex`·`/tmp/node` 우회 불가, 07 §8.1). cwd는 `--cd <wslWorkDir>`로 WSL 내부 경로 직접 설정(09 §canonicalize 완료 값). env 경계: **non-secret env만 `-e env KEY=VAL` argv 경유**(비민감 플래그), **secret env(API key/OAuth token/gateway header/cookie)는 argv 비경유 — `Command::env()`+`WSLENV` passthrough**(07 §5.1 C1; v1 기본값은 secret env 미전달=provider 자체 WSL 인증 의존). PTY의 `HashMap::remove`+Drop에 의존하지 말고 명시적 child handle 보관(BE §2.4, §10 권고 5). graceful shutdown: stdin close→`SHUTDOWN_GRACE_MS`(2000ms) 대기→kill(07 §5.2). wait-중-kill deadlock 회피 정본 패턴(child는 wait 전용 thread로 move, kill은 저장된 OS pid/handle, 07 §5.3).
 - DoD: child handle 보관·kill 동작. `cargo test`로 mock(non-WSL) 경로 검증. **executable+argv** 모델 준수(shell string 금지, BE §2.2). 추가 검증:
   - **`--cd <wslWorkDir>` cwd 경계**: spawn argv에 `--cd`와 canonicalize된 WSL absolute workDir이 정확히 포함되는지(Windows path·relative workDir 거부는 §9/T2.4 allowlist 책임이나 spawn 조립에서 cwd 인자 위치를 검증).
   - **non-secret env argv 경계**: `non_secret_env`의 `KEY=VAL`만 `-e env` 뒤 argv에 조립되는지.
   - **secret env 경계**: `secret_env` 키가 child argv(`-e env KEY=VAL`)에 **부재**하고 `Command::env()`+`WSLENV`(`KEY/u` 형태)에만 등재되는지(07 §5.1 C1, AC-10b).
-  - **allowlist(backend-resolved command + 정확 args) 경계**: spawn에 들어오는 executable이 backend resolve 신뢰 절대경로이고, argv가 provider별 정확 일치(Codex `["app-server","--stdio"]`, Claude `[검증된 adapterEntryPath]`)인 검증을 통과한 값만 spawn되는지(07 §8.1, T2.4 연계). renderer는 command를 넘기지 않음(S1).
-- 테스트(11): "shutdown timeout 후 kill", "`spawn_wsl_process` argv 조립(`--cd` cwd·non-secret env argv·secret env는 `Command::env()`+`WSLENV`)", "backend-resolved command + 정확 args allowlist"(T2.4와 교차).
+  - **allowlist(backend-resolved executable + 정확 args) 경계**: spawn에 들어오는 executable이 backend resolve 신뢰 절대경로이고, argv가 provider별 정확 일치(Codex `["app-server","--stdio"]`, Claude `[검증된 adapterEntryPath]`)인 검증을 통과한 값만 spawn되는지(07 §8.1, T2.4 연계). renderer는 command를 넘기지 않음(S1).
+- 테스트(11): "shutdown timeout 후 kill", "`spawn_wsl_process` argv 조립(`--cd` cwd·non-secret env argv·secret env는 `Command::env()`+`WSLENV`)", "backend-resolved executable + 정확 args allowlist"(T2.4와 교차).
 - 계약(15 §): §8.1 `AgentRuntimeStartParams`(provider/distro/workDir/args/env; **command 필드 없음 — backend가 provider로 신뢰 절대경로 resolve, S1**), §8.2 시그니처.
-- ref §: 07 §5.1(launch 정본 형태·cwd·non-secret/secret env 경계), §5.2/§5.3(shutdown·wait/kill), §8.1(R4 allowlist·backend-resolved command·정확 args), §9(WSL path 경계).
+- ref §: 07 §5.1(launch 정본 형태·cwd·non-secret/secret env 경계), §5.2/§5.3(shutdown·wait/kill), §8.1(R4 allowlist·backend-resolved executable·정확 args), §9(WSL path 경계).
 - 본뜰 코드: `commands/wsl.rs::WslShell::spawn`(BE §5.1 비-PTY spawn 레퍼런스).
 
 ### T2.3 — newline-delimited JSON-RPC framing + reader threads
 
 - 대상: `src-tauri/src/features/agent_runtime/transport.rs`.
-- 선행: T2.2, §0.3 UTF-8 framer 공유 결정.
+- 선행: T2.0, T2.2, §0.3 UTF-8 framer 공유 결정 (OQ-39 결정 = T2.0).
 - 산출물: stdout reader thread(newline framing, `decode_utf8_stream_chunk`로 byte→str), stderr reader thread(별도), stdin writer(`Mutex` 잠금). 각 라인을 `JsonRpcMessage`로 파싱해 `agent-runtime-message` emit. invalid JSON·embedded newline은 `agent-runtime-error`(recoverable 분류, 07 §Framing). stderr 라인은 `agent-runtime-stderr`. exit는 `agent-runtime-exit`. bounded queue overflow는 `agent-runtime-backpressure`(07 §Process lifecycle).
 - DoD: 아래 framing 테스트 전부 통과. stdout/stderr 분리. PTY reader loop(BE §2.2 mod.rs:513-582)를 newline framer로 치환. framing·decode 같은 핵심 로직에는 한 줄 한글 주석을 단다(17 §B.2).
 - 테스트(11): "newline-delimited message framing", "stderr와 stdout 분리", "bounded queue overflow event", "stdio JSON-RPC process start/stop".
@@ -268,10 +295,11 @@
 ### T2.4 — allowlist 검증
 
 - 대상: `src-tauri/src/features/agent_runtime/allowlist.rs`.
-- 선행: T2.1.
-- 산출물: provider enum(`codex`|`claude`)별 검증(07 §8.1 R4 정본 — basename/prefix 비교 폐지). **command는 renderer가 넘기지 않는다**: backend가 provider로 신뢰 절대경로를 resolve(codex→codex 절대경로, claude→node 절대경로; 06 §2.2 resolve 방식 3 + 캐시, 또는 사전 등록 절대경로 화이트리스트)하고 동명 바이너리(`/tmp/codex`·`/tmp/node`)를 거부한다(S1). args는 **provider별 정확 일치**: Codex `["app-server","--stdio"]`, Claude `args.length==1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js`). env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + provider별 허용 key, 값은 non-secret 전용). renderer가 임의 args/shell string/비신뢰 entry를 넘기면 `Err(String)`(15 §8.1 주석, 07 §8.1). PTY에 선례 없는 신규 강화점(BE §6, §10 권고 6).
-- DoD: 허용/거부 케이스 단위 테스트(backend-resolved 절대경로 통과 vs 동명 바이너리 거부, Codex 정확 args vs 그 외 거부, Claude `adapterEntryPath` 신뢰 vs 비신뢰 거부, env key allowlist 위반 거부). `agent_runtime_start`가 spawn 전에 이 검증을 호출.
-- 테스트(11): "provider별 startup command allowlist 검증"(backend-resolved command + 정확 args + env key, 07 AC-7).
+- 선행: T2.0, T2.1 (OQ-36/OQ-38 결정 = T2.0).
+- 산출물: provider enum(`codex`|`claude`)별 검증(07 §8.1 R4 정본 — basename/prefix 비교 폐지). **command는 renderer가 넘기지 않는다**: backend가 provider로 신뢰 절대경로를 resolve(codex→codex 절대경로, claude→node 절대경로; OQ-36에서 확정한 owner/cache/entry 탐색 방식, 또는 사전 등록 절대경로 화이트리스트)하고 동명 바이너리(`/tmp/codex`·`/tmp/node`)를 거부한다(S1). args는 **provider별 정확 일치**: Codex `["app-server","--stdio"]`, Claude `args.length==1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js`). env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + OQ-38에서 확정한 provider별 허용 key, 값은 non-secret 전용). renderer가 임의 args/shell string/비신뢰 entry를 넘기면 `Err(String)`(15 §8.1 주석, 07 §8.1). PTY에 선례 없는 신규 강화점(BE §6, §10 권고 6).
+- **실제 resolve 구현(T2.0 결정 반영)**: OQ-36 결정에 따라 `resolve_trusted_executable(provider,distro)`/`resolve_trusted_adapter_entry(provider,distro)`의 **실제 성공경로**(npm 설치 위치 탐색→신뢰 절대경로 반환)와 **미설치/탐색 실패 경로**(`Err(String)`, RS-10c)와 **캐시 무효화 정책**(distro별 cache key/TTL/clear 조건)을 구현한다(owner 모듈은 OQ-36 결정 = `allowlist.rs` 또는 별도 `resolver.rs`). mock 주입은 테스트 격리용이고, 실제 resolve 본체는 이 task가 소유한다.
+- DoD: 허용/거부 케이스 단위 테스트(backend-resolved 절대경로 통과 vs 동명 바이너리 거부, Codex 정확 args vs 그 외 거부, Claude `adapterEntryPath` 신뢰 vs 비신뢰 거부, env key allowlist 위반 거부). **실제 resolve 함수 + 미설치 실패경로(RS-10c) + 캐시 무효화 정책** 구현·검증(11 RS-8..RS-10c는 현재 실패/mock 주입만 명시 — backend resolve 성공경로 테스트가 추가로 필요함을 11에 인용). `agent_runtime_start`가 spawn 전에 이 검증을 호출.
+- 테스트(11): "provider별 startup executable allowlist 검증"(backend-resolved executable + 정확 args + env key, 07 AC-7), backend resolve 성공경로(설치된 codex/node 절대경로 resolve)는 11 RS-8..RS-10c에 성공경로 케이스 추가 필요(11 에이전트가 추가).
 - 계약(15 §): §8.1 `AgentRuntimeStartParams`(command 필드 없음 — backend resolve, S1).
 - ref §: 07 §8.1(R4 allowlist 정본), §5.1(launch 형태).
 
@@ -279,7 +307,7 @@
 
 - 대상: `src-tauri/src/features/agent_runtime/mod.rs`, `src-tauri/src/commands/agent_runtime.rs`, `commands/mod.rs`(edit), `lib.rs`(edit).
 - 선행: T2.2, T2.3, T2.4.
-- 산출물: `AgentRuntimeState`(`Mutex<HashMap<RuntimeId, AgentRuntime>>`+`next_id`, PtyState와 별도, BE §10 권고 1). 얇은 `#[tauri::command]` 5종: `agent_runtime_start/send/cancel/shutdown/get_snapshot`(15 §8.2). `lib.rs` 3곳 등록(`use`+`.manage`+`generate_handler![]`, BE §3.2). process exit이 모든 pending request 실패로 닫음(07 §Process lifecycle).
+- 산출물: `AgentRuntimeState`(`Mutex<HashMap<RuntimeId, AgentRuntime>>`+`next_id`, PtyState와 별도, BE §10 권고 1). 얇은 `#[tauri::command]` 5종: `agent_runtime_start/send/cancel/shutdown/get_snapshot`(15 §8.2). `lib.rs` 3곳 등록(`use`+`.manage`+`generate_handler![]`, BE §3.2). process exit이 모든 pending request 실패로 닫음(07 §Process lifecycle). **test-mode mock JSON-RPC 스트림 정의**: `is_test_mode()` 경로가 재생할 스트림은 **T0.5 fixture 포맷(`{direction,message}[]`)을 그대로 재사용**한다(E2E mock과 fixture replay 단일 출처). provider별 최소 시나리오를 정의: Codex `initialize→thread/started→turn delta→item/completed→turn/completed` 및 approval(`requestApproval→respondApproval`); Claude `initialize→session/new→session/update chunk→stopReason` 및 `session/request_permission`. mock은 별도 스크립트가 아니라 T0.5 fixture를 로드해 재생한다.
 - DoD: `cargo check`+`cargo test` 통과. command가 `Result<T,String>` 반환(15 §0.5). test-mode mock 경로 제공(`is_test_mode()`로 가짜 JSON-RPC 스트림, BE §10 권고 8).
 - 테스트(11): Tauri tests 전체 + test-mode mock fixture(BE §8.1 `create_mock_session` 본뜸).
 - 계약(15 §): §8.2 command 시그니처.
@@ -479,9 +507,9 @@
 
 - 대상: 전체.
 - 선행: T6.3.
-- 산출물: `npm run verify` 통과. E2E 시나리오(11 §E2E) — Codex/Claude 새 세션 prompt·streaming, approval allow/reject, cancel cleanup, fallback, 기존 PTY open 회귀.
-- DoD: 11 §E2E 6시나리오 + Acceptance checklist 5항목 충족.
-- 테스트(11): E2E scenarios 전체, Acceptance checklist.
+- 산출물: `npm run verify` 통과. E2E 시나리오(11 §7 E2E-1..E2E-10) — Codex/Claude 새 세션 prompt·streaming, approval allow/reject, cancel cleanup, resume/load 복원, fallback, 기존 PTY open 회귀, 탭 전환 무재mount, raw log off.
+- DoD: 11 §7 E2E-1..E2E-10 전체 + §8.1–§8.6 Acceptance checklist 전부 충족.
+- 테스트(11): §7 E2E-1..E2E-10 전체, §8.1–§8.6 Acceptance checklist 전부.
 - 계약(15 §): 전체.
 - ref §: 전체.
 
@@ -506,7 +534,8 @@
 ```mermaid
 graph TD
   P0["Phase 0\n타입·핀·fixture"] --> P1["Phase 1\n공통 모델/store"]
-  P0 --> P2["Phase 2\nTauri transport"]
+  P0 --> T20["T2.0\nPhase 2 진입 결정 게이트\n(OQ-36/37/38/39)"]
+  T20 --> P2["Phase 2\nTauri transport\n(T2.2/T2.3/T2.4)"]
   P1 --> P3["Phase 3\nCodex adapter"]
   P2 --> P3
   P1 --> P4["Phase 4\nClaude adapter"]
@@ -520,11 +549,14 @@ graph TD
   P6 --> P7["Phase 7\nverification + launch"]
 ```
 
+> T2.0은 Phase 2 진입 결정 게이트로, T0.0 후 OQ-36/37/38/39를 확정해 T2.2/T2.3/T2.4를 unblock한다(T2.1 Rust 타입 미러는 결정과 무관하게 T0.1 후 선행 가능하나, serde 직렬화 방식은 OQ-37=T2.0 결정을 반영). 그래프에서는 Phase 2 진입 경로에 T2.0을 명시한다.
+
 ### 병렬 트랙
 
 | 트랙 | Phase/Task | 병렬 조건 |
 |---|---|---|
-| A (backend) | P2 전체 | 15 §8 interface 동결(P0) 후 P1과 무관하게 병렬 |
+| 게이트 | T2.0 | T0.0 후. OQ-36/37/38/39 확정으로 T2.2/T2.3/T2.4를 unblock(트랙 A의 진입 게이트) |
+| A (backend) | P2 backend(T2.1–T2.5) ∥ T2.6 frontend(T2.5 후) | 15 §8 interface 동결(P0)·T2.0 결정 후 P1과 무관하게 병렬. T2.6은 frontend `service/transport.ts`지만 controller/state(트랙 B)와 **파일 비충돌**(서로 다른 하위 디렉토리: `service/` vs `controller/`·`state/`)이며 T2.5(backend command 이름 확정) 후 착수 |
 | B (model) | P1 전체 | P0 타입 정본 후 P2와 병렬 |
 | C (codex) | P3 | P1·P2 완료 후. P4와 병렬 |
 | D (claude) | P4 | P1·P2 완료 후. P3와 병렬 |
@@ -535,6 +567,7 @@ graph TD
 
 `P0 → P1 → (P3 또는 P4 중 먼저 필요한 하나) → P5 → P6 → P7`.
 
+- T2.0(Phase 2 진입 결정 게이트)은 T0.0 후 즉시 착수 가능하고 P1과 병렬이므로 critical path를 늘리지 않는다(P2 backend의 진입 전제일 뿐 P1 경로와 겹쳐 흡수). 단 OQ-36/37/38/39가 미결이면 P2 backend(T2.2/T2.3/T2.4)가 막혀 P3/P4가 지연되므로 **T2.0을 Phase 2 착수 직전 우선 닫는다**.
 - P2는 P1과 병렬이므로 critical path에서 P1과 겹쳐 흡수 가능(둘 다 P3/P4의 선행).
 - adapter는 P3·P4 병렬이지만 P5 통합은 **최소 1개** adapter만 있으면 시작 가능 → critical path 상 하나만 직렬.
 - view 선행 착수(트랙 E)는 P5 통합 시간을 단축하나 critical path 길이는 바꾸지 않는다(adapter 완료가 게이트).

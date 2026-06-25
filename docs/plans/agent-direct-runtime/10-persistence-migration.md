@@ -2,7 +2,7 @@
 
 > 이 문서는 direct runtime 세션의 **저장·복원·migration**을 다운스트림 구현 에이전트가 이 문서만 읽고 구현할 수 있는 수준으로 정의한다. **모든 타입은 [`15-data-contracts.md`](15-data-contracts.md) §7을 인용**하며 여기서 재정의하지 않는다. 상태 머신/approval cleanup 규칙은 [`04-normalized-agent-model.md`](04-normalized-agent-model.md)를 인용한다. 미확정 항목은 본문에서 `결정 필요`로 표기하고 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 연결한다.
 >
-> **정합 기준**: 브랜치 `feat/claude-tui-fullscreen-option`. 코드 현실 근거는 [`research/codebase-backend.md`](research/codebase-backend.md) §4(영속화 계층)·§10(분리/공존 권고), [`research/codebase-frontend.md`](research/codebase-frontend.md) §4.3(workspace.ts)·§8(타입)·§10(통합 체크리스트)이다.
+> **정합 기준**: 코드 스냅샷 commit `e7a5f9e`; 구현 전 현재 작업트리와 대조. 코드 현실 근거는 [`research/codebase-backend.md`](research/codebase-backend.md) §4(영속화 계층)·§10(분리/공존 권고), [`research/codebase-frontend.md`](research/codebase-frontend.md) §4.3(workspace.ts)·§8(타입)·§10(통합 체크리스트)이다.
 
 ---
 
@@ -67,7 +67,8 @@ transcript 본문(메시지/tool call/diff)은 1차 범위에서 **저장하지 
 저장 시 frontend `sanitizeWorkspaceSnapshotForSave`가 이미 `ptyId`/`resumeToken`을 null 마스킹한다 (`research/codebase-frontend.md` §4.3). direct runtime metadata도 동일 함수에서 보조적으로 마스킹한다(최종 scrub은 backend `sanitize_workspace_for_persist`, §6):
 
 - [ ] frontend `sanitizeWorkspaceSnapshotForSave`에 `agentRuntime` 내부 3필드(`providerSessionId`, `providerThreadId`, `providerResumeToken`)를 `undefined`로 마스킹하는 분기 추가(보조 방어선). `runtimeKind`/`provider`/버전 필드는 비밀이 아니므로 유지.
-- [ ] `applyWorkspaceWindowSnapshot`(복원 경로)이 새 필드를 세션 객체로 hydrate하도록 확장 (`research/codebase-frontend.md` §8 주석, §10 체크리스트 11 `session-store-snapshot.ts` — 단 해당 파일은 research에서 **미독(추정)**이므로 [`13`](13-risks-open-questions.md)에 확인 항목으로 등록).
+- [ ] 저장 경로 `src/lib/features/workspace/session-store-snapshot.ts::createWorkspaceTabSnapshot`이 `runtimeKind`/`agentRuntime`을 `WorkspaceTabSnapshot`에 직렬화하도록 확장.
+- [ ] 복원 경로 `src/lib/features/session/service/live-session-workspace-sync.ts::createSessionCore`/`createRuntimeSession` 및 기존 세션 갱신 분기 `applyWorkspaceWindowSnapshot`이 새 필드를 세션 객체로 hydrate하도록 확장. 이 파일 본문은 2026-06-25 문서 정리에서 확인했으며, 더 이상 research 미확인 항목이 아니다([`13`](13-risks-open-questions.md) OQ-18 참조).
 
 ### 3.3 Rust 측 (`features/workspace/types.rs` + `store.rs`)
 
@@ -78,7 +79,7 @@ transcript 본문(메시지/tool call/diff)은 1차 범위에서 **저장하지 
 - [ ] `AgentRuntimeMetadataRecord` struct를 15 §7.3대로 추가(`#[serde(rename_all = "camelCase")]`, `Default` derive).
 - [ ] **호환성 검증 (RED→GREEN)**: 기존 `runtime_kind`/`agent_runtime` 없는 `workspace.json`을 deserialize했을 때 `runtime_kind == "pty"`, `agent_runtime == None`이 나오는 round-trip 단위 테스트(§8, [`11`](11-testing-acceptance.md) Tauri tests).
 
-> `WorkspaceTabSnapshot` 필드 추가 시 `merge_workspace_snapshot`(`service/window_ops.rs`)와 frontend `WorkspaceSnapshot` 타입 동기화가 필요하다 (`research/codebase-backend.md` §11 확인 필요). 본 문서는 이를 [`13`](13-risks-open-questions.md)에 확인 항목으로 등록한다.
+> `WorkspaceTabSnapshot` 필드 추가 시 `merge_workspace_snapshot`(`service/window_ops.rs`)와 frontend `WorkspaceSnapshot` 타입 동기화가 필요하다. frontend 저장/복원 함수 위치는 위 §3.2에서 확인 완료했으며, Rust merge 범위는 [`13`](13-risks-open-questions.md) OQ-18의 구현 전 확인 항목으로 유지한다.
 
 ---
 

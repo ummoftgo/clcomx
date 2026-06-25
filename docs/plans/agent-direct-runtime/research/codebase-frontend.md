@@ -2,8 +2,8 @@
 
 > **⚠️ 스냅샷 — 코드 현실의 *시점* 매핑**: 이 문서는 아래 git ref 시점의 frontend 코드 구조를 박제한 조사 스냅샷이다. 코드가 바뀌면 낡을 수 있으므로 **충돌 시 실제 코드(`src/`)가 정본이고 이 문서가 아니다.** 인용된 경로·심볼·줄번호는 실제 코드와 대조한 뒤 사용한다.
 
-> 조사 대상 ref: `git e7a5f9e` (`v0.6.0-3-ge7a5f9e`, branch `feat/claude-tui-fullscreen-option`)
-> 저장소 루트: `/home/melbin/work/clcomx`
+> 조사 대상 ref: `git e7a5f9e` (`v0.6.0-3-ge7a5f9e`)
+> 저장소 루트: 작업 시작 시 `pwd`와 `git rev-parse --show-toplevel`로 재확인한다. 2026-06-25 문서 정리 시 확인한 루트는 `/home/xenia/work/claudemx`다.
 > 스택: Tauri v2 + Svelte 5 (runes), TypeScript, Vite, Vitest, svelte-i18n
 > 본 문서의 모든 경로는 저장소 루트 기준 상대경로이며, 인용한 심볼/시그니처는 위 ref에서 실제 파일을 읽어 확인한 사실(confirmed)이다. 추정에는 명시적으로 "추정"이라고 표기한다.
 
@@ -35,7 +35,7 @@ Direct Agent Runtime의 transcript surface는 **새 `src/lib/features/agent-runt
 
 ### 1.2 레이어별 역할과 네이밍 규약 (confirmed)
 
-- **view (`*.svelte`)**: 거의 로직 없음. props 정의 + 자식 컴포넌트 wiring. 예: `TerminalRuntimeSurface.svelte`는 `Props` interface와 `$props()` 구조분해, `$bindable()` 사용만 있고 동작은 전부 부모에서 콜백으로 받음. `SessionShell.svelte`는 단 11줄(`src/lib/features/session/view/SessionShell.svelte`).
+- **view (`*.svelte`)**: 거의 로직 없음. props 정의 + 자식 컴포넌트 wiring. 예: `TerminalRuntimeSurface.svelte`는 `Props` interface와 `$props()` 구조분해, `$bindable()` 사용만 있고 동작은 전부 부모에서 콜백으로 받음. `SessionShell.svelte`는 단 10줄(`src/lib/features/session/view/SessionShell.svelte`).
 - **controller (`*-controller.ts` 또는 `*-controller` 함수)**: `export function create<Name>Controller(deps: <Name>Dependencies)` 팩토리 패턴. 의존성은 전부 **getter/콜백 함수로 주입**(DI). 반환값은 메서드 객체. 룬을 직접 쓰지 않고 `deps.state` 또는 getter/setter로 상태를 만짐 → 순수 TS로 vitest 단위 테스트 가능. 예: `createMainTerminalRuntimeController(deps)` (`src/lib/features/terminal/controller/main-terminal-runtime-controller.ts:68`).
 - **state (`*-state.svelte.ts`)**: 룬 `$state`를 멤버로 가진 class를 정의하고 `create<Name>State(): <Name>State` 팩토리로 instance를 반환. interface와 impl class를 분리. 예: `src/lib/features/terminal/state/main-terminal-runtime-state.svelte.ts`, `draft-composer-state.svelte.ts`, `overlay-interaction-state.svelte.ts`, `aux-terminal-runtime-state.svelte.ts`.
 - **contracts (`*.ts`)**: props/DI 타입 interface만 모음. 예: `src/lib/features/session/contracts/session-shell.ts`(`SessionShellProps`, `SessionHostProps`, `SessionShellSession`, `SessionShellAuxState`), `session/contracts/session-viewport.ts`(`SessionViewportProps`), `launcher/contracts/session-launcher.ts`, `session-tabs/contracts/tab-bar.ts`.
@@ -143,7 +143,7 @@ host 컴포넌트(`Terminal.svelte`)가 이 controller들을 조립하는 곳이
 ### 2.4 host 조립부 (confirmed)
 
 `src/lib/components/Terminal.svelte`가 host다. 흐름:
-- `$props()`로 `SessionHostProps`(`sessionId`, `visible`, `agentId`, `distro`, `workDir`, `ptyId`, `resumeToken`, `sessionSnapshot`, `onPtyId`, `onAuxStateChange`, `onExit`, `onResumeFallback`, `onEditorSessionStateChange`) 수신 (`Terminal.svelte:98`).
+- `$props()`로 `SessionHostProps`(`sessionId`, `visible`, `agentId`, `distro`, `workDir`, `ptyId`, `resumeToken`, `sessionSnapshot`, `onPtyId`, `onAuxStateChange`, `onExit`, `onResumeFallback`, `onEditorSessionStateChange`) 수신 (`Terminal.svelte:98–115`, 구조분해 종료는 `:115`).
 - 룬 `let outputEl = $state<HTMLDivElement>(...)`, `editorViewMode = $state<"terminal"|"editor">("terminal")` 등 보유.
 - `onMount`에서 xterm `Terminal` 생성 → `term.open(outputEl)` → `listen<PtyOutputChunk>("pty-output", ...)` + `listen<number>("pty-exit", ...)` 등록 → `mainTerminalRuntime.attachOrSpawnPty(term, ...)` (`Terminal.svelte:854~945`).
 - template: `<TerminalEmbeddedEditorSurface viewMode={editorViewMode} .../>` 와 `<TerminalRuntimeSurface viewMode={editorViewMode} .../>`를 **둘 다 mount**하고 `viewMode`로 둘 중 하나만 보이게 함(`Terminal.svelte:1152`, `:1176`). 이 "두 surface를 같은 host에 mount하고 mode로 토글" 패턴이 **transcript vs legacy terminal 전환의 직접적 선례**다(3.3절).
@@ -235,8 +235,8 @@ App.svelte (window root)
 
 > **연결점(추정 + 권고)**: transcript 세션을 legacy terminal 세션과 구분하려면 `SessionCore`(또는 별도 snapshot)에 **runtime kind 필드**를 추가하는 게 자연스럽다. 예:
 > ```ts
-> export type SessionRuntimeKind = "terminal" | "agent-direct"; // ※ stale — 정본은 15 §7.1 ("pty" | "direct-codex" | "direct-claude")
-> // SessionCore에 runtimeKind: SessionRuntimeKind 추가 (default "terminal")
+> export type SessionRuntimeKind = "pty" | "direct-codex" | "direct-claude"; // 정본은 15 §7.1
+> // SessionCore에 runtimeKind?: SessionRuntimeKind 추가 (부재 시 "pty")
 > ```
 > 이를 추가하면 `WorkspaceTabSnapshot`, `session-factory.buildSession`, `applyWorkspaceWindowSnapshot`(persistence)에도 전파해야 한다. 단, `SessionViewMode`를 `"terminal"|"editor"|"agent"`로 확장하는 것은 **부적절**하다 — viewMode는 한 host 안에서의 surface 토글이고, runtime kind는 host 종류 자체를 결정하므로 의미가 다르다. 정합 결정은 `04-normalized-agent-model.md`/`10-persistence-migration.md`와 cross-check 필요(아래 9절 risks).
 
@@ -335,13 +335,13 @@ src/lib/features/agent-runtime/
 - 단점: `SessionViewportProps`(`session/contracts/session-viewport.ts`)와 `App.svelte`의 lazy-load 로직(`ensureSessionShellComponent`/`loadSessionShellComponent`)을 둘로 늘려야 함. `{#each}` 안에서 컴포넌트 분기 → 두 host의 props 계약을 viewport가 동시에 알아야 함.
 
 ### 옵션 B — `SessionShell.svelte` 내부 분기 (권고)
-- `SessionShell.svelte`는 현재 11줄짜리 thin wrapper(`createSessionHostProps(props)` → `<Terminal {...terminalProps} />`).
+- `SessionShell.svelte`는 현재 10줄짜리 thin wrapper(`createSessionHostProps(props)` → `<Terminal {...terminalProps} />`).
 - 여기서 `session.runtimeKind`(또는 `session.agentId`/설정 기반)로 분기:
   ```svelte
   <script lang="ts">
     let props: SessionShellProps = $props();
     const hostProps = $derived(createSessionHostProps(props));
-    const useDirectRuntime = $derived(/* props.session.runtimeKind === "agent-direct" */);
+    const useDirectRuntime = $derived(/* props.session.runtimeKind?.startsWith("direct-") */);
   </script>
   {#if useDirectRuntime}
     <AgentRuntimeShell {...hostProps} />
@@ -358,7 +358,7 @@ src/lib/features/agent-runtime/
 - 단점: 한 윈도우에 terminal/agent 세션이 **혼재**하면 단일 `SessionShellComponent` 룬으로 표현 불가(현재 App은 component 1개만 보관). 옵션 A/B 없이는 혼재 불가능.
 
 ### 전환 메커니즘 (옵션 B 기준)
-1. **session 단위 분기**: `session-factory.buildSession`이 `runtimeKind`를 세팅(launcher에서 agent 선택 시 capability에 따라 결정). 기존 세션은 `runtimeKind` 부재 → default `"terminal"`로 normalize(persistence 마이그레이션은 `10-persistence-migration.md` 소관).
+1. **session 단위 분기**: `session-factory.buildSession`이 `runtimeKind`를 세팅(launcher에서 agent 선택 시 capability에 따라 결정). 기존 세션은 `runtimeKind` 부재 → default `"pty"`로 normalize(persistence 마이그레이션은 `10-persistence-migration.md` 소관).
 2. **탭 전환 무재mount 보장**: `AgentRuntimeShell`도 `visible` prop만 받고 자체적으로 `.hidden` CSS로 숨김(3.3 계약). transport 구독은 `onMount`~`onDestroy` 생애주기로 묶고, 비활성 시에도 살려둬 transcript/연결 유지.
 3. **동일 host 안에서 surface 토글이 추가로 필요하면**(예: transcript ↔ raw diagnostic terminal embed) `Terminal.svelte`의 `editorViewMode` 토글 패턴(2.4, `Terminal.svelte:1152/1176`을 둘 다 mount + `viewMode`로 display 토글)을 재사용한다. 즉 `AgentRuntimeShell` 안에 `AgentTranscriptSurface`와 (선택적) `TerminalRuntimeSurface`를 함께 두고 mode로 전환 가능.
 
@@ -378,7 +378,7 @@ src/lib/features/agent-runtime/
 | 8 | `src/lib/i18n/locales/{en,ko}.ts` | `agentRuntime.*` namespace 추가(en/ko 동시) |
 | 9 | `src/lib/testids.ts` `TEST_IDS` | transcript/composer/approval testid 추가 |
 | 10 | `src/lib/stores/settings.svelte.ts` + `components/settings/registry.ts` | 새 설정 섹션/필드 추가 시 cloneDefaults/normalizeSettings/updateSettings 3함수 + registry |
-| 11 | `src/lib/features/workspace/session-store-snapshot.ts`(persistence) | `runtimeKind` snapshot 직렬화(파일 미독, 추정) |
+| 11 | `src/lib/features/workspace/session-store-snapshot.ts` + `src/lib/features/session/service/live-session-workspace-sync.ts`(persistence) | 저장은 `createWorkspaceTabSnapshot`, 복원은 `createSessionCore`/`createRuntimeSession` 및 기존 세션 갱신은 `applyWorkspaceWindowSnapshot`에서 `runtimeKind`/`agentRuntime` 전파 |
 | 12 | `App.svelte` `live-session-store` mutator wiring | direct runtime은 PTY 없으므로 `onPtyId` 흐름 우회/대체 필요 |
 
 ---
@@ -386,7 +386,7 @@ src/lib/features/agent-runtime/
 ## 11. 위험과 미확인 사항
 
 - **(미확인)** 신규 Rust command/event 이름·payload(transport) — 본 frontend 조사 범위 밖. `05-codex-app-server-adapter.md`, `06-claude-acp-adapter.md`, `07-tauri-process-runtime.md`에 의존. 4.2의 transport 래퍼는 그 결정 이후 확정.
-- **(미확인)** persistence 마이그레이션(`runtimeKind` 컬럼/필드, 기존 세션 복원) — `10-persistence-migration.md` 소관. `session-store-snapshot.ts`/`session-store-persistence.ts`는 본 조사에서 본문 미독(파일 존재만 확인).
+- **(확인됨, 2026-06-25 문서 정리)** persistence 마이그레이션의 frontend 저장/복원 위치: `session-store-snapshot.ts::createWorkspaceTabSnapshot`가 저장 snapshot을 만들고, `live-session-workspace-sync.ts::createSessionCore`/`createRuntimeSession`/`applyWorkspaceWindowSnapshot`가 복원·기존 세션 갱신을 담당한다. `runtimeKind`/`agentRuntime` 필드 추가 시 이 함수들을 함께 수정한다.
 - **(위험)** `App.svelte`의 `SessionShellComponent` 룬은 **윈도우당 단일 컴포넌트**를 가정. terminal/agent 혼재를 옵션 B로 처리하면 OK지만, 옵션 C로 가면 구조 변경이 크다.
 - **(위험)** `onPtyId`/`onAuxStateChange`/`onExit`/`onResumeFallback` 콜백 흐름(`session-lifecycle-controller`, `session-runtime.ts`)은 전부 PTY 전제. direct runtime은 ptyId가 없어 이 흐름을 우회하거나 no-op 처리해야 하며, workspace autosave `$effect`(`App.svelte:353`)가 추적하는 필드 목록도 영향. transcript 세션의 "ptyId 부재"가 persist/복원 로직에서 죽은 세션으로 오인되지 않도록 검증 필요.
 - **(위험)** 탭 전환 시 비활성 host를 살려두는 계약(3.3)을 transcript surface가 깨면(예: heavy DOM을 unmount/remount) 회귀. `08-ui-composition.md`의 focus/shortcut 회귀 위험과 겹침.

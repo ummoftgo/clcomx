@@ -6,7 +6,7 @@
 
 Proposed
 
-조사 시점: 2026-06-25. 코드 정합 기준: 브랜치 `feat/claude-tui-fullscreen-option`. version pin은 본 ADR §"Decision에 영향을 준 검증된 버전 핀"에 모은다.
+조사 시점: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조. version pin은 본 ADR §"Decision에 영향을 준 검증된 버전 핀"에 모은다.
 
 ---
 
@@ -63,7 +63,7 @@ UI/store/persistence는 provider protocol을 모르고 [`15-data-contracts.md`](
 
 ### D3. backend는 framing/transport만, protocol 해석은 frontend adapter가 한다
 
-Tauri backend(`agent_runtime_*` command, `agent-runtime-*` event — 15 §8)는 process spawn·stdio framing·라우팅만 책임지고 **raw JSON-RPC를 그대로 올린다**(`agent-runtime-message`). provider wire → `AgentEvent` 변환은 frontend의 Codex/Claude adapter가 담당한다 (15 §8.3, `03-target-architecture.md` §Provider Adapter). `agent_runtime_*` namespace는 기존 `pty_*`와 분리하고, `AgentRuntimeState`는 `PtyState`와 별도로 둔다 (`research/codebase-backend.md` §10 권고 1·2). `command`/`args`/`env`는 adapter 생성값만 허용하고 Rust handler가 provider별 allowlist로 재검증한다(임의 executable/shell string 차단) — PTY 대비 의도적 강화 지점 (15 §8.1 주석, `research/codebase-backend.md` §6, §10 권고 6).
+Tauri backend(`agent_runtime_*` command, `agent-runtime-*` event — 15 §8)는 process spawn·stdio framing·라우팅만 책임지고 **raw JSON-RPC를 그대로 올린다**(`agent-runtime-message`). provider wire → `AgentEvent` 변환은 frontend의 Codex/Claude adapter가 담당한다 (15 §8.3, `03-target-architecture.md` §Provider Adapter). `agent_runtime_*` namespace는 기존 `pty_*`와 분리하고, `AgentRuntimeState`는 `PtyState`와 별도로 둔다 (`research/codebase-backend.md` §10 권고 1·2). executable `command`는 renderer 입력에서 제거하고 backend가 provider로 신뢰 절대경로를 resolve한다. `args`/`env`는 adapter 생성값만 허용하고 Rust handler가 provider별 allowlist로 재검증한다(임의 executable/shell string 차단) — PTY 대비 의도적 강화 지점 (15 §8.1 주석, `research/codebase-backend.md` §6, §10 권고 6).
 
 ### D4. 기존 PTY/xterm runtime은 legacy/fallback/보조 터미널로 보존한다
 

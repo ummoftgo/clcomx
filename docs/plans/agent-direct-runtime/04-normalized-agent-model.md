@@ -109,18 +109,33 @@ Codex는 streaming delta와 최종 completed item을 모두 보낸다. reconcile
 
 - **plan**: 소스 주석상 "concatenated delta가 completed와 일치하지 않을 수 있음"이 명시돼 있다 → **completed item을 권위로 삼고, delta는 점진 렌더링용으로만** 쓴다. 메시지처럼 delta=completed를 가정하면 안 된다.
 - **reasoning / thinking (channel:"thought" 정본)**: Codex `reasoning` item은 전용 event를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel:"thought"`로 흘린다(15 §3). `item/reasoning/textDelta` → `agent_message_delta{channel:"thought"}`로 append하고, completed reasoning item → `agent_message{channel:"thought", mode:"replace"}`로 reconcile한다. **thought 채널은 `channel:"response"`와 별도 스트림으로 누적**하며(한 본문에 섞지 않음), completed reasoning item이 thought 채널의 **권위**다. plan과 마찬가지로 delta 누적=completed를 가정하지 않는다(점진 렌더용). 인덱스별 누적은 §3.2.5, UI 렌더(접이식 'thinking' 블록, 기본 collapsed)는 08.
+- **누적 키 (provider별 — 정본)**: Codex에는 `messageId` 개념이 없고 `itemId`가 메시지 역할을 한다(15 §1.1). 따라서 thought 채널 누적 키는 provider별로 다르다 — **Codex = `(itemId, contentIndex/summaryIndex)`, ACP = `(messageId, contentIndex)`**. §3.2.5의 "인덱스별 누적"과 §3.3의 "같은 messageId 청크 누적"은 각각 이 두 키를 가리킨다. `channel:"response"` 본문 누적도 같은 키를 쓴다.
+- **Codex reasoning completed 권위 필드 (미확정)**: Codex `reasoning` item은 completed 시 `summary: string[]`과 `content: string[]`을 모두 가질 수 있어(ref-codex §6.3) 어느 쪽이 권위인지 미확정이다. v1 보수적 기본값 = 둘 다 표시(`[...item.summary, ...item.content].join("\n")`). wire 실측에서 단일/우선 필드를 확정한다([13](13-risks-open-questions.md) OQ-46, 05 §5.3 reasoning completed 매핑과 연동).
 
 #### 3.2.3 명령 출력
 
 `item/started`(commandExecution, `inProgress`) → 여러 `item/commandExecution/outputDelta`(`command_output_delta`) → `item/completed`(`completed`/`failed`/`declined`, `aggregatedOutput`/`exitCode`). reconcile 키 `itemId`.
 
+**`command_output_delta` vs `tool_call_content_delta` 책임 분리 (정본)**: 두 event는 모두 진행 중 tool call에 출력을 흘리지만(15 §3 두 variant 공존, 08 §3 라우팅), 책임이 다르다.
+
+- **`command_output_delta`** = `execute` kind(명령 실행) stdout/stderr **전용**이다. `stream:"stdout"|"stderr"`별로 각각 append하며, UI는 `CommandOutputCard`의 stdout/stderr 버퍼에 stream별로 쌓는다(08 §3). Codex thread 내 `item/commandExecution/outputDelta`가 이 event로 매핑된다(05 §5.2; standalone `command/exec/outputDelta`는 base64 디코드 후 동일, 05 §8.1 두 채널 구분).
+- **`tool_call_content_delta`** = 비-execute tool(`read`/`search`/`fetch` 등)의 점진 content **전용**이다. stream 구분이 없는 단일 content 증분이며, UI는 `ResourceContentCard` 등 kind별 카드에 누적한다(08 §3·§4). ACP `tool_call_update.content`는 replace 의미라 1차는 이 delta를 쓰지 않고 마지막 update로 통째 갈아끼운다(§3.3, 06 §5.4).
+
+즉 stdout/stderr 구분이 필요한 명령 출력은 `command_output_delta`로, stream 구분이 없는 일반 tool content 증분은 `tool_call_content_delta`로 보낸다.
+
 #### 3.2.4 파일 변경
 
 `item/started`(fileChange) → `item/fileChange/patchUpdated`(`file_change_updated`) → `item/completed`(`PatchApplyStatus`).
 
+**`file_change_updated` 발생 조건·dedup (정본)**: 파일 변경은 두 경로로 표현될 수 있다 — (a) tool_call 경유(`fileChange` item → `tool_call_updated{kind:"edit"/"delete"/"move"}`, 같은 `itemId`), (b) `file_change_updated`(별도 `FileChangeSummary`). 둘이 같은 변경을 이중으로 가리키지 않도록 규칙을 둔다.
+
+- **`file_change_updated`는 Codex 전용이다.** Codex `fileChange` item이 진행 중(`item/fileChange/patchUpdated`) 및 완료(`item/completed`의 `changes[]`) 시 tool_call_updated와 **함께**(같은 `itemId` ref) emit한다(05 §5.2/§5.3). tool_call_updated는 카드 상태/제목/diffstat을, `file_change_updated`는 패치 적용 요약(`FileChangeSummary`)을 담당하는 **상보 관계**다(중복이 아니라 역할 분담). 같은 `itemId`로 묶이므로 UI는 한 카드(`FileDiffCard`)에 합쳐 렌더한다(08 §3·§4.2).
+- **ACP는 `file_change_updated`를 v1에서 사용하지 않는다.** ACP 파일 변경은 `tool_call_update.content`의 `diff` content로만 오고(replace 의미, §3.3), adapter는 이를 `tool_call_updated`로만 흘린다(06 §5.4). 즉 ACP 경로에는 독립 `file_change_updated`가 없다([13](13-risks-open-questions.md) 인용 — ACP file change는 tool_call diff 단일 경로).
+- **dedup/우선순위**: 같은 `itemId`에 대해 tool_call diff(`AgentContent{type:"diff"}`)와 `FileChangeSummary`가 둘 다 있으면 UI는 **하나의 변경**으로 합치고, 최종 patch 적용 상태(`PatchApplyStatus`/`FileChangeSummary.operation`)를 `file_change_updated`의 마지막 값으로 본다. 둘이 충돌하면 completed item의 값이 권위다(§3.2 reconcile).
+
 #### 3.2.5 reasoning 인덱스 누적
 
-`item/reasoning/textDelta`(`contentIndex`)·`summaryTextDelta`(`summaryIndex`)는 같은 `itemId` 안에서 인덱스별로 다중 스트림을 누적한다. 이 누적은 §3.2.2의 thought 채널(`channel:"thought"`) 스트림으로 흐르며, messageId/contentIndex별로 append하고 completed reasoning item이 권위(reconcile)다 — `channel:"response"` 스트림과 섞지 않는다.
+`item/reasoning/textDelta`(`contentIndex`)·`summaryTextDelta`(`summaryIndex`)는 같은 `itemId` 안에서 인덱스별로 다중 스트림을 누적한다. 이 누적은 §3.2.2의 thought 채널(`channel:"thought"`) 스트림으로 흐른다. **누적 키는 Codex `(itemId, contentIndex/summaryIndex)`**이며(Codex엔 `messageId`가 없어 `itemId`가 메시지 역할 — 15 §1.1; ACP의 `(messageId, contentIndex)`와 대비되는 §3.2.2 "누적 키" 규칙), 각 키별로 append하고 completed reasoning item이 권위(reconcile)다 — `channel:"response"` 스트림과 섞지 않는다. completed의 권위 텍스트가 `summary`인지 `content`인지(둘 다인지)는 미확정이라 v1은 둘 다 표시한다(§3.2.2 "권위 필드", 13 OQ-46).
 
 ### 3.3 ACP chunk vs update replace
 
@@ -139,6 +154,19 @@ ACP는 두 가지 갱신 의미가 섞여 있다 (ref-acp §4, §5).
 ### 3.5 legacy PTY 처리
 
 Legacy PTY output은 전체 agent transcript가 아니라 `terminal_output_delta` event로 보존하고, UI는 legacy/fallback terminal surface에만 렌더링한다. transcript 모델로 끌어올리지 않는다.
+
+### 3.6 notice 항목 생성 규칙
+
+08 §3은 `turn_completed`(failed/refusal/max_*)·`process_exited`(비정상)·`error`를 transcript의 `notice` 항목으로 렌더한다(타입 `TranscriptItem.notice{level, messageKey, raw}`는 15를 인용 — 본 문서는 재정의하지 않는다). 어느 event가 언제 notice를 만들고, 어떻게 dedup·멱등 처리하는지는 이 절이 규칙 정본이다.
+
+규칙:
+
+1. **`turn_completed` → warning notice**: `turn_completed`의 `status`가 `failed`이거나, 보존된 원본 stopReason(`ProviderRef.raw`/metadata)이 `refusal`/`max_tokens`/`max_turn_requests` 중 하나이면(08 §3.1), 그 turn에 대해 `notice{level:"warning", messageKey, raw}`를 1건 append한다. `messageKey`는 사유별 i18n 키(`agentRuntime.errors.*` — 예: `refusal`/`maxTokens`/`maxTurnRequests`, 08 §8)이고 원본 stopReason/`codexErrorInfo`는 `raw`에 둔다. `status`가 `completed`/`cancelled`이고 max_*/refusal도 아니면 notice를 만들지 않는다.
+2. **`process_exited`(비정상) → error notice**: `process_exited`가 비정상 종료(`code != 0` 또는 `signal` 존재)면 `notice{level:"error", messageKey:"agentRuntime.errors.processExited", raw}`를 1건 append한다. 정상 종료(`code == 0`, signal 없음)는 notice를 만들지 않는다(세션은 §2.1 규칙 7로 `exited` 전이).
+3. **`error` event → error notice**: `error` event는 `notice{level:"error", messageKey, raw}`를 append한다. `recoverable:true`면 retry 가능을 함께 표기하되(08 §3 retry 표시), notice 자체는 1건이다. 매핑 불가 사유는 `raw` 보존(§5).
+4. **dedup·멱등 키**: notice는 **(생성 사유, 라우팅 키) 1쌍당 1건**이다. `turn_completed` notice의 dedup 키는 turn당 1건(`(turnId, "turn_completed")`; ACP는 합성 turnId — §"turn id 합성 규칙")이고, 같은 turn에 대해 동일 사유의 `turn_completed`가 재emit돼도 **멱등하게 무시**한다(중복 append 금지, §3.2 reconcile 멱등성과 동일 원칙). `process_exited` notice는 세션당 1건(`(sessionId, "process_exited")`)이며 늦은 중복 exit은 무시한다(§5.0 규칙 2 멱등 종료와 합류). `error` notice의 dedup 키는 (라우팅 키 + `message` 해시)로, 동일 에러의 폭주성 반복 emit을 1건으로 접는다.
+
+> **다운스트림 인용**: notice 생성·dedup 규칙은 08 §3(이벤트→TranscriptItem 라우팅)·§3.1(stop reason/refusal notice)이 인용·준수하는 정본이다. `TranscriptItem.notice` 타입은 08 §5(UI view-model, 15 §3 content 재export)가 정의하며, 본 문서는 생성 규칙만 둔다.
 
 ---
 

@@ -6,19 +6,21 @@
 
 ---
 
-## 0. 검증 상태 요약 (verified pins)
+## 0. 검증 상태 요약 (baseline pins)
 
-ref-* 3종은 **각 프로토콜의 1차 소스(저장소 태그 소스/생성 schema/패키지 메타데이터)에서 직접 읽어 검증**되었다. 아래 핀은 ref 문서의 §0(버전 핀 절)과 일치한다.
+ref-* 3종은 **각 프로토콜의 1차 소스(저장소 태그 소스/생성 schema/패키지 메타데이터)를 기준으로 작성한 baseline 조사 결과**다. 아래 값은 ref 문서의 §0(버전 축 절)과 일치하되, 구현 핀은 T0.0/OQ-41 preflight에서 현재 public artifact와 대조한 뒤 확정한다.
 
-| 프로토콜 / 구현체 | pinned 값 | wire/protocol 축 | 검증 근거(ref) |
+| 프로토콜 / 구현체 | baseline / pinned 값 | wire/protocol 축 | 검증 근거(ref) |
 |---|---|---|---|
 | OpenAI Codex app-server | git tag `rust-v0.142.0`, CLI `codex-cli 0.142.0` | protocol **v2**(thread/turn/item); `initialize`만 v1 | [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §0 |
-| Agent Client Protocol (ACP) | schema tag `schema-v1.16.0` | wire `protocolVersion = 1` (stable; v2는 unstable draft) | [`ref-acp-protocol.md`](ref-acp-protocol.md) §0 |
+| Agent Client Protocol (ACP) | schema baseline 후보 `schema-v1.16.0` (**구현 핀 아님; T0.0/OQ-41에서 public artifact 확정**) | wire `protocolVersion = 1` (stable; v2는 unstable draft) | [`ref-acp-protocol.md`](ref-acp-protocol.md) §0 |
 | Claude ACP adapter | `@agentclientprotocol/claude-agent-acp@0.51.0` (release commit `23626c9`) | ACP `protocolVersion = 1` 회신 | [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md) §버전 고정, §4 |
+
+> **주의 — baseline과 구현 시점 검증을 분리한다.** 위 값은 ref 문서를 작성한 조사 baseline이다. Codex/ACP/Claude adapter는 릴리스 주기가 빠르므로 구현 착수 직전 `codex --version`, `codex app-server generate-ts`, ACP public tag/release 및 패키지 내 schema artifact, `npm view @agentclientprotocol/claude-agent-acp version`을 다시 확인한다. baseline과 현재 환경이 다르면 자동으로 문서 값을 따라가지 말고 schema diff와 fixture replay 결과를 13 OQ-41에 기록한 뒤 결정한다.
 
 > **세 개의 독립 버전 축을 혼동하지 말 것**([`ref-acp-protocol.md`](ref-acp-protocol.md) §0):
 > 1. **wire protocolVersion** (ACP는 정수 `1`, Codex는 v1/v2 표면 구분) — `initialize`로 협상하는 값.
-> 2. **schema release tag** (ACP `schema-v1.16.0`, Codex `rust-v0.142.0`) — 저장소가 타입을 배포하는 semver 태그. protocol version과 독립적으로 자주 올라간다.
+> 2. **schema release tag** (ACP baseline 후보 `schema-v1.16.0`, Codex `rust-v0.142.0`) — 저장소가 타입을 배포하는 semver 태그. protocol version과 독립적으로 자주 올라간다. ACP의 실제 생성 타입 artifact는 T0.0/OQ-41에서 확정한다.
 > 3. **구현체 패키지 버전** (Claude adapter `0.51.0`) — 실제 실행하는 바이너리/패키지 semver.
 
 ---
@@ -40,10 +42,10 @@ Codex 계획은 CLI terminal 출력 파싱이 아니라 app-server protocol을 1
 
 - 문서: https://agentclientprotocol.com
 - 저장소: https://github.com/agentclientprotocol/agent-client-protocol
-- pinned schema tag: **`schema-v1.16.0`** (2026-06-24). wire **`protocolVersion = 1`**(stable).
-- 1차 ref 문서: [`ref-acp-protocol.md`](ref-acp-protocol.md) — `schema-v1.16.0`의 `schema/v1` JSON Schema와 `agent-client-protocol-schema/src/version.rs`를 **직접 읽어** transport/JSON-RPC 2.0, lifecycle(initialize/session_new/load/resume/prompt/cancel), `ContentBlock`, `ToolCall`/`ToolCallUpdate`, permission, fs/terminal client method, MCP config, modes/usage, error code, normalized 매핑을 기술했다(§1–§13).
+- schema baseline 후보: **`schema-v1.16.0`** (2026-06-24 조사값, **구현 핀 아님**). wire **`protocolVersion = 1`**(stable).
+- 1차 ref 문서: [`ref-acp-protocol.md`](ref-acp-protocol.md) — baseline 후보 schema cut의 `schema/v1` JSON Schema와 `agent-client-protocol-schema/src/version.rs`를 근거로 transport/JSON-RPC 2.0, lifecycle(initialize/session_new/load/resume/prompt/cancel), `ContentBlock`, `ToolCall`/`ToolCallUpdate`, permission, fs/terminal client method, MCP config, modes/usage, error code, normalized 매핑을 기술했다(§1–§13). 실제 구현 타입 정본은 T0.0/OQ-41에서 public artifact와 대조 후 확정한다.
 
-확인된 핵심 사실(verified): `version.rs`에서 `pub const LATEST: Self = Self::V1;`이고 `V2`는 `#[cfg(feature = "unstable_protocol_v2")]`로 게이트됨 → **현재 production이 협상하는 stable wire protocol은 `protocolVersion = 1`**(ref-acp §0). v2(draft)는 `session/set_mode` 제거·`fs/*`/`terminal/*` 재배치 논의 중이므로 **참고만** 한다. CLCOMX adapter는 `protocolVersion = 1` (schema-v1.16.0)을 타겟으로 구현한다.
+확인된 핵심 방향: CLCOMX adapter는 **stable wire `protocolVersion = 1`**을 타겟으로 구현한다(ref-acp §0). v2(draft)는 `session/set_mode` 제거·`fs/*`/`terminal/*` 재배치 논의 중이므로 **참고만** 한다. `schema-v1.16.0`은 구현 핀이 아니며, 생성 타입 정본으로 쓸 ACP artifact는 T0.0/OQ-41에서 확정한다.
 
 ### 1.3 Claude Agent / ACP Adapter
 
@@ -69,7 +71,7 @@ Claude 계획은 `claude -p --output-format stream-json`을 주 경로로 삼지
 | 자료 | 대상 ref | 범위 |
 |---|---|---|
 | [`research/codebase-backend.md`](research/codebase-backend.md) | commit `e7a5f9e` | PTY runtime 해부, command 등록 패턴, 영속화(workspace/settings/history)·scrub 경계, WSL 경계·OSC·resume fallback, Rust 동시성/에러 컨벤션, direct runtime 신설 위치 |
-| [`research/codebase-frontend.md`](research/codebase-frontend.md) | commit `e7a5f9e` (`feat/claude-tui-fullscreen-option`) | feature 레이어 규약, terminal feature 지도, 세션/탭 흐름, invoke/listen 래퍼, 도메인 모델, i18n/설정 UI, host 분기 전략, 연동점 체크리스트 |
+| [`research/codebase-frontend.md`](research/codebase-frontend.md) | commit `e7a5f9e` | feature 레이어 규약, terminal feature 지도, 세션/탭 흐름, invoke/listen 래퍼, 도메인 모델, i18n/설정 UI, host 분기 전략, 연동점 체크리스트 |
 | [`research/ux-reference.md`](research/ux-reference.md) | 외부 문서 | transcript UI 패턴 1차 추출 + CLCOMX 매핑 |
 
 현재 PTY/xterm 구조의 코드 레벨 기술은 [02](02-current-state.md)에 정리되어 있다.
@@ -93,11 +95,11 @@ Claude 계획은 `claude -p --output-format stream-json`을 주 경로로 삼지
 
 - [ ] `codex app-server --help`에서 `generate-ts`, `generate-json-schema`, `--listen` 옵션 확인.
 - [ ] `codex app-server generate-ts` 결과를 `src/lib/features/agent-runtime/generated/codex-app-server/`의 생성 타입과 비교(ref-codex §0의 schema 산출물 기준).
-- [ ] 로컬 CLI 버전이 `rust-v0.142.0`과 다르면 thread/turn/item 표면 diff 확인.
+- [ ] 로컬 CLI 버전이 baseline `rust-v0.142.0`과 다르면 thread/turn/item 표면 diff 확인. 최신 릴리스가 존재해도 schema diff와 adapter fixture가 통과하기 전에는 핀을 임의로 올리지 않는다.
 
 ### 4.2 ACP
 
-- [ ] `schema/v1`(태그 `schema-v1.16.0`)의 JSON Schema와 adapter가 실제 협상하는 `protocolVersion`(=1) 대조(ref-acp §0, ux-reference §0 주의).
+- [ ] ACP public release/tag 목록, 패키지 내 `schema/v1` artifact, adapter가 실제 협상하는 `protocolVersion`(=1)을 대조한다(ref-acp §0, ux-reference §0 주의). baseline 후보 `schema-v1.16.0`과 public artifact가 다르면 어느 artifact를 생성 타입의 정본으로 쓸지 13 OQ-41에 기록하고, 확정 전에는 ACP 타입 생성/매핑 구현을 시작하지 않는다. 구현 핀 확정 시 생성 타입은 sdk `0.29.0`(`session/update` 13 variant, 13 OQ-32) 정합을 확인한다 — public artifact를 고르더라도 13종 정본을 우선한다.
 - [ ] `agent_thought_chunk`/`user_message_chunk`의 정확한 discriminator를 schema에서 확정([15](15-data-contracts.md) §3 모델 gap, [`research/ux-reference.md`](research/ux-reference.md) §12-2).
 - [ ] ACP diff content(`oldText`/`newText`) → [15](15-data-contracts.md) §4 `{type:"diff", patch}` 변환 규칙 확정([`research/ux-reference.md`](research/ux-reference.md) §12-3).
 

@@ -5,12 +5,12 @@
 > **권위 분리 (반드시 준수)**: 이 문서는 **흐름을 시각화만** 한다. 새 타입을 정의하지 않으며 규칙을 새로 만들지 않는다.
 > - 모든 타입(`AgentEvent`, `ProviderRef`, `ToolCallUpdate`, `Approval*`, `AgentSessionStatus`, `JsonRpcMessage`, `AgentRuntimeStartParams`, `AgentRuntimeEvent`, `AgentRuntimeSnapshot` 등)의 정의는 [`15-data-contracts.md`](15-data-contracts.md)가 권위다. 본 문서는 그 타입을 **이름으로만** 사용한다.
 > - 상태 전이·upsert/reconcile·approval 생명주기·process exit 정리 **규칙**은 [`04-normalized-agent-model.md`](04-normalized-agent-model.md)가 권위다. 본 문서의 다이어그램은 그 규칙을 그림으로 옮긴 것이며, 충돌 시 04가 이긴다.
-> - wire 메서드명/필드명은 protocol ref가 권위다: Codex [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) (`rust-v0.142.0`), ACP [`ref-acp-protocol.md`](ref-acp-protocol.md) (`schema-v1.16.0`, `protocolVersion = 1`), Claude 구현체 [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md) (`@agentclientprotocol/claude-agent-acp@0.51.0`).
+> - wire 메서드명/필드명은 protocol ref가 권위다: Codex [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) (`rust-v0.142.0`), ACP [`ref-acp-protocol.md`](ref-acp-protocol.md) (`protocolVersion = 1`; schema artifact는 T0.0/OQ-41에서 확정, `schema-v1.16.0`은 baseline 후보), Claude 구현체 [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md) (`@agentclientprotocol/claude-agent-acp@0.51.0`).
 > - 코드 현실(actor 매핑·실제 파일/심볼)은 [`research/codebase-backend.md`](research/codebase-backend.md), [`research/codebase-frontend.md`](research/codebase-frontend.md)가 권위다.
 >
 > 미확정 항목은 **unverified** 또는 **결정 필요**로 표시하고 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 연결한다.
 
-조사 시점: 2026-06-25. 코드 정합 기준: 브랜치 `feat/claude-tui-fullscreen-option`.
+조사 시점: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조.
 
 ---
 

@@ -6,7 +6,7 @@
 >
 > **미확정 항목**은 본문에서 `unverified` 또는 `결정 필요`로 표기하고 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 연결한다.
 
-조사 시점: 2026-06-25. 코드 정합 기준: 브랜치 `feat/claude-tui-fullscreen-option`.
+조사 시점: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조.
 
 ---
 
@@ -355,7 +355,7 @@ PTY와 달리 direct runtime은 backend가 provider별로 command를 resolve하�
 
 **args 검증(backend)**: Codex는 `args`가 **정확히** `["app-server","--stdio"]`. Claude는 `args.length == 1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(절대경로, `claude-agent-acp` `dist/index.js` 패턴)와 정확 일치. `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 **고정 npm 의존 위치에서 resolve(또는 사전 등록된 절대경로)**한 값이다. env key는 정규식 + provider별 허용 key 집합으로 강제한다(값은 non-secret, C1). shell metachar 검사는 방어용으로 유지한다. 아래 RS-8..RS-12b는 이 S1 정본의 수용 테스트다(09 untrusted renderer 위협모델, 07 §8.1 인용; 타입 정본 15 §8.1은 S1로 `command` 필드 제거).
 
-> **resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식은 `결정 필요`(→ [13](13-risks-open-questions.md) "command/entry resolve 주체")**. 테스트는 "renderer가 command를 못 넘기고 backend가 provider로 신뢰 경로를 resolve한다"는 계약과 args/env 거부 규칙만 고정 assert하고, resolve 구현 디테일(어느 cache/탐색)은 mock으로 주입한다.
+> **resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식은 `결정 필요`(→ [13](13-risks-open-questions.md) OQ-36 "command/entry resolve 주체")**. 테스트는 "renderer가 command를 못 넘기고 backend가 provider로 신뢰 절대경로를 resolve한다"는 계약과 args/env 거부 규칙, 그리고 **resolve 성공경로**(신뢰 절대경로 반환 + 캐시 무효화 후 재탐색, RS-10d/10e)만 고정 assert하고, resolve 구현 디테일(어느 cache/탐색)은 mock으로 주입한다. 현 RS-10c가 실패만 다루던 공백을 RS-10d/10e가 보완한다(12 T2.0/T2.4 DoD 연계).
 
 | # | 입력 | 기대 |
 |---|---|---|
@@ -366,6 +366,8 @@ PTY와 달리 direct runtime은 backend가 provider별로 command를 resolve하�
 | RS-10 | **renderer가 command를 넣을 경로가 없음(구조적 차단)**: 직렬화 시 추가 `command` 키가 붙은 payload를 deserialize | `command` 필드는 타입에 없으므로 무시되거나(미정의 필드) deny — renderer가 executable 경로를 제어할 입력 자체가 없음을 assert. 동명 바이너리(`/tmp/codex`,`/tmp/node`) 우회 불가가 구조적으로 성립(S1; 07 §8.1 basename 비교 제거, 15 §8.1 command 제거) |
 | RS-10b | `provider:"claude"`, `args:["/tmp/x.js"]` (backend node resolve 사용, adapterEntryPath 미일치) | `Err(String)` 거부 — executable은 backend가 고정 resolve하므로 renderer가 못 바꾸고, `args[0]`가 신뢰 adapterEntryPath 아니라 거부(S1 핵심 거부 케이스, 09 위협모델). renderer가 임의 .js를 실행시킬 수 없음을 assert |
 | RS-10c | backend resolve가 신뢰 codex/node 절대경로를 못 찾음(미설치/탐색 실패) | `Err(String)` — provider 신뢰 경로 resolve 실패 시 spawn하지 않음(S1 backend-resolve 계약; resolve 주체는 13 결정 필요, mock으로 실패 주입) |
+| RS-10d | **resolve 성공경로(executable)**: 설치된 provider에 대해 `resolve_trusted_executable(provider, distro)`(13 OQ-36) 호출(mock 아닌 실제 resolve 로직, 탐색 성공) | 신뢰 **절대경로** 반환(상대경로·동명 PATH 바이너리 아님) — `codex`→codex app-server 절대경로, `claude`→node 절대경로. 반환 경로가 spawn executable로 그대로 전달됨을 assert(S1 backend-resolve 계약, 07 §8.1, 12 T2.0/T2.4 DoD 연계) |
+| RS-10e | **resolve 성공경로(adapter entry) + 캐시 무효화**: `resolve_trusted_adapter_entry("claude", distro)`(13 OQ-36)로 신뢰 `adapterEntryPath`를 1회 resolve(캐시 채움) → 무효화 트리거(13 OQ-36 cache key/clear 조건) 후 재호출 | 1차 호출이 신뢰 절대경로(`claude-agent-acp` `dist/index.js` 패턴)를 반환하고, 무효화 후 재호출이 재탐색(stale 캐시 미반환)함을 assert. cache key/TTL/clear 조건은 `결정 필요`(→ [13](13-risks-open-questions.md) OQ-36) — 테스트는 "성공 시 신뢰 절대경로 반환 + 무효화 후 재탐색" 계약만 고정하고 캐시 구현 디테일은 mock 주입(07 §8.1, 12 T2.0/T2.4 DoD 연계) |
 | RS-11 | args에 shell 메타문자/주입 시도(`;`/`|`/`$(`/개행 등) | 거부(executable+argv 직접 실행이라 셸 비경유지만 방어적 metachar 검사 유지, 07 §8.1 규칙 3, `research/codebase-backend.md` §2.2) |
 | RS-12 | env key가 `^[A-Za-z_][A-Za-z0-9_]*$` 위반(예: `1BAD`, `A-B`, `A B`) | `Err(String)` 거부(registry `assertValidEnvKey` 선례, 07 §8.1 규칙 5, `research/codebase-backend.md` §6) |
 | RS-12b | env key가 정규식은 통과하나 provider별 허용 key 집합 밖(미등록 key) | `Err(String)` 거부 — env key allowlist(provider별 허용 집합) 강제(07 §8.1 규칙 5, S1 env key allowlist). 값은 non-secret 전용(C1, 07 §5.1·§8.1·§11) |
@@ -389,7 +391,7 @@ PTY와 달리 direct runtime은 backend가 provider별로 command를 resolve하�
 | RS-16 | 빠른 메시지 flood로 queue saturation | `agent-runtime-backpressure{droppedMessages}` emit(15 §8.3) |
 | RS-17 | overflow 후 정상화 | 후속 메시지 정상 emit, droppedMessages 카운트 정확 |
 
-> backpressure 정책(드롭 vs 블록)은 `std::thread` vs tokio 선택에 따라 다르다(`research/codebase-backend.md` §7, §11 — tokio 채택은 ADR 결정). 1차는 `std::thread`+`Mutex` 기반 권고. 정책 미확정분은 [13](13-risks-open-questions.md)로.
+> v1 동시성 모델은 `std::thread`+`Mutex`로 확정됐다(07 §7.4). backpressure 테스트의 미확정분은 tokio 여부가 아니라 OQ-39의 수치 정책(`MAX_MESSAGE_LOG_BYTES`, single-line cap, notify interval, drop/block)이다. OQ-39 확정 전에는 RS-16/17의 기대값을 고정하지 않는다.
 
 ### 5.6 is_test_mode mock (E2E·unit 1급 지원)
 
@@ -474,6 +476,19 @@ PTY와 달리 direct runtime은 backend가 provider별로 command를 resolve하�
 | FE-20 | direct runtime 세션은 ptyId 없음 | `onPtyId` 흐름 우회/no-op, persist에서 죽은 세션 오인 안 됨(`research/codebase-frontend.md` §11 위험, §10 #12) |
 | FE-21 | 탭 전환 | host 재mount 없음, transport 구독 유지(`research/codebase-frontend.md` §3.3, §9.2) |
 
+### 6.7 persistence 왕복 / settings 동기화
+
+대상: `src/lib/features/workspace/session-store-snapshot.ts`(`createWorkspaceTabSnapshot`), `src/lib/features/session/service/live-session-workspace-sync.ts`(`createSessionCore`/`createRuntimeSession`/`applyWorkspaceWindowSnapshot`), `src/lib/stores/settings.svelte.ts`(`cloneDefaults`/`normalizeSettings`/`updateSettings`)(12 §0.2 항목 10·11). direct 세션의 `runtimeKind`/`agentRuntime`(15 §7.2) 영속화 3경로(저장→복원→기존세션 갱신)와 settings 3함수 동기화를 검증한다. backend snapshot scrub 직렬화는 RS-25(§5.7)가, 부재→`"pty"` normalize는 FE-19(§6.6)가 이미 다룬다 — 여기서는 frontend 왕복·전파·default 보존을 본다.
+
+| # | 입력 | 기대 |
+|---|---|---|
+| FE-22 | direct 세션(`runtimeKind:"direct-codex"`, `agentRuntime` 설정)에 `createWorkspaceTabSnapshot` 적용 | snapshot에 `runtimeKind`/`agentRuntime`(15 §7.3 scrub 후 — session/thread id·resume token 제외) 포함. scrub 대상 필드가 snapshot에 없음 + 비-scrub 필드 보존 동시 assert(12 §0.2 #11, 15 §7.3) |
+| FE-23 | FE-22 snapshot으로 `createSessionCore`/`createRuntimeSession` 복원 | 복원된 세션의 `runtimeKind`/`agentRuntime`가 snapshot과 동일 필드로 복구(왕복 무손실, scrub된 필드는 부재 그대로). legacy snapshot(필드 부재)은 FE-19 normalize 경로로 위임(12 §0.2 #11) |
+| FE-24 | 기존 세션이 있는 상태에서 `applyWorkspaceWindowSnapshot` 호출(window snapshot이 direct 세션 갱신 포함) | 기존 세션 객체에 `runtimeKind`/`agentRuntime`가 전파(갱신 경로) — 새 세션 생성뿐 아니라 **기존 세션 갱신 경로**에서도 두 필드가 누락 없이 반영(12 §0.2 #11 "기존 세션 갱신은 `applyWorkspaceWindowSnapshot`") |
+| FE-25 | 새 agentRuntime 설정 섹션 default가 `cloneDefaults`/`normalizeSettings`/`updateSettings` 세 함수 모두에 반영 | 세 함수 어느 경로(초기화·정규화·갱신)로 들어와도 새 섹션 default가 동일하게 채워짐 — 한 함수만 갱신해 default가 어긋나는 회귀를 잠금(`research/codebase-frontend.md` §7.3, §11; 12 §0.2 #10) |
+
+> FE-25는 settings 3함수가 default 정의를 한 곳에서 공유하는지(또는 세 함수가 동일 default를 산출하는지)를 cloneDefaults 결과·normalizeSettings(빈 입력)·updateSettings(미지정 섹션) 산출을 교차 비교하는 단위 테스트로 구현한다(`research/codebase-frontend.md` §7.3 — 새 섹션 추가 시 3함수 동기화 MUST).
+
 ---
 
 ## 7. E2E scenarios (14 시퀀스 대응)
@@ -513,6 +528,7 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 
 - [ ] stdio JSON-RPC framing(newline·UTF-8 경계·부분 라인), stderr/stdout 분리, bounded queue overflow, shutdown timeout→kill(**child reap 후 반환**)이 Rust test(RS-1..RS-17)로 검증된다(S3 reap 경계 RS-13/14/15b/15c).
 - [ ] renderer/adapter는 **command를 넘기지 않고**(15 §8.1 `command` 필드 제거), backend가 `provider`로 신뢰 절대경로를 resolve한다(codex→codex 절대경로, claude→node 절대경로). args(Codex 정확 `["app-server","--stdio"]`, Claude `args.length==1`+검증된 adapterEntryPath)·env key allowlist가 backend에서 재검증되어 임의 .js·동명 바이너리 우회(`/tmp/codex`,`/tmp/node`)·미등록 env key를 차단하고, renderer가 executable 경로를 제어할 입력 자체가 없다(RS-8..RS-12b, 07 §8.1 S1 정본, 09 untrusted renderer 위협모델).
+- [ ] `resolve_trusted_executable`/`resolve_trusted_adapter_entry`(13 OQ-36)의 **성공경로**(신뢰 절대경로 반환 + 캐시 무효화 후 재탐색)가 실제 resolve 로직으로 검증되어 RS-10c의 실패-only 공백을 보완한다(RS-10d/10e, 12 T2.0/T2.4 DoD 연계).
 - [ ] Tauri 경계 enum payload의 **camelCase 필드 round-trip(TS↔Rust)** 이 일치한다 — `AgentRuntimeStartParams`/`AgentRuntimeCancelTarget`/`AgentRuntimeEvent`/`JsonRpcMessage`의 variant 필드(`workDir`/`requestId`/`runtimeId`/`droppedMessages` 등)가 snake_case로 새지 않는다(RS-21..RS-25, S2 `rename_all_fields` 또는 필드별 rename; serde ≥ 1.0.181 확인 → 13).
 - [ ] `is_test_mode` mock 경로가 1급으로 제공되어 WSL/실제 CLI 없이 E2E·unit이 돈다(RS-18..RS-20).
 
@@ -533,6 +549,7 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 - [ ] provider id(threadId/sessionId/requestId)가 저장소와 debug view에서 추적 가능하다(NM-15, 15 §0.1).
 - [ ] approval wire 응답이 **원본 JSON-RPC id 타입을 보존**한다 — numeric id(예 `42`)가 `"42"`로 변질되지 않고, `ApprovalRequest.id`/`ProviderRef.requestId`는 문자열 키, wire 응답 `id`는 원본 타입 유지(CL-21b/21c, R3; 06 §6.1/§6.2 `rpcId`, 05 §6 CodexRouting).
 - [ ] provider session/thread id·resume token은 디스크 저장 시 scrub된다(RS-25, 15 §7.3, `research/codebase-backend.md` §4.2).
+- [ ] direct 세션의 `runtimeKind`/`agentRuntime`가 **저장→복원→기존세션 갱신** 3경로 모두에서 무손실 왕복(scrub 후)하고, 새 settings 섹션 default가 `cloneDefaults`/`normalizeSettings`/`updateSettings` 3함수에 동기화된다(FE-22..FE-25, 12 §0.2 #10·#11, 15 §7.2/§7.3).
 - [ ] raw protocol log가 기본 비활성화이며 redaction 정책이 있다(E2E-10, 13 §raw log, 09 §감사).
 
 ### 8.6 게이트
@@ -549,7 +566,7 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 1. ~~agent_thought_chunk / Codex reasoning 처리 정책~~ **해소됨(D11)**: thought를 `channel:"thought"` 별도 스트림으로 누적(15 §3 `channel` 필드, 04 §3.2.2/§3.2.5). CL-17/NM-10/NM-11 기대값은 thought 채널 누적으로 고정(13 OQ-01/RD-13 해소).
 2. **ACP audio content**(CL-18): 미지원 드롭 vs raw 보존(ref-acp §13.2).
 3. **reject_always → Codex decline 매핑**(CX-14): 영구 거부 등가물 부재, decline + 사용자 규칙으로 임시(ref-codex §8.1·§10).
-4. **backpressure 정책**(RS-16/17): drop vs block, `std::thread` vs tokio 선택에 종속(`research/codebase-backend.md` §7·§11 — ADR 결정).
+4. **backpressure 정책**(RS-16/17): v1 동시성 모델은 `std::thread`+`Mutex`로 확정됨(07 §7.4). 구현 전 OQ-39에서 drop vs block, `MAX_MESSAGE_LOG_BYTES`, single-line cap, notify interval을 확정해야 한다.
 5. **message seq + snapshot/delta-since** late-attach: 현 계약(15 §8.3)에는 seq 미포함, 후속 추가 권고. E2E late-attach 신뢰성 테스트는 그 후(04 §3.4, `research/codebase-backend.md` §10 권고 3).
 6. **14-sequence-and-state.md 동기화**: 14는 존재함. E2E §7 표가 14 시퀀스와 1:1로 유지돼야 함. 14 시퀀스 갱신 시 본 표 번호와 일치시킬 것.
 7. **fixture 캡처 신뢰도**: 실제 wire 캡처 전까지 ref 예시 기반 fixture는 ordering `unverified`(ref-codex §9·§10). 실제 캡처로 교체 필요.

@@ -28,7 +28,7 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
 | 문서 | 역할 |
 |---|---|
 | 00-index | 계획 목적·범위·완료 기준 |
-| 01-source-map | 조사 근거와 버전 핀(Codex `rust-v0.142.0`, ACP `schema-v1.16.0`, `@agentclientprotocol/claude-agent-acp@0.51.0` commit `23626c9`) |
+| 01-source-map | 조사 근거와 baseline 버전(Codex `rust-v0.142.0`, ACP schema baseline 후보 `schema-v1.16.0` — 구현 핀은 T0.0/OQ-41에서 확정, `@agentclientprotocol/claude-agent-acp@0.51.0` commit `23626c9`) |
 | 02-current-state | 현재 PTY/xterm 구조 |
 | 03-target-architecture | 목표 아키텍처(Port/Adapter/Router/Store/Runtime) |
 | **04-normalized-agent-model** | **규칙 정본** — 상태 머신·upsert/append/replace/reconcile·approval 생명주기 |
@@ -57,12 +57,13 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
    - **규칙은 [04](04-normalized-agent-model.md)가 정본.** 상태 전이·upsert/reconcile·approval cleanup 불변식은 04를 따른다.
    - **wire 사실은 `ref-*`가 정본.** provider 메시지 shape/필드/enum 값은 ref 문서 §번호로 확인한다. 추측하지 않는다.
 3. **빌드 컨벤션을 따른다.** TS는 `src/lib/tauri/core.ts`의 `invoke`, `src/lib/tauri/event.ts`의 `listen`만 사용(직접 `@tauri-apps/api` import 금지). Rust command는 `Result<T, String>` 반환, 경계 struct는 `#[serde(rename_all="camelCase")]`([15](15-data-contracts.md) §0 컨벤션). 코드 스타일 — 도메인 단위 파일 분리(2000줄 임계 검토)와 클래스/함수 한글 doc-comment(JSDoc/rustdoc) — 은 [17](17-coding-conventions.md)이 정본이며, 12의 각 task DoD에도 편입돼 있다([17](17-coding-conventions.md) §C.2).
-4. **보안 경계를 먼저 세운다.** `provider_session_id`/`provider_thread_id`/`provider_resume_token`은 디스크 저장 직전 scrub([15](15-data-contracts.md) §7.3). `command`/`args`/`env`는 Rust handler에서 provider별 allowlist 재검증([15](15-data-contracts.md) §8.1, [09](09-permissions-security.md)). approval cleanup(turn cancel/shutdown은 `cancelled`+wire, process exit은 `failed`(내부)로 pending을 닫기)은 runtime 필수 기능이다([04](04-normalized-agent-model.md) §4.2·§5.0).
+4. **보안 경계를 먼저 세운다.** `provider_session_id`/`provider_thread_id`/`provider_resume_token`은 디스크 저장 직전 scrub([15](15-data-contracts.md) §7.3). executable `command`는 renderer 입력에서 제거하고 backend가 provider로 resolve하며, `args`/`env`는 Rust handler에서 provider별 allowlist 재검증([15](15-data-contracts.md) §8.1, [09](09-permissions-security.md)). approval cleanup(turn cancel/shutdown은 `cancelled`+wire, process exit은 `failed`(내부)로 pending을 닫기)은 runtime 필수 기능이다([04](04-normalized-agent-model.md) §4.2·§5.0).
 
 ## 시작 전 반드시 확인
 
+- **현재 작업 루트와 브랜치를 먼저 확인한다.** 문서에 남은 절대경로는 조사 당시 환경의 예시일 수 있다. 구현 전 `pwd`, `git rev-parse --show-toplevel`, `git status --short --branch`를 실행하고, 12의 모든 파일 경로는 확인된 저장소 루트 기준 상대경로로 해석한다. 이 문서 정리 시점(2026-06-25)에 확인한 루트는 `/home/xenia/work/claudemx`, 브랜치는 `codex/direct-agent-runtime-docs`다.
 - **unverified / 결정 필요 항목은 [13-risks-open-questions.md](13-risks-open-questions.md)를 먼저 확인한다.** 계획서 곳곳에 "unverified" 또는 "결정 필요"로 표시된 항목(예: `audio` content 대응, ACP `usage_update` vs `TokenUsage` 매핑, Codex `ClientInfo`/`InitializeCapabilities` 필드와 initialize 핸드셰이크 필수 여부, websocket transport 채택 여부)은 13 레지스트리에서 현재 결정 상태를 본 뒤 진행한다. 확정 전이면 13에 결정을 기록하고 움직인다. (참고: `agent_thought_chunk`/reasoning 표시는 `channel:"thought"`로, `claude-agent-acp` 버전은 `0.51.0`으로, ACP `session/update` variant 집합은 sdk 0.29.0 기준 13종으로 이미 해소됨.)
-- **버전 핀을 재확인한다.** Codex `rust-v0.142.0`, ACP `schema-v1.16.0`(wire `protocolVersion = 1`), `@agentclientprotocol/claude-agent-acp@0.51.0`(commit `23626c9`, sdk `0.29.0` 의존). 구현 직전 실제 schema와 대조([01](01-source-map.md) "구현 전 재확인 체크").
+- **버전 핀을 재확인한다.** Codex `rust-v0.142.0`, ACP wire `protocolVersion = 1` + schema baseline 후보 `schema-v1.16.0`(구현 핀 아님), `@agentclientprotocol/claude-agent-acp@0.51.0`(commit `23626c9`, sdk `0.29.0` 의존)은 조사 baseline이다. 구현 직전 실제 CLI/schema/package와 대조하고, 다르면 [01](01-source-map.md) "구현 전 재확인 체크"와 [13](13-risks-open-questions.md) OQ-41에 기록한 절차로 diff를 확인한다. T0.0 완료 전에는 스캐폴드/타입 생성/dependency 추가를 시작하지 않는다.
 
 ## Build / Run gate (AGENTS.md 준수)
 

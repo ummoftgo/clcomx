@@ -8,7 +8,7 @@
 > - **wire 사실**은 protocol ref가 권위다: Codex는 [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md), ACP는 [`ref-acp-protocol.md`](ref-acp-protocol.md), Claude 구현체는 [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md).
 > - **코드 현실**은 [`research/codebase-backend.md`](research/codebase-backend.md)가 권위다(§번호 인용).
 >
-> 조사 시점 정합 기준: 브랜치 `feat/claude-tui-fullscreen-option`. backend 컨벤션 출처: `src-tauri/src/features/terminal/mod.rs`, `commands/wsl.rs`, `features/terminal/parsing.rs`, `lib.rs`, `app_env.rs`.
+> 조사 시점 정합 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조. backend 컨벤션 출처: `src-tauri/src/features/terminal/mod.rs`, `commands/wsl.rs`, `features/terminal/parsing.rs`, `lib.rs`, `app_env.rs`.
 
 ---
 
@@ -209,8 +209,11 @@ pub type RuntimeId = u32; // 15 §8.1과 동일
 struct AgentRuntime {
     provider: String,          // "codex" | "claude"  (allowlist·로깅용)
     transport_kind: String,    // "jsonrpc-stdio" (v1)
-    /// child process handle. graceful shutdown/kill에 직접 사용(PTY의 Drop 의존과 다름, §5).
-    child: Arc<Mutex<Option<ChildHandle>>>,
+    /// kill 전용 식별자. `ChildHandle` 자체는 상태에 보관하지 않고 wait 전용 thread가 소유한다
+    /// (§5.3 정본; terminal/mod.rs 2-thread 선례). graceful shutdown/kill(§5.2)은 이 저장된
+    /// pid/handle로만 OS kill을 호출하므로 wait thread의 `Child`와 lock 경쟁이 없다.
+    /// Windows는 강제 종료에 process handle이 필요할 수 있어 `KillHandle`에 함께 담는다.
+    kill_handle: KillHandle,
     /// stdin writer. agent_runtime_send가 잠가 write(§6.2).
     stdin: Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>>,
     /// late-attach용 message log (snapshot/delta-since 후속 단계 — §4.5).
@@ -235,6 +238,19 @@ struct RuntimeMessageRecord {
     line: String,
 }
 
+/// kill 전용 식별자(§5.2 강제 종료에서만 사용). `ChildHandle`은 wait thread가 소유하므로
+/// 상태에는 OS-level kill에 필요한 최소 정보만 둔다(§5.3 정본 패턴).
+/// pid만 담는 v1에서는 `Clone`(Windows handle 추가 시에도 Arc로 감싸 `Clone` 유지)이므로
+/// wait thread로 `ChildHandle`을 move하기 전에 복제해 상태에 보관한다.
+#[derive(Clone)]
+struct KillHandle {
+    /// spawn 시 `child.id()`로 얻은 OS pid. Unix는 이 pid로 signal kill.
+    pid: u32,
+    // Windows는 강제 종료에 process handle이 필요할 수 있다(예: OpenProcess/TerminateProcess
+    // 또는 taskkill /PID). 구현 시 raw HANDLE 보관은 `unsafe`/`Send` 경계를 검토한다.
+    // #[cfg(windows)] win_handle: ...,
+}
+
 #[derive(Default)]
 pub struct AgentRuntimeState {
     runtimes: Mutex<HashMap<RuntimeId, AgentRuntime>>,
@@ -242,7 +258,7 @@ pub struct AgentRuntimeState {
 }
 ```
 
-`ChildHandle`은 §5.1에서 정의. `next_id`는 PTY `next_session_id`(research §2.1, terminal/mod.rs:237-242)와 동일하게 lock 후 `+= 1`로 발급:
+`ChildHandle`은 §5.1에서 정의. `ChildHandle` 자체는 `AgentRuntime`에 보관하지 않고 wait 전용 thread가 소유하며(§5.3 정본), 상태에는 위 `KillHandle`(kill 전용 pid/handle)만 남긴다. `next_id`는 PTY `next_session_id`(research §2.1, terminal/mod.rs:237-242)와 동일하게 lock 후 `+= 1`로 발급:
 
 ```rust
 fn next_runtime_id(state: &AgentRuntimeState) -> Result<RuntimeId, String> {
@@ -288,6 +304,7 @@ fn spawn_stdout_reader(
         let mut line_buf = String::new();            // 미완성 라인 carry over
         let mut buf = [0u8; 4096];
         let mut invalid_streak = 0u32;
+        let mut framing_failed = false; // §4.4 latch: recoverable:false emit 후 true(이후 라인 drop)
 
         loop {
             match reader.read(&mut buf) {
@@ -297,7 +314,7 @@ fn spawn_stdout_reader(
                     line_buf.push_str(&tail);
                     flush_complete_lines(&mut line_buf, /*final=*/true, &app, runtime_id,
                                          &message_log, &message_seq, &dropped_messages,
-                                         &mut invalid_streak);
+                                         &mut invalid_streak, &mut framing_failed);
                     break;
                 }
                 Ok(n) => {
@@ -305,11 +322,13 @@ fn spawn_stdout_reader(
                     line_buf.push_str(&decoded);
                     flush_complete_lines(&mut line_buf, false, &app, runtime_id,
                                          &message_log, &message_seq, &dropped_messages,
-                                         &mut invalid_streak);
+                                         &mut invalid_streak, &mut framing_failed);
                 }
                 Err(_) => break,
             }
             if exited.load(Ordering::SeqCst) { break; }
+            // §4.4 latch: framing 붕괴 후에는 read 자체는 계속하되(EOF/shutdown 감지를 위해)
+            // 파싱·emit은 flush_complete_lines/handle_line 진입부에서 drop된다.
         }
     });
 }
@@ -318,28 +337,32 @@ fn spawn_stdout_reader(
 fn flush_complete_lines(line_buf: &mut String, is_final: bool, app: &AppHandle,
                         runtime_id: RuntimeId, message_log: &Arc<Mutex<VecDeque<RuntimeMessageRecord>>>,
                         message_seq: &Arc<AtomicU64>, dropped: &Arc<AtomicU64>,
-                        invalid_streak: &mut u32) {
+                        invalid_streak: &mut u32, framing_failed: &mut bool) {
     loop {
         let Some(idx) = line_buf.find('\n') else { break; };
         let line: String = line_buf.drain(..=idx).collect();
+        // §4.4 latch: framing 붕괴 후에는 라인을 경계로만 소거하고 파싱·emit하지 않는다(drop).
+        if *framing_failed { continue; }
         let line = line.trim_end_matches(['\n', '\r']).to_string();
         if line.is_empty() { continue; }
-        handle_line(line, app, runtime_id, message_log, message_seq, dropped, invalid_streak);
+        handle_line(line, app, runtime_id, message_log, message_seq, dropped, invalid_streak, framing_failed);
     }
-    if is_final && !line_buf.trim().is_empty() {
-        // EOF 후 남은 개행 없는 마지막 조각도 한 메시지로 시도
+    if is_final && !*framing_failed && !line_buf.trim().is_empty() {
+        // EOF 후 남은 개행 없는 마지막 조각도 한 메시지로 시도(latch면 시도 안 함)
         let line = std::mem::take(line_buf).trim().to_string();
-        handle_line(line, app, runtime_id, message_log, message_seq, dropped, invalid_streak);
+        handle_line(line, app, runtime_id, message_log, message_seq, dropped, invalid_streak, framing_failed);
     }
 }
 
 fn handle_line(line: String, app: &AppHandle, runtime_id: RuntimeId,
                message_log: &Arc<Mutex<VecDeque<RuntimeMessageRecord>>>,
                message_seq: &Arc<AtomicU64>, dropped: &Arc<AtomicU64>,
-               invalid_streak: &mut u32) {
+               invalid_streak: &mut u32, framing_failed: &mut bool) {
+    // §4.4 latch: 이미 framing 붕괴를 한 번 알렸으면 추가 파싱·emit·에러 suppress(명시적 shutdown 대기).
+    if *framing_failed { return; }
     match serde_json::from_str::<serde_json::Value>(&line) {
         Ok(value) => {
-            *invalid_streak = 0;
+            *invalid_streak = 0; // latch 진입 전에만 유효(진입 후엔 위 가드로 도달 안 함)
             let seq = message_seq.fetch_add(1, Ordering::SeqCst) + 1; // 1-based
             record_and_emit_message(app, runtime_id, seq, line, value, message_log, dropped);
         }
@@ -351,6 +374,12 @@ fn handle_line(line: String, app: &AppHandle, runtime_id: RuntimeId,
                 message: format!("invalid json-rpc line: {e}"),
                 recoverable,
             });
+            // §4.4 latch 진입: recoverable:false를 올린 직후 latch를 set한다.
+            // 이후 라인은 flush_complete_lines/handle_line 진입부에서 drop되어
+            // 추가 framing 에러가 frontend로 중복 emit되지 않는다(명시적 shutdown까지 유지).
+            if !recoverable {
+                *framing_failed = true;
+            }
         }
     }
 }
@@ -398,6 +427,10 @@ stderr는 session diagnostic panel에서 opt-in으로만 표시한다(§11, [09]
 | child wait → exit | 정상/비정상 종료 | `agent-runtime-exit` | — (별도 event) |
 
 `recoverable:false` 에러 후에는 frontend adapter가 세션을 `failed`로 전이(04 §2.1 규칙 6)하고 process shutdown을 호출할 수 있다. backend는 자동 kill하지 않는다(명시적 shutdown 대기).
+
+**latched-failed 규칙 (정본 — framing 붕괴 후 reader 상태)**: `recoverable:false`(framing 붕괴: 5회 연속 invalid 또는 embedded newline)를 **한 번 emit한 뒤에는 reader thread를 latched-failed 상태로 전환**한다. latch 진입 후 reader는 **이후 stdout 라인을 모두 drop(파싱·emit 안 함)하고 추가 framing 에러를 suppress**한다 — 즉 `recoverable:false`는 runtime당 정확히 한 번만 올라가고, 깨진 framing에서 쏟아지는 후속 invalid 라인이 frontend를 추가 에러로 도배하지 않는다. latch는 frontend의 **명시적 shutdown(§5.2)** 까지 유지되며(그 시점에 stdin EOF→kill→exit로 reader가 EOF로 종료), backend는 자동 kill하지 않는다. 이 latch가 없으면 backend는 라인을 계속 파싱·재시도하나 frontend는 이미 세션을 `failed`로 본 상태라 둘이 어긋난다 — latch로 "framing 붕괴 후 backend도 새 메시지를 올리지 않는다"는 불변식을 맞춘다.
+
+§4.2 의사코드와의 정합: `handle_line`/reader는 latch 플래그(예: `AtomicBool` `framing_failed` 또는 reader thread 로컬 `bool`)를 둔다. valid 라인에서 `invalid_streak=0`으로 리셋하는 것은 **latch 진입 전에만** 유효하고, latch 진입 후에는 valid/invalid 구분 없이 라인을 drop한다(리셋·재진입 없음). `recoverable:false`를 emit하는 분기(5연속 invalid 도달, embedded newline 감지)에서 이 latch 플래그를 set하고, 이후 `flush_complete_lines`/`handle_line` 진입부에서 latch가 set이면 즉시 return한다. 결정 필요 항목(latch 플래그를 reader-local로 둘지 `AgentRuntime` 공유 상태로 노출해 snapshot에 반영할지)은 [13](13-risks-open-questions.md) "framing 붕괴 latch 노출 범위" 참조.
 
 ### 4.5 message seq / snapshot / delta-since (late-attach, 후속 단계)
 
@@ -526,11 +559,13 @@ pub fn start(state: &AgentRuntimeState, app: &AppHandle, params: AgentRuntimeSta
         spawn_wsl_process(&distro, &executable, &argv, &work_dir, &non_secret_env, &secret_env)?;
     // 5) RuntimeId 발급 + AgentRuntime 구성 + HashMap insert
     let id = next_runtime_id(state)?;
-    let runtime = build_runtime(provider, child, &stdio); // stdin handle 보관 등
+    // kill 전용 식별자만 상태에 남긴다(§3 kill_handle). ChildHandle은 아래 wait thread로 move(소유).
+    let kill_handle = KillHandle { pid: child.pid /* , #[cfg(windows)] win_handle: ... */ };
+    let runtime = build_runtime(provider, kill_handle, &stdio); // stdin handle·kill_handle 보관 등
     // 6) reader/stderr/child-wait thread 3개 spawn (§4.2, §4.3, §5.3)
     spawn_stdout_reader(app.clone(), id, stdio.stdout, /* ... */);
     spawn_stderr_reader(app.clone(), id, stdio.stderr);
-    spawn_child_wait(app.clone(), id, /* child wait handle, exited flag, ... */);
+    spawn_child_wait(app.clone(), id, child, /* exited flag, exited_at, status */); // child(ChildHandle) move
     // 7) status = "running" (process는 떴음; protocol initialize는 frontend adapter가 별도로 함)
     insert_runtime(state, id, runtime)?;
     Ok(id)
@@ -565,10 +600,12 @@ pub fn shutdown(state: &AgentRuntimeState, runtime_id: RuntimeId) -> Result<(), 
     const POLL_MS: u64 = 50;
     const REAP_GRACE_MS: u64 = 1000; // S3: kill 후 wait thread reap 반영 대기 상한
 
-    let (stdin, child, exited) = {
+    // kill_handle은 kill 전용 식별자(pid/handle)다. ChildHandle 자체는 wait thread가 소유하므로
+    // 여기서 Child를 다시 잠그지 않는다(§3·§5.3 정본).
+    let (stdin, kill_handle, exited) = {
         let mut runtimes = state.runtimes.lock().map_err(|e| e.to_string())?;
         let rt = runtimes.get(&runtime_id).ok_or("runtime not found")?;
-        (rt.stdin.clone(), rt.child.clone(), rt.exited.clone())
+        (rt.stdin.clone(), rt.kill_handle.clone(), rt.exited.clone())
     };
 
     // 1) stdin drop → EOF
@@ -585,8 +622,8 @@ pub fn shutdown(state: &AgentRuntimeState, runtime_id: RuntimeId) -> Result<(), 
     }
     if !exited.load(Ordering::SeqCst) {
         // §5.3 정본 패턴: Child 자체는 wait 전용 thread가 소유하므로 여기서 다시 잠그지 않는다.
-        // 강제 종료는 spawn 시 저장해 둔 OS pid/handle로 수행한다(wait thread와 lock 경쟁 없음).
-        kill_by_stored_pid(&child); // 저장된 pid/handle로 OS kill (deadlock 회피, §5.3 note)
+        // 강제 종료는 spawn 시 저장해 둔 OS pid/handle(kill_handle)로 수행한다(wait thread와 lock 경쟁 없음).
+        kill_by_stored_pid(&kill_handle); // 저장된 pid/handle로 OS kill (deadlock 회피, §5.3 note)
     }
 
     // 5) S3: child reap 보장 — kill 후 wait thread가 reap + exit event emit을 끝내(exited=true)도록
@@ -650,7 +687,7 @@ fn spawn_child_wait(
 
 > **child wait/kill 동시성 — 정본 패턴**: `child.wait()`는 blocking이고 `&mut`가 필요하다. `Mutex` lock을 wait 내내 잡으면 `kill()`(§5.2)이 같은 lock을 기다리다 deadlock한다.
 >
-> **정본 패턴**: spawn 직후 `Child`를 **wait 전용 thread로 `move`**하고, 그 thread가 소유권으로 `child.wait()`를 호출한다(blocking wait 중 Mutex 미보유). `kill`은 spawn 시점에 **저장해 둔 OS pid/handle**로 수행한다 — `ChildHandle.pid`(§5.1, Windows는 `child.id()`로 얻은 PID, Unix는 동일)를 별도로 보관하고, §5.2의 강제 종료는 이 저장된 pid/handle로 OS kill을 호출한다(wait thread가 가진 `Child`를 다시 잠그지 않는다). 이는 `terminal/mod.rs`의 **2-thread 선례**(Thread 1이 `child`를 move해 `child.wait()`만 하고, kill은 `portable_pty`의 killer handle로 분리; terminal/mod.rs:491-502)와 동형이다. PTY는 child를 reader/wait가 공유하지 않아 이 문제가 없었고, direct runtime도 동일하게 wait 소유권과 kill 경로를 분리해 회피한다.
+> **정본 패턴**: spawn 직후 `Child`(`ChildHandle`)를 **wait 전용 thread로 `move`**하고, 그 thread가 소유권으로 `child.wait()`를 호출한다(blocking wait 중 Mutex 미보유). `ChildHandle` 자체는 `AgentRuntime`에 **보관하지 않는다**(§3에서 `child` 필드 제거). `kill`은 spawn 시점에 **저장해 둔 kill 전용 식별자(`KillHandle`)**로 수행한다 — `ChildHandle.pid`(§5.1, Windows는 `child.id()`로 얻은 PID, Unix는 동일)를 `move` 전에 `KillHandle`로 복제해 `AgentRuntime.kill_handle`(§3)에 보관하고, §5.2의 강제 종료 `kill_by_stored_pid(&KillHandle)`는 이 저장된 pid/handle로 OS kill을 호출한다(wait thread가 가진 `Child`를 다시 잠그지 않는다 — `Arc<Mutex<Option<ChildHandle>>>` 같은 공유 슬롯이 없으므로 move-후-None 모순이 발생하지 않는다). 이는 `terminal/mod.rs`의 **2-thread 선례**(Thread 1이 `child`를 move해 `child.wait()`만 하고, kill은 `portable_pty`의 killer handle로 분리; terminal/mod.rs:491-502)와 동형이다. PTY는 child를 reader/wait가 공유하지 않아 이 문제가 없었고, direct runtime도 동일하게 wait 소유권과 kill 경로를 분리해 회피한다.
 >
 > 위 `spawn_child_wait` 의사코드는 `Child`(`ChildHandle`)를 wait 전용 thread로 **move**해 소유하므로 blocking wait 중 어떤 lock도 잡지 않는다(forbidden한 wait-중-lock 패턴을 보이지 않는다). kill용 pid/handle만 `AgentRuntime`에 남긴다(§5.2). 구현 시 wait-중-kill deadlock 미발생을 반드시 테스트한다(§13 AC-5).
 
@@ -810,7 +847,7 @@ PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에
    - `codex` → `args`가 **정확히** `["app-server", "--stdio"]`일 것(ref-codex §1.1). 그 외 길이/값은 거부.
    - `claude` → `args.length == 1` 이고 `args[0]`이 **backend가 검증한 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js` 패턴)**일 것. 임의 `.js`·임의 바이너리·복수 인자는 거부(06 §2.2: bin은 `dist/index.js` 하나, args = `[adapterEntryPath]`). **이 `adapterEntryPath` 절대경로 검증이 Claude의 1차 argv 검증이다** — executable(node)은 backend가 provider로 resolve한 신뢰 절대경로로 고정되고, `adapterEntryPath`도 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록)하므로, renderer는 실행 대상 어느 쪽도 제어하지 못한다. backend는 `args[0]`이 그 신뢰 출처와 정확히 일치하는지 재검증한다.
 4. **executable·args 출처 (S1)**: executable은 renderer가 넘기지 않고 backend가 provider로 resolve한다(위 2). `args`는 adapter가 생성한 검증된 값만 허용하되 backend가 provider별 정확 일치로 재검증한다. frontend가 executable 경로 또는 임의 argv를 자유 입력으로 주입하는 경로를 차단(§0). renderer는 untrusted로 간주하며, backend는 resolve된 executable(절대경로)·args(정확 일치)·env key를 재검증한다(09 위협모델, 11 테스트).
-5. **env key allowlist + non-secret 값 (C1)**: `env` 각 key는 `^[A-Za-z_][A-Za-z0-9_]*$`(POSIX env 이름 규칙)를 만족하고 **provider별 허용 key 집합**에 속해야 한다. 값은 **non-secret 전용**(§5.1 `-e env KEY=VAL` argv 경로). secret(API key/token/gateway header/cookie)은 이 argv 경로로 넘기지 않으며, 필요 시 `Command::env()`+`WSLENV` passthrough로만 전달한다(§5.1 note). v1 기본값은 secret env 미전달(provider 자체 WSL 인증 의존). shell 메타문자 검사는 값에 대한 방어용으로 유지한다.
+5. **env key allowlist + non-secret 값 (C1)**: `env` 각 key는 `^[A-Za-z_][A-Za-z0-9_]*$`(POSIX env 이름 규칙)를 만족하고 **OQ-38에서 확정한 provider별 허용 key 집합**에 속해야 한다. 값은 **non-secret 전용**(§5.1 `-e env KEY=VAL` argv 경로). secret(API key/token/gateway header/cookie)은 이 argv 경로로 넘기지 않으며, 필요 시 `Command::env()`+`WSLENV` passthrough로만 전달한다(§5.1 note). v1 기본값은 secret env 미전달(provider 자체 WSL 인증 의존). shell 메타문자 검사는 값에 대한 방어용으로 유지한다.
 
 ```rust
 // S1: executable은 renderer가 넘기지 않는다. backend가 provider로 신뢰 절대경로를 resolve한다.
@@ -837,8 +874,8 @@ fn is_trusted_adapter_entry_path(entry: &str) -> bool {
 // Codex args 정본(ref-codex §1.1): 정확히 ["app-server", "--stdio"].
 const CODEX_REQUIRED_ARGS: &[&str] = &["app-server", "--stdio"];
 
-// provider별 env key allowlist. POSIX env 이름 규칙 + 허용 key 집합.
-// (정확한 key 집합은 05/06/09와 동기화; 값은 non-secret 전용, secret은 별도 채널 §5.1.)
+// provider별 env key allowlist. POSIX env 이름 규칙 + OQ-38에서 확정한 허용 key 집합.
+// OQ-38 확정 전 T2.4 구현 금지. 값은 non-secret 전용, secret은 별도 채널 §5.1.
 const CODEX_ALLOWED_ENV_KEYS: &[&str] = &[/* 05/09와 동기화: 비민감 플래그 key만 */];
 const CLAUDE_ALLOWED_ENV_KEYS: &[&str] = &[/* 06/09와 동기화: 비민감 플래그 key만 */];
 
@@ -931,7 +968,7 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
 }
 ```
 
-> **executable/adapterEntryPath 신뢰 출처 (S1 정본)**: `resolve_trusted_executable`이 돌려주는 executable 절대경로와 `is_trusted_adapter_entry_path`가 비교하는 `adapterEntryPath`는 모두 **backend가 resolve해 캐시한 값**(06 §2.2 resolve 방식 3: `wsl.exe -e bash -lc "command -v node"` / `node -e require.resolve(...)` 1회 resolve 후 캐시) 또는 **사전 등록 절대경로 화이트리스트**에서 온다 — **renderer가 넘긴 command를 검증하는 게 아니라 backend가 직접 resolve**한다(command 필드 제거, 15 §8.1). 정확한 resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식·distro 검증(`list_wsl_distros` wsl.rs:297 결과 집합) 여부와 `*_ALLOWED_ENV_KEYS` 정확 집합은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·[`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)·[`09-permissions-security.md`](09-permissions-security.md)와 동기화해야 한다(결정 필요 항목 [13](13-risks-open-questions.md) "command/entry resolve 주체", "distro allowlist 검증 여부", "provider env key allowlist 집합").
+> **executable/adapterEntryPath 신뢰 출처 (S1 정본)**: `resolve_trusted_executable`이 돌려주는 executable 절대경로와 `is_trusted_adapter_entry_path`가 비교하는 `adapterEntryPath`는 모두 **OQ-36에서 확정한 방식으로 backend가 resolve해 캐시한 값**(예: 06 §2.2 resolve 방식 3: `wsl.exe -e bash -lc "command -v node"` / `node -e require.resolve(...)` 1회 resolve 후 캐시) 또는 **사전 등록 절대경로 화이트리스트**에서 온다 — **renderer가 넘긴 command를 검증하는 게 아니라 backend가 직접 resolve**한다(command 필드 제거, 15 §8.1). 정확한 resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식·distro 검증(`list_wsl_distros` wsl.rs:297 결과 집합) 여부와 `*_ALLOWED_ENV_KEYS` 정확 집합은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·[`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)·[`09-permissions-security.md`](09-permissions-security.md)와 동기화해야 한다(결정 필요 항목 [13](13-risks-open-questions.md) "command/entry resolve 주체", "distro allowlist 검증 여부", "provider env key allowlist 집합"). OQ-36/OQ-38 확정 전에는 T2.2/T2.4 구현을 시작하지 않는다.
 
 ---
 
@@ -1054,13 +1091,14 @@ fn redact(s: &str) -> String {
 - [ ] `decode_utf8_stream_chunk` 가시성 처리(§2 note) 후 newline framer 구현(§4.2).
 - [ ] stdout reader / stderr reader / child wait thread 3개 (§4.2, §4.3, §5.3).
 - [ ] invalid JSON / embedded newline 에러 분류 (§4.4).
+- [ ] framing 붕괴 latched-failed: `recoverable:false` 1회 emit 후 reader latch(이후 라인 drop, 추가 framing 에러 suppress), 명시적 shutdown까지 자동 kill 없음 (§4.4).
 
 **process**
 - [ ] `spawn_wsl_process`(`wsl.exe -d -e`, piped stdio, CREATE_NO_WINDOW) (§5.1).
 - [ ] launch 커맨드 정본(`wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <exe> <argv>`, 셸 비경유)(§5.1).
 - [ ] C1 secret env 경계: `-e env KEY=VAL` argv는 non-secret 전용. secret은 `Command::env()`+`WSLENV` passthrough(argv 금지), v1 기본은 secret env 미전달(§5.1·§8.1·§11).
 - [ ] graceful shutdown(stdin drop → grace poll → kill → child reap; reap 후 반환, teardown은 최종 exit 반영 후, exit/shutdown pending 종료 멱등·정확히 한 번) (§5.2, §5.3, 04 §5).
-- [ ] child wait/kill 동시성 정본 패턴: Child를 wait 전용 thread로 move + 저장한 pid/handle로 kill(§5.3, terminal/mod.rs 2-thread 선례).
+- [ ] child wait/kill 동시성 정본 패턴: `ChildHandle`은 상태에 보관하지 않고(§3 `child` 필드 제거, `kill_handle: KillHandle`로 교체) wait 전용 thread로 move + 저장한 `KillHandle`(pid/handle)로 kill(§3·§5.2·§5.3, terminal/mod.rs 2-thread 선례).
 
 **보안·경계**
 - [ ] provider별 allowlist 검증(§8, S1/R4): executable=**backend가 provider로 resolve한 신뢰 절대경로**(command 파라미터 비수신, basename 비교 폐지), args 정확 일치(Codex `["app-server","--stdio"]`, Claude `[backend가 검증한 adapterEntryPath]` 절대경로), env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + provider 허용 key) + 값 non-secret.
@@ -1074,7 +1112,7 @@ fn redact(s: &str) -> String {
 **test**
 - [ ] `is_test_mode()` mock 경로 + `mock_jsonrpc_script`(§10.1).
 - [ ] `#[cfg(test)] test_state_with_runtime` 생성기(§10.2).
-- [ ] tests.rs: framing(완성/미완성/UTF-8 경계/invalid JSON), shutdown grace, allowlist 거부, path 검증.
+- [ ] tests.rs: framing(완성/미완성/UTF-8 경계/invalid JSON), framing 붕괴 후 latched-failed(§4.4: `recoverable:false` 1회·후속 라인 drop), shutdown grace, allowlist 거부, path 검증.
 
 ---
 
@@ -1086,6 +1124,7 @@ fn redact(s: &str) -> String {
 | AC-2 | `agent_runtime_*` 5 command가 `generate_handler!`에 등록되어 invoke 가능 | E2E mock 시나리오에서 `invoke("agent_runtime_start", ...)` 성공 |
 | AC-3 | newline framer가 multi-chunk·UTF-8 경계 분할 stdout에서 정확히 메시지 경계 복원 | tests.rs: 한 JSON을 byte 단위로 쪼개 reader에 주입, 1메시지로 복원 검증 |
 | AC-4 | invalid JSON 라인이 `agent-runtime-error{recoverable:true}` emit, 5연속 시 `false` | tests.rs |
+| AC-4b | `recoverable:false`(framing 붕괴) emit 후 latched-failed: `recoverable:false`는 runtime당 정확히 한 번만 emit되고, 이후 stdout 라인은 drop되어 추가 framing 에러를 올리지 않음(§4.4 latch). 명시적 shutdown까지 reader는 자동 kill하지 않음 | tests.rs: invalid 라인 다수를 주입해도 `recoverable:false` 1회·후속 라인 emit 0건 검증 |
 | AC-5 | `shutdown`이 stdin EOF → grace(2s) → kill → **child reap** 순으로 동작, 정상 종료 시 kill 미발생, reap 완료(`exited`) 후 반환·teardown(S3) | tests.rs(mock child) + 수동 확인 |
 | AC-6 | process exit 시 `agent-runtime-exit`가 **정확히 한 번** emit(exit/shutdown 동시 트리거에도 이중 emit 없음, S3), frontend가 pending을 멱등하게 한 번 정리 가능(04 §5) | E2E + tests.rs(compare_exchange exactly-once) |
 | AC-7 | allowlist 검증(S1/R4) 거부: command는 renderer가 넘길 수 없고 backend가 provider로 resolve(executable resolve 실패 시 Err), Claude `args=[/tmp/x.js]`(신뢰 adapterEntryPath 아님) 거부, Codex args≠`["app-server","--stdio"]` 거부, Claude args≠`[검증된 adapterEntryPath]` 거부, env key allowlist 위반·`^[A-Za-z_][A-Za-z0-9_]*$` 위반 거부, shell 메타문자 args/값 거부. backend resolve된 executable·정확 args·허용 env key만 통과 | tests.rs(§8) |

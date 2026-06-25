@@ -9,21 +9,23 @@ ACP에는 서로 다른 두 개의 버전 축이 있다. 혼동하면 안 된다
 | 축 | 의미 | 값 (조사 시점) |
 |---|---|---|
 | **Protocol version** (`protocolVersion`) | wire 상에서 `initialize`로 협상하는 정수. breaking change에서만 증가. | `LATEST = 1` (stable). `0`은 pre-release fallback. `2`는 **unstable draft**, `unstable_protocol_v2` feature로만 노출되며 `LATEST`에 포함되지 않음. |
-| **Schema release tag** (git tag) | `agentclientprotocol/agent-client-protocol` 저장소가 스키마/타입을 배포하는 npm/crate semver 태그. protocol version과 독립적으로 자주 올라감. | 조사에 사용한 태그: `schema-v1.16.0` |
+| **Schema release tag** (git tag) | `agentclientprotocol/agent-client-protocol` 저장소가 스키마/타입을 배포하는 npm/crate semver 태그. protocol version과 독립적으로 자주 올라감. | 작성 당시 조사 baseline 후보: `schema-v1.16.0`. **구현 핀 아님** — T0.0/OQ-41에서 public tag/release artifact를 재확정한 뒤 생성 타입 정본을 고른다. |
 | **ACP agent 구현체 버전** (Claude) | CLCOMX가 실제로 실행하는 ACP agent 바이너리/패키지(`@agentclientprotocol/claude-agent-acp`)의 버전. 위 두 축과 또 다르다. | `0.51.0` (release commit `23626c9`, 2026-06-24). verified: https://github.com/agentclientprotocol/claude-agent-acp `package.json` + commit `23626c9` "chore(main): release 0.51.0 (#808)" |
 
-확인된 사실(verified): `agent-client-protocol-schema/src/version.rs` (ref `schema-v1.16.0`)에서 `pub const LATEST: Self = Self::V1;`이고 `V2`는 `#[cfg(feature = "unstable_protocol_v2")]`로 게이트됨. 따라서 **현재 production 에이전트가 실제로 협상하는 stable wire 프로토콜은 protocolVersion = 1**이다.
-출처: https://github.com/agentclientprotocol/agent-client-protocol/blob/schema-v1.16.0/agent-client-protocol-schema/src/version.rs
+작성 당시 조사 메모: `agent-client-protocol-schema/src/version.rs` (baseline 후보 ref `schema-v1.16.0`)에서 `pub const LATEST: Self = Self::V1;`이고 `V2`는 `#[cfg(feature = "unstable_protocol_v2")]`로 게이트되는 형태였다. 따라서 **CLCOMX의 ACP 어댑터는 stable wire 프로토콜 `protocolVersion = 1`을 타겟**으로 한다.
+후보 출처(재검증 필요): https://github.com/agentclientprotocol/agent-client-protocol/blob/schema-v1.16.0/agent-client-protocol-schema/src/version.rs
+
+> **구현 전 gate**: `schema-v1.16.0` ref는 구현 핀이 아니다. 구현 시작 시 public tag/release 목록, 패키지에 포함된 schema, `@agentclientprotocol/sdk` 타입 산출물을 T0.0/OQ-41 절차로 대조하고, 실제 생성 타입의 정본 artifact를 확정해야 한다. 불일치하면 이 문서의 `schema-v1.16.0` 링크를 그대로 따라 구현하지 않는다.
 
 ### v1 vs v2(draft) 메서드 차이 (참고용, v2는 미확정)
 
-`schema/v1/meta.json`과 `schema/v2/meta.json`을 비교한 결과(verified):
+baseline 후보 `schema/v1/meta.json`과 `schema/v2/meta.json`을 비교한 결과(구현 전 OQ-41 재검증 필요):
 
 - v2(draft)는 `session/set_mode`를 **제거**하고 `session/set_config_option`만 둔다.
 - v2(draft)의 `clientMethods`는 `session/request_permission`, `session/update` **두 개뿐**이며 `fs/*`, `terminal/*`가 빠져 있다. (transport 변경/재배치 논의 중)
 
-> **결론: CLCOMX adapter는 protocolVersion = 1 (schema-v1.16.0)을 타겟으로 구현한다.** 이 문서의 본문(1장 이후)은 전부 v1 stable 기준이다. v2는 stabilize되기 전까지 참고만 한다.
-> 출처: https://github.com/agentclientprotocol/agent-client-protocol/blob/schema-v1.16.0/schema/v1/meta.json , https://github.com/agentclientprotocol/agent-client-protocol/blob/schema-v1.16.0/schema/v2/meta.json
+> **결론: CLCOMX adapter는 `protocolVersion = 1`을 타겟으로 구현한다.** 생성 타입 정본으로 사용할 schema release artifact는 T0.0/OQ-41에서 확정한다. 확정 전 `schema-v1.16.0`은 baseline 후보일 뿐 구현 핀이 아니다. 이 문서의 본문(1장 이후)은 작성 당시 v1 stable shape 기준이며, 실제 artifact가 다르면 schema diff + fixture replay 결과가 우선한다. v2는 stabilize되기 전까지 참고만 한다.
+> 후보 출처(재검증 필요): https://github.com/agentclientprotocol/agent-client-protocol/blob/schema-v1.16.0/schema/v1/meta.json , https://github.com/agentclientprotocol/agent-client-protocol/blob/schema-v1.16.0/schema/v2/meta.json
 
 ---
 
@@ -62,7 +64,7 @@ ACP는 JSON-RPC 2.0 위에서 동작한다. 두 가지 메시지 종류만 있�
 - custom method는 이름을 `_` prefix로 만든다.
 - custom capability는 `initialize`에서 광고.
 
-출처: https://agentclientprotocol.com/protocol/v1/overview.md , 각 타입 schema의 `_meta` 설명(ref `schema-v1.16.0`).
+출처: https://agentclientprotocol.com/protocol/v1/overview.md , 각 타입 schema의 `_meta` 설명(baseline 후보 ref `schema-v1.16.0`; 구현 전 OQ-41 재검증 필요).
 
 ### JSON-RPC envelope 예시
 
@@ -88,7 +90,7 @@ notification(응답 없음, `id` 없음):
 ## 2. 메서드/노티피케이션 카탈로그
 
 방향: `C→A` = Client가 Agent에게, `A→C` = Agent가 Client에게.
-모든 method/notification 이름은 `schema/v1/meta.json` (ref `schema-v1.16.0`)에서 verified.
+모든 method/notification 이름은 baseline 후보 `schema/v1/meta.json`(ref `schema-v1.16.0`)에서 조사했다. 구현 전 OQ-41에서 public artifact와 재대조한다.
 
 ### Agent가 구현 (Client가 호출, C→A)
 
@@ -126,9 +128,9 @@ notification(응답 없음, `id` 없음):
 
 ### session/update notification의 update variant (정본 13종 = 출처별 11/13 분기)
 
-discriminator = `update.sessionUpdate` (snake_case). `SessionUpdate` oneOf의 variant 집합은 **같은 `protocolVersion = 1` wire인데도 조사한 schema artifact에 따라 개수가 다르다**(verified, 1차 소스 재검증 2026-06-25):
+discriminator = `update.sessionUpdate` (snake_case). `SessionUpdate` oneOf의 variant 집합은 **같은 `protocolVersion = 1` wire인데도 조사한 schema artifact에 따라 개수가 다르다**(baseline 조사, 구현 전 OQ-41 재검증 필요):
 
-- agent-client-protocol 저장소 **`schema-v1.16.0`의 `schema/v1/schema.json`** → `SessionUpdate` oneOf **11종** (`plan_update`/`plan_removed` **없음**). verified: `gh api repos/agentclientprotocol/agent-client-protocol/contents/schema/v1/schema.json?ref=schema-v1.16.0`. 출처: https://github.com/agentclientprotocol/agent-client-protocol/blob/schema-v1.16.0/schema/v1/schema.json
+- agent-client-protocol 저장소 baseline 후보 **`schema-v1.16.0`의 `schema/v1/schema.json`** → `SessionUpdate` oneOf **11종** (`plan_update`/`plan_removed` **없음**). 조사 근거: `gh api repos/agentclientprotocol/agent-client-protocol/contents/schema/v1/schema.json?ref=schema-v1.16.0`. 후보 출처(재검증 필요): https://github.com/agentclientprotocol/agent-client-protocol/blob/schema-v1.16.0/schema/v1/schema.json
 - **`@agentclientprotocol/sdk@0.29.0`의 `schema/schema.json`** → `SessionUpdate` oneOf **13종** (위 11종 + `plan_update` + `plan_removed`). 이 SDK도 `PROTOCOL_VERSION = 1`을 협상한다(verified: `dist/schema/index.js:51 export const PROTOCOL_VERSION = 1;`). 출처: npm tarball `@agentclientprotocol/sdk@0.29.0` `schema/schema.json`.
 
 **정본(CLCOMX 구현 기준)**: CLCOMX가 실제로 실행하는 어댑터 `@agentclientprotocol/claude-agent-acp@0.51.0`은 `@agentclientprotocol/sdk@0.29.0`에 의존하므로, 런타임 wire에 실제 등장할 수 있는 variant 집합은 **13종**이다. 단 `plan_update`/`plan_removed`는 **SDK 0.29.0 schema에만 존재**하고 protocol-repo `schema-v1.16.0` v1 schema.json에는 **없다**(같은 protocolVersion=1의 서로 다른 schema cut). 클라이언트 parser는 모르는 variant를 graceful하게 무시해야 한다.
@@ -218,7 +220,7 @@ discriminator = `update.sessionUpdate` (snake_case). `SessionUpdate` oneOf의 va
 
 - **AuthenticateRequest**: `{ methodId: AuthMethodId, _meta? }` — `methodId`는 initialize의 `authMethods`에 광고된 것 중 하나(MUST).
 - **AuthenticateResponse**: `{ _meta? }` (빈 객체)
-- `AuthMethod`는 `anyOf`이며 현재 `agent`(`AuthMethodAgent`) variant만 가진다. `type` 생략 시 `agent`로 간주(verified: schema-v1.16.0 `$defs.AuthMethod` description "When no `type` is present, the method is treated as `agent`").
+- `AuthMethod`는 `anyOf`이며 현재 `agent`(`AuthMethodAgent`) variant만 가진다. `type` 생략 시 `agent`로 간주(baseline 후보 schema-v1.16.0 `$defs.AuthMethod` description 조사값; 구현 전 OQ-41 재검증 필요).
 - `AuthMethodAgent` (verified, `required: id, name`): `{ id: AuthMethodId, name: string, description?: string|null, _meta? }`. `initialize` 응답의 `authMethods` 항목이 이 형태이며, `methodId`로 쓰는 값이 `id`다.
 - auth가 필요한데 안 했으면 에러코드 `-32000 Authentication required` 반환.
 
@@ -239,7 +241,7 @@ discriminator = `update.sessionUpdate` (snake_case). `SessionUpdate` oneOf의 va
 예시:
 ```json
 { "jsonrpc":"2.0","id":2,"method":"session/new","params":{
-  "cwd":"/home/melbin/work/clcomx",
+  "cwd":"/home/xenia/work/claudemx",
   "mcpServers":[],
   "additionalDirectories":[]
 }}
@@ -287,7 +289,7 @@ discriminator = `update.sessionUpdate` (snake_case). `SessionUpdate` oneOf의 va
 | `refusal` | agent가 계속 진행을 거부. 이 user prompt 이후는 다음 prompt에 포함되지 않으므로 UI에 반영해야 함 |
 | `cancelled` | `session/cancel`로 취소됨. cancel을 받으면 **MUST** 이 값을 반환(내부 예외가 나도 catch해서 이 값으로) |
 
-> `StopReason`은 const string들의 닫힌 `oneOf`다(open-string fallback 없음; verified schema-v1.16.0 `$defs.StopReason`). 따라서 adapter는 위 5개 값을 exhaustive하게 match하면 되고 default branch가 따로 필요 없다(확장은 envelope의 `_meta`로만). 알 수 없는 stopReason string이 오면 그 자체가 프로토콜 위반이다.
+> `StopReason`은 const string들의 닫힌 `oneOf`다(open-string fallback 없음; baseline 후보 schema-v1.16.0 `$defs.StopReason` 조사값). 따라서 adapter는 T0.0/OQ-41에서 확정한 schema artifact의 stopReason 집합을 exhaustive하게 match한다. 알 수 없는 stopReason string이 오면 그 자체가 프로토콜 위반이다.
 
 요청 예시:
 ```json
@@ -363,7 +365,7 @@ tool 실행이 필요하면 3↔4 사이에서 permission 요청 → 실행 → 
 
 resource_link 예시:
 ```json
-{"type":"resource_link","name":"foo.ts","uri":"file:///home/melbin/work/clcomx/foo.ts","mimeType":"text/x-typescript"}
+{"type":"resource_link","name":"foo.ts","uri":"file:///home/xenia/work/claudemx/foo.ts","mimeType":"text/x-typescript"}
 ```
 embedded resource(text) 예시:
 ```json
@@ -498,7 +500,7 @@ read 예시:
 
 ## 8. Terminal client methods (verified)
 
-`clientCapabilities.terminal == true`일 때만. `terminal/output`/`wait_for_exit`/`kill`/`release`는 `required: sessionId, terminalId`. `terminal/create`는 `required: sessionId, command`만이고 `args`/`env`/`cwd`/`outputByteLimit`는 전부 **optional**(verified: schema-v1.16.0 `$defs.CreateTerminalRequest`, `required:["sessionId","command"]`). `args`/`env`는 생략 시 빈 배열로 취급되지만 wire 상 required가 아니다.
+`clientCapabilities.terminal == true`일 때만. `terminal/output`/`wait_for_exit`/`kill`/`release`는 `required: sessionId, terminalId`. `terminal/create`는 `required: sessionId, command`만이고 `args`/`env`/`cwd`/`outputByteLimit`는 전부 **optional**(baseline 후보 schema-v1.16.0 `$defs.CreateTerminalRequest`, `required:["sessionId","command"]` 조사값). `args`/`env`는 생략 시 빈 배열로 취급되지만 wire 상 required가 아니다. 구현 전 OQ-41에서 확정 schema와 대조한다.
 
 | Method | Request 필드 | Response |
 |---|---|---|
@@ -531,7 +533,7 @@ create 예시:
 | `http` | `McpServerHttp` | `mcpCapabilities.http` | `name`, `url`, `headers:HttpHeader[]` |
 | `sse` | `McpServerSse` | `mcpCapabilities.sse` | `name`, `url`, `headers:HttpHeader[]` |
 
-`HttpHeader` (verified, schema-v1.16.0 `$defs.HttpHeader`, `required: name, value`): `{ name: string, value: string, _meta? }`.
+`HttpHeader` (baseline 후보 schema-v1.16.0 `$defs.HttpHeader`, `required: name, value` 조사값): `{ name: string, value: string, _meta? }`.
 
 ---
 
@@ -545,9 +547,9 @@ create 예시:
 
 ### Session Config Options
 - `SetSessionConfigOptionRequest` (`required: sessionId, configId, value`): `{ sessionId: SessionId, configId: SessionConfigId, value: SessionConfigValueId, _meta? }`
-- `SetSessionConfigOptionResponse` (`required: configOptions`): `{ configOptions: SessionConfigOption[], _meta? }` — **응답은 빈 객체가 아니다.** set 직후의 **전체 config option set과 현재 값**을 그대로 돌려준다(`ConfigOptionUpdate`와 동일 shape). adapter가 빈 result로 가정하면 set 직후의 config 상태를 유실한다. (verified: schema-v1.16.0 `$defs.SetSessionConfigOptionResponse`, `required:["configOptions"]`, `props:[configOptions,_meta]`)
+- `SetSessionConfigOptionResponse` (`required: configOptions`): `{ configOptions: SessionConfigOption[], _meta? }` — **응답은 빈 객체가 아니다.** set 직후의 **전체 config option set과 현재 값**을 그대로 돌려준다(`ConfigOptionUpdate`와 동일 shape). adapter가 빈 result로 가정하면 set 직후의 config 상태를 유실한다. (baseline 후보 schema-v1.16.0 `$defs.SetSessionConfigOptionResponse`, `required:["configOptions"]`, `props:[configOptions,_meta]` 조사값)
 - `ConfigOptionUpdate { configOptions: SessionConfigOption[] }` — `config_option_update` notification (전체 set 교체)
-- `SessionConfigOption` 상세 구조 (verified, schema-v1.16.0 `$defs`): `required: id, name`. 필드 `{ id: SessionConfigId, name: string, description?: string|null, category?: SessionConfigOptionCategory|null, _meta? }`. 추가로 `type` discriminator(현재 `select`만)가 `oneOf`로 붙고 `select`일 때 `SessionConfigSelect`를 merge한다.
+- `SessionConfigOption` 상세 구조 (baseline 후보 schema-v1.16.0 `$defs` 조사값): `required: id, name`. 필드 `{ id: SessionConfigId, name: string, description?: string|null, category?: SessionConfigOptionCategory|null, _meta? }`. 추가로 `type` discriminator(현재 `select`만)가 `oneOf`로 붙고 `select`일 때 `SessionConfigSelect`를 merge한다.
   - `SessionConfigSelect` (`required: currentValue, options`): `{ currentValue: SessionConfigValueId, options: SessionConfigSelectOptions }` — 단일 값 selector(dropdown).
   - `SessionConfigSelectOptions`는 plain `SessionConfigSelectOption[]` 또는 그룹핑된 `SessionConfigSelectGroup[]`를 담는다.
   - `SessionConfigSelectOption` (`required: value, name`): `{ value: SessionConfigValueId, name: string, description?: string|null, _meta? }`.
@@ -564,7 +566,7 @@ create 예시:
 ### Available commands (slash commands)
 - `AvailableCommandsUpdate { availableCommands: AvailableCommand[] }`
 - `AvailableCommand { name, description, input?:AvailableCommandInput\|null }`
-- `AvailableCommandInput` = `anyOf`. 현재 정의된 variant는 `unstructured`(`UnstructuredCommandInput { hint: string (required), _meta? }`, 명령 이름 뒤에 입력된 텍스트 전체를 input으로 받음)뿐이다(verified: schema-v1.16.0 `$defs.AvailableCommandInput` / `$defs.UnstructuredCommandInput`). `anyOf`이므로 향후 다른 input variant가 추가될 수 있다 — slash command 입력을 파싱하는 adapter는 알 수 없는 variant를 방어적으로(예: unstructured로 fallback 또는 무시) 처리해야 한다.
+- `AvailableCommandInput` = `anyOf`. 현재 정의된 variant는 `unstructured`(`UnstructuredCommandInput { hint: string (required), _meta? }`, 명령 이름 뒤에 입력된 텍스트 전체를 input으로 받음)뿐이다(baseline 후보 schema-v1.16.0 `$defs.AvailableCommandInput` / `$defs.UnstructuredCommandInput` 조사값). `anyOf`이므로 향후 다른 input variant가 추가될 수 있다 — slash command 입력을 파싱하는 adapter는 알 수 없는 variant를 방어적으로(예: unstructured로 fallback 또는 무시) 처리해야 한다.
 
 ### Plan
 - `Plan { entries: PlanEntry[] }` — 갱신 시 **전체 목록 재전송**(client가 통째 교체).
@@ -708,10 +710,10 @@ ACP `ToolCall`/`ToolCallUpdate` → CLCOMX `ToolCallUpdate`:
 
 | 소스 | ref | 비고 |
 |---|---|---|
-| `schema/v1/schema.json` | `schema-v1.16.0` | wire 타입 전체(JSON Schema). 본 문서 2–12장의 모든 타입 verified 근거 |
-| `schema/v1/meta.json` | `schema-v1.16.0` | method/notification 이름 verified |
-| `schema/v2/meta.json` | `schema-v1.16.0` | v2 draft 메서드 목록(차이 확인용) |
-| `agent-client-protocol-schema/src/version.rs` | `schema-v1.16.0` | `LATEST=V1`, V2 unstable 확인 |
+| `schema/v1/schema.json` | baseline 후보 `schema-v1.16.0` | wire 타입 전체(JSON Schema). **구현 전 public artifact 재검증 필요(T0.0/OQ-41)** |
+| `schema/v1/meta.json` | baseline 후보 `schema-v1.16.0` | method/notification 이름 조사 근거. **구현 전 public artifact 재검증 필요** |
+| `schema/v2/meta.json` | baseline 후보 `schema-v1.16.0` | v2 draft 메서드 목록(차이 확인용). **구현 전 public artifact 재검증 필요** |
+| `agent-client-protocol-schema/src/version.rs` | baseline 후보 `schema-v1.16.0` | `LATEST=V1`, V2 unstable 조사 근거. **구현 전 public artifact 재검증 필요** |
 | docs: transports.md | v1 (live, 2026-06 조사) | stdio/stdout purity 규칙 인용 |
 | docs: overview.md | v1 | JSON-RPC, conventions, 메서드 목록, error handling |
 | docs: prompt-turn.md | v1 | turn lifecycle, cancellation 규칙 인용 |
@@ -721,4 +723,4 @@ ACP `ToolCall`/`ToolCallUpdate` → CLCOMX `ToolCallUpdate`:
 - 프로토콜 저장소: https://github.com/agentclientprotocol/agent-client-protocol
 - Claude ACP agent 구현체 저장소: https://github.com/agentclientprotocol/claude-agent-acp
 - 문서 사이트: https://agentclientprotocol.com
-- 조사 시점: 2026-06-25. protocol stable version = **1**, schema tag = **schema-v1.16.0**, Claude agent (`@agentclientprotocol/claude-agent-acp`) = **0.51.0** (commit `23626c9`).
+- 조사 시점: 2026-06-25. protocol stable version = **1**, schema baseline 후보 = **schema-v1.16.0**(**구현 핀 아님, T0.0/OQ-41에서 재확정**), Claude agent (`@agentclientprotocol/claude-agent-acp`) = **0.51.0** (commit `23626c9`).

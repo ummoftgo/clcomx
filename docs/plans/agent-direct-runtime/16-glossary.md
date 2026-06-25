@@ -4,7 +4,7 @@
 >
 > 표기 규약: 기술 식별자(타입/메서드/필드/명령/경로/enum 값)는 원문 영어 그대로 둔다. 한국어 산문으로 의미를 설명한다.
 
-조사 시점: 2026-06-25. 코드 정합 기준 브랜치: `feat/claude-tui-fullscreen-option`.
+조사 시점: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조.
 
 ---
 
@@ -62,7 +62,7 @@ provider마다 같은 단어가 다른 것을 가리킨다. 아래는 **CLCOMX �
 | **AgentRuntimePort** | §1 참조. provider 구현을 숨기는 TS interface. | [15](15-data-contracts.md) §6 |
 | **AgentRuntimeMetadata** | direct runtime 세션 재개/복원용 metadata. resume 키류는 디스크 저장 시 scrub 대상. | [15](15-data-contracts.md) §7.1 |
 | **JsonRpcMessage** | JSON-RPC 메시지 4종 union(request/notification/response/error). `jsonrpc` 필드는 optional(Codex는 생략, ACP는 `"2.0"`). | [15](15-data-contracts.md) §8.1 |
-| **AgentRuntimeStartParams** | process/transport 기동 파라미터(`transportKind` 태그). `command`/`args`/`env`는 adapter 생성값만 허용. | [15](15-data-contracts.md) §8.1 |
+| **AgentRuntimeStartParams** | process/transport 기동 파라미터(`transportKind` 태그). `command` 필드는 없고 backend가 provider로 executable을 resolve한다. `args`/`env`는 adapter 생성값만 허용하며 backend가 재검증한다. | [15](15-data-contracts.md) §8.1 |
 | **AgentRuntimeEvent** | Rust runtime이 emit하는 transport 레벨 event(`message`/`stderr`/`exit`/`error`/`backpressure`). raw JSON-RPC를 그대로 올린다. | [15](15-data-contracts.md) §8.3 |
 
 ---
@@ -86,14 +86,14 @@ provider마다 같은 단어가 다른 것을 가리킨다. 아래는 **CLCOMX �
 
 | 용어 | 1–2줄 정의 | 정본 |
 |---|---|---|
-| **ACP (Agent Client Protocol)** | Claude adapter의 1차 protocol. JSON-RPC 2.0 정식(`jsonrpc:"2.0"`). pinned `schema-v1.16.0`, wire `protocolVersion = 1`. | [ref-acp-protocol.md](ref-acp-protocol.md) §1, [15](15-data-contracts.md) 머리말 |
+| **ACP (Agent Client Protocol)** | Claude adapter의 1차 protocol. JSON-RPC 2.0 정식(`jsonrpc:"2.0"`). wire `protocolVersion = 1`; schema artifact는 T0.0/OQ-41에서 확정한다(`schema-v1.16.0`은 baseline 후보). | [ref-acp-protocol.md](ref-acp-protocol.md) §1, [15](15-data-contracts.md) 머리말 |
 | **app-server (Codex app-server)** | Codex adapter의 1차 연결면. JSON-RPC 유사이나 `jsonrpc` 필드를 보내지도 기대하지도 않는다. pinned `rust-v0.142.0`. | [ref-codex-app-server-protocol.md](ref-codex-app-server-protocol.md) §1.2, [15](15-data-contracts.md) 머리말 |
 | **JSON-RPC** | request/notification/response/error 4종 메시지 규약. CLCOMX는 `JsonRpcMessage` union으로 양 provider를 표현(`jsonrpc` optional). | [15](15-data-contracts.md) §8.1 `JsonRpcMessage` |
 | **stdio** | stdin/stdout 파이프로 JSON-RPC를 주고받는 transport. v1 Codex/Claude 모두 stdio 우선. | [13](13-risks-open-questions.md) Resolved defaults, [15](15-data-contracts.md) §8.1 |
 | **framing** | byte stream에서 개별 JSON-RPC 메시지 경계를 잘라내는 작업. backend runtime 책임이며 protocol 의미는 해석하지 않는다. | [07](07-tauri-process-runtime.md) §Framing, [15](15-data-contracts.md) §8.3 |
 | **capability** | initialize 단계에서 교환하는 기능 협상값. ACP는 `clientCapabilities`(`fs`/`terminal`)·`agentCapabilities`(`loadSession`/`resume`)·`promptCapabilities`(image/audio/embeddedContext). | [ref-acp-protocol.md](ref-acp-protocol.md) §session-setup, [ref-claude-agent-acp.md](ref-claude-agent-acp.md) §1 |
 | **initialize** | protocol 버전 협상 + capability 교환 단계. process spawn과 분리되며, 끝나야 세션이 `ready`가 된다. | [04](04-normalized-agent-model.md) §2.1 규칙 1, [07](07-tauri-process-runtime.md) |
-| **stopReason** | ACP turn 종료 사유(`end_turn`/`max_tokens`/`max_turn_requests`/`refusal`/`cancelled`). CLCOMX `turn_completed.status`로 축약하고 원본은 raw 보존. | [ref-acp-protocol.md](ref-acp-protocol.md) §prompt-turn, [research/ux-reference.md](research/ux-reference.md) §6 |
+| **stopReason** | ACP turn 종료 사유(`end_turn`/`max_tokens`/`max_turn_requests`/`refusal`/`cancelled`). CLCOMX `turn_completed.status`로 축약하고 원본은 raw 보존. | [ref-acp-protocol.md](ref-acp-protocol.md) §3.6, [research/ux-reference.md](research/ux-reference.md) §6 |
 | **session/update** | ACP의 진행 상황 notification. message/tool/plan/usage variant를 담는다. ACP에는 별도 `state_update`가 없다. | [ref-acp-protocol.md](ref-acp-protocol.md) §13, [15](15-data-contracts.md) §2 ACP 주의 |
 | **serverRequest/resolved** | Codex가 pending approval이 다른 경로로 해결됐음을 알리는 notification. 해당 `requestId`를 닫는다. | [04](04-normalized-agent-model.md) §4.2, [ref-codex-app-server-protocol.md](ref-codex-app-server-protocol.md) §4.4 |
 
@@ -107,7 +107,7 @@ provider마다 같은 단어가 다른 것을 가리킨다. 아래는 **CLCOMX �
 | **sandbox mode** | "무엇을 읽/쓸지"를 정하는 모드(permission mode와 별개 축). | [research/ux-reference.md](research/ux-reference.md) §8.1 (Codex IDE) |
 | **allow_always / acceptEdits** | "기억하는 승인". audit trail 준비 전까지 CLCOMX 저장 비활성화(옵션이 와도 한 번만 허용으로 취급). | [09](09-permissions-security.md), [research/ux-reference.md](research/ux-reference.md) §8.2 |
 | **scrub** | 디스크 저장 직전 비밀 필드를 제거하는 작업. `provider_session_id`/`provider_thread_id`/`provider_resume_token`은 기존 `pty_id`/`resume_token`처럼 scrub 대상. | [15](15-data-contracts.md) §7.3 보안 경계, [10](10-persistence-migration.md), [research/codebase-backend.md](research/codebase-backend.md) §4.2 |
-| **allowlist** | Rust handler가 `command`/`args`/`env`를 provider별로 재검증해 임의 executable/shell string을 차단하는 목록. PTY 대비 의도적 강화 지점. | [15](15-data-contracts.md) §8.1 주의, [09](09-permissions-security.md), [research/codebase-backend.md](research/codebase-backend.md) §6 |
+| **allowlist** | Rust handler가 backend-resolved executable/`args`/`env`를 provider별로 재검증해 임의 executable/shell string을 차단하는 목록. PTY 대비 의도적 강화 지점. | [15](15-data-contracts.md) §8.1 주의, [09](09-permissions-security.md), [research/codebase-backend.md](research/codebase-backend.md) §6 |
 | **pending request table** | resolve되지 않은 approval/server request를 `requestId`로 관리하는 구조. cancel/exit 시 cleanup이 필수. | [04](04-normalized-agent-model.md) §4, §5, [15](15-data-contracts.md) §8.1 `AgentRuntimeSnapshot.pendingRequestIds` |
 | **approval cleanup** | turn cancel/shutdown(process 생존)은 unresolved approval을 `cancelled`로 닫고 wire 응답; process exit(사망)은 `failed`(내부, wire 미전송)로 닫는 불변식. ACP/Codex MUST와 대응. | [04](04-normalized-agent-model.md) §4.2, §5.0 |
 | **migration** | 기존 `workspace.json`에 runtime kind/metadata를 optional 확장으로 더해 forward/backward 호환을 유지하는 작업. | [10](10-persistence-migration.md), [15](15-data-contracts.md) §7.2, §7.3 |

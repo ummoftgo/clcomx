@@ -117,7 +117,7 @@ ACP transport는 **stdio**다. 별도 transport 인자가 없다.
 `npm install --omit=optional`로 설치하면 바이너리가 빠져 실패하므로 optional dep을 포함해 설치해야 한다.
 
 > 로컬 환경 확인값(인용): `claude --version` → `2.1.187 (Claude Code)`; `node --version` →
-> `v24.14.0`; `which node` → `/home/melbin/.nvm/versions/node/v24.14.0/bin/node`. (조사 머신 기준,
+> `v24.14.0`; `which node` → `<wsl-home>/.nvm/versions/node/v24.14.0/bin/node`. (조사 머신 기준 경로를 일반화한 예시이며,
 > CLCOMX 배포 대상과 다를 수 있음 — unverified for target.)
 
 ### 환경변수
@@ -298,12 +298,12 @@ CLCOMX가 실행하는 어댑터 `@agentclientprotocol/claude-agent-acp@0.51.0`�
 wire에 실제 등장할 수 있는 정본 variant 집합은 **이 13종**이다. 클라이언트 parser는 모르는 variant를
 graceful하게 무시할 수 있어야 한다.
 
-> **출처 분기 주의 (verified, 1차 소스 재검증 2026-06-25)**: 같은 `protocolVersion = 1`인데도
-> agent-client-protocol 저장소 **`schema-v1.16.0`의 `schema/v1/schema.json`**은 `SessionUpdate`
+> **출처 분기 주의 (baseline 조사, 구현 전 OQ-41 재확인 필요)**: 같은 `protocolVersion = 1`인데도
+> agent-client-protocol 저장소 baseline 후보 **`schema-v1.16.0`의 `schema/v1/schema.json`**은 `SessionUpdate`
 > oneOf를 **11종**으로만 정의하며 `plan_update`/`plan_removed`가 **없다**. 즉 `plan_update`/`plan_removed`는
-> **sdk 0.29.0 schema 전용 추가분**이고 protocol-repo schema-v1.16.0 v1 wire에는 존재하지 않는다
+> **sdk 0.29.0 schema 전용 추가분**이고 baseline 후보 protocol-repo schema-v1.16.0 v1 wire에는 존재하지 않는다
 > (같은 protocolVersion=1의 서로 다른 schema cut). `ref-acp-protocol.md §2`와 이 표는 동일한 13종
-> 정본 집합을 공유하며 출처 표기만 다르다. verified:
+> 정본 집합을 공유하며 출처 표기만 다르다. baseline 조사 근거:
 > `gh api repos/agentclientprotocol/agent-client-protocol/contents/schema/v1/schema.json?ref=schema-v1.16.0`(11종),
 > npm tarball `@agentclientprotocol/sdk@0.29.0` `schema/schema.json`(13종).
 
@@ -315,8 +315,8 @@ graceful하게 무시할 수 있어야 한다.
 | `tool_call` | 양쪽 schema 공통 | 예 (1394·4264행) | tool 호출 시작 |
 | `tool_call_update` | 양쪽 schema 공통 | 예 (1447·2064·4218·4247·4342·4355행) | tool 진행/완료, terminal meta 동승 |
 | `plan` | 양쪽 schema 공통 | 예 (3154·3173·4174·4315행) | TODO/plan 리스트 |
-| `plan_update` | **sdk 0.29.0 schema 전용** (schema-v1.16.0 v1엔 없음) | (미관측) | plan 증분 갱신 |
-| `plan_removed` | **sdk 0.29.0 schema 전용** (schema-v1.16.0 v1엔 없음) | (미관측) | plan 제거 |
+| `plan_update` | **sdk 0.29.0 schema 전용** (baseline 후보 schema-v1.16.0 v1엔 없음) | (미관측) | plan 증분 갱신 |
+| `plan_removed` | **sdk 0.29.0 schema 전용** (baseline 후보 schema-v1.16.0 v1엔 없음) | (미관측) | plan 제거 |
 | `available_commands_update` | 양쪽 schema 공통 | 예 (1421·2739행) | `availableCommands` 키, `getAvailableSlashCommands` |
 | `current_mode_update` | 양쪽 schema 공통 | 예 (2359·2567·2857·3134행) | `currentModeId` 필드 |
 | `config_option_update` | 양쪽 schema 공통 | 예 (2758행) | `configOptions` 전체 배열 |

@@ -5,7 +5,7 @@
 > **권위 분리 (반드시 준수)**
 > - **타입 정본**: 모든 공통 타입(`AgentEvent`/`ProviderRef`/`ToolCallUpdate`/`Approval*`/`AgentRuntimeMetadata`/`JsonRpcMessage`/`AgentRuntimeStartParams` 등)은 [`15-data-contracts.md`](15-data-contracts.md)에 정의돼 있다. 이 문서는 그 타입을 **재정의하지 않고** §번호로 인용한다.
 > - **규칙 정본**: 상태 머신·upsert/append/replace·approval 생명주기·식별자 라우팅 규칙은 [`04-normalized-agent-model.md`](04-normalized-agent-model.md)에 있다. 이 문서는 그 규칙을 인용한다.
-> - **프로토콜 wire 사실**: [`ref-acp-protocol.md`](ref-acp-protocol.md)(ACP v1 wire, ref `schema-v1.16.0`, `protocolVersion = 1`), [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md)(`@agentclientprotocol/claude-agent-acp@0.51.0`, commit `23626c9`).
+> - **프로토콜 wire 사실**: [`ref-acp-protocol.md`](ref-acp-protocol.md)(ACP v1 wire, `protocolVersion = 1`; schema artifact는 T0.0/OQ-41에서 확정, `schema-v1.16.0`은 baseline 후보), [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md)(`@agentclientprotocol/claude-agent-acp@0.51.0`, commit `23626c9`).
 > - **코드 현실**: [`research/codebase-frontend.md`](research/codebase-frontend.md), [`research/codebase-backend.md`](research/codebase-backend.md).
 >
 > 미확인/결정 필요 항목은 본문에서 `unverified`/`결정 필요`로 표기하고 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 연결한다.
@@ -58,7 +58,7 @@ src/lib/features/agent-runtime/
 
 - **CLCOMX 공통 타입**: 재정의 금지. 15에서 import.
 - **ACP wire 타입**: `@agentclientprotocol/sdk@0.29.0`이 `dist/schema/types.gen.d.ts`를 제공한다(ref-claude-agent-acp §2 "어댑터가 바인딩하는 wire RPC method"). 어댑터는 **가능하면 이 sdk 타입을 import**해 wire shape를 다룬다. sdk를 frontend 번들에 직접 의존시키기 부적절하면(번들 크기/ESM 이슈) `contracts/claude-acp.ts`에 **필요한 부분만** 좁게 정의한다 — 단 이는 wire shape의 *부분 미러*이지 CLCOMX 공통 타입이 아니다.
-  - sdk를 frontend 의존성으로 둘지, 부분 타입 미러로 갈지는 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md). 1차 권고: **부분 타입 미러**(frontend는 raw `JsonRpcMessage`만 다루므로 sdk 런타임 불필요. 어댑터 process는 backend가 spawn하는 별도 node process이고 frontend 번들과 무관). sdk 패키지는 `claude-agent-acp` 어댑터 process가 실행하는 node 의존성으로만 존재한다.
+  - sdk를 frontend 의존성으로 둘지, 부분 타입 미러로 갈지는 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md) OQ-42 "sdk 타입 의존 방식". 1차 권고: **부분 타입 미러**(frontend는 raw `JsonRpcMessage`만 다루므로 sdk 런타임 불필요. 어댑터 process는 backend가 spawn하는 별도 node process이고 frontend 번들과 무관). sdk 패키지는 `claude-agent-acp` 어댑터 process가 실행하는 node 의존성으로만 존재한다.
 
 ---
 
@@ -68,7 +68,7 @@ src/lib/features/agent-runtime/
 
 ACP transport는 **stdio**다(ref-acp §1 stdio transport, ref-claude-agent-acp §1 "ACP transport는 stdio"). CLCOMX는 `wsl.exe`를 통해 WSL 안에서 node bin을 실행하고, stdin/stdout으로 newline-delimited JSON-RPC 2.0만 주고받는다. stderr는 log stream으로 분리한다.
 
-backend가 받는 기동 파라미터는 정본 `AgentRuntimeStartParams`(15 §8.1)의 `jsonrpc-stdio` + `provider:"claude"` variant다. **renderer/adapter는 실행 파일 `command`를 넘기지 않는다**(S1 정본, R4). backend가 provider로 신뢰 절대경로를 resolve한다 — `claude`는 backend가 resolve한 신뢰 `node` 절대경로다. 어댑터는 `provider`/`distro`/`workDir`/`args`(검증 대상)/`env`(non-secret)만 넘기고, Rust handler가 provider별 allowlist로 command(절대경로)·args(정확 일치)·env key를 재검증한다([`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §8.1, [`research/codebase-backend.md`](research/codebase-backend.md) §6, §10 권고 6, 15 §8.1 주석). 동명 바이너리(`/tmp/node`)로 우회할 수 없다.
+backend가 받는 기동 파라미터는 정본 `AgentRuntimeStartParams`(15 §8.1)의 `jsonrpc-stdio` + `provider:"claude"` variant다. **renderer/adapter는 실행 파일 `command`를 넘기지 않는다**(S1 정본, R4). backend가 provider로 신뢰 절대경로를 resolve한다 — `claude`는 backend가 resolve한 신뢰 `node` 절대경로다. 어댑터는 `provider`/`distro`/`workDir`/`args`(검증 대상)/`env`(non-secret)만 넘기고, Rust handler가 provider별 allowlist로 backend-resolved executable(절대경로)·args(정확 일치)·env key를 재검증한다([`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §8.1, [`research/codebase-backend.md`](research/codebase-backend.md) §6, §10 권고 6, 15 §8.1 주석). 동명 바이너리(`/tmp/node`)로 우회할 수 없다.
 
 ### 2.2 argv 결정 (WSL, absolute path 필수; executable은 backend resolve)
 
@@ -207,6 +207,33 @@ sequenceDiagram
 4. prompt는 `session/prompt`(§3.6). 출력/상태는 `session/update` notification(§5)·`session/request_permission`(§6)으로 수신.
 5. cancel은 `session/cancel` notification(§4.3). 종료는 graceful shutdown(§4.4).
 
+### 3.1a RPC request/notification 헬퍼 (pending 응답 매칭)
+
+`initialize`/`session/new`/`session/load`/`session/resume`/`session/prompt`/`session/set_mode`/`session/set_config_option`은 모두 **id 있는 client→agent request**이며, 그 응답(`{id, result}` 또는 `{id, error}`)을 `pendingRequests`(§4.2) Map으로 매칭해 resolve/reject한다. 05 §3.1 `rpcRequest`와 **동형**으로 단일 헬퍼를 둔다(개념 의사코드, 05 §3.1과 동일 변수/함수명 재사용):
+
+```text
+rpcRequest(runtimeId, method, params) -> Promise<result>:
+  id = deps.nextRequestId()                                   // §4.1 단조 증가 id
+  store rt.pendingRequests[id] = {resolve, reject}            // §4.2 pending table
+  await deps.sendMessage(runtimeId, { jsonrpc:"2.0", id, method, params })  // ACP는 jsonrpc:"2.0" 채움(05 §3.1 주석)
+  return promise (JSONRPCResponse{id,result|error} 도착 시 settle, 아래 resolveRpc)
+
+rpcNotify(runtimeId, method, params?) -> void:
+  await deps.sendMessage(runtimeId, { jsonrpc:"2.0", method, params })      // id 없음 → notification(session/cancel 등)
+
+// inbound dispatch(§5 intro·04 §5): response면 pending table로 settle
+resolveRpc(msg: JsonRpcMessage /* {id, result|error} */):
+  pending = rt.pendingRequests.get(msg.id)                    // id 원본 타입(string|number)으로 조회(R3)
+  if !pending: return                                         // 늦은/중복 응답 → 멱등 무시(§4.4 (c))
+  rt.pendingRequests.delete(msg.id)
+  if ("error" in msg): pending.reject(new AdapterError(msg.error.code, msg.error.message))  // H3 분기(§9)
+  else:                pending.resolve(msg.result)
+```
+
+> **H3 — result/error 분기(05 H3과 동일 원칙)**: response는 `result`(성공) 또는 `error`(실패) 중 하나다(ref-acp §11 JSON-RPC error). `"error" in msg`면 reject한다. `initialize`/`session/*` 요청이 reject되면 호출부(`startSession`/`resumeSession`)는 catch해 `status→failed` + protocol error 분류 + PTY fallback 제안으로 전이한다(§3.2 검증 규칙 1, §9, §10). 즉 `initialize`/`session/new`/`session/load`/`session/resume`/`session/prompt`/`session/set_mode`/`session/set_config_option`은 위 `rpcRequest`를 경유하며, error response는 §9 error 표대로 처리한다(`-32000 Authentication required`→§3.3, `-32601`→`error{recoverable:false}`). `session/cancel`만 `rpcNotify`(응답 없음, §4.3).
+>
+> id 매칭은 §6.1/§6.2와 동일하게 **원본 JSON-RPC id 타입을 보존**한다(String화 금지, R3, ref-acp §6). numeric id로 보낸 request의 response가 numeric id로 오므로 `pendingRequests` 키도 원본 타입을 쓴다.
+
 ### 3.2 initialize (capability negotiation, protocolVersion=1)
 
 정확한 params/result는 ref-acp §3.1. 어댑터가 보내는 `clientCapabilities`는 **client가 광고해야만 agent 기능이 켜지는** 게이트다(ref-claude-agent-acp §2 "주의(게이트)"). CLCOMX가 광고할 capability 결정표:
@@ -214,11 +241,11 @@ sequenceDiagram
 | capability | 1차 값 | 근거/효과 |
 |---|---|---|
 | `protocolVersion` | `1` | ref-acp §0, ref-claude-agent-acp §4. 어댑터는 항상 `1` 회신(ref-claude-agent-acp §2). 불일치 시 protocol error(§9). |
-| `clientCapabilities.fs.readTextFile` / `writeTextFile` | `false`(1차) | true면 어댑터가 `fs/read_text_file`/`fs/write_text_file`로 client가 IO를 대행(ref-acp §7). 1차는 어댑터 SDK 자체 IO에 맡기고 client fs 미광고. (`결정 필요`: editor 통합 시 true 검토 → 13) |
+| `clientCapabilities.fs.readTextFile` / `writeTextFile` | `false`(1차) | true면 어댑터가 `fs/read_text_file`/`fs/write_text_file`로 client가 IO를 대행(ref-acp §7). 1차는 어댑터 SDK 자체 IO에 맡기고 client fs 미광고. (`결정 필요`: editor 통합 시 true 검토 → 13 OQ-43 "client capability 1차 값") |
 | `clientCapabilities.terminal` | `false`(1차) | true면 `terminal/*`로 명령 실행 terminal을 client가 호스팅(ref-acp §8). 1차는 tool_call content(terminal embed)를 어댑터가 채우게 두고 client terminal 미광고. (후속: command output을 CLCOMX terminal surface로 끌어올릴 때 true) |
 | `clientCapabilities._meta["terminal_output"]` | `false`(1차) | 어댑터의 terminal_info/terminal_output/terminal_exit meta 게이트(ref-claude-agent-acp §2). 1차 미광고. |
 | `clientCapabilities.auth.terminal` / `_meta["terminal-auth"]` | §3.3 결정 | 광고 시 어댑터가 terminal auth method 제시(ref-claude-agent-acp §1 인증 표). |
-| `clientCapabilities.elicitation.form` / `.url` | `false`(1차) | true면 `AskUserQuestion`이 form elicitation으로 surface(ref-claude-agent-acp §3 request_permission 1번). 1차 미광고 → `AskUserQuestion`이 어떻게 오는지 확인 필요(`결정 필요`, 13). |
+| `clientCapabilities.elicitation.form` / `.url` | `false`(1차) | true면 `AskUserQuestion`이 form elicitation으로 surface(ref-claude-agent-acp §3 request_permission 1번). 1차 미광고 → `AskUserQuestion`이 어떻게 오는지 확인 필요(`결정 필요`, 13 OQ-43 "client capability 1차 값"). |
 | `clientInfo` | `{name:"clcomx", version:<앱버전>}` | ref-acp §3.1. branding 주의(§9, 13). |
 
 ```ts
@@ -268,6 +295,8 @@ export interface ParsedInitialize {
 4. `authMethods`가 비어있지 않으면 인증 미완 가능성 → §3.3.
 
 > initialize 협상 완료는 event가 아니다(ref-acp §13.1). `ProviderRef.provider="claude"`를 확정하고 내부 상태만 갱신한다. `agentCapabilities`/`agentInfo.version`은 `AgentRuntimeMetadata.protocolVersion`/`providerVersion`/`adapterVersion`(15 §7.1)에 보존한다.
+>
+> **요청/응답 경유(§3.1a)**: `buildInitializeRequest`는 message만 만든다 — 실제 송신·응답 await는 `rpcRequest(runtimeId, "initialize", params)`(§3.1a)를 거치며, resolve된 result를 `parseInitializeResponse`로 검증한다. error response면 `rpcRequest`가 reject하고 `startSession`이 catch해 `status→failed`+fallback로 전이한다(§3.1a H3, 위 검증 규칙 1). `session/new`(§3.4)·`session/load`\|`session/resume`(§3.5)·`session/prompt`(§3.6)·`session/set_mode`/`session/set_config_option`(§8)도 동일하게 `rpcRequest`를 경유하고, `session/cancel`만 `rpcNotify`(§4.3)다.
 
 ### 3.3 인증(authentication)
 
@@ -280,7 +309,7 @@ ref-claude-agent-acp §1 "인증 전제"가 권위다. **핵심: terminal 로그
 | **terminal 구독/Console 로그인** | client가 `auth.terminal`/`_meta["terminal-auth"]` 광고 | 어댑터가 terminal auth method 제시, 실제 로그인은 `--cli auth login --claudeai`/`--console` passthrough를 **별도 터미널**에서 실행(ref-claude-agent-acp §1 표). non-remote에서만 `claude-ai-login`/`console-login` 제시, remote(SSH 등)는 `claude-login`만(ref-claude-agent-acp §1 "remote 분기 주의"). |
 | **gateway** | client가 `auth._meta.gateway===true` 광고 | `authenticate` 요청에 `_meta.gateway.{baseUrl, headers}` 채워 보냄. gateway header 등 secret 값은 argv가 아니라 backend `Command::env()`+`WSLENV` secret 경로로 자식 환경에 주입한다(C1, 07 §5.1). 어댑터가 query 시 env 합성(ref-claude-agent-acp §1 authenticate 처리). |
 
-> **1차 인증 정책(정본)**: v1은 **WSL 측 자체 인증(`claude login`/config)에 의존**하고 secret env를 런타임으로 넘기지 않는다(C1 기본값, 07 §5.1). gateway 등으로 API key가 꼭 필요하면 launch argv(`-e env KEY=VAL`)가 아니라 backend `std::process::Command::env()`+`WSLENV` passthrough로만 secret을 자식 프로세스 환경에 주입한다(argv 비경유 → `ps`/`/proc/<pid>/cmdline` 평문 노출 방지). terminal/gateway interactive 인증은 후속으로 둔다 — terminal auth를 켜려면 CLCOMX가 PTY로 `claude /login`을 띄우는 별도 UX가 필요(WSL 경계). 이는 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md). WSL 환경에서 SSH env(`SSH_CONNECTION` 등)가 설정돼 있으면 어댑터가 remote로 오판해 `claude-login`만 제시할 수 있으니 launch env를 점검한다(ref-claude-agent-acp §1).
+> **1차 인증 정책(정본)**: v1은 **WSL 측 자체 인증(`claude login`/config)에 의존**하고 secret env를 런타임으로 넘기지 않는다(C1 기본값, 07 §5.1). gateway 등으로 API key가 꼭 필요하면 launch argv(`-e env KEY=VAL`)가 아니라 backend `std::process::Command::env()`+`WSLENV` passthrough로만 secret을 자식 프로세스 환경에 주입한다(argv 비경유 → `ps`/`/proc/<pid>/cmdline` 평문 노출 방지). terminal/gateway interactive 인증은 후속으로 둔다 — terminal auth를 켜려면 CLCOMX가 PTY로 `claude /login`을 띄우는 별도 UX가 필요(WSL 경계). 이는 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md) OQ-43 "client capability 1차 값". WSL 환경에서 SSH env(`SSH_CONNECTION` 등)가 설정돼 있으면 어댑터가 remote로 오판해 `claude-login`만 제시할 수 있으니 launch env를 점검한다(ref-claude-agent-acp §1).
 
 ### 3.4 session/new
 
@@ -308,7 +337,11 @@ result 처리:
 | `session/load` | `agentCapabilities.loadSession`(top-level) | **replay**: 응답 전 `session/update`들로 transcript 재구성(ref-acp §3.4) | `{sessionId, cwd, mcpServers, additionalDirectories?}` |
 | `session/resume` | `sessionCapabilities.resume` | replay 없이 세션 재개 | `{sessionId, cwd, additionalDirectories?, mcpServers?}` |
 
-**replay 처리 규칙(load)**: load 응답(`LoadSessionResponse`)을 받기 전에 들어오는 `session/update`는 **transcript 재구성용**으로 처리한다(ref-acp §3.4, ref-acp §13.1). 어댑터는 "load 진행 중" 플래그를 두고, 이 동안의 update는 `emit`하되 store가 replay임을 알 수 있게 한다(`session_loaded` event를 먼저 emit하거나 replay 플래그 전달 — 04 §3과 store 설계 소관). `user_message_chunk`도 이 경로로 온다(ref-claude-agent-acp §2 variant 표 비고).
+**replay 처리 규칙(load)**: load 응답(`LoadSessionResponse`)을 받기 **전**에 들어오는 `session/update`는 **transcript 재구성용**(replay)으로 처리한다(ref-acp §3.4, ref-acp §13.1). 어댑터는 `loadingReplay` 플래그(§4.2)로 replay/live를 구분한다:
+- `session/load` request **송신 직전** `rt.loadingReplay = true`로 켠다.
+- 이 동안 도착하는 update는 `emit`하되 store가 replay임을 알 수 있게 한다(replay 플래그 전달 — 04 §3과 store 설계 소관). `user_message_chunk`도 이 경로로 온다(ref-claude-agent-acp §2 variant 표 비고).
+- **`loadingReplay`를 끄는 시점(M2)**: `session/load` 응답(`LoadSessionResponse`)이 `rpcRequest`(§3.1a)로 resolve되는 핸들러에서 `rt.loadingReplay = false`로 전이하고, **그 경계에서 `session_loaded`를 emit**한다. 즉 replay update 스트림(전부) → load response resolve → `loadingReplay=false` + `session_loaded` emit → 이후 update는 live. 이렇게 replay 종료 경계를 단일 지점(load response resolve)으로 확정해 replay/live 경계 모호성을 없앤다.
+- `session/resume`는 replay가 없으므로 `loadingReplay`를 켜지 않고 응답 resolve 시 바로 `session_loaded`를 emit한다(ref-acp §13.1).
 
 ```ts
 // resume/load 분기 (개념)
@@ -325,11 +358,32 @@ function buildLoadOrResume(id, p: ResumeSessionParams, caps: ParsedInitialize): 
 }
 ```
 
-result 처리: 둘 다 `{modes?, configOptions?}`. `emit { type:"session_loaded", ref }`(15 §3). resume는 replay 없음(ref-acp §13.1).
+result 처리: 둘 다 `{modes?, configOptions?}`. load/resume 응답 resolve 핸들러(§3.1a `rpcRequest`)에서 `loadingReplay=false`(load만 — resume은 애초에 false) 전이 경계에 `emit { type:"session_loaded", ref }`(15 §3, M2). resume는 replay 없음(ref-acp §13.1).
 
 ### 3.6 session/prompt + stopReason
 
 params: ref-acp §3.6 (`required: sessionId, prompt`). `prompt`는 `ContentBlock[]`(§7). turn id는 ACP wire에 없으므로 CLCOMX가 prompt 단위로 합성한다(04 §"turn id 합성 규칙": `<sessionId>:t<n>`). 그 turn 동안 발생하는 모든 `AgentEvent.ref.turnId`에 같은 값을 넣는다.
+
+**turn id 합성 배선(`sendPrompt`)**: `activeTurnId`/`turnSeq`(§4.2)는 여기서 **할당·증가**되고, 응답 수신 후 정책에 따라 처리된다. 05의 `routing.setActiveTurn`/`clearActiveTurn`(Codex는 wire turnId를 받음)과 달리 ACP는 wire turnId가 없으므로 어댑터가 **prompt 송신 직전에** `turnSeq`를 증가시켜 합성한다(04 §turn id 합성).
+
+```text
+sendPrompt(sessionHandle, input: SendPromptInput):           // 15 §6
+  rt = byHandle(sessionHandle)
+  acpPrompt = toAcpPromptContent(input.content)              // §7.1 AgentContent[] → ContentBlock[]
+  // turnId 합성: prompt 송신 직전 turnSeq 증가 + activeTurnId 할당(04 §turn id 합성, <sessionId>:t<n>)
+  rt.turnSeq += 1
+  rt.activeTurnId = `${rt.providerSessionId}:t${rt.turnSeq}`
+  emit({ type:"session_status_changed", ref: refFor(rt), status:"running" })  // 04 §2.1 규칙 2
+  // session/prompt는 rpcRequest 경유(§3.1a). 응답 result.stopReason로 turn 종료 처리.
+  result = await rpcRequest(rt.runtimeId, "session/prompt", { sessionId: rt.providerSessionId, prompt: acpPrompt })
+  // stopReason → turn_completed(아래 표). usage 동승은 rt.lastUsage(§3.6 usage_update).
+  emit(mapStopReason(rt, result.stopReason))                 // turn_completed{status} + (status→idle)
+  rt.activeTurnId = undefined                                 // turn 종료: clear(아래 정책)
+```
+
+**activeTurnId clear vs 유지 정책**: `session/prompt` 응답(stopReason) 수신 → `turn_completed` emit **직후 `activeTurnId`를 `undefined`로 clear**한다(turn 경계 명시). 이는 05의 `clearActiveTurn`(turn 종료 시 활성 turn 제거)에 대응한다. clear 후 발생할 수 있는 두 경계 케이스의 turnId 처리 규칙:
+- **turn 사이(idle) 도착 update**: 정상적으로는 turn 종료 후 `session/update`가 더 오지 않으나, 늦게 도착하면 `activeTurnId === undefined`이므로 `ProviderRef.turnId`는 `undefined`로 둔다(특정 turn에 귀속시키지 않음). store는 turnId 없는 event를 마지막 활성 메시지/세션 레벨로 흡수한다(04 §3, store 소관).
+- **replay(`session/load`) 중 도착 update**: replay는 prompt를 보내지 않으므로 `activeTurnId`가 없다(§3.5). replay update의 `ref.turnId`도 `undefined`로 두고, store가 `loadingReplay` 경계(§3.5)로 재구성한다. replay 중 과거 turn 경계는 wire에 없으므로 어댑터가 합성하지 않는다(04 §turn id 합성: 합성은 `sendPrompt`에서만).
 
 전송 시: `status→running`(04 §2.1 규칙 2 + ref-acp §13.1 "session/prompt 전송 → running"). accepted 개념은 response가 아니라 turn 시작 시점이다(04 §2.1 + ref-acp §13.1).
 
@@ -341,7 +395,7 @@ params: ref-acp §3.6 (`required: sessionId, prompt`). `prompt`는 `ContentBlock
 | `cancelled` | `turn_completed{status:"cancelled"}` | cancel MUST 반환값 |
 | `refusal` | `turn_completed{status:"completed"}` + UI 거부 표시 | refusal은 CLCOMX status enum에 없음 → metadata 보존 |
 
-`usage_update`로 받은 마지막 `TokenUsage`를 `turn_completed.usage`에 동승할 수 있다(15 §3, §5; ACP `UsageUpdate{used,size}`는 inputTokens 등으로 직접 매핑 안 되므로 `used` 보강 또는 raw 보존, 15 §5 주의).
+`usage_update`로 받은 마지막 `TokenUsage`를 `turn_completed.usage`에 동승할 수 있다(15 §3, §5). **ACP `UsageUpdate{used,size}` 매핑(OQ-02 해소)**: `used`→`TokenUsage.contextUsed`, `size`→`TokenUsage.contextSize`로 매핑한다(15 §5 신규 필드 `contextUsed`/`contextSize`, ref-acp §10). 이는 Codex 토큰 축(`inputTokens` 등)과 분리된 **context window 축**이므로 `inputTokens`에 섞지 않는다(15 §5 주의, 08 context gauge). `cost` 등 잔여 필드는 raw 보존. 이 매핑은 `mapSessionUpdate`의 `usage_update` 분기(§5.1)에서 `rt.lastUsage`에 누적해 `turn_completed.usage`로 동승한다.
 
 ---
 
@@ -487,7 +541,7 @@ async function cancelTurn(handle, turnId?) {
 
 **(c) 멱등·정확히 한 번**: exit(`agent-runtime-exit`)으로 인한 pending 종료와 shutdown으로 인한 pending 종료는 **멱등하며 정확히 한 번만** 수행된다. 어댑터는 `agent-runtime-exit` 수신 시 `emit { type:"process_exited", ref, code?, signal? }`하고 남은 pending approval/request를 닫되, 이미 (a)에서 닫힌 항목은 `closing`/closed 표시로 멱등 무시한다(04 §4.2 규칙 4, §5). exit이 shutdown보다 먼저 오든 나중에 오든 같은 pending을 두 번 닫지 않고, 어느 경로로도 빠뜨리지 않는다.
 
-> ACP는 `session/close`(`sessionCapabilities.close`)도 있다(ref-acp §2). 1차는 process shutdown으로 충분하나, 한 process에 여러 session을 둘 경우 session별 close가 필요할 수 있다(`결정 필요`, 13).
+> ACP는 `session/close`(`sessionCapabilities.close`)도 있다(ref-acp §2). 1차는 process shutdown으로 충분하나, 한 process에 여러 session을 둘 경우 session별 close가 필요할 수 있다(`결정 필요`, 13 OQ-44 "session/close 필요성").
 
 ---
 
@@ -511,7 +565,7 @@ async function cancelTurn(handle, turnId?) {
 | `current_mode_update` | `CurrentModeUpdate{currentModeId}` | (전용 event 없음) → mode 상태 갱신(§8) | 현재 mode 갱신 |
 | `config_option_update` | `ConfigOptionUpdate{configOptions}` | (전용 event 없음) → config 상태 갱신(§8) | 전체 set 교체 |
 | `session_info_update` | `SessionInfoUpdate{title?,updatedAt?}` | (전용 event 없음) → 세션 title 갱신 | null=clear |
-| `usage_update` | `UsageUpdate{used,size,cost?}` | `turn_completed.usage` 동승용 보관(§3.6) | 최신값 보관 |
+| `usage_update` | `UsageUpdate{used,size,cost?}` | `used`→`TokenUsage.contextUsed`, `size`→`contextSize`(OQ-02 해소, 15 §5); `turn_completed.usage` 동승용 `rt.lastUsage` 보관(§3.6) | 최신값 보관 |
 | `plan_update`/`plan_removed` | — | 어댑터 미관측(ref-claude-agent-acp §2) → 방어적 무시 또는 raw | — |
 
 ### 5.2 메시지 chunk (agent/user)
@@ -563,7 +617,9 @@ function mapToolCall(rt, raw, isNew: boolean): AgentEvent {
     id: raw.toolCallId,
     title: raw.title,                      // tool_call_update는 optional
     kind: mapToolKind(raw.kind),           // switch_mode → "other"(ref-acp §13.3, ref-acp §5)
-    status: raw.status,                    // ACP에 cancelled 없음 → client 합성만(§4.3)
+    status: raw.status,                    // tool_call_update는 변경 필드만 옴 → undefined면 그대로 전달.
+                                           // store가 04 §3.1 upsert로 undefined=기존값 유지 처리(omit 불필요).
+                                           // ACP에 cancelled 없음 → client 합성만(§4.3)
     content: raw.content?.map(mapToolCallContent), // replace 의미(04 §3.3)
     locations: raw.locations,              // {path,line?} → FileLocation(column 없음)
     rawInput: raw.rawInput,
@@ -617,6 +673,7 @@ function mapRequestPermission(rt, msg: JsonRpcMessage /* request */): AgentEvent
     body: undefined,                                // toolCall content 요약 가능(선택)
     toolCallId: params.toolCall?.toolCallId,
     options: params.options.map((o) => ({ id: o.optionId, label: o.name, kind: o.kind })), // 15 §5 ApprovalOption
+    severity: "normal",                             // OQ-47: v1은 전부 normal(inline). escalation 매핑은 후속(아래)
   };
   // rpcId: 원본 JSON-RPC id를 타입 보존(string|number). String화 금지 — wire 응답은 이 값으로 복원(§6.2).
   rt.pendingApprovals.set(String(id), { rpcId: id, ref, request });
@@ -638,6 +695,7 @@ function mapRequestPermission(rt, msg: JsonRpcMessage /* request */): AgentEvent
 > ```
 
 - `PermissionOptionKind` 4종(`allow_once`/`allow_always`/`reject_once`/`reject_always`) → `ApprovalOption.kind`로 1:1(15 §5, ref-acp §6). ACP엔 `cancel`/`other` 없음.
+- **`severity` 기본값(OQ-47)**: v1은 모든 ApprovalRequest에 `severity:"normal"`(inline 카드)을 부여한다(15 §5 `ApprovalRequest.severity`, 08 §4.4 inline vs modal 분기). provider escalation 신호(Claude `bypassPermissions`/`ExitPlanMode` 등)를 `severity:"escalation"`(blocking modal)으로 매핑하는 정밀 분류는 **후속**으로 두고 OQ-47 확정 후 적용한다([`13-risks-open-questions.md`](13-risks-open-questions.md) OQ-47).
 - 어댑터가 보내는 옵션 집합(일반 tool 3-option, ExitPlanMode 옵션, AskUserQuestion form 등)은 ref-claude-agent-acp §3 표대로 도착. UI는 label을 그대로 보여주되 **i18n key로 감싼다**(`agentRuntime.approval.*`, [`research/codebase-frontend.md`](research/codebase-frontend.md) §6.3, ref-claude-agent-acp §3 마지막).
 - `ExitPlanMode` 승인은 옵션 선택 시 mode 전환을 유발하고 `current_mode_update`+`config_option_update` 양쪽으로 통지될 수 있다(§8, ref-claude-agent-acp §2·§3).
 
@@ -834,15 +892,17 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 ### 11.1 단위 테스트 (순수 매핑)
 
 - `mapSessionUpdate`: 8개 핵심 variant 각각 fixture → 기대 `AgentEvent[]` 검증. messageId 그룹핑(바뀌면 새 메시지, §5.2), tool_call_update content **replace**(§5.4), plan 전체 교체(§5.5).
-- `mapRequestPermission`/`buildPermissionResponse`: option kind 1:1, selected/cancelled wire shape(§6, ref-acp §6). **rpcId 타입 보존**: numeric id(예: `42`)로 온 request_permission에 대해 wire 응답 `id`가 `42`(number)로 유지되는지(String `"42"` 금지, R3). `ApprovalRequest.id`/`ProviderRef.requestId`는 `"42"`(문자열 키)인지.
+- `mapRequestPermission`/`buildPermissionResponse`: option kind 1:1, selected/cancelled wire shape(§6, ref-acp §6). **rpcId 타입 보존**: numeric id(예: `42`)로 온 request_permission에 대해 wire 응답 `id`가 `42`(number)로 유지되는지(String `"42"` 금지, R3). `ApprovalRequest.id`/`ProviderRef.requestId`는 `"42"`(문자열 키)인지. `ApprovalRequest.severity`가 v1 전부 `"normal"`인지(OQ-47, §6.1).
 - `mapContentBlock`/`toAcpPromptContent`: image base64↔uri, diff patch 생성, path absolute 정규화(§7).
 - `buildInitializeRequest`/`parseInitializeResponse`: protocolVersion=1 검증, capability 위치 비대칭(loadSession top-level vs resume in sessionCapabilities, §3.2).
 - `buildSetMode`/`buildSetConfigOption`: 6 modes, set_config_option 응답 `{configOptions}` 비-빈 가정(§8).
+- `mapSessionUpdate`(`usage_update`): ACP `{used,size}` → `TokenUsage.contextUsed`/`contextSize` 매핑(OQ-02 해소, §3.6·§5.1). `used`가 `inputTokens`로 새지 않는지(축 분리).
 
 ### 11.2 통합 테스트 (어댑터 + 모킹 transport)
 
-- lifecycle: startSession → initialize → session/new → sendPrompt → session/update 스트림 → stopReason → turn_completed. status 전이(starting→ready→running→idle) 검증(04 §2).
-- replay: session/load 시 응답 전 update가 transcript 재구성 경로로 처리되는지(§3.5).
+- lifecycle: startSession → initialize → session/new → sendPrompt → session/update 스트림 → stopReason → turn_completed. status 전이(starting→ready→running→idle) 검증(04 §2). **turn id 합성(C1, §3.6)**: `sendPrompt` 직전 `turnSeq` 증가·`activeTurnId=<sessionId>:t<n>` 할당, turn 동안 모든 `ref.turnId`가 동일, stopReason 수신 후 `activeTurnId` clear됨을 검증. idle 중 늦게 도착한 update의 `ref.turnId`가 `undefined`인지.
+- replay: session/load 시 응답 전 update가 transcript 재구성 경로(`loadingReplay=true`)로 처리되고, **load response resolve 시점에 `loadingReplay=false`로 꺼지며 `session_loaded`가 emit**되는지(M2, §3.5). resume은 `loadingReplay`를 켜지 않는지.
+- rpcRequest 응답 매칭(H2/H3, §3.1a): `initialize`/`session/new`/`session/prompt`가 `pendingRequests`로 await/resolve되고, error response(`{id,error}`)면 reject되어 `status→failed`로 전이하는지(§3.2 규칙 1, §9). 응답 id 원본 타입 보존(R3).
 - cancel cleanup: cancelTurn 시 pending approval이 모두 cancelled wire 응답 + `approval_resolved` emit(§4.3, 04 §4.2). **deadlock 회귀 방지 핵심**.
 - shutdown/process exit (S3): `shutdown` 시 `agentRuntimeShutdown` 호출 **전에** pending approval cancelled 종료 + pending RPC reject가 일어나고 그 뒤 unlisten/세션 삭제됨을 검증(§4.4 (a)). 늦은 exit이 와도 pending이 두 번 닫히지 않고(멱등·정확히 한 번, §4.4 (c)) 누락도 없음. `process_exited`만 단독으로 와도 남은 pending이 닫힘(§4.4, 04 §5).
 - protocol error: protocolVersion≠1 / 비-JSON stdout → failed + fallback 신호(§9, §10).
@@ -870,10 +930,11 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 4. **client capability 1차 값**(§3.2): `fs`/`terminal`/`terminal_output`/`elicitation` 모두 false 시작 — `AskUserQuestion`/command terminal surface UX 영향.
 5. ~~**agent_thought_chunk 정책**(§5.3)~~: **해소됨** — reasoning/thinking은 `agent_message`/`agent_message_delta`의 `channel:"thought"`로 누적, UI는 접이식 thinking 블록(기본 collapsed)으로 렌더(D11, 15 §3·04 §3.2.2/§3.2.5·13 OQ-01/RD-13).
 6. **audio content**(§7.2): 미지원/raw 보존(모델 gap, 15 §4).
-7. **sdk 타입 의존 방식**(§1.2): frontend가 `@agentclientprotocol/sdk` 타입 의존 vs 부분 미러. 1차 권고 부분 미러.
-8. **session/close 필요성**(§4.4): 멀티세션 시 session별 close.
+7. **sdk 타입 의존 방식**(§1.2, 13 OQ-42): frontend가 `@agentclientprotocol/sdk` 타입 의존 vs 부분 미러. 1차 권고 부분 미러.
+8. **session/close 필요성**(§4.4, 13 OQ-44): 멀티세션 시 session별 close.
+8b. **approval severity escalation 매핑**(§6.1, 13 OQ-47): v1은 전부 `severity:"normal"`(inline). Claude `bypassPermissions`/`ExitPlanMode` 등 escalation 신호 → `"escalation"`(modal) 정밀 매핑은 후속. (OQ-02 ACP `usage_update`→`contextUsed`/`contextSize` 매핑은 §3.6/§5.1에서 **해소**, 15 §5.)
 9. **0.50.0↔0.51.0 capability diff**(ref-claude-agent-acp §6): CHANGELOG 미인용.
-10. **`src/tools.ts` tool content/diff 세부 매핑**·`SettingsManager.filterEscalatingDefaultMode` 동작(ref-claude-agent-acp §6 미확인): 구현 시 1차 소스 재확인.
+10. **`src/tools.ts` tool content/diff 세부 매핑**·`SettingsManager.filterEscalatingDefaultMode` 동작(ref-claude-agent-acp §6 미확인, 13 OQ-45): 구현 시 1차 소스 재확인.
 
 ---
 

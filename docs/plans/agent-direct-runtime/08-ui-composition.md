@@ -9,7 +9,7 @@
 > - 브랜딩 제약은 [`09-permissions-security.md`](09-permissions-security.md) §"브랜드/제품 표시"를 따른다.
 > - 미확정/결정 필요 항목은 본문에 `결정 필요`로 표기하고 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 연결한다.
 
-조사 시점: 2026-06-25. 코드 정합 기준 브랜치: `feat/claude-tui-fullscreen-option`.
+조사 시점: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조.
 
 ---
 
@@ -108,6 +108,8 @@ graph TD
 
   const approval = createApprovalController({
     getState: () => runtimeState,
+    // transport controller가 내부적으로 sessionHandle을 주입하므로 호출부는 decision만 넘긴다.
+    // 매핑: transport.respondApproval(decision) → AgentRuntimePort.respondApproval(sessionHandle, decision) (15 §6, §9.3).
     respondApproval: (decision) => transport.respondApproval(decision),
   });
 
@@ -238,9 +240,10 @@ approval 타입(`ApprovalRequest`/`ApprovalOption`/`ApprovalDecision`)은 15 §5
 - **provider가 제시한 `options`를 그대로 보존·표시한다.** 표시하지 않은 option을 임의 선택하지 않는다([09](09-permissions-security.md), ux-reference §8.2).
 - option label은 i18n으로 감싸되(§8 `agentRuntime.approval.*`), `optionId`/`kind`(15 §5)는 원본 유지.
 - `ApprovalOption.kind`(15 §5: `allow_once|allow_always|reject_once|reject_always|cancel|other`)별로 버튼 스타일/아이콘을 구분한다. `allow_always`/`reject_always`는 시각적으로 "기억되는 승인"임을 알린다.
-- **inline vs modal 분기**(ux-reference §8.2):
-  - 단일 tool 승인(대부분) → `ApprovalInlineCard`를 해당 `ToolCallCard` 하단에 인라인 표시. approval card는 auto-scroll 설정과 무관하게 항상 view로 스크롤(ux-reference §7.2, §9).
-  - escalation/destructive(sandbox 우회, 권한 상승) → `ApprovalModal`(blocking). modal escape 회귀 보호(§10.3).
+- **inline vs modal 분기**(ux-reference §8.2): 자연어 판단이 아니라 **15 §5 `ApprovalRequest.severity` 필드 기반**으로 분기한다(기본값 `"normal"`).
+  - `severity!=="escalation"`(= `"normal"`, 대부분) → `ApprovalInlineCard`를 해당 `ToolCallCard` 하단에 인라인 표시(`pendingApprovals`로 노출). approval card는 auto-scroll 설정과 무관하게 항상 view로 스크롤(ux-reference §7.2, §9).
+  - `severity==="escalation"`(sandbox 우회, 권한 상승)일 때만 → `ApprovalModal`(blocking, `escalationApproval`로 노출). modal escape 회귀 보호(§10.3).
+  - **v1 보수적 기본값**: adapter는 모든 approval을 `severity:"normal"`로 emit하므로 `escalationApproval` 분기는 사실상 비활성이다(전부 inline). provider escalation 신호→`"escalation"` 매핑은 후속 — [`13`](13-risks-open-questions.md) OQ-47.
 - **진행/취소 상태**:
   - approval pending 동안 세션 status는 `requires_action`(04 §2)이고, composer는 "승인 대기 중" 표시 + cancel만 허용(ux-reference §9.2).
   - 사용자가 option 선택 → `ApprovalDecision{outcome:"selected", optionId}`로 응답(04 §4.1), 카드를 "처리 중"으로 잠그고 `approval_resolved` 수신 시 닫는다.
@@ -284,12 +287,12 @@ export interface AgentRuntimeViewState {
   transcript: TranscriptItem[];
   status: AgentSessionStatus;                  // 15 §2
   streamingItemId: string | null;              // 가상화 강제 포함 대상(§3)
-  pendingApprovals: ApprovalRequest[];         // inline 표시 대상(15 §5)
-  escalationApproval: ApprovalRequest | null;  // modal 표시 대상
+  pendingApprovals: ApprovalRequest[];         // severity!=="escalation" 파생(inline, 15 §5, §4.4)
+  escalationApproval: ApprovalRequest | null;  // severity==="escalation" 파생(modal, §4.4, OQ-47)
   capabilities: ComposerCapabilities;          // §6.4
   providerLabel: string;                       // §6.5 (브랜딩 §8 준수)
   usage: TokenUsage | null;                    // 15 §5 (turn 토큰)
-  contextUsage?: { used: number; size: number } | null; // ACP usage_update — 결정 필요(13)
+  contextUsage?: { used: number; size: number } | null; // ACP usage_update → 15 §5 TokenUsage.contextUsed/contextSize(OQ-02 해소, 06 §3.6)
   autoFollow: boolean;                         // §7.2
 }
 
@@ -300,6 +303,8 @@ export interface ComposerCapabilities {
   audio: boolean;        // v1 미지원(15 §4 주의) → 항상 false
 }
 ```
+
+> **approval 파생 관계(이중 소유 아님)**: `pendingApprovals`/`escalationApproval`은 별도 권위 store가 아니라, Event Router가 소유하는 pending request table(`requestId → ApprovalRequest`, [`03`](03-target-architecture.md) §2.3)을 15 §5 `ApprovalRequest.severity`로 분류해 노출하는 **표시용 파생 값**이다. 권위는 pending table 한 곳이며 store 형상·소유 관계 정본은 [`03`](03-target-architecture.md) §2.2(owns 주의)다. `severity==="escalation"`만 `escalationApproval`(modal), 그 외는 `pendingApprovals`(inline). v1은 전부 `normal`이라 escalation 분기 비활성([`13`](13-risks-open-questions.md) OQ-47).
 
 > `transcript-reducer.ts`(service, research/codebase-frontend.md §8)는 **순수 함수** `apply(state, event: AgentEvent): void`(또는 immutable 변형)로 04의 upsert/append/replace 규칙을 구현한다. controller는 이 reducer를 호출만 한다. reducer는 vitest 단위 테스트 대상(§9.4).
 
@@ -376,6 +381,8 @@ ux-reference §7.1(Claude fullscreen) 패턴을 채택한다:
 ### 7.2 가상화
 
 긴 transcript 성능을 위해 **보이는 item만 mount**(ux-reference §1.1, §7.1). `MessageList`가 윈도잉을 담당하되 §3 주의대로 `streamingItemId` item은 강제 포함. 권장 라이브러리/방식은 `결정 필요`(직접 구현 vs 라이브러리, [13](13-risks-open-questions.md)).
+
+> **가상화(item 레벨) vs surface unmount 금지(surface 레벨)는 별개 경계다**(OQ-17 해소). item 가상화는 `MessageList` 내부에서 **보이지 않는 transcript item DOM만** mount/unmount하는 것이고, [10](10-persistence-migration.md) §4.3의 "process 생존 중 unmount 금지"는 **transcript surface(host = `AgentRuntimeShell`/`AgentTranscriptSurface`) 전체**에 적용되는 별개 규칙이다. host는 `visible=false`(탭 비활성)에도 `.hidden` CSS로만 숨기고 unmount하지 않으며(§2.2), late-attach store(transcript·status·pending 등 `AgentRuntimeViewState` §5)는 **surface 내부 메모리에 그대로 유지**된다. 즉 가상화로 끝부분 item이 unmount돼도 store와 surface는 살아 있으므로 seq 재구성 없이 안전하다. 이 경계 확인은 [13](13-risks-open-questions.md) OQ-17의 "08 가상화 경로가 surface를 unmount하지 않음" 게이트를 충족한다.
 
 ### 7.3 CommandOutputCard / 긴 출력
 
@@ -460,6 +467,17 @@ direct runtime은 ptyId가 없다. `onPtyId`/`onAuxStateChange`/`onExit`/`onResu
 - `onMount` → `AgentRuntimePort.startSession`/`resumeSession`(15 §6). resume 시 `session/load` replay 중 "복원 중" 상태 + composer 잠금(ux-reference §10.2).
 - 구독은 `subscribeEvents`(15 §6)로 등록하고 `UnlistenFn`을 host가 보유, `onDestroy`에서 해제.
 - 탭 비활성(`visible=false`) 시에도 구독/연결 유지(§2.2 계약). `onDestroy`는 탭 닫힘/세션 종료 시에만. `shutdown` 정책(graceful)은 [07](07-tauri-process-runtime.md).
+
+> **transport controller ↔ `AgentRuntimePort`(15 §6) 매핑**: §2.2 host가 쓰는 `transport.*`는 controller가 `props.sessionId`(= sessionHandle)를 **자동 주입**하는 얇은 래퍼라서, 호출부는 sessionHandle을 명시하지 않는다.
+
+| transport controller(호출부) | `AgentRuntimePort` 메서드(15 §6) | 비고 |
+|---|---|---|
+| `transport.sendPrompt(content)` | `sendPrompt(sessionHandle, input)` | sessionHandle 주입 |
+| `transport.cancelTurn()` | `cancelTurn(sessionHandle, turnId?)` | turnId 생략 시 active turn |
+| `transport.respondApproval(decision)` | `respondApproval(sessionHandle, decision)` | sessionHandle 주입(§2.2 주석) |
+| `transport.subscribeEvents(listener)` | `subscribeEvents(sessionHandle, listener)` | `UnlistenFn` 반환 |
+| `runtime.start(props)` | `startSession`/`resumeSession(params)` | §9.3 lifecycle |
+| `runtime.dispose()` | `shutdown(sessionHandle)` + unsubscribe | onDestroy 정책 |
 
 ### 9.4 테스트
 

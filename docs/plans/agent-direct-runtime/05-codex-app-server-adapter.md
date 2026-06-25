@@ -9,7 +9,7 @@
 > - 코드 현실(feature 레이어·transport 래퍼·host 분기)은 [`research/codebase-frontend.md`](research/codebase-frontend.md), [`research/codebase-backend.md`](research/codebase-backend.md)의 §번호로 인용한다.
 > - 미확정 사항은 본문에서 `unverified` 또는 `결정 필요`로 표시하고 [13](13-risks-open-questions.md)으로 연결한다.
 
-조사 시점: 2026-06-25. 코드 정합 기준 브랜치: `feat/claude-tui-fullscreen-option`. Codex wire 정본 ref: `rust-v0.142.0`(로컬 `codex-cli 0.142.0`).
+조사 시점: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조. Codex wire baseline ref: `rust-v0.142.0`(로컬 조사 당시 `codex-cli 0.142.0`).
 
 ---
 
@@ -134,6 +134,8 @@ export function buildCodexStartParams(input: CodexLaunchInput): AgentRuntimeStar
 
 ```text
 startSession(params):
+  // 0) 세션 핸들 확정(이후 sessions/routing 키). threadId 확정 전이라 runtimeId 기준 발급.
+  handle = newSessionHandle()                                   // sessions.set(handle, rt) 키(§3)
   // 1) process spawn (transport만; 아직 starting)
   runtimeId = await agentRuntimeStart(buildCodexStartParams({distro, workDir}))
   bind agent-runtime-message/stderr/exit/error/backpressure listeners (§3.2)
@@ -152,6 +154,7 @@ startSession(params):
   //   startResp: { thread: Thread, ... }  (ref-codex §9 시퀀스)
   threadId = startResp.thread.id
   routing.setThread(threadId, startResp.thread.sessionId)       // §6
+  routing.bindHandle(handle, threadId)                          // §6: sendPrompt/cancelTurn 역조회(C2)
   emit AgentEvent(session_started, ref{provider:"codex", threadId, sessionId}, cwd=thread.cwd)
   emit AgentEvent(session_status_changed, status="ready")       // 04 §2.1 규칙 1
   return { ref: { provider:"codex", threadId, sessionId } }     // SessionStartResult (15 §6)
@@ -163,14 +166,23 @@ startSession(params):
 
 ```text
 sendPrompt(sessionHandle, input: SendPromptInput):       // 15 §6
-  threadId = routing.threadIdOf(sessionHandle)
+  threadId = routing.threadIdOf(sessionHandle)           // §6 역조회(C2); 미바인딩이면 throw(세션 미준비)
   codexInput = mapAgentContentToUserInput(input.content) // §5.3d outbound (AgentContent → UserInput[])
-  resp = await rpcRequest(runtimeId, "turn/start",
-           { threadId, input: codexInput })              // ref-codex §6.5 TurnStartParams (안정 필드만)
+  try:
+    resp = await rpcRequest(runtimeId, "turn/start",
+             { threadId, input: codexInput })            // ref-codex §6.5 TurnStartParams (안정 필드만)
+  catch err:                                             // H3: turn/start가 JSONRPCError로 reject(§3.1 resolveRpc)
+    // running으로 전이한 적이 없으므로(아래 setActiveTurn/status 전이는 성공 후에만 수행) 롤백 대상은
+    //   없지만, turn 시작 실패를 transcript에 노출하고 세션을 ready로 복원해 다음 입력을 받게 한다.
+    emit AgentEvent(error, ref{provider:"codex", threadId}, message=err.message, recoverable=true) // 04 §5
+    emit AgentEvent(session_status_changed, ref{provider:"codex", threadId}, status="ready")       // status 복원
+    return                                               // turnId 미확정 → setActiveTurn 호출 안 함
   turnId = resp.turn.id                                  // ref-codex §3.2 TurnStartResponse {turn}
   routing.setActiveTurn(threadId, turnId)                // §6
   // session_status_changed(running)는 turn/started notification 또는 resp 둘 중 먼저 도착하는 것으로 emit(멱등)
 ```
+
+> **H3 — turn/start error 응답 처리**: `rpcRequest`는 result/error를 다른 채널로 분기하므로(§3.1 `resolveRpc`) `turn/start`가 `JSONRPCError`로 응답하면 `resp.turn.id` 접근 전에 reject되어 위 `catch`로 빠진다. 어댑터는 `setActiveTurn`/running 전이를 **응답 성공 이후에만** 수행하므로 활성 turn 상태가 오염되지 않으며, 실패를 `error` event로 노출하고 세션 status를 `ready`로 복원해 deadlock 없이 다음 입력을 받는다(04 §5). running 전이가 이미 일어난 변형(turn/started notification이 error보다 먼저 도착)에서는 §5.2 `turn/completed`/`error` notification이 status를 정리한다.
 
 `turn/start` params는 **안정 필드만** 채운다(ref-codex §6.5): `threadId`, `input`. `model`/`effort`/`sandboxPolicy`/`approvalPolicy` 등 override는 settings 연동 시 추가하되 experimental 필드(`environments`/`permissions`/`collaborationMode` 등)는 넣지 않는다(ref-codex §6.5 주석, §1.4). approval 정책 키는 `approvalPolicy`(타입 `AskForApproval`, kebab-case: `untrusted`/`on-failure`/`on-request`/`never`)이며, sandbox 키는 `sandboxPolicy`(타입 `SandboxPolicy`)임에 주의(ref-codex §6.5 주석). v1 기본값/노출 여부는 [09](09-permissions-security.md)와 [13](13-risks-open-questions.md)에서 확정(결정 필요).
 
@@ -180,6 +192,7 @@ ref-codex §3.1: `thread/resume`(`ThreadResumeParams`)는 기존 thread 재개, 
 
 ```text
 resumeSession(params: ResumeSessionParams):              // 15 §6
+  handle = newSessionHandle()                             // sessions/routing 키(§3)
   runtimeId = await agentRuntimeStart(buildCodexStartParams(...))
   bind listeners; initialize/initialized handshake (§2.3 1~2단계)
   if params.replay:
@@ -188,6 +201,7 @@ resumeSession(params: ResumeSessionParams):              // 15 §6
                  { threadId: params.providerThreadId, includeTurns: true })  // ref-codex §3.1
     threadId = readResp.thread.id
     routing.setThread(threadId, readResp.thread.sessionId)
+    routing.bindHandle(handle, threadId)                 // §6: sendPrompt/cancelTurn 역조회(C2)
     emit AgentEvent(session_loaded, ref{threadId, sessionId})
     replayThread(readResp.thread)   // §5.4: Thread.turns[].items[] → AgentEvent[] 재생
   else:
@@ -195,6 +209,7 @@ resumeSession(params: ResumeSessionParams):              // 15 §6
                    { threadId: params.providerThreadId /*, ThreadResumeParams 잔여 필드 */ })
     threadId = resumeResp.thread.id
     routing.setThread(threadId, resumeResp.thread.sessionId)
+    routing.bindHandle(handle, threadId)                 // §6: sendPrompt/cancelTurn 역조회(C2)
     emit AgentEvent(session_loaded, ref{threadId, sessionId})
   emit AgentEvent(session_status_changed, status="ready")
   return { ref: { provider:"codex", threadId } }
@@ -271,7 +286,14 @@ rpcRequest(runtimeId, method, params) -> Promise<result>:
   id = deps.nextRpcId()
   store pendingRpc[id] = {resolve, reject}
   await deps.send(runtimeId, { id, method, params })          // jsonrpc 필드 없음 (15 §8.1, ref-codex §1.2)
-  return promise (resolved when JSONRPCResponse{id,result} 도착, §3.2)
+  return promise (resolved when JSONRPCResponse{id,result} 도착, reject when JSONRPCError{id,error}, §3.2)
+
+// pending table 매칭(§3.2 handleMessage가 호출). result/error를 다른 채널로 분기(H3).
+resolveRpc(msg: JsonRpcMessage) -> void:
+  p = pendingRpc[msg.id]; if !p: return                       // 미매칭 id(이미 닫힘 등) → 무시
+  delete pendingRpc[msg.id]
+  if "error" in msg: p.reject(msg.error as JsonRpcError)      // JSONRPCError → reject (ref-codex §1.2)
+  else:              p.resolve(msg.result)                    // JSONRPCResponse → resolve
 
 sendNotification(runtimeId, method, params?) -> void:
   await deps.send(runtimeId, { method, params })              // id 없음 → notification
@@ -295,7 +317,7 @@ onRuntimeEvent(payload: AgentRuntimeEvent):
 
 handleMessage(msg: JsonRpcMessage):
   if "result" in msg or "error" in msg:                      // JSONRPCResponse / JSONRPCError (ref-codex §1.2)
-     resolveRpc(msg.id, msg.result | msg.error)              // §3.1 pending table
+     resolveRpc(msg)                                         // §3.1: result→resolve, error→reject(H3)
      return
   if "id" in msg and "method" in msg:                        // server→client REQUEST (approval 등, ref-codex §4)
      events = mapCodexMessage(msg, routing)                  // → approval_requested (§7.1)
@@ -400,7 +422,13 @@ mapCodexNotification(method, p, routing):
                entries: p.plan.map(mapPlanStep) }]         // §5.5
 
   case "thread/tokenUsage/updated":                        // ref-codex §5.1, §6.7
-     routing.recordTokenUsage(p.threadId, p.turnId, mapTokenUsage(p.tokenUsage)) // §5.6
+     usage = mapTokenUsage(p.tokenUsage)
+     // M4: turn/completed보다 늦게 도착하면(ordering unverified, ref-codex §10) 보관이 아니라 보강.
+     if routing.isTurnClosed(p.threadId, p.turnId):        // §6: clearActiveTurn 후면 이미 닫힌 turn
+        return [{ type:"turn_completed",                   // usage-only 보강(reducer가 turnId로 병합, §5.6)
+                  ref: refOf({threadId:p.threadId, turnId:p.turnId}),
+                  status:"completed", usage }]
+     routing.recordTokenUsage(p.threadId, p.turnId, usage) // §5.6: 선행 도착이면 보관 후 turn_completed에 결합
      return []                                             // turn_completed에 결합(별도 event 안 냄)
 
   case "error":                                            // ref-codex §5.1, §6.9
@@ -520,8 +548,13 @@ mapItemCompleted(item, threadId, turnId):
        return [{ type:"user_message", ref, content: item.content.map(mapUserInput), mode:"replace" }]
     case "reasoning":
        // D11: completed reasoning item이 thought 채널의 권위 → replace로 reconcile(04 §3.2.2/§3.2.5)
+       // ⚠️ OQ-46: reasoning item은 `text`가 없다 — ref-codex §6.3은 `summary: string[]`,
+       //   `content: string[]`만 정의(agentMessage의 `text`와 다름). 권위 필드(summary vs content)가
+       //   미확정이므로 보수적 기본값으로 둘 다 표시(join). wire 실측에서 단일/우선 필드 확정(13 OQ-46).
        return [{ type:"agent_message", ref, channel:"thought",
-                 content: [{ type:"text", text: item.text }], mode:"replace" }]
+                 content: [{ type:"text",
+                             text: [...(item.summary ?? []), ...(item.content ?? [])].join("\n") }],
+                 mode:"replace" }]
     default:
        return []
 ```
@@ -661,6 +694,13 @@ mapGenericTool(item):
 ```text
 mapPlanStep(s): { content: s.step, status: { pending:"pending",
                   inProgress:"in_progress", completed:"completed" }[s.status] } // ref-codex §6.8
+
+mapThreadStatus(s):                        // ThreadStatus(tagged type, ref-codex §6.1/§8)
+  // active는 activeFlags에 waitingOnApproval/waitingOnUserInput가 있으면 requires_action(04 §2.1 규칙3).
+  return s.type === "active"
+       ? (s.activeFlags?.some(f => f === "waitingOnApproval" || f === "waitingOnUserInput")
+            ? "requires_action" : "running")
+       : { notLoaded:"starting", idle:"idle", systemError:"failed" }[s.type]    // ref-codex §8 표
 ```
 
 ### 5.6 token usage 결합
@@ -675,6 +715,8 @@ mapTokenUsage(tu):                         // ThreadTokenUsage (ref-codex §6.7)
            // totalTokens는 버림(15 §5 매핑 주의)
 ```
 
+> **late usage fallback (M4)**: 위 결합은 `thread/tokenUsage/updated`가 `turn/completed` **이전**에 도착함을 전제한다(takeTokenUsage가 보관분을 꺼내 `turn_completed.usage`로 동승). 그러나 두 notification의 ordering은 ref-codex §10에서 unverified다(`turn/completed`가 먼저 올 수 있음). `turn/completed` 시점에 `takeTokenUsage`가 비어 있으면 `usage`는 `undefined`로 emit하고, 뒤늦게 도착한 `thread/tokenUsage/updated`는 §5.1처럼 보관만 하지 말고 **usage-only 보강 update를 emit**해 해당 turn의 usage를 갱신한다(transcript reducer가 turnId로 `turn_completed`에 병합). 즉 `thread/tokenUsage/updated` 처리에서 "이미 닫힌 turn(`clearActiveTurn` 후)이면 보관 대신 `turn_completed{usage}` 보강 emit"으로 분기한다. ordering이 wire 실측으로 "tokenUsage가 항상 선행"으로 확정되면 이 보강 분기는 제거 가능하다([13](13-risks-open-questions.md) verify-at-impl, ref-codex §10 ordering unverified).
+
 ---
 
 ## 6. 라우팅 (`codex-routing.ts`) — `(threadId, turnId, itemId)` 삼중 키
@@ -685,6 +727,7 @@ Codex는 한 connection에서 여러 thread/turn이 인터리빙될 수 있다(r
 // adapters/codex/codex-routing.ts
 export class CodexRouting {
   private sessionIdByThread = new Map<string, string>();     // threadId → sessionId
+  private threadIdByHandle = new Map<AgentSessionHandle, string>(); // handle → threadId (sendPrompt/cancelTurn 역방향)
   private activeTurnByThread = new Map<string, string>();    // threadId → turnId
   private startedThreads = new Set<string>();                // session_started 멱등 가드(§2.3)
   private messageItems = new Set<string>();                  // beginMessage 추적
@@ -694,9 +737,14 @@ export class CodexRouting {
   ensureThread(threadId: string, sessionId?: string): void;
   alreadyStarted(threadId: string): boolean;                 // §2.3 멱등
   markStarted(threadId: string): void;
+  // handle↔threadId 바인딩(§2.3/§2.5 startSession/resumeSession에서 threadId 확정 시 호출).
+  //   sendPrompt(§2.4)·cancelTurn(§7.3)이 sessionHandle로 threadId를 역조회하는 데 쓴다.
+  bindHandle(handle: AgentSessionHandle, threadId: string): void;
+  threadIdOf(handle: AgentSessionHandle): string | undefined; // §2.4·§7.3 역조회(미바인딩이면 undefined)
   setActiveTurn(threadId: string, turnId: string): void;
-  clearActiveTurn(threadId: string, turnId: string): void;
+  clearActiveTurn(threadId: string, turnId: string): void;   // turn/completed 시: closedTurns에 기록(§5.6 M4)
   activeTurnOf(threadId: string): string | undefined;        // cancelTurn 기본값(§7.3)
+  isTurnClosed(threadId: string, turnId: string): boolean;   // §5.6 M4: clearActiveTurn 후면 true(late usage 분기)
   recordTokenUsage(threadId: string, turnId: string, u: TokenUsage): void;   // §5.6
   takeTokenUsage(threadId: string, turnId: string): TokenUsage | undefined;  // §5.6
 
@@ -754,11 +802,13 @@ mapCodexServerRequest(method, id, p, routing):              // §3.2 request 분
        return [{ type:"approval_requested", ref, request: {
          id: reqId, title: i18nKey("agentRuntime.approval.command"),  // label은 UI에서 i18n(04 §4.1)
          body: p.command, toolCallId: p.itemId,
+         severity: "normal",                                // OQ-47 기본값: v1은 inline 카드(15 §5 severity)
          options: COMMAND_OPTIONS } }]                       // §7.1 표
     case "item/fileChange/requestApproval":                 // ref-codex §4.2
        return [{ type:"approval_requested", ref, request: {
          id: reqId, title: i18nKey("agentRuntime.approval.fileChange"),
          body: p.reason, toolCallId: p.itemId,
+         severity: "normal",                                // OQ-47 기본값: v1은 inline 카드(15 §5 severity)
          options: FILECHANGE_OPTIONS } }]
     case "item/permissions/requestApproval":                // ref-codex §4.3
        // D12 v1 기본값: permission-profile escalation은 자동 decline(+raw 보존).
@@ -792,6 +842,8 @@ mapCodexServerRequest(method, id, p, routing):              // §3.2 request 분
 | `cancel` | `agentRuntime.approval.cancel` | `cancel` | ref-codex §8.1 |
 
 > v1은 단위 enum 4종(`accept`/`acceptForSession`/`decline`/`cancel`)만 전송한다(ref-codex §4.1 ⚠️, §8.1, §10). `acceptWithExecpolicyAmendment`/`applyNetworkPolicyAmendment`(데이터 variant)는 보내지 않는다. `reject_always`는 Codex에 정확한 등가물이 없어 `decline`으로 매핑(ref-codex §8.1, §10, [13](13-risks-open-questions.md)).
+>
+> **OQ-47 — approval severity 기본값**: command/fileChange approval은 `ApprovalRequest.severity`(15 §5)에 **`"normal"`**(inline 카드)을 기본 부여한다. provider escalation 신호(Codex sandbox 우회/`danger-full-access` 등)를 `"escalation"`(blocking modal)으로 올리는 매핑은 **후속**이며 v1은 전부 `normal`로 둔다. 분류 신호↔severity 매핑은 미확정([13](13-risks-open-questions.md) OQ-47; UI 분기는 08 §4.4).
 
 ### 7.2 outbound: `respondApproval` → JSON-RPC response
 
