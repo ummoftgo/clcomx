@@ -372,7 +372,7 @@ PTY와 달리 direct runtime은 backend가 provider별로 command를 resolve하�
 
 ### 5.4 process lifecycle: shutdown timeout → kill (S3 — reap 후 반환 + cleanup 경계)
 
-**S3 정본(B3 정정)**: `agent_runtime_shutdown`은 **authoritative cleanup 경계**다. backend shutdown은 graceful stdin close → timeout → kill → **child reap까지 끝낸 뒤 반환**하며, 최종 exit이 반영/계상된 후에만 teardown이 일어나도록 한다(늦은 exit로 pending이 누락되지 않게). 아래 RS-13..RS-15b는 backend 경계 테스트다. adapter-side pending 종료 순서(unlisten 전에 정확히 한 번)는 §2.5 NM-18b/18c가 검증한다.
+**S3 정본(B3 정정)**: `agent_runtime_shutdown`은 **authoritative cleanup 경계**다. backend shutdown은 graceful stdin close → timeout → kill → **child reap까지 끝낸 뒤 반환**하며, 최종 exit이 반영/계상된 후에만 teardown이 일어나도록 한다(늦은 exit로 pending이 누락되지 않게). 아래 RS-13..RS-15c는 backend 경계 테스트다(RS-15c는 `REAP_GRACE_MS` 초과 시 Err 반환+runtime 미제거 필수 실패 분기). adapter-side pending 종료 순서(unlisten 전에 정확히 한 번)는 §2.5 NM-18b/18c가 검증한다.
 
 | # | 입력 | 기대 |
 |---|---|---|
@@ -505,13 +505,13 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 
 - [ ] Codex와 Claude 모두 **새 session, resume/load, prompt, stream, tool call, approval, cancel, error, process exit** 각각에 대해 문서(§3/§4 매핑)와 테스트(fixture FR-* + adapter CX-*/CL-*)가 존재한다.
 - [ ] normalized model의 upsert/append/reconcile/approval lifecycle/cancel cleanup/raw 보존(04 §3·§4·§5)이 unit test(NM-1..NM-30)로 검증된다.
-- [ ] shutdown cleanup ordering(S3): adapter shutdown이 **unlisten/세션 삭제 전에** 모든 pending approval/RPC를 정확히 한 번 닫고, 늦은 exit이 멱등 처리되어 이중 종료·누락이 없다(NM-18b/18c/18d, 04 §4.2·§5; backend reap 경계는 RS-13/14/15b).
+- [ ] shutdown cleanup ordering(S3): adapter shutdown이 **unlisten/세션 삭제 전에** 모든 pending approval/RPC를 정확히 한 번 닫고, 늦은 exit이 멱등 처리되어 이중 종료·누락이 없다(NM-18b/18c/18d, 04 §4.2·§5; backend reap 경계는 RS-13/14/15b/15c).
 - [ ] interleaved turn 분리(CX-16/17, ref-codex §7.1)와 ACP chunk/replace 구분(CL-12..CL-16, ref-acp §4·§5)이 검증된다.
 - [ ] 미지원 server→client **request**(id 있는 요청)는 Codex·Claude 양쪽에서 JSON-RPC error(`-32601`)/decline 응답을 보내고 **무응답으로 끝나지 않는다**(CX-15b, CL-24b, R5; 04 §5 edge 규칙). 미지원 **notification**(id 없음)은 raw 보존+counter만, 응답 없음(CX-15c, CL-27).
 
 ### 8.2 transport / process
 
-- [ ] stdio JSON-RPC framing(newline·UTF-8 경계·부분 라인), stderr/stdout 분리, bounded queue overflow, shutdown timeout→kill(**child reap 후 반환**)이 Rust test(RS-1..RS-17)로 검증된다(S3 reap 경계 RS-13/14/15b).
+- [ ] stdio JSON-RPC framing(newline·UTF-8 경계·부분 라인), stderr/stdout 분리, bounded queue overflow, shutdown timeout→kill(**child reap 후 반환**)이 Rust test(RS-1..RS-17)로 검증된다(S3 reap 경계 RS-13/14/15b/15c).
 - [ ] renderer/adapter는 **command를 넘기지 않고**(15 §8.1 `command` 필드 제거), backend가 `provider`로 신뢰 절대경로를 resolve한다(codex→codex 절대경로, claude→node 절대경로). args(Codex 정확 `["app-server","--stdio"]`, Claude `args.length==1`+검증된 adapterEntryPath)·env key allowlist가 backend에서 재검증되어 임의 .js·동명 바이너리 우회(`/tmp/codex`,`/tmp/node`)·미등록 env key를 차단하고, renderer가 executable 경로를 제어할 입력 자체가 없다(RS-8..RS-12b, 07 §8.1 S1 정본, 09 untrusted renderer 위협모델).
 - [ ] Tauri 경계 enum payload의 **camelCase 필드 round-trip(TS↔Rust)** 이 일치한다 — `AgentRuntimeStartParams`/`AgentRuntimeCancelTarget`/`AgentRuntimeEvent`/`JsonRpcMessage`의 variant 필드(`workDir`/`requestId`/`runtimeId`/`droppedMessages` 등)가 snake_case로 새지 않는다(RS-21..RS-25, S2 `rename_all_fields` 또는 필드별 rename; serde ≥ 1.0.181 확인 → 13).
 - [ ] `is_test_mode` mock 경로가 1급으로 제공되어 WSL/실제 CLI 없이 E2E·unit이 돈다(RS-18..RS-20).

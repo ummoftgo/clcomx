@@ -613,7 +613,7 @@ pub fn shutdown(state: &AgentRuntimeState, runtime_id: RuntimeId) -> Result<(), 
 
 PTY thread1(child wait, terminal/mod.rs:491-502)을 본뜬다. 이 thread가 **child reap(`child.wait()`)의 단일 책임자**다 — `child.wait()`가 반환하면 `exited.store(true)` + `exited_at`/`status` 기록 + `agent-runtime-exit`를 **정확히 한 번** emit한다. shutdown(§5.2)의 kill도 이 thread의 wait를 풀어 reap을 완료시키며, shutdown은 이 `exited` 플래그를 보고 reap 완료를 확인한 뒤 teardown한다(S3 reap-후-반환).
 
-**S3 정본 (exit/shutdown pending 종료는 멱등·정확히 한 번)**: `agent-runtime-exit`은 exit 경로와 shutdown 경로가 동시에 트리거되어도 **정확히 한 번만** emit된다(`exited` 플래그로 이중 emit 차단). **process exit은 모든 pending request(approval 포함)를 실패로 닫는다** — 단, backend는 frontend에 exit event를 알릴 뿐이고, 실제 pending 정리는 frontend adapter가 04 §5 규칙에 따라 **멱등하게 정확히 한 번** 수행한다: 모든 pending approval을 cancelled로 닫고(04 §4.2) pending RPC를 로컬에서 reject한 **뒤에** listener 해제·세션 삭제를 한다(05/06 adapter shutdown 순서; unlisten/삭제가 pending 종료보다 앞서면 늦은 exit로 pending이 누락된다). 이중 종료·누락 없이 정확히 한 번이라는 불변식의 정본은 04 §5다.
+**S3 정본 (exit/shutdown pending 종료는 멱등·정확히 한 번)**: `agent-runtime-exit`은 exit 경로와 shutdown 경로가 동시에 트리거되어도 **정확히 한 번만** emit된다(`exited` 플래그로 이중 emit 차단). **process exit은 모든 pending request(approval 포함)를 실패로 닫는다** — 단, backend는 frontend에 exit event를 알릴 뿐이고, 실제 pending 정리는 frontend adapter가 04 §5 규칙에 따라 **멱등하게 정확히 한 번** 수행한다: **process exit 경로**(process 사망)에서는 pending approval을 `failed`(client 내부 전용, wire 미전송)로, **shutdown 경로**(process 살아 있음)에서는 `cancelled`(wire 전송)로 닫고(04 §4.2·§5.0), 두 경로 모두 pending RPC를 로컬에서 failed로 reject한 **뒤에** listener 해제·세션 삭제를 한다(05/06 adapter shutdown 순서; unlisten/삭제가 pending 종료보다 앞서면 늦은 exit로 pending이 누락된다). 이중 종료·누락 없이 정확히 한 번이라는 불변식의 정본은 04 §5다.
 
 ```rust
 fn spawn_child_wait(

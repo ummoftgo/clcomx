@@ -131,7 +131,7 @@ interface ApprovalAuditEntry {
   outcome: ApprovalDecision["outcome"]; // "selected"|"cancelled"|"failed"
   scope?: "once" | "session";  // allow_always류면 session
   decidedAt: number;           // epoch ms
-  decidedBy: "user" | "auto" | "cleanup"; // cleanup = cancel/exit 자동 cancelled
+  decidedBy: "user" | "auto" | "cleanup"; // cleanup = cancel/shutdown→cancelled(wire) / exit→failed(내부, 04 §5.0)
 }
 ```
 
