@@ -607,13 +607,14 @@ mapAgentContentToUserInput(content, caps):
   for c in content:
     switch c.type:
     case "text":
-       // ⚠️ outbound text variant 필드 결정 필요(아래 주석·13 OQ-33).
-       //   가능성 A(우선): { type:"text", text: c.text }
-       //     — ref-codex §6.5 TurnStartParams 예시는 outbound input에 평문 text만 보인다.
-       //   가능성 B(필요 시 동반): { type:"text", text: c.text, text_elements: toTextElements(c.text) }
+       // ⚠️ D-USERINPUT(13 OQ-33 hard gate): outbound text variant 필드가 wire 실측으로
+       //   확정되기 전까지 makeTextUserInput은 **기본 구현을 두지 않는다**(throw/stub, 아래 정의).
+       //   가능성 A: { type:"text", text: c.text } — ref-codex §6.5 TurnStartParams 예시는 평문 text만 보임.
+       //   가능성 B: { type:"text", text: c.text, text_elements: toTextElements(c.text) }
        //     — ref-codex §6.4 inbound item은 text_elements(snake_case, TextElement[], 필수)다.
-       //   둘 중 무엇이 schema 통과하는지 generate-ts(UserInput.ts)/실측 wire로 구현 전 확정(13 OQ-33).
-       out.push(makeTextUserInput(c.text))     // A 우선; B 필요 시 text_elements 동반
+       //   B가 정답이면 A로 보낸 turn/start는 server schema 검증에서 거부된다(ref-codex §6.4 text_elements required).
+       //   잘못 단정하면 turn 자체가 실패하므로, 실측(13 OQ-33 hard gate) 전에는 stub으로 막는다.
+       out.push(makeTextUserInput(c.text))     // 아래 stub: OQ-33 확정 전 throw
        break
     case "image":
        if caps?.imageInput:                    // ref-codex §1.4 capability opt-in 확인
@@ -635,7 +636,25 @@ mapAgentContentToUserInput(content, caps):
   return out
 ```
 
-> **outbound text variant 필드 — 결정 필요(13 OQ-33)**: ref-codex §6.5 `TurnStartParams` 예시는 outbound `input`에 `{type:"text", text}`(평문 text만)을 보이지만, §6.4 inbound `UserInput.text`는 `text_elements`(snake_case, `TextElement[]`, **필수**)다. 어느 쪽을 보내야 server schema가 통과하는지는 **양립 가능성이 있어 구현 전 확정**한다 — 가능성 A(text only) 우선, 실측에서 거부되면 가능성 B(text_elements 동반). `codex app-server generate-ts`(§11)의 `UserInput.ts`와 실측 wire로 확정하고 13에 verify-at-impl로 등록한다.
+**`makeTextUserInput` — OQ-33 확정 전 기본 구현 금지(D-USERINPUT)**: 위 text case가 호출하는 `makeTextUserInput`은 OQ-33(outbound text variant) hard gate가 닫혀 있는 동안 **기본 구현을 두지 않는다**. 잘못된 형태(가능성 A인지 B인지)를 단정해 채우면 `turn/start`가 server schema 검증(ref-codex §6.4 `text_elements` required)에서 거부되어 turn 시작 자체가 실패한다. 따라서 실측(13 OQ-33 hard gate) 전에는 **throw/compile-time stub**으로 막아 잘못된 wire를 보내지 못하게 한다:
+
+```ts
+// adapters/codex/codex-wire-mapper.ts — OQ-33 hard gate 전 stub(기본 구현 금지, D-USERINPUT)
+/**
+ * composer text → Codex turn/start의 UserInput text variant.
+ * ⚠️ OQ-33(13) 미해소: outbound text 형태(A: {type:"text",text} / B: text_elements 동반)가
+ *    wire 실측으로 확정되기 전까지 **구현 금지**. 잘못 단정하면 ref-codex §6.4 text_elements required로
+ *    turn/start가 거부되어 turn이 실패한다. hard gate(13 OQ-33) 확정 후에만 채운다.
+ */
+export function makeTextUserInput(_text: string): UserInput {
+  // OQ-33 wire 실측(generate-ts UserInput.ts + 실측 turn/start) 전 미구현.
+  //   gate 통과 후: 가능성 A({type:"text", text})를 우선 채우고, 실측에서 거부되면
+  //   가능성 B({type:"text", text, text_elements: toTextElements(text)})로 교체한다.
+  throw new Error("OQ-33 wire 실측 전 미구현: makeTextUserInput (13 OQ-33 hard gate)");
+}
+```
+
+> **outbound text variant 필드 — 결정 필요(13 OQ-33 hard gate)**: ref-codex §6.5 `TurnStartParams` 예시는 outbound `input`에 `{type:"text", text}`(평문 text만)을 보이지만, §6.4 inbound `UserInput.text`는 `text_elements`(snake_case, `TextElement[]`, **필수**)다. 어느 쪽을 보내야 server schema가 통과하는지는 **양립 가능성이 있어 구현 전 확정**한다 — 가능성 A(text only) 우선, 실측에서 거부되면 가능성 B(text_elements 동반). **확정 전 `makeTextUserInput`은 stub(throw)로 두고 기본 구현을 채우지 않는다**(D-USERINPUT). `codex app-server generate-ts`(§11)의 `UserInput.ts`와 실측 wire로 확정하고 13에 verify-at-impl(hard gate)로 등록한다. 12 T3.1/T3.2(sendPrompt outbound) 선행 조건도 이 gate다.
 > image/resource 매핑의 capability opt-in 키와 resource→reference 정확 매핑도 동일 OQ로 묶는다(ref-codex §1.4·§6.4 unverified, [13](13-risks-open-questions.md) OQ-33).
 
 **5.3b `commandExecution` → `ToolCallUpdate`** (15 §5, ref-codex §6.3/§8):
@@ -802,13 +821,13 @@ mapCodexServerRequest(method, id, p, routing):              // §3.2 request 분
        return [{ type:"approval_requested", ref, request: {
          id: reqId, title: i18nKey("agentRuntime.approval.command"),  // label은 UI에서 i18n(04 §4.1)
          body: p.command, toolCallId: p.itemId,
-         severity: "normal",                                // OQ-47 기본값: v1은 inline 카드(15 §5 severity)
+         severity: codexApprovalSeverity(method, p),        // D-ESCALATION: 고위험 신호면 escalation(아래)
          options: COMMAND_OPTIONS } }]                       // §7.1 표
     case "item/fileChange/requestApproval":                 // ref-codex §4.2
        return [{ type:"approval_requested", ref, request: {
          id: reqId, title: i18nKey("agentRuntime.approval.fileChange"),
          body: p.reason, toolCallId: p.itemId,
-         severity: "normal",                                // OQ-47 기본값: v1은 inline 카드(15 §5 severity)
+         severity: codexApprovalSeverity(method, p),        // D-ESCALATION: grantRoot 등 고위험이면 escalation
          options: FILECHANGE_OPTIONS } }]
     case "item/permissions/requestApproval":                // ref-codex §4.3
        // D12 v1 기본값: permission-profile escalation은 자동 decline(+raw 보존).
@@ -832,6 +851,28 @@ mapCodexServerRequest(method, id, p, routing):              // §3.2 request 분
        return []                                             // event는 없음(응답은 위에서 wire로 송신)
 ```
 
+**D-ESCALATION — approval severity 분류기(`codexApprovalSeverity`)**: D-ESCALATION(H-C3)·09 §8.3 고위험 집합 정본에 따라, v1 기본 severity는 `"normal"`(inline)이되 **09 §8.3 고위험 집합에 해당하는 approval은 v1부터 `severity:"escalation"`**(blocking modal)으로 분류한다. 09 §8.3 고위험 집합 = sandbox 우회/`danger-full-access`/`Agent (Full Access)` 등 자동 승인 고위험 모드. Codex wire에서 이에 대응하는 **감지 가능한 신호**는 다음과 같다(ref-codex §4.1·§4.3):
+
+```text
+codexApprovalSeverity(method, p):     // → "normal" | "escalation" (15 §5 severity)
+  // (1) 권한/sandbox 상승 자체를 요구하는 server request → 고위험 집합(09 §8.3)
+  if method === "item/permissions/requestApproval":         // ref-codex §4.3: sandbox/permission 상승 요청
+     return "escalation"                                    // sandbox 우회/권한 상승(danger-full-access 계열)
+  // (2) command approval이 sandbox/network 정책 우회(amendment/managed-network)를 동반 → 고위험
+  if method === "item/commandExecution/requestApproval" &&
+     (p.proposedExecpolicyAmendment != null                // exec policy 우회 제안(ref-codex §4.1)
+      || p.proposedNetworkPolicyAmendments != null          // network policy 우회 제안(ref-codex §4.1)
+      || p.networkApprovalContext != null):                 // managed-network 우회 prompt(ref-codex §4.1)
+     return "escalation"
+  // (3) fileChange가 sandbox writable root 밖 쓰기를 요구(grantRoot) → 고위험
+  if method === "item/fileChange/requestApproval" && p.grantRoot === true:  // ref-codex §4.2 grantRoot
+     return "escalation"
+  // 그 외 일반 command/fileChange approval → 기본 normal(inline 카드)
+  return "normal"
+```
+
+> 위 분류는 09 §8.3 "전부 normal이라 단정하지 않는다"(D-ESCALATION)를 wire 실측 신호로 구현한 것이다. `item/permissions/requestApproval`은 §7.1에서 v1 자동 decline(D12)되어 사용자에게 escalation 카드로 노출되지는 않으나, 그 신호 자체가 고위험 집합임을 분류기가 인지한다(노출 정책과 분류 정책은 분리). **감지 가능한 wire 신호가 불명확한 부분만 OQ-47 잔여로 남긴다** — 예: command approval의 experimental `additionalPermissions`/`availableDecisions`(ref-codex §4.1, gated)나 `commandActions` 내 위험 동작 분류는 wire 표현 미확정이라 OQ-47에 verify-at-impl로 남긴다.
+
 `ApprovalOption.kind`(15 §5) → Codex decision(ref-codex §4.1/§8.1):
 
 | option `kind` | label i18n 키 | Codex `decision`(command/fileChange) | 근거 |
@@ -843,7 +884,7 @@ mapCodexServerRequest(method, id, p, routing):              // §3.2 request 분
 
 > v1은 단위 enum 4종(`accept`/`acceptForSession`/`decline`/`cancel`)만 전송한다(ref-codex §4.1 ⚠️, §8.1, §10). `acceptWithExecpolicyAmendment`/`applyNetworkPolicyAmendment`(데이터 variant)는 보내지 않는다. `reject_always`는 Codex에 정확한 등가물이 없어 `decline`으로 매핑(ref-codex §8.1, §10, [13](13-risks-open-questions.md)).
 >
-> **OQ-47 — approval severity 기본값**: command/fileChange approval은 `ApprovalRequest.severity`(15 §5)에 **`"normal"`**(inline 카드)을 기본 부여한다. provider escalation 신호(Codex sandbox 우회/`danger-full-access` 등)를 `"escalation"`(blocking modal)으로 올리는 매핑은 **후속**이며 v1은 전부 `normal`로 둔다. 분류 신호↔severity 매핑은 미확정([13](13-risks-open-questions.md) OQ-47; UI 분기는 08 §4.4).
+> **OQ-47 — approval severity 분류(D-ESCALATION 재정의)**: command/fileChange approval의 `ApprovalRequest.severity`(15 §5) **기본값은 `"normal"`**(inline 카드)이되, **09 §8.3 고위험 집합(sandbox 우회/`danger-full-access`/`Agent (Full Access)`)에 해당하는 approval은 v1부터 `severity:"escalation"`**(blocking modal)으로 분류한다(위 `codexApprovalSeverity`). 즉 **"v1은 전부 normal"이라고 단정하지 않는다**. Codex의 감지 가능한 고위험 wire 신호는 `item/permissions/requestApproval`(ref-codex §4.3), command approval의 `proposedExecpolicyAmendment`/`proposedNetworkPolicyAmendments`/`networkApprovalContext`(ref-codex §4.1), fileChange의 `grantRoot`(ref-codex §4.2)다. **감지 가능한 wire 신호가 불명확한 잔여 분류(experimental `additionalPermissions`/`commandActions` 위험도 등)만 OQ-47에 남긴다**([13](13-risks-open-questions.md) OQ-47; severity 정본은 09 §8.3·15 §5, UI 분기는 08 §4.4).
 
 ### 7.2 outbound: `respondApproval` → JSON-RPC response
 

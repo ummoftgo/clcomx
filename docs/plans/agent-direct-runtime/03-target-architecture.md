@@ -39,7 +39,7 @@ flowchart TB
 
   subgraph Router["Event Router (controller, 순수 TS)"]
     Reducer["transcript-reducer.ts<br/>(prev, AgentEvent) → next"]
-    PendingTbl["pending request table<br/>(requestId → approval)"]
+    PendingTbl["pending request table<br/>((sessionHandle, requestId) → approval)"]
   end
 
   subgraph Port["Agent Runtime Port (contracts/runtime-port.ts)"]
@@ -118,7 +118,7 @@ flowchart TB
   - `pendingApprovals: ApprovalRequest[]` / `escalationApproval: ApprovalRequest | null` — [`15`](15-data-contracts.md) §5 `ApprovalRequest`. inline(복수) vs modal(단수) **표시용 파생**(아래 주의). 생명주기는 [`04`](04-normalized-agent-model.md) §4.
   - `capabilities` / `providerLabel` — composer feature gating·provider indicator용([`08`](08-ui-composition.md) §6.4·§6.5). adapter가 `initialize`에서 채움.
   - `agentRuntime` metadata(provider session/thread id 등, resume용) — [`15`](15-data-contracts.md) §7.1 `AgentRuntimeMetadata`.
-- **approval 상태 단일 소유(주의)**: approval 요청의 **권위 보관처는 Event Router의 pending request table**(`requestId → ApprovalRequest`, §2.3)이다. store의 `pendingApprovals`/`escalationApproval`은 그 table을 [`15`](15-data-contracts.md) §5 `ApprovalRequest.severity`로 분류해 view에 노출하는 **파생 표시 값**일 뿐, 별도 권위 store가 아니다(§5 원칙4 "같은 상태를 두 곳에서 쓰지 않는다"와 정합). `severity==="escalation"`만 `escalationApproval`(modal), 그 외 inline(기본값 `normal`, [`08`](08-ui-composition.md) §4.4, [`13`](13-risks-open-questions.md) OQ-47).
+- **approval 상태 단일 소유(주의)**: approval 요청의 **권위 보관처는 Event Router의 pending request table**(`(sessionHandle, requestId) → ApprovalRequest`, §2.3)이다. store의 `pendingApprovals`/`escalationApproval`은 그 table을 [`15`](15-data-contracts.md) §5 `ApprovalRequest.severity`로 분류해 view에 노출하는 **파생 표시 값**일 뿐, 별도 권위 store가 아니다(§5 원칙4 "같은 상태를 두 곳에서 쓰지 않는다"와 정합). `severity==="escalation"`만 `escalationApproval`(modal), 그 외 inline(기본값 `normal`, [`08`](08-ui-composition.md) §4.4, [`13`](13-risks-open-questions.md) OQ-47).
 - **규약**: 세션 인스턴스마다 격리돼야 하므로 **state class**(`createAgentRuntimeState()`)로 만든다. 윈도우 전역 상태(전역 approval queue 등)는 모듈 store(`*.svelte.ts`)로 분리한다 (`research/codebase-frontend.md` §1.3·§1.4 규약 결론).
 - **주의**: 기존 `live-session-store`는 세션 목록/활성 탭의 single source of truth를 그대로 유지한다. agent-runtime state는 그 위에 얹히는 **세션별 transcript 상태**다. `SessionViewMode`(`"terminal"|"editor"`)는 `"agent"`로 확장하지 **않는다** — host 종류는 `runtimeKind`로 구분한다 ([`15`](15-data-contracts.md) §7.2 주의, `research/codebase-frontend.md` §5).
 
@@ -127,7 +127,7 @@ flowchart TB
 - **responsibility**: adapter가 emit한 `AgentEvent`를 받아 (a) `ProviderRef` 라우팅 키로 올바른 transcript 항목/tool card/approval에 매핑하고, (b) `transcript-reducer`로 store를 mutate하고, (c) approval은 pending table에 등록/해소한다. **변환은 안 하고 적용만 한다** — wire→AgentEvent 변환은 adapter 책임이다.
 - **in**: `AgentEvent`(adapter에서, [`15`](15-data-contracts.md) §3). 사용자 의도(view에서, submit/approve/cancel).
 - **out**: store mutation. 사용자 의도를 Port 메서드 호출로 변환(`sendPrompt`/`respondApproval`/`cancelTurn`).
-- **owns**: pending request table(`requestId → ApprovalRequest`). 라우팅 키 인덱스(Codex `(threadId, turnId, itemId)`, ACP `(sessionId, messageId)`/`(sessionId, toolCallId)`).
+- **owns**: pending request table(`(sessionHandle, requestId) → ApprovalRequest`). 키는 반드시 **`(sessionHandle, requestId)` 복합 키**다 — JSON-RPC `id`는 runtime/connection 단위로만 유일하므로 전역 단독 `requestId` 키는 금지한다(두 runtime이 같은 `id`(예: 42)를 동시에 받아도 서로의 approval에 오응답하지 않는다 — **불변식**). 라우팅 키 인덱스(Codex `(threadId, turnId, itemId)`, ACP `(sessionId, messageId)`/`(sessionId, toolCallId)`).
 - **적용 규칙(인용)**:
   - upsert/append/replace 의미, Codex delta→completed reconcile, ACP chunk vs update replace는 [`04`](04-normalized-agent-model.md) §3.1–§3.3.
   - 순서 보존·sequence 부여는 [`04`](04-normalized-agent-model.md) §3.4.

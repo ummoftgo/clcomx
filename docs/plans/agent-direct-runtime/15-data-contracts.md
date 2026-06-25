@@ -73,10 +73,11 @@ export interface ProviderRef {
 | transcript item | `ThreadItem.id` (`itemId`) | (message는 `messageId`로 그룹핑) | `itemId` | Codex upsert 키 |
 | 메시지 청크 그룹 | (itemId가 역할) | `ContentChunk.messageId` | `messageId` | ACP upsert 키 |
 | tool call | `commandExecution`/`fileChange`/`mcpToolCall` item id | `ToolCallId` | `toolCallId` | tool card upsert 키 |
-| approval 요청 | JSON-RPC `id`(+`approvalId?`) | JSON-RPC `id` | `requestId` | 응답 매칭 키 |
+| approval 요청 | JSON-RPC `id`(+`approvalId?`) | JSON-RPC `id` | `requestId` | 응답 매칭 키(pending table key는 `(sessionHandle, requestId)` — 아래 참조) |
 
 - **Codex 라우팅 삼중 키**: `(threadId, turnId, itemId)`. 동시에 여러 thread/turn이 흐를 수 있으므로 반드시 삼중 키로 upsert한다 (ref-codex §7.1). zsh-exec-bridge 분기 시 한 `itemId`에 복수 approval이 붙으면 `approvalId`로 구분(원본은 `raw`).
 - **ACP 라우팅 키**: 메시지는 `(sessionId, messageId)`, tool call은 `(sessionId, toolCallId)`. ACP는 turn id가 wire에 없으므로 `turnId`는 CLCOMX가 prompt 단위로 합성한 값을 넣는다(합성 규칙은 04 §"provider별 식별자").
+- **approval pending key (H-C4)**: `requestId`(JSON-RPC `id`)는 **runtime/connection 단위로만 유일**하므로, approval pending request table의 키는 전역 단독 `requestId`가 아니라 **`(sessionHandle, requestId)` 복합 키**다. 두 runtime이 같은 `id`(예: 42)를 동시에 받아도 서로의 approval에 오응답하지 않는다(불변식). 이 table은 Event Router가 단일 소유하며 **정본 정의는 03 §2.3**이다(이 문서는 pending table을 새로 정의하지 않고 키 정합만 명시).
 
 ---
 
@@ -227,9 +228,11 @@ export interface ApprovalRequest {
   options: ApprovalOption[];
   /**
    * UI 표현 분기 신호: "normal"(기본) = inline 카드, "escalation" = blocking modal.
-   * adapter가 provider escalation 신호(Codex sandbox 우회/danger-full-access,
-   * Claude bypassPermissions/ExitPlanMode)로 채운다. v1 매핑은 보수적(전부 normal),
-   * 정밀 매핑은 OQ-47 확정 후. 08 §4.4(inline vs modal 분기)·05/06 approval 매핑이 사용. */
+   * adapter가 provider escalation 신호로 채운다. **v1 기본은 normal이되, 09 §8.3 고위험 집합
+   * (Claude `bypassPermissions`, Codex `danger-full-access`/sandbox 우회(`Agent (Full Access)`))은
+   * v1부터 "escalation"** 이다(OQ-47 재정의 — "전부 normal"로 단정하지 않는다). 05/06 approval 매핑이
+   * 이 신호를 감지해 escalation을 부여하며, 감지 가능한 wire 신호가 불명확한 잔여만 OQ-47로 남긴다.
+   * 09(보안 정본)·08 §4.4(inline vs modal 분기)·05/06 approval 매핑이 사용. */
   severity?: "normal" | "escalation";
 }
 
@@ -730,7 +733,7 @@ event 이름은 kebab-case 문자열 리터럴, payload는 `#[serde(rename_all="
 
 | event 이름 | 의미 | payload variant |
 |---|---|---|
-| `agent-runtime-message` | JSON-RPC response/notification/request | `{ type:"message", runtimeId, message }` |
+| `agent-runtime-message` | JSON-RPC response/notification/request | `{ type:"message", runtimeId, message }` (Rust emit은 `message: serde_json::Value`, TS 수신은 `JsonRpcMessage` — §8.3 비대칭 주석) |
 | `agent-runtime-stderr` | stderr 로그 라인 | `{ type:"stderr", runtimeId, line }` |
 | `agent-runtime-exit` | process 종료 | `{ type:"exit", runtimeId, code?, signal? }` |
 | `agent-runtime-error` | framing/runtime 에러 | `{ type:"error", runtimeId, message, recoverable }` |
@@ -751,10 +754,12 @@ export type AgentRuntimeEvent =
 // S2: variant 필드 runtime_id/dropped_messages를 camelCase(runtimeId/droppedMessages)로
 //     직렬화하려면 rename_all_fields 필요(serde >= 1.0.181). tag/variant rename_all만으로는
 //     필드명이 snake_case로 남아 frontend listen payload 역직렬화가 깨진다.
+// M-4: Message variant의 message는 **Rust `serde_json::Value`로 무손실 통과**시키고(아래 주석),
+//     TS 측은 `JsonRpcMessage`로 받는다. JsonRpcMessage가 untagged라 동일 JSON이므로 비대칭이어도 wire-compat.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentRuntimeEvent {
-    Message { runtime_id: RuntimeId, message: JsonRpcMessage }, // → "runtimeId"
+    Message { runtime_id: RuntimeId, message: serde_json::Value }, // → "runtimeId"; TS는 JsonRpcMessage로 수신(M-4 비대칭)
     Stderr { runtime_id: RuntimeId, line: String },
     Exit { runtime_id: RuntimeId, #[serde(skip_serializing_if = "Option::is_none")] code: Option<i32>, #[serde(skip_serializing_if = "Option::is_none")] signal: Option<String> },
     Error { runtime_id: RuntimeId, message: String, recoverable: bool },
@@ -762,7 +767,11 @@ pub enum AgentRuntimeEvent {
 }
 ```
 
-> `agent-runtime-message`는 **raw JSON-RPC**를 그대로 올린다. provider wire → `AgentEvent`(§3) 변환은 frontend adapter(Codex/Claude)가 담당한다. backend는 framing/transport만 책임지고 protocol 의미를 해석하지 않는다 (`07-tauri-process-runtime.md` §Framing, `03-target-architecture.md` §Provider Adapter). late-attach 신뢰성을 위해 message에 단조 증가 seq + snapshot/delta-since를 PTY와 동일 원리로 적용하는 것을 권고한다(`research/codebase-backend.md` §2.3, §10 권고 3 — seq 필드는 후속 단계에서 message payload에 추가).
+> `agent-runtime-message`는 **raw JSON-RPC**를 그대로 올린다. provider wire → `AgentEvent`(§3) 변환은 frontend adapter(Codex/Claude)가 담당한다. backend는 framing/transport만 책임지고 protocol 의미를 해석하지 않는다 (`07-tauri-process-runtime.md` §Framing, `03-target-architecture.md` §Provider Adapter).
+>
+> **M-4 — emit payload 비대칭 (정본)**: `Message` variant의 `message`는 **Rust 측 `serde_json::Value`** 로 두고 **TS 측은 `JsonRpcMessage`** 로 받는다. backend는 protocol 의미를 해석하지 않으므로(§0) `JsonRpcMessage` untagged enum이 어느 variant인지 판정하는 비용을 frontend로 미루고, Rust는 디코드한 `Value`를 그대로 무손실 통과시켜 round-trip 손실을 없앤다. untagged라 동일 JSON으로 직렬화/수신되므로 이 비대칭은 wire-compat하다(07 §4.2 권고와 일치). **send 방향**(`agent_runtime_send`의 `message: JsonRpcMessage`, §8.2)은 renderer가 구성한 메시지를 받으므로 `JsonRpcMessage`를 유지한다.
+>
+> **M-1 — seq 미도입 (정본)**: v1은 **event-level `seq`를 도입하지 않는다**(§3 AgentEvent union에 추가 안 함; `terminal_output_delta.seq`는 PTY byte-stream 전용으로 별개). per-(라우팅 키) receive-order가 v1 정렬 권위다(04 §3.4). late-attach 신뢰성을 위한 **backend transport message seq + snapshot/delta-since**(PTY와 동일 원리)는 **후속 enhancement**이며, 도입 시 message payload에 단조 증가 seq를 추가한다(`research/codebase-backend.md` §2.3, §10 권고 3, 13 OQ-17).
 
 ---
 

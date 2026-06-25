@@ -673,7 +673,7 @@ function mapRequestPermission(rt, msg: JsonRpcMessage /* request */): AgentEvent
     body: undefined,                                // toolCall content 요약 가능(선택)
     toolCallId: params.toolCall?.toolCallId,
     options: params.options.map((o) => ({ id: o.optionId, label: o.name, kind: o.kind })), // 15 §5 ApprovalOption
-    severity: "normal",                             // OQ-47: v1은 전부 normal(inline). escalation 매핑은 후속(아래)
+    severity: classifySeverity(rt, params),         // 기본 "normal"(inline). 09 §8.3 고위험 신호면 "escalation"(아래 bullet, OQ-47)
   };
   // rpcId: 원본 JSON-RPC id를 타입 보존(string|number). String화 금지 — wire 응답은 이 값으로 복원(§6.2).
   rt.pendingApprovals.set(String(id), { rpcId: id, ref, request });
@@ -695,7 +695,7 @@ function mapRequestPermission(rt, msg: JsonRpcMessage /* request */): AgentEvent
 > ```
 
 - `PermissionOptionKind` 4종(`allow_once`/`allow_always`/`reject_once`/`reject_always`) → `ApprovalOption.kind`로 1:1(15 §5, ref-acp §6). ACP엔 `cancel`/`other` 없음.
-- **`severity` 기본값(OQ-47)**: v1은 모든 ApprovalRequest에 `severity:"normal"`(inline 카드)을 부여한다(15 §5 `ApprovalRequest.severity`, 08 §4.4 inline vs modal 분기). provider escalation 신호(Claude `bypassPermissions`/`ExitPlanMode` 등)를 `severity:"escalation"`(blocking modal)으로 매핑하는 정밀 분류는 **후속**으로 두고 OQ-47 확정 후 적용한다([`13-risks-open-questions.md`](13-risks-open-questions.md) OQ-47).
+- **`severity` 분류(OQ-47 재정의)**: 기본은 `severity:"normal"`(inline 카드)이되, **09 §8.3 고위험 집합**에 해당하는 신호가 감지되면 v1부터 `severity:"escalation"`(blocking modal)을 부여한다(15 §5 `ApprovalRequest.severity`, 08 §4.4 inline vs modal 분기). Claude 측 고위험 집합 = `bypassPermissions` 진입/해당 모드 하의 approval, 그리고 ExitPlanMode에서 `bypassPermissions` 옵션이 노출되는 승인(`ALLOW_BYPASS`일 때만, ref-claude-agent-acp §3 ExitPlanMode 표, 09 §8.3). `classifySeverity(rt, params)`는 이들 신호를 감지해 `"escalation"`을, 그 외에는 `"normal"`을 돌려준다. 감지 가능한 wire 신호가 불명확한 경계(예: provider가 현재 permission mode를 request 시점에 직접 노출하지 않는 경우 — 어댑터는 `current_mode_update`/§8 mode 추적으로 보강)는 그 부분만 **OQ-47 잔여**로 남기되, v1을 "전부 normal"로 단정하지 않는다([`13-risks-open-questions.md`](13-risks-open-questions.md) OQ-47, [`09-permissions-security.md`](09-permissions-security.md) §8.3).
 - 어댑터가 보내는 옵션 집합(일반 tool 3-option, ExitPlanMode 옵션, AskUserQuestion form 등)은 ref-claude-agent-acp §3 표대로 도착. UI는 label을 그대로 보여주되 **i18n key로 감싼다**(`agentRuntime.approval.*`, [`research/codebase-frontend.md`](research/codebase-frontend.md) §6.3, ref-claude-agent-acp §3 마지막).
 - `ExitPlanMode` 승인은 옵션 선택 시 mode 전환을 유발하고 `current_mode_update`+`config_option_update` 양쪽으로 통지될 수 있다(§8, ref-claude-agent-acp §2·§3).
 
@@ -892,7 +892,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 ### 11.1 단위 테스트 (순수 매핑)
 
 - `mapSessionUpdate`: 8개 핵심 variant 각각 fixture → 기대 `AgentEvent[]` 검증. messageId 그룹핑(바뀌면 새 메시지, §5.2), tool_call_update content **replace**(§5.4), plan 전체 교체(§5.5).
-- `mapRequestPermission`/`buildPermissionResponse`: option kind 1:1, selected/cancelled wire shape(§6, ref-acp §6). **rpcId 타입 보존**: numeric id(예: `42`)로 온 request_permission에 대해 wire 응답 `id`가 `42`(number)로 유지되는지(String `"42"` 금지, R3). `ApprovalRequest.id`/`ProviderRef.requestId`는 `"42"`(문자열 키)인지. `ApprovalRequest.severity`가 v1 전부 `"normal"`인지(OQ-47, §6.1).
+- `mapRequestPermission`/`buildPermissionResponse`: option kind 1:1, selected/cancelled wire shape(§6, ref-acp §6). **rpcId 타입 보존**: numeric id(예: `42`)로 온 request_permission에 대해 wire 응답 `id`가 `42`(number)로 유지되는지(String `"42"` 금지, R3). `ApprovalRequest.id`/`ProviderRef.requestId`는 `"42"`(문자열 키)인지. **`ApprovalRequest.severity` 분류**: 기본값이 `"normal"`(inline)이고, 09 §8.3 고위험 신호(`bypassPermissions` 진입/해당 모드 approval, `ExitPlanMode`의 `bypassPermissions` 옵션 노출 승인)에서는 `classifySeverity`가 `"escalation"`(modal)을 돌려주는지(§6.1, OQ-47, 08 §4.4 modal 분기 정합).
 - `mapContentBlock`/`toAcpPromptContent`: image base64↔uri, diff patch 생성, path absolute 정규화(§7).
 - `buildInitializeRequest`/`parseInitializeResponse`: protocolVersion=1 검증, capability 위치 비대칭(loadSession top-level vs resume in sessionCapabilities, §3.2).
 - `buildSetMode`/`buildSetConfigOption`: 6 modes, set_config_option 응답 `{configOptions}` 비-빈 가정(§8).
@@ -932,7 +932,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 6. **audio content**(§7.2): 미지원/raw 보존(모델 gap, 15 §4).
 7. **sdk 타입 의존 방식**(§1.2, 13 OQ-42): frontend가 `@agentclientprotocol/sdk` 타입 의존 vs 부분 미러. 1차 권고 부분 미러.
 8. **session/close 필요성**(§4.4, 13 OQ-44): 멀티세션 시 session별 close.
-8b. **approval severity escalation 매핑**(§6.1, 13 OQ-47): v1은 전부 `severity:"normal"`(inline). Claude `bypassPermissions`/`ExitPlanMode` 등 escalation 신호 → `"escalation"`(modal) 정밀 매핑은 후속. (OQ-02 ACP `usage_update`→`contextUsed`/`contextSize` 매핑은 §3.6/§5.1에서 **해소**, 15 §5.)
+8b. **approval severity escalation 매핑**(§6.1, 13 OQ-47): v1 기본 severity는 `"normal"`(inline)이되, 09 §8.3 고위험 집합(`bypassPermissions` 진입/해당 모드 approval, `ExitPlanMode`의 `bypassPermissions` 옵션 노출 승인)은 v1부터 `severity:"escalation"`(modal)이다(§6.1 `classifySeverity`). 감지 wire 신호가 불명확한 추가 escalation 신호(protected path 등) 확대만 후속(OQ-47 잔여) — **"v1 전부 normal"로 단정하지 않는다**. (OQ-02 ACP `usage_update`→`contextUsed`/`contextSize` 매핑은 §3.6/§5.1에서 **해소**, 15 §5.)
 9. **0.50.0↔0.51.0 capability diff**(ref-claude-agent-acp §6): CHANGELOG 미인용.
 10. **`src/tools.ts` tool content/diff 세부 매핑**·`SettingsManager.filterEscalatingDefaultMode` 동작(ref-claude-agent-acp §6 미확인, 13 OQ-45): 구현 시 1차 소스 재확인.
 

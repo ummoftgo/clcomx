@@ -202,7 +202,7 @@ graph TD
 
 ## 4. Tool kind별 카드 표현 (정본)
 
-`ToolCallUpdate.kind`(15 §5)는 `read|edit|delete|move|search|execute|think|fetch|other` 9종이며 ACP `ToolKind`와 정합(ux-reference §2.1). `ToolCallCard.svelte`가 kind로 collapsed summary와 expanded content를 분기한다.
+`ToolCallUpdate.kind`(15 §5)는 `read|edit|delete|move|search|execute|think|fetch|other` 9종이다. ACP `ToolKind`는 `switch_mode`를 포함한 10종이며, 그중 `switch_mode → other`로 축약해 정규화 9종에 매핑한다(15 §5, ref-acp §5/§13.3; ux-reference §2.1). `ToolCallCard.svelte`가 kind로 collapsed summary와 expanded content를 분기한다.
 
 | `kind` | collapsed summary | expanded content (전용 카드) | 출처 |
 |---|---|---|---|
@@ -243,7 +243,7 @@ approval 타입(`ApprovalRequest`/`ApprovalOption`/`ApprovalDecision`)은 15 §5
 - **inline vs modal 분기**(ux-reference §8.2): 자연어 판단이 아니라 **15 §5 `ApprovalRequest.severity` 필드 기반**으로 분기한다(기본값 `"normal"`).
   - `severity!=="escalation"`(= `"normal"`, 대부분) → `ApprovalInlineCard`를 해당 `ToolCallCard` 하단에 인라인 표시(`pendingApprovals`로 노출). approval card는 auto-scroll 설정과 무관하게 항상 view로 스크롤(ux-reference §7.2, §9).
   - `severity==="escalation"`(sandbox 우회, 권한 상승)일 때만 → `ApprovalModal`(blocking, `escalationApproval`로 노출). modal escape 회귀 보호(§10.3).
-  - **v1 보수적 기본값**: adapter는 모든 approval을 `severity:"normal"`로 emit하므로 `escalationApproval` 분기는 사실상 비활성이다(전부 inline). provider escalation 신호→`"escalation"` 매핑은 후속 — [`13`](13-risks-open-questions.md) OQ-47.
+  - **v1 기본값(고위험은 v1부터 escalation)**: adapter는 approval을 기본 `severity:"normal"`(inline)로 emit하되, [09](09-permissions-security.md) §8.3 고위험 집합(Claude `bypassPermissions`, Codex `danger-full-access`/sandbox 우회 = `Agent (Full Access)`)에 해당하는 approval·모드 신호는 **v1부터 `severity:"escalation"`**(→ `ApprovalModal`)으로 emit한다. severity를 채우는 주체는 05/06 adapter의 approval 매핑이며(감지 가능한 wire 신호가 불명확한 잔여 부분만 후속 — [`13`](13-risks-open-questions.md) OQ-47), UI는 "전부 inline"으로 단정하지 않는다.
 - **진행/취소 상태**:
   - approval pending 동안 세션 status는 `requires_action`(04 §2)이고, composer는 "승인 대기 중" 표시 + cancel만 허용(ux-reference §9.2).
   - 사용자가 option 선택 → `ApprovalDecision{outcome:"selected", optionId}`로 응답(04 §4.1), 카드를 "처리 중"으로 잠그고 `approval_resolved` 수신 시 닫는다.
@@ -304,7 +304,7 @@ export interface ComposerCapabilities {
 }
 ```
 
-> **approval 파생 관계(이중 소유 아님)**: `pendingApprovals`/`escalationApproval`은 별도 권위 store가 아니라, Event Router가 소유하는 pending request table(`requestId → ApprovalRequest`, [`03`](03-target-architecture.md) §2.3)을 15 §5 `ApprovalRequest.severity`로 분류해 노출하는 **표시용 파생 값**이다. 권위는 pending table 한 곳이며 store 형상·소유 관계 정본은 [`03`](03-target-architecture.md) §2.2(owns 주의)다. `severity==="escalation"`만 `escalationApproval`(modal), 그 외는 `pendingApprovals`(inline). v1은 전부 `normal`이라 escalation 분기 비활성([`13`](13-risks-open-questions.md) OQ-47).
+> **approval 파생 관계(이중 소유 아님)**: `pendingApprovals`/`escalationApproval`은 별도 권위 store가 아니라, Event Router가 소유하는 pending request table(`requestId → ApprovalRequest`, [`03`](03-target-architecture.md) §2.3)을 15 §5 `ApprovalRequest.severity`로 분류해 노출하는 **표시용 파생 값**이다. 권위는 pending table 한 곳이며 store 형상·소유 관계 정본은 [`03`](03-target-architecture.md) §2.2(owns 주의)다. `severity==="escalation"`만 `escalationApproval`(modal), 그 외는 `pendingApprovals`(inline). v1 기본은 `normal`이되 [09](09-permissions-security.md) §8.3 고위험 집합(`bypassPermissions`/`danger-full-access`/sandbox 우회)은 v1부터 `escalation`으로 분류되어 escalation 분기가 작동한다([`13`](13-risks-open-questions.md) OQ-47).
 
 > `transcript-reducer.ts`(service, research/codebase-frontend.md §8)는 **순수 함수** `apply(state, event: AgentEvent): void`(또는 immutable 변형)로 04의 upsert/append/replace 규칙을 구현한다. controller는 이 reducer를 호출만 한다. reducer는 vitest 단위 테스트 대상(§9.4).
 

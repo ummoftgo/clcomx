@@ -16,7 +16,7 @@
 
 direct runtime은 **protocol mapping 오류가 곧 UX 회귀**다(잘못 매핑된 tool status가 카드 상태를 깨고, 누락된 approval cleanup이 agent를 deadlock시킨다). 따라서 테스트는 아래 순서로 신뢰도를 쌓는다:
 
-1. **fixture replay (§1)** — provider wire 캡처(JSONL)를 adapter에 흘려 normalized event 시퀀스를 검증. mapping 회귀의 1차 방어선.
+1. **fixture replay (§1)** — provider wire 캡처(`{direction,message}` envelope NDJSON)를 adapter에 흘려 normalized event 시퀀스를 검증. mapping 회귀의 1차 방어선.
 2. **normalized model unit (§2)** — store reducer의 upsert/append/reconcile/approval lifecycle 불변식(04 규칙).
 3. **adapter unit (§3 Codex, §4 Claude)** — wire→`AgentEvent` 변환 정확도.
 4. **Tauri Rust (§5)** — transport framing·allowlist·process lifecycle.
@@ -53,7 +53,7 @@ direct runtime은 **protocol mapping 오류가 곧 UX 회귀**다(잘못 매핑�
 
 ### 1.1 목적과 형식
 
-provider가 보내는 wire 메시지를 **NDJSON(JSONL) 한 줄=한 메시지**로 캡처해 fixture로 박고, adapter에 그대로 흘려 normalized `AgentEvent` 시퀀스를 스냅샷 비교한다. ACP는 newline-delimited가 wire 규칙 그대로이고(ref-acp §1 stdio transport), Codex도 line-delimited JSON이다(ref-codex §1.2). 따라서 캡처 파일 형식이 wire 형식과 1:1이라 재현성이 높다.
+provider가 보내는 wire 메시지를 **NDJSON(`.jsonl`) 한 줄 = `{ direction: "in"|"out", message: JsonRpcMessage }` envelope**로 캡처해 fixture로 박고, envelope의 `message`를 adapter에 흘려 normalized `AgentEvent` 시퀀스를 스냅샷 비교한다(`direction`: in=provider→client, out=client→provider). 이 형식은 12 §T0.5 fixture 포맷 정본·§T2.5 test-mode mock 재사용과 **단일 형식**으로 통일된다(replay 입력과 E2E mock 단일 출처). ACP는 newline-delimited가 wire 규칙 그대로이고(ref-acp §1 stdio transport), Codex도 line-delimited JSON이다(ref-codex §1.2). 따라서 envelope의 `message`가 wire 메시지와 1:1이라 재현성이 높다.
 
 ```
 src/lib/features/agent-runtime/adapters/__fixtures__/
@@ -61,7 +61,7 @@ src/lib/features/agent-runtime/adapters/__fixtures__/
 │   ├── thread-start-turn.jsonl          # initialize~turn/completed 1회
 │   ├── delta-completed-reconcile.jsonl  # agentMessage delta→completed
 │   ├── command-exec-approval.jsonl      # commandExecution + requestApproval
-│   ├── interleaved-two-turns.jsonl      # 동시 thread/turn 인터리빙
+│   ├── interleaved-two-turns.jsonl      # 동시 thread/turn 인터리빙 ({direction,message} envelope NDJSON)
 │   └── *.expected.json                  # 기대 AgentEvent[] (ref 보존 포함)
 └── claude/
     ├── initialize-session-new.jsonl
@@ -84,22 +84,30 @@ export interface AdapterUnderTest {
   drainOutbound(): JsonRpcMessage[];
 }
 
+/** fixture 한 줄 = {direction,message} envelope (12 §T0.5 포맷 정본) */
+interface FixtureLine {
+  direction: "in" | "out";
+  message: JsonRpcMessage;
+}
+
 export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): AgentEvent[] {
   const lines = readFileSync(jsonlPath, "utf8").split("\n").filter(Boolean);
   const events: AgentEvent[] = [];
   for (const line of lines) {
-    events.push(...adapter.ingest(JSON.parse(line) as JsonRpcMessage));
+    const { direction, message } = JSON.parse(line) as FixtureLine;
+    if (direction !== "in") continue; // out(client→provider)은 outbound 기대 비교용; ingest엔 in만 흘림
+    events.push(...adapter.ingest(message));
   }
   return events;
 }
 ```
 
-> `JsonRpcMessage`/`AgentEvent` 타입은 15 §8.1, §3 정본을 import한다(재정의 금지).
+> `JsonRpcMessage`/`AgentEvent` 타입은 15 §8.1, §3 정본을 import한다(재정의 금지). fixture 형식(`{direction,message}` envelope)은 12 §T0.5 정본을 따른다(재정의 금지).
 
 ### 1.3 캡처 방법 (fixture 생산)
 
-- **1차(권고)**: backend `agent-runtime-message` 이벤트(15 §8.3, raw JSON-RPC를 그대로 올림)를 redacted debug mode(13 §"raw protocol log")에서 파일로 tee. 실제 wire라 가장 신뢰도 높다.
-- **2차(부트스트랩)**: ref 문서의 verified payload(ref-codex §9 시퀀스, ref-acp §3·§4·§5·§6 예시)를 손으로 JSONL로 옮긴다. ordering 일부는 `unverified`(ref-codex §10, §9 주석) → 해당 fixture는 "예시 기반"으로 주석 표기하고, 실제 캡처가 생기면 교체한다([13](13-risks-open-questions.md)로 연결).
+- **1차(권고)**: backend `agent-runtime-message` 이벤트(15 §8.3, raw JSON-RPC를 그대로 올림)와 client→provider 아웃바운드를 각각 `direction:"in"`/`"out"` envelope으로 감싸 redacted debug mode(13 §"raw protocol log")에서 파일로 tee. 실제 wire라 가장 신뢰도 높다.
+- **2차(부트스트랩)**: ref 문서의 verified payload(ref-codex §9 시퀀스, ref-acp §3·§4·§5·§6 예시)를 손으로 `{direction,message}` envelope NDJSON으로 옮긴다. ordering 일부는 `unverified`(ref-codex §10, §9 주석) → 해당 fixture는 "예시 기반"으로 주석 표기하고, 실제 캡처가 생기면 교체한다([13](13-risks-open-questions.md)로 연결).
 - 캡처에는 **반드시 redaction**을 적용한다: provider session/thread id, resume token, file 내용 일부는 마스킹(09 §감사, 15 §7.3 scrub 경계). fixture는 commit되므로 비밀이 새면 안 된다.
 
 ### 1.4 fixture replay 케이스 목록
@@ -157,6 +165,7 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 | NM-13 | NM-12 후 `approval_resolved{requestId:"7", outcome:"selected"}` | pending에서 "7" 제거, status → `running`(04 §4.1) |
 | NM-14 | 같은 itemId에 approvalId가 다른 2개 approval | `requestId`(+approvalId)로 별개 pending 2개(04 §1 Codex zsh-exec-bridge) |
 | NM-15 | provider 원본 `requestId`가 `ApprovalRequest.id`와 `ProviderRef.requestId` 양쪽에 보존 | 원본 id 미손실 assert(15 §0.1) |
+| NM-15b | **pending key 충돌 회귀(D-PENDINGKEY)**: 두 runtime(세션 handle A·B)이 각각 **같은 JSON-RPC id**(예 둘 다 `requestId:"7"`)로 approval을 보냄 → `approval_requested{sessionHandle:A, id:"7"}` + `approval_requested{sessionHandle:B, id:"7"}` 후 A의 "7"만 resolve | pending table key가 `(sessionHandle, requestId)`라 두 approval이 별개 엔트리로 공존하고, A resolve가 B의 "7"을 건드리지 않음 — approval 응답이 **올바른 세션으로만 라우팅(오응답 없음)**. "두 runtime이 같은 id를 받아도 오응답하지 않음"을 불변식으로 assert. 전역 단독 `requestId` 키였다면 충돌해 한쪽이 오라우팅됨(03 §2.3/§2.8, 04 §4.1 참조, 12 T1.4 DoD; JSON-RPC id는 runtime/connection 단위 유일이라 cross-runtime 전역 유일 아님) |
 
 ### 2.5 cancel cleanup (04 §4.2 불변식)
 
@@ -191,9 +200,12 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 
 ### 2.8 sequence/ordering (04 §3.4)
 
+> v1 순서 권위는 **per-(라우팅 키) receive-order**다(04 §3.4). event-level `seq`는 v1에 미도입(15 AgentEvent에 추가 안 함, D-SEQ M-1) — adapter 단조 seq를 통한 cross-key 전역 정렬은 **후속(event-level seq 도입 후) enhancement**다. 따라서 v1 필수는 NM-29a(per-키 수신순서)이고, NM-29(seq 정렬)는 후속으로 강등한다.
+
 | # | 입력 | 기대 |
 |---|---|---|
-| NM-29 | adapter가 단조 증가 seq를 부여한 event들이 재정렬되어 도착 | store가 seq로 안정 정렬·dedup(04 §3.4) |
+| NM-29a | **(v1 필수)** 같은 라우팅 키(예 같은 `(threadId,turnId,itemId)` 또는 같은 messageId 그룹)에 대한 event들이 adapter 수신 순서대로 도착 | store가 **per-키 receive-order**를 권위로 append/replace 순서 보존(04 §3.4 v1 권위). cross-key 전역 재정렬은 v1 비요구 |
+| NM-29 | **(후속 — event-level seq 도입 후)** adapter가 단조 증가 seq를 부여한 event들이 재정렬되어 도착 | store가 seq로 안정 정렬·dedup. **v1 미도입**(seq가 15 AgentEvent에 추가된 뒤에만 활성, D-SEQ M-1) — v1에서는 NM-29a로 대체(04 §3.4) |
 | NM-30 | legacy `terminal_output_delta` | transcript 모델로 끌어올리지 않고 terminal surface에만 라우팅(04 §3.5) |
 
 ---

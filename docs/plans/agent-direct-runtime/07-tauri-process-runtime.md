@@ -753,6 +753,8 @@ pub fn cancel(state: &AgentRuntimeState, _app: &AppHandle, runtime_id: RuntimeId
 
 backend가 pending을 추적한다면, `send`에서 message가 `request`(id+method 둘 다 존재)면 `pending_request_ids`에 push, response/error 수신(reader)에서 매칭 id pop. **단 이는 의미 해석이 아니라 단순 id bookkeeping**이고, snapshot 진단용일 뿐이다. authoritative pending 정리는 frontend(04 §5). 1차에서는 backend pending 추적을 **생략**하고 `pendingRequestIds`를 항상 빈 배열로 둬도 무방하다(15 §8.1).
 
+> **v1 deadlock 탐지 권위 = frontend pending table (D-PENDINGSNAP 정본, 13 §1.5 정합)**: v1에서 backend `AgentRuntimeSnapshot.pendingRequestIds`는 **선택적**이며 **비어 있을 수 있다**(위처럼 backend pending 추적을 생략하면 항상 빈 배열). 따라서 **v1 deadlock(응답 없는 pending) 탐지의 단일 권위는 frontend의 pending table**이고, backend snapshot의 `pendingRequestIds`는 (채워진다면) 진단 보조에 그친다 — 비어 있다고 해서 pending이 없다는 의미가 아니다. backend가 pending을 권위로 추적하지 않는 v1에서는 frontend pending table만이 정확한 pending 집합을 알며, deadlock 판정·timeout·cleanup 트리거는 모두 frontend가 04 §5 규칙으로 수행한다. backend snapshot pending tracking을 권위 소스로 승격할지는 후속 결정 사항이다([13](13-risks-open-questions.md) §1.5).
+
 ### 6.5 `get_snapshot`
 
 ```rust
@@ -782,13 +784,14 @@ late-attach 진단·재접속에 쓴다. message replay(delta-since)는 §4.5 �
 
 reader thread가 `app.emit("agent-runtime-message", ...)`로 메시지를 올린다. provider가 폭주(대용량 output, 빠른 delta)하면 frontend 소비가 못 따라잡을 수 있다. PTY는 `output_log`/`output_chunks`에 4MB cap을 두고 trim했다(research §2.3).
 
-### 7.2 정책 (정본)
+### 7.2 정책 (정본 — bounded replay log + telemetry)
 
-backend의 `app.emit`은 Tauri IPC 큐로 들어간다. 이를 무한히 쌓지 않도록 **message_log를 bounded**로 둔다:
+**이 메커니즘은 "bounded replay log + telemetry"이지 emit throttle이 아니다(정본 명명).** backend의 `app.emit`은 Tauri IPC 큐로 들어간다. v1 완화책은 emit 자체를 막거나(throttle) 합치거나(coalesce) 떨어뜨리는(drop) 것이 **아니라**, late-attach용 **replay log를 bounded로 경계**짓고 그 경계에서 발생한 trim을 **dropped 카운터(telemetry)** 로 알리는 것뿐이다:
 
-- `message_log`(VecDeque) cap = `MAX_MESSAGE_LOG_BYTES`(예: 4MB) 또는 `MAX_MESSAGE_COUNT`(예: 10000). 초과 시 oldest pop(trim) → `dropped_messages.fetch_add(1)`.
-- emit 자체는 막지 않는다(frontend는 실시간 stream을 받음). trim은 **late-attach용 log**에만 적용된다.
-- 단, emit rate가 위험 수준이면(예: 100ms 내 1000+ message), backend가 `agent-runtime-backpressure{droppedMessages}`를 주기적으로 emit해 frontend가 throttle/coalesce하도록 신호한다.
+- `message_log`(VecDeque) cap = `MAX_MESSAGE_LOG_BYTES`(예: 4MB) 또는 `MAX_MESSAGE_COUNT`(예: 10000). 초과 시 oldest pop(trim) → `dropped_messages.fetch_add(1)`. 이 trim은 **replay log 경계 유지(메모리 보호)** 일 뿐 실시간 emit 압력을 줄이지 않는다.
+- **emit 자체는 막지 않는다**(frontend는 실시간 stream을 그대로 받음). trim은 **late-attach용 replay log**에만 적용되고, 이미 emit된 실시간 메시지에는 관여하지 않는다.
+- `agent-runtime-backpressure{droppedMessages}`는 replay log에서 trim된 누적 건수를 알리는 **telemetry 신호**다(주기적 emit). frontend가 이를 보고 throttle/coalesce 정책을 *스스로* 적용할지는 frontend 관심사이며, backend는 신호만 보낸다.
+- **실제 emit buffer cap / coalesce / drop policy는 v1 범위 밖**이다 — bounded replay log + telemetry로 실시간 emit 압력 자체를 줄이지 못하므로, IPC emit overflow를 직접 완화하는 정책(emit-side bounded buffer·coalesce·drop)은 후속이며, 필요 시 [13](13-risks-open-questions.md) OQ로 남긴다.
 
 ```rust
 fn record_and_emit_message(app: &AppHandle, runtime_id: RuntimeId, seq: u64,
@@ -817,11 +820,11 @@ fn record_and_emit_message(app: &AppHandle, runtime_id: RuntimeId, seq: u64,
 }
 ```
 
-> trim은 **late-attach log 신뢰성**에만 영향을 준다(delta-since complete=false → full replay 불가 구간). v1에서 delta-since가 없으면(§4.5), trim은 메모리 보호만 하면 되고 backpressure event는 진단 신호로만 쓴다. `MAX_MESSAGE_LOG_BYTES`/`BACKPRESSURE_NOTIFY_INTERVAL` 상수값은 [13](13-risks-open-questions.md) "backpressure 임계값" 참조.
+> trim은 **late-attach replay log 신뢰성**에만 영향을 준다(delta-since complete=false → full replay 불가 구간)이며 실시간 emit에는 관여하지 않는다(§7.2 정본 명명: bounded replay log + telemetry). v1에서 delta-since가 없으면(§4.5), trim은 메모리 보호만 하면 되고 backpressure event는 dropped 카운터 telemetry 신호로만 쓴다(emit throttle 아님). `MAX_MESSAGE_LOG_BYTES`/`BACKPRESSURE_NOTIFY_INTERVAL` 상수값과 emit-side cap/coalesce/drop policy(후속) 도입 여부는 [13](13-risks-open-questions.md) "backpressure 임계값" 참조.
 
 ### 7.3 emit overflow 명시 에러
 
-07의 기존 계약("queue는 bounded로 두고 overflow 시 명시적인 error event")을 위 backpressure event로 구현한다. drop이 발생하면 침묵하지 않고 누적 카운트를 알린다.
+07의 기존 계약("queue는 bounded로 두고 overflow 시 명시적인 error event")은 v1에서 **bounded replay log + telemetry**(§7.2)로 구현한다 — replay log trim이 발생하면 침묵하지 않고 누적 dropped 카운트를 backpressure telemetry로 알린다. 단 이는 실시간 IPC emit overflow를 직접 막는 게 아니라 replay log 경계에서의 drop을 알리는 telemetry임에 유의한다(실제 emit-side overflow 완화는 후속, §7.2 정본).
 
 ### 7.4 tokio 미도입 (결정)
 

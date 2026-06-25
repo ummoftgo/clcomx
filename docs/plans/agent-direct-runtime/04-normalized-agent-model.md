@@ -34,7 +34,7 @@ ACP는 turn id가 없으므로 CLCOMX가 합성한다. `sendPrompt` 시 client�
 
 - Codex 메시지/tool/명령 event: `(provider="codex", threadId, turnId, itemId)`.
 - ACP 메시지 event: `(provider="claude", sessionId, messageId)`. tool call: `(sessionId, toolCallId)`.
-- approval event: 양 provider 모두 `requestId`(JSON-RPC id)로 pending table 매칭.
+- approval event: 양 provider 모두 pending table key **`(sessionHandle, requestId)`**(`requestId`=JSON-RPC id)로 매칭. JSON-RPC id는 runtime/connection 단위로만 유일하므로 단독 `requestId`가 아니라 `sessionHandle`과 묶는다(table 소유 정본 [`03`](03-target-architecture.md) §2.3·§2.8, 생명주기 규칙 §4).
 
 ---
 
@@ -86,7 +86,7 @@ ACP의 신호 합성과 Codex의 thread/turn status를 공통 상태로 축약�
 
 정본 타입: [`15-data-contracts.md`](15-data-contracts.md) §3 (`AgentEvent`), §4 (`AgentContent`), §5 (하위 타입).
 
-event apply는 **순서 보존이 핵심**이다. 같은 session 안에서 message id별 append/replace 순서를 보존한다. provider가 순서를 보장하지 않는 event는 adapter에서 sequence를 부여한다(§3.4).
+event apply는 **순서 보존이 핵심**이다. 같은 session 안에서 message id별 append/replace 순서를 보존한다. v1 권위는 **per-(라우팅 키) receive-order**이며(단일 stdio 스트림이라 같은 키 내 순서가 보존됨), cross-key 전역 정렬용 adapter sequence 부여는 후속 enhancement다(§3.4).
 
 > **reasoning/thinking 채널 정책 (정본, 해소됨)**: reasoning/thinking은 전용 event variant를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel?: "response" | "thought"` 필드로 구분한다(타입 정본 15 §3, 미지정 시 `"response"`). `"thought"` 채널은 `"response"`와 **별도 스트림**으로 messageId/contentIndex별 누적하며, completed reasoning item이 thought 채널의 **권위**(reconcile)다. provider별 매핑은 Codex §3.2.2/§3.2.5(05 §5.2), ACP §3.3(06 §5). UI는 thought 채널을 접이식 'thinking' 블록(기본 collapsed)으로 response와 시각 구분해 렌더한다(08).
 
@@ -148,8 +148,9 @@ ACP는 두 가지 갱신 의미가 섞여 있다 (ref-acp §4, §5).
 ### 3.4 순서 보존과 sequence 부여
 
 - adapter는 provider wire를 받은 **수신 순서를 보존**해 `AgentEvent`를 emit한다.
-- provider가 순서를 보장하지 않거나(예: 동시 thread/turn 인터리빙), transport가 재정렬할 수 있는 경우 adapter가 **단조 증가 sequence**를 event에 부여해 store가 안정적으로 정렬·dedup할 수 있게 한다.
-- transcript late-attach 신뢰성을 위해, backend transport message에도 PTY와 동일한 seq + snapshot/delta-since 메커니즘을 적용하는 것을 권고한다(15 §8.3, `research/codebase-backend.md` §2.3·§10 권고 3). seq는 후속 단계에서 message payload에 추가한다(현재 계약엔 미포함).
+- **v1 권위는 per-(라우팅 키) receive-order다.** 한 provider는 단일 stdio 스트림으로 message를 보내므로, 같은 라우팅 키(§1: Codex `(threadId, turnId, itemId)`, ACP `(sessionId, messageId)`/`(sessionId, toolCallId)`) 내부의 message 순서는 transport에서 보존된다. store는 같은 키 내 receive-order로 append/replace를 적용하며, v1 계약([`15`](15-data-contracts.md) §3 `AgentEvent`)에는 event-level `seq` 필드가 **없다**(D-SEQ).
+- **cross-key 전역 정렬은 후속 enhancement다.** 동시에 흐르는 여러 thread/turn(키가 다른 event들) 사이의 전역 정렬·dedup이 필요해지면, adapter가 **단조 증가 sequence**를 event에 부여하는 방안을 후속 단계에서 도입한다. 이 seq는 v1 `AgentEvent` 계약에 미포함이며, per-키 순서만으로 충분한 v1에서는 부여하지 않는다. (per-키 순서는 단일 스트림이라 이미 보존되므로 v1에서 seq가 권위가 아니다.)
+- transcript late-attach 신뢰성을 위해, backend transport message에도 PTY와 동일한 seq + snapshot/delta-since 메커니즘을 적용하는 것을 권고한다(15 §8.3, `research/codebase-backend.md` §2.3·§10 권고 3). 이 backend transport seq 역시 위 cross-key event seq와 함께 후속 단계에서 message payload에 추가한다(현재 계약엔 미포함).
 
 ### 3.5 legacy PTY 처리
 
@@ -157,7 +158,7 @@ Legacy PTY output은 전체 agent transcript가 아니라 `terminal_output_delta
 
 ### 3.6 notice 항목 생성 규칙
 
-08 §3은 `turn_completed`(failed/refusal/max_*)·`process_exited`(비정상)·`error`를 transcript의 `notice` 항목으로 렌더한다(타입 `TranscriptItem.notice{level, messageKey, raw}`는 15를 인용 — 본 문서는 재정의하지 않는다). 어느 event가 언제 notice를 만들고, 어떻게 dedup·멱등 처리하는지는 이 절이 규칙 정본이다.
+08 §3은 `turn_completed`(failed/refusal/max_*)·`process_exited`(비정상)·`error`를 transcript의 `notice` 항목으로 렌더한다(타입 `TranscriptItem.notice{level, messageKey, raw}`는 [`08`](08-ui-composition.md) §5(UI view-model)가 정의하며 내부 content 타입은 15 §3을 재export — 본 문서는 재정의하지 않는다). 어느 event가 언제 notice를 만들고, 어떻게 dedup·멱등 처리하는지는 이 절이 규칙 정본이다.
 
 규칙:
 
@@ -174,11 +175,11 @@ Legacy PTY output은 전체 agent transcript가 아니라 `terminal_output_delta
 
 정본 타입: [`15-data-contracts.md`](15-data-contracts.md) §5 (`ApprovalRequest`/`ApprovalOption`/`ApprovalDecision`).
 
-approval은 server→client request이며, **request id로 pending table을 관리**한다.
+approval은 server→client request이며, **pending table로 관리**한다. pending table의 key는 **`(sessionHandle, requestId)`**다 — JSON-RPC `id`(`requestId`)는 runtime/connection 단위로만 유일하므로, 두 runtime이 같은 `id`를 받아도 오응답하지 않도록 세션 핸들과 묶어 라우팅한다(**불변식**: 같은 `requestId`라도 다른 `sessionHandle`이면 별개 pending이다). 이 table을 소유·정의하는 정본은 Event Router([`03`](03-target-architecture.md) §2.3·§2.8)이며, 04는 그 key로 라우팅하는 **규칙**만 둔다(table을 재정의하지 않는다).
 
 ### 4.1 정상 흐름
 
-1. provider가 approval 요청 → adapter가 `approval_requested{request}` emit. `request.id`는 JSON-RPC `id`(문자열화)이고 `ProviderRef.requestId`에도 보존한다. 세션 상태는 `requires_action`으로 합성(§2).
+1. provider가 approval 요청 → adapter가 `approval_requested{request}` emit. `request.id`는 JSON-RPC `id`(문자열화)이고 `ProviderRef.requestId`에도 보존한다. pending table에는 `(sessionHandle, requestId)` key로 등록한다(§4 intro). 세션 상태는 `requires_action`으로 합성(§2).
 2. UI가 사용자에게 `options`를 보여주고(`label`은 i18n으로 감싼다), 사용자가 하나 선택.
 3. `respondApproval`로 `ApprovalDecision{outcome:"selected", optionId}`를 보낸다. adapter가 provider 응답으로 변환:
    - Codex: `{ id, result: { decision } }` (`jsonrpc` 필드 없음). kind→decision 매핑은 ref-codex §8.1.

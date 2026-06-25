@@ -85,7 +85,7 @@ approval 결정 타입은 15 §5(`ApprovalRequest`/`ApprovalOption`/`ApprovalDec
 2. **표시-선택 일치 (Spoofing 방어)**: UI가 사용자에게 **실제로 보여준 option 중 하나만** 선택해 응답한다. provider가 보낸 적 없는 optionId나 UI가 숨긴 옵션을 client가 임의로 합성해 보내지 않는다. `ApprovalDecision.outcome`은 15 §5의 `selected`/`cancelled`/`failed`만 쓰며, `failed`는 **wire로 보내지 않는** client 내부 전용이다(15 §5 주석, 04 §4.2 규칙 4).
 3. **자동 허용 금지(기본값)**: client측 자동 허용(auto-approve)은 별도 설정 + audit trail이 준비되기 전까지 도입하지 않는다([`13`](13-risks-open-questions.md) Resolved defaults). provider 자체의 sandbox/permission mode(예: Codex `Agent (Full Access)`, Claude `bypassPermissions`)는 §8에서 표시·게이트만 하고 client가 흉내내지 않는다.
 4. **cleanup 불변식 준수**: turn cancel·session shutdown·process exit 시 pending approval을 반드시 닫는다. 정확한 규칙은 04 §4.2/§5, 본 문서 §3.5에 운영 체크리스트로 옮겼다.
-5. **escalation은 modal**: sandbox 우회·`bypassPermissions` 진입·protected path 쓰기 같은 고위험 결정은 비차단 inline이 아니라 modal로 표시한다(`research/ux-reference.md` 라인 336, 08 modal escape 회귀 보호).
+5. **escalation은 modal**: sandbox 우회·`bypassPermissions` 진입·protected path 쓰기 같은 고위험 결정은 비차단 inline이 아니라 modal로 표시한다(`research/ux-reference.md` 라인 336, 08 modal escape 회귀 보호). §8.3 고위험 집합(Claude `bypassPermissions`, Codex `danger-full-access`/sandbox 우회)은 **v1부터 `severity:"escalation"`**(modal)로 분류하며 v1에서 normal로 강등하지 않는다(§8.3, 08 §4.4, 15 §5, [`13`](13-risks-open-questions.md) OQ-47).
 
 > **구현 시 점검 (§2)**
 > - [ ] `respondApproval`은 store의 pending table에 실제로 존재하는 `requestId`에만 응답하는가(없는 id면 거부/로그).
@@ -352,6 +352,7 @@ ACP와 Codex app-server는 MCP/client tool 흐름을 가질 수 있다(ref-acp �
 
 `bypassPermissions`(Claude) / `danger-full-access`(Codex) / `Agent (Full Access)`는 전부 자동 승인하는 고위험 모드다. 보안 규칙:
 
+- **이 고위험 집합(고위험 신호)은 v1부터 `severity:"escalation"`(modal)로 분류한다** — 08 §4.4 inline/modal 분기, 15 §5 `ApprovalRequest.severity`, [`13`](13-risks-open-questions.md) OQ-47. 즉 approval/모드 신호가 Claude `bypassPermissions`, Codex `danger-full-access`/sandbox 우회(`Agent (Full Access)`)에 해당하면 05/06 approval 매핑이 이를 감지해 `severity:"escalation"`을 부여하고, UI는 비차단 inline이 아니라 blocking modal로 표시한다. **v1에서 이 집합을 `normal`로 강등하지 않는다** — OQ-47의 후속 범위는 *추가 escalation 신호의 확대*(감지 가능한 wire 신호가 불명확한 경우만 OQ-47 잔여로 남김)이지, *이 고위험 집합을 inline으로 강등*하는 것이 아니다. 보안 정본이 v1 기본값을 구속한다.
 - 이 모드로의 진입·표시는 **명확한 고위험 시각 경고**(modal/배지 강조)와 함께한다(§2 규칙 5).
 - Claude `bypassPermissions`는 어댑터 측에서 `ALLOW_BYPASS = !IS_ROOT || !!IS_SANDBOX`로 게이트되며 root에서는 비활성이다(ref-claude-agent-acp §1, §3). CLCOMX는 이 게이트를 **무력화하는 env(`IS_SANDBOX`)를 v1에서 주입하지 않는다**(§4.4) — root에서 bypass를 강제로 켜지 않는다.
 - ExitPlanMode에서 `bypassPermissions` 옵션은 `ALLOW_BYPASS`일 때만 노출되는 어댑터 동작을 그대로 존중한다(ref-claude-agent-acp §3 ExitPlanMode 표).

@@ -148,9 +148,9 @@
 
 - 대상: `src/lib/features/agent-runtime/adapters/__fixtures__/` (신설) + `fixture-format.md`(또는 README).
 - 선행: T0.2.
-- 산출물: provider wire message 시퀀스를 재생할 fixture 포맷 정의. 권고 형태: `{ direction: "in"|"out"; message: JsonRpcMessage }[]` JSON 배열(in=provider→client, out=client→provider). Codex/Claude 공용.
-- DoD: 포맷 스키마 문서화 + 최소 1개 hello-world fixture(Codex initialize, Claude initialize) 작성. reducer/adapter 테스트가 이 포맷을 로드.
-- 테스트(11): "interleaved stream fixture", "ACP message chunk/update" 등 모든 adapter 테스트가 이 포맷에 의존.
+- 산출물: provider wire message 시퀀스를 재생할 fixture 포맷 정의. **정본 형식 = NDJSON 한 줄 = `{ direction: "in"|"out"; message: JsonRpcMessage }`**(파일 확장자 `.jsonl`, in=provider→client, out=client→provider). 논리적으로는 `{direction,message}[]` 배열과 동형이나 **정본 직렬화는 NDJSON `.jsonl`**(한 줄=한 envelope)로 못박는다 — 11 §1과 단일 형식으로 통일(11 §1 replay harness가 줄 단위로 읽음). 기대 normalized 산출은 `*.expected.json`. Codex/Claude 공용.
+- DoD: 포맷 스키마 문서화 + 최소 1개 hello-world fixture(Codex initialize, Claude initialize) 작성. reducer/adapter 테스트가 이 NDJSON 포맷을 줄 단위로 로드(11 §1.2 harness 시그니처와 정합).
+- 테스트(11): "interleaved stream fixture", "ACP message chunk/update" 등 모든 adapter 테스트가 이 포맷에 의존(11 §1 fixture replay).
 - 계약(15 §): §8.1 `JsonRpcMessage`.
 - ref §: ref-codex §1.2, ref-acp §1.
 
@@ -216,11 +216,11 @@
 
 - 대상: `src/lib/features/agent-runtime/controller/agent-event-router.ts` + `state/agent-runtime-store.svelte.ts`의 module-level registry.
 - 선행: T1.3.
-- 산출물: router는 `AgentEvent`를 `ref`(provider/sessionId/threadId/turnId/messageId/itemId/toolCallId/requestId) 기준으로 올바른 세션 state로 dispatch(03 §Event Router). module-level registry는 handle→runtimeId/port 매핑과 전역 pending request table(FE §1.4 module store). **윈도우 소유권/수명 모델은 13 OQ-48/위험 §1.11의 선행 gate**: registry 단일 윈도우 소유 + `runtimeId`↔window 바인딩 + window-close 시 소유 엔트리만 정리 + cross-window dispatch 금지(불변식). 구현 전 OQ-48 확정.
-- DoD: 라우팅 키 표(15 §1.1)대로 Codex 삼중 키·ACP `(sessionId,messageId)`/`(sessionId,toolCallId)` 분기 동작. co-located 테스트 통과. window-close 격리·cross-window dispatch 차단(OQ-48/§1.11) 동작.
-- 테스트(11): "interleaved turn stream이 turn id별로 분리되는지"의 store 측(adapter는 Phase 3). window-close 시 소유 엔트리만 정리되는지(OQ-48).
-- 계약(15 §): §1.1 라우팅 키.
-- ref §: ref-codex §7.1(삼중 키), 13 OQ-48·위험 §1.11(멀티 윈도우 registry 소유권/수명).
+- 산출물: router는 `AgentEvent`를 `ref`(provider/sessionId/threadId/turnId/messageId/itemId/toolCallId/requestId) 기준으로 올바른 세션 state로 dispatch(03 §Event Router). module-level registry는 handle→runtimeId/port 매핑과 pending request table(FE §1.4 module store). **approval pending request table key = `(sessionHandle, requestId)`**(03 §2.8). JSON-RPC id(`requestId`)는 runtime/connection(=adapter 연결) 단위에서만 유일하므로 **전역 단독 `requestId`를 key로 쓰는 것을 금지**한다 — 두 runtime이 같은 id를 받아도 서로의 approval로 오라우팅·오응답하지 않아야 한다(불변식). **윈도우 소유권/수명 모델은 13 OQ-48/위험 §1.11의 선행 gate**: registry 단일 윈도우 소유 + `runtimeId`↔window 바인딩 + window-close 시 소유 엔트리만 정리 + cross-window dispatch 금지(불변식). 구현 전 OQ-48 확정.
+- DoD: 라우팅 키 표(15 §1.1)대로 Codex 삼중 키·ACP `(sessionId,messageId)`/`(sessionId,toolCallId)` 분기 동작. **pending request table이 `(sessionHandle, requestId)` 복합 키로 인덱싱**되고, 서로 다른 두 runtime이 동일 `requestId`를 받아도 각자의 pending에만 매칭(오응답 없음)됨을 검증(11 충돌 회귀 테스트). co-located 테스트 통과. window-close 격리·cross-window dispatch 차단(OQ-48/§1.11) 동작.
+- 테스트(11): "interleaved turn stream이 turn id별로 분리되는지"의 store 측(adapter는 Phase 3). **"두 runtime이 같은 JSON-RPC id를 받아도 오응답하지 않음"(`(sessionHandle, requestId)` 키 충돌 회귀)**. window-close 시 소유 엔트리만 정리되는지(OQ-48).
+- 계약(15 §): §1.1 라우팅 키(approval 라우팅 키 = `(sessionHandle, requestId)`).
+- ref §: 03 §2.8(pending request table key), ref-codex §7.1(삼중 키), 13 OQ-48·위험 §1.11(멀티 윈도우 registry 소유권/수명).
 
 ### T1.5 — legacy PTY 래핑 어댑터
 
@@ -307,7 +307,7 @@
 
 - 대상: `src-tauri/src/features/agent_runtime/mod.rs`, `src-tauri/src/commands/agent_runtime.rs`, `commands/mod.rs`(edit), `lib.rs`(edit).
 - 선행: T2.2, T2.3, T2.4.
-- 산출물: `AgentRuntimeState`(`Mutex<HashMap<RuntimeId, AgentRuntime>>`+`next_id`, PtyState와 별도, BE §10 권고 1). 얇은 `#[tauri::command]` 5종: `agent_runtime_start/send/cancel/shutdown/get_snapshot`(15 §8.2). `lib.rs` 3곳 등록(`use`+`.manage`+`generate_handler![]`, BE §3.2). process exit이 모든 pending request 실패로 닫음(07 §Process lifecycle). **test-mode mock JSON-RPC 스트림 정의**: `is_test_mode()` 경로가 재생할 스트림은 **T0.5 fixture 포맷(`{direction,message}[]`)을 그대로 재사용**한다(E2E mock과 fixture replay 단일 출처). provider별 최소 시나리오를 정의: Codex `initialize→thread/started→turn delta→item/completed→turn/completed` 및 approval(`requestApproval→respondApproval`); Claude `initialize→session/new→session/update chunk→stopReason` 및 `session/request_permission`. mock은 별도 스크립트가 아니라 T0.5 fixture를 로드해 재생한다.
+- 산출물: `AgentRuntimeState`(`Mutex<HashMap<RuntimeId, AgentRuntime>>`+`next_id`, PtyState와 별도, BE §10 권고 1). 얇은 `#[tauri::command]` 5종: `agent_runtime_start/send/cancel/shutdown/get_snapshot`(15 §8.2). `lib.rs` 3곳 등록(`use`+`.manage`+`generate_handler![]`, BE §3.2). process exit이 모든 pending request 실패로 닫음(07 §Process lifecycle). **test-mode mock JSON-RPC 스트림 정의**: `is_test_mode()` 경로가 재생할 스트림은 **T0.5 fixture 포맷(NDJSON 한 줄=`{direction,message}`, `.jsonl`)을 그대로 재사용**한다(E2E mock과 fixture replay 단일 출처, 11 §1과 동일 형식). provider별 최소 시나리오를 정의: Codex `initialize→thread/started→turn delta→item/completed→turn/completed` 및 approval(`requestApproval→respondApproval`); Claude `initialize→session/new→session/update chunk→stopReason` 및 `session/request_permission`. mock은 별도 스크립트가 아니라 T0.5 fixture(`.jsonl`)를 줄 단위로 로드해 재생한다.
 - DoD: `cargo check`+`cargo test` 통과. command가 `Result<T,String>` 반환(15 §0.5). test-mode mock 경로 제공(`is_test_mode()`로 가짜 JSON-RPC 스트림, BE §10 권고 8).
 - 테스트(11): Tauri tests 전체 + test-mode mock fixture(BE §8.1 `create_mock_session` 본뜸).
 - 계약(15 §): §8.2 command 시그니처.
@@ -334,7 +334,7 @@
 ### T3.1 — Codex Port 구현 (initialize/thread/turn)
 
 - 대상: `src/lib/features/agent-runtime/adapters/codex/codex-app-server-adapter.ts`(+ `codex-launch.ts` start params 생성).
-- 선행: T2.6, T0.3.
+- 선행: T2.6, T0.3, **OQ-33 wire 실측 hard gate**(13 OQ-33, "Codex wire 실측" 묶음 H4 — T0.0 직후 처리). OQ-33이 미해소이면 outbound `UserInput.text` wire 필드가 미확정이므로 05 §5.3d `makeTextUserInput`/`mapAgentContentToUserInput`은 **기본 구현 금지(throw/stub)** 로 두고, OQ-33 확정(wire 실측) 후에만 채운다 — 틀리면 `turn/start`가 거부되어 Codex 경로 전체가 막힌다(Phase 3 blocker).
 - 산출물: `AgentRuntimePort` 구현(15 §6). `startSession`=process start→initialize→thread start, `resumeSession`=thread/resume·thread/read(replay), `sendPrompt`=turn start, `cancelTurn`, `respondApproval`, `subscribeEvents`, `shutdown`. Codex는 envelope에 `jsonrpc` 미포함(15 §8.1 주석, ref-codex §1.2). `codex-launch.ts`는 `AgentRuntimeStartParams`(provider/distro/workDir/args=`["app-server","--stdio"]`/env)만 생성하고 **executable command는 넘기지 않는다 — backend가 codex 신뢰 절대경로를 resolve한다(S1, 07 §8.1)**.
 - DoD: 아래 mapping 테스트 통과.
 - 테스트(11): "thread start/resume mapping", "app-server process exit 처리".
@@ -344,7 +344,7 @@
 ### T3.2 — notification→AgentEvent 매핑 (delta/completion reconcile)
 
 - 대상: `adapters/codex/codex-wire-mapper.ts`.
-- 선행: T3.1, T1.1.
+- 선행: T3.1, T1.1, **OQ-33 wire 실측 hard gate**(13 OQ-33). outbound `UserInput.text` 매핑(05 §5.3d `makeTextUserInput`)은 OQ-33 확정 전 stub 유지 — T3.1과 동일 gate.
 - 산출물: Codex notification/request→`AgentEvent`(15 §3) 변환. delta→completed reconcile(04 §3.2): message는 completed `text` 권위, plan/reasoning은 completed 권위. command output `outputDelta`→`command_output_delta`, fileChange→`file_change_updated`. 삼중 키 `(threadId,turnId,itemId)` ref 보존(15 §1.1).
 - DoD: interleaved stream fixture 테스트 통과(turn id별 분리).
 - 테스트(11): "agent message delta와 completed item reconcile", "command output delta routing", "interleaved turn stream이 turn id별로 분리되는지".
@@ -565,10 +565,10 @@ graph TD
 
 ### Critical Path
 
-`P0 → P1 → (P3 또는 P4 중 먼저 필요한 하나) → P5 → P6 → P7`.
+`P0 → max(P1, P2) → adapter(P3/P4 중 먼저 필요한 하나) → P5 → P6 → P7`.
 
-- T2.0(Phase 2 진입 결정 게이트)은 T0.0 후 즉시 착수 가능하고 P1과 병렬이므로 critical path를 늘리지 않는다(P2 backend의 진입 전제일 뿐 P1 경로와 겹쳐 흡수). 단 OQ-36/37/38/39가 미결이면 P2 backend(T2.2/T2.3/T2.4)가 막혀 P3/P4가 지연되므로 **T2.0을 Phase 2 착수 직전 우선 닫는다**.
-- P2는 P1과 병렬이므로 critical path에서 P1과 겹쳐 흡수 가능(둘 다 P3/P4의 선행).
+- **P3/P4 adapter는 P1과 P2 둘 다를 선행으로 요구한다**(reducer/router=P1, transport=P2). P1과 P2는 병렬 트랙이지만 둘 중 **늦게 끝나는 쪽이 adapter 착수 시점을 결정**하므로 critical path 길이는 `max(P1, P2)`다. P2를 "P1에 흡수"라고 단정하지 않는다 — P2(backend host: T2.0 게이트 + T2.1~T2.5 spawn/framing/allowlist/state)가 P1보다 길어지면 **P2가 병목**이 되어 adapter·P5가 그만큼 지연된다(일정 리스크).
+- T2.0(Phase 2 진입 결정 게이트)은 T0.0 후 즉시 착수 가능하고 P1과 병렬이나, **P2 경로 자체의 진입 전제**다. OQ-36/37/38/39가 미결이면 P2 backend(T2.2/T2.3/T2.4)가 막혀 `max(P1, P2)`의 P2 쪽이 그대로 늘어나 P3/P4가 지연되므로 **T2.0을 Phase 2 착수 직전 우선 닫는다**.
 - adapter는 P3·P4 병렬이지만 P5 통합은 **최소 1개** adapter만 있으면 시작 가능 → critical path 상 하나만 직렬.
 - view 선행 착수(트랙 E)는 P5 통합 시간을 단축하나 critical path 길이는 바꾸지 않는다(adapter 완료가 게이트).
 
