@@ -164,12 +164,28 @@ turn cancel(또는 process exit) 시 **unresolved approval은 반드시 cancelle
 - ACP: "Client는 pending된 모든 `session/request_permission`에 `cancelled` outcome으로 **MUST** 응답"(ref-acp §3.8). 즉 cancel 시 모든 pending approval에 `{ outcome: { outcome:"cancelled" } }`를 보낸다.
 - Codex: `serverRequest/resolved` notification(`{threadId, requestId}`)을 받으면 해당 `requestId`의 pending approval을 닫는다(다른 경로로 이미 해결됨). turn interrupt 시에도 unresolved를 cancelled로 정리(ref-codex §4.4).
 
+#### cancel cleanup 정본 순서 (규칙 정본)
+
+이 절이 cancel cleanup 순서의 **규칙 정본**이다. `cancelTurn` 호출 또는 `turn_completed{status:"cancelled"}` 수신 시, adapter는 아래 순서를 **그대로** 따른다. **approval cancelled 응답을 provider turn cancel보다 먼저** 보내는 것이 핵심이며(approval을 매단 채로 turn을 끊으면 wire 상에서 응답 없는 pending request가 남는다), 이중 응답과 race를 막기 위해 `closing` 표시 + 멱등 무시를 명문화한다. 타입은 15 §5 정본(`ApprovalDecision`), wire는 ref-* 인용이며 이 문서에서 재정의하지 않는다.
+
+1. **pending을 원자적으로 `closing` 표시**: 해당 turn의 모든 pending approval을 pending table에서 원자적으로 `closing` 상태로 전이한다. `closing`(및 이후 closed)은 그 `requestId`에 대한 추가 응답·resolve를 차단하는 내부 상태이며 wire로 나가지 않는다. 이 원자적 표시가 동시 도착한 사용자 `respondApproval`과 cancel 사이의 이중 응답을 막는다.
+2. **cancelled 응답을 wire로 먼저 전송**: `closing`으로 표시한 각 pending approval에 cancelled 응답을 **provider turn cancel보다 먼저** wire로 보낸다.
+   - Codex: `{ id, result: { decision: "cancel" } }` (ref-codex §4.1; `jsonrpc` 필드 없음).
+   - ACP: `{ jsonrpc:"2.0", id, result: { outcome: { outcome:"cancelled" } } }` (ref-acp §6).
+   각 응답 직후 `approval_resolved{decision: ApprovalDecision{outcome:"cancelled"}}`를 emit하고 pending table에서 제거(`closing`→closed)한다.
+3. **그 다음 provider turn cancel 전송**: 모든 approval cancelled 응답을 보낸 뒤에 provider turn cancel을 보낸다.
+   - Codex: `turn/interrupt` request `{threadId, turnId}` (ref-codex §3.2).
+   - ACP: `session/cancel` notification `{sessionId}` (ref-acp §3.8; notification이므로 응답 없음).
+4. **늦은 응답 멱등 무시**: cancel 이후 도착하는 늦은 `serverRequest/resolved`(Codex) / `stopReason`(ACP) / 동일 `requestId`에 대한 resolved 응답은, 대상이 이미 `closing`/closed이면 **멱등하게 무시**한다(상태 변경·재emit 없음). 이미 wire로 cancelled를 보낸 requestId에 사용자 응답이 뒤늦게 들어와도 무시한다.
+
 규칙 요약:
 
-1. `cancelTurn` 호출 또는 `turn_completed{status:"cancelled"}` 수신 시, 해당 turn에 속한 모든 pending approval을 `ApprovalDecision{outcome:"cancelled"}`로 닫고 wire로도 cancelled 응답을 보낸다.
+1. `cancelTurn` 호출 또는 `turn_completed{status:"cancelled"}` 수신 시, 위 cancel cleanup 정본 순서(1~4)를 따라 해당 turn에 속한 모든 pending approval을 `ApprovalDecision{outcome:"cancelled"}`로 닫고 wire cancelled 응답을 provider turn cancel보다 먼저 보낸다.
 2. `process_exited` 시 모든 pending approval(및 pending request)을 실패로 닫는다(§5).
-3. `serverRequest/resolved`(Codex) 수신 시 해당 requestId만 닫는다(사용자 응답 불필요).
+3. `serverRequest/resolved`(Codex) 수신 시 해당 requestId만 닫는다(사용자 응답 불필요). cancel cleanup 중/후 도착분은 규칙 4(멱등 무시)를 따른다.
 4. `ApprovalDecision.outcome: "failed"`는 client 내부 에러용이며 **wire로 보내지 않는다**(ACP는 selected/cancelled만, Codex도 decision enum만).
+
+> **다운스트림 인용**: 이 순서는 Codex adapter `05 §7.3`, Claude ACP adapter `06 §4.3`, 검증 매트릭스 `14 §5`가 인용·준수하는 **단일 정본**이다. 특히 06 §4.3은 기존에 `session/cancel`을 먼저 보내고 approval을 나중에 닫는 순서였으나, 이 정본에 따라 **approval cancelled 응답 먼저 → `session/cancel` 나중**으로 교정한다.
 
 ---
 

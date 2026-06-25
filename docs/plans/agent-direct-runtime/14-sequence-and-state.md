@@ -270,7 +270,7 @@ sequenceDiagram
 
 ## 5. Turn cancel 중 pending approval cleanup (04 §4 불변식)
 
-흐름: `cancelTurn` → provider cancel 호출 → **해당 turn의 모든 unresolved approval을 `cancelled`로 닫고 wire로도 cancelled 응답을 보낸다** → `turn_completed{status:"cancelled"}` → `idle`. 이는 두 protocol의 MUST와 정확히 대응한다(04 §4.2).
+흐름: `cancelTurn` → **① 해당 turn의 pending approval을 원자적으로 `closing`으로 표시(이중 응답 방지) → ② 각 pending에 `cancelled` wire 응답 먼저 전송 + pending table에서 제거 → ③ 그 다음 provider turn cancel 호출** → `turn_completed{status:"cancelled"}` → `idle`. **④ cancel 이후 도착하는 늦은 `serverRequest/resolved`/동일 requestId 응답/늦은 `stopReason`은 이미 `closing`/`closed`이므로 멱등하게 무시한다.** 이 순서는 04 §4.2 정본이며 두 protocol의 MUST와 정확히 대응한다.
 
 wire 근거: ACP ref-acp §3.8 ("pending된 모든 `session/request_permission`에 `cancelled` outcome으로 MUST 응답"). Codex ref-codex §3.2 (`turn/interrupt`), §4.4 (`serverRequest/resolved`).
 
@@ -292,8 +292,10 @@ sequenceDiagram
     Port->>Adapter: cancelTurn(handle, turnId)
 
     rect rgb(245, 230, 230)
-        Note over Adapter,Store: 불변식 (04 §4.2 규칙 1): turn에 속한 모든 pending approval을 cancelled로 닫는다
-        loop pending r in table (this turn)
+        Note over Adapter,Store: 불변식 (04 §4.2): cleanup 순서는 ① closing 원자 표시 → ② approval cancelled wire → ③ provider turn cancel → ④ 늦은 응답 멱등 무시
+        Adapter->>Store: 해당 turn의 pending approval을 원자적으로 closing 표시 (이중 응답 방지)
+        Note right of Store: closing 표시 후 동일 requestId의 신규 wire 응답은 보내지 않는다 (04 §4.2)
+        loop pending r in table (this turn, closing)
             alt Codex
                 Adapter->>Transport: agentRuntimeSend(rt, {id:r, result:{decision:"cancel"}})
             else Claude (ACP)
@@ -301,7 +303,7 @@ sequenceDiagram
             end
             Transport->>Provider: cancelled approval response (id:r)
             Adapter->>Router: AgentEvent{type:"approval_resolved", ref:{requestId:r}, decision:{outcome:"cancelled"}}
-            Router->>Store: pending table에서 r 제거
+            Router->>Store: pending table에서 r 제거 (closing → closed)
         end
     end
 
@@ -319,9 +321,17 @@ sequenceDiagram
     Adapter->>Router: AgentEvent{type:"turn_completed", status:"cancelled"}
     Router->>Store: turn_completed → status = idle (04 §2.1 규칙 5)
     Store-->>UI: render cancelled (미완료 tool call은 cancelled 표시)
+
+    opt cancel 이후 늦게 도착한 응답 (멱등 무시)
+        Provider-->>Transport: serverRequest/resolved {requestId:r} | session/update | 동일 requestId 응답 | 늦은 stopReason
+        Transport-->>Adapter: agent-runtime-message
+        Adapter->>Router: AgentEvent (late)
+        Router->>Store: 이미 closing/closed → 멱등하게 무시 (04 §4.2)
+    end
 ```
 
-> **순서 권고**: pending approval cleanup을 cancel method 전송 **전 또는 동시에** 수행한다. ACP는 cancel 받은 즉시 `cancelled` stopReason을 MUST 반환하므로(ref-acp §3.8), client는 pending permission을 비워 deadlock(agent가 응답을 기다리는 상태)을 피해야 한다.
+> **순서 정본(04 §4.2)**: pending approval cleanup(② approval `cancelled` wire 응답)을 provider turn cancel(③ `turn/interrupt` / `session/cancel`) **전에** 수행한다. ACP는 cancel 받은 즉시 `cancelled` stopReason을 MUST 반환하므로(ref-acp §3.8), client는 먼저 pending permission을 비워 deadlock(agent가 응답을 기다리는 상태)을 피해야 한다. 시작 시 ① pending을 `closing`으로 원자 표시해 사용자 응답 경로(§4)와의 이중 응답을 막는다.
+> **늦은 응답 멱등 무시(04 §4.2)**: ② 이후 도착하는 Codex `serverRequest/resolved`(같은 `requestId`)·동일 requestId의 approval 응답·늦은 `turn_completed`/`stopReason`은 이미 `closing`/`closed` 상태이므로 멱등하게 무시한다(이중 처리·재emit 금지). pending table은 `requestId`(JSON-RPC id) 기준으로 멱등 판정한다(04 §4·§4.2).
 > ACP tool call status에는 `cancelled`가 없으므로(ref-acp §5), 미완료 tool card의 `cancelled` 상태는 client가 합성한다(15 §5 `ToolCallUpdate.status` 매핑 주의, 04 §3.3). Codex `interrupted` turn status → `turn_completed{status:"cancelled"}`로 매핑(ref-codex §8).
 
 ---
@@ -588,6 +598,7 @@ stateDiagram-v2
 ```
 
 > 핵심 구분(04 §4.2): **cancel cleanup**은 wire로 `cancelled`를 보낸다(process 살아있음, MUST). **process exit cleanup**은 wire 응답 없이 내부 `failed`로 닫는다(process 죽음). 둘 다 pending table에서 제거하지만 wire 동작이 다르다. `ApprovalDecision.outcome:"failed"`는 ACP/Codex wire에 없는 CLCOMX 전용 값이다(15 §5, ref-acp §6 "ACP outcome에는 failed 없음").
+> cancel cleanup 순서/멱등(04 §4.2, §5 시퀀스): cancel 시작 시 해당 pending을 먼저 `closing`으로 원자 표시(이중 응답 방지)한 뒤 `cancelled` wire 응답을 보내고 table에서 제거(`closing`→제거)한다. 이후 도착하는 `serverRequest/resolved`/동일 requestId 응답/늦은 `stopReason`은 멱등하게 무시한다. `closing`은 표현용 중간 상태이며 정본 `AgentSessionStatus`/`ApprovalDecision` enum(15 §5·§2)을 재정의하지 않는다.
 
 ---
 

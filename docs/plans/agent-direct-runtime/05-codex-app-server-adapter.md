@@ -83,7 +83,7 @@ ref-codex §1.1(로컬 `codex app-server --help` 0.142.0 실행 결과)에 근�
 
 1. stdio + newline-delimited JSON-RPC를 **유일한 1차 transport**로 한다(`transportKind: "jsonrpc-stdio"`, 15 §8.1). websocket(`ws://`)은 검증 후 optional, 1차 미구현([07](07-tauri-process-runtime.md) §Runtime 종류, [13](13-risks-open-questions.md)).
 2. `codex exec` JSONL SDK 경로는 fixture 참고로만 쓰고 런타임 경로로 쓰지 않는다(ref-codex §10 마지막 항목 — SDK는 app-server JSON-RPC와 1:1이 아닐 수 있음).
-3. WSL 경계 유지: backend가 `wsl.exe -d <distro> -e bash -li -c "<cmd>"`로 띄운다([07](07-tauri-process-runtime.md) §WSL/Windows 경계, [`research/codebase-frontend.md`](research/codebase-frontend.md) §4.2의 기존 PTY 선례와 동일 경계).
+3. WSL 경계 유지: backend가 **로그인 셸 비경유(shell-less)** 정본으로 띄운다 — `wsl.exe -d <distro> --cd <wslWorkDir> -e codex app-server --stdio`(executable=`codex`, argv=`["app-server","--stdio"]`). 07 §5.1 launch 정본(`wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <executable> <argv...>`)과 동일 형태이며, non-secret env가 없으면 `env KEY=VAL` prefix 없이 `-e codex …`로 직접 exec한다([07](07-tauri-process-runtime.md) §5.1, §8). 기존 PTY가 쓰던 `bash -li -c "<cmd>"` 형태(로그인 셸 경유)는 **쓰지 않는다** — rc 파일 stdout 출력이 JSON-RPC framing(purity)을 깨뜨릴 위험을 셸 비경유로 원천 차단한다(07 §5.1 OQ-28 해소 주석, 06 §2.3와 일치). executable basename `codex`는 backend allowlist `CODEX_ALLOWED_EXE = {codex}`(절대경로 허용)로 재검증된다(07 §8.1).
 
 **미확정 → [13](13-risks-open-questions.md)**:
 
@@ -102,7 +102,8 @@ export interface CodexLaunchInput {
   distro: string;
   workDir: string;            // WSL absolute path (backend가 canonicalize, 07 §WSL 경계)
   codexBin?: string;          // 기본 "codex" (PATH). settings로 override 가능 (결정 필요, 13)
-  extraEnv?: Record<string, string>;
+  extraEnv?: Record<string, string>;  // ⚠️ non-secret env 전용(07 §5.1·09). secret(API key/token/header)은
+                                      //    argv 경유 금지 — env() + WSLENV passthrough만(07/09, OQ-28).
 }
 
 export function buildCodexStartParams(input: CodexLaunchInput): AgentRuntimeStartParams {
@@ -113,8 +114,9 @@ export function buildCodexStartParams(input: CodexLaunchInput): AgentRuntimeStar
     workDir: input.workDir,
     command: input.codexBin ?? "codex",
     // ref-codex §1.1: stdio 기본. 명시적으로 --stdio 부여(실험 플래그 불필요).
+    // 07 §5.1 정본: backend는 이 값을 셸 비경유로 `wsl.exe -d <distro> --cd <workDir> -e codex app-server --stdio`로 exec한다.
     args: ["app-server", "--stdio"],
-    env: input.extraEnv,
+    env: input.extraEnv,          // non-secret 전용(07 §5.1·09). secret은 argv 비경유(env()+WSLENV).
   };
 }
 ```
@@ -158,7 +160,7 @@ startSession(params):
 ```text
 sendPrompt(sessionHandle, input: SendPromptInput):       // 15 §6
   threadId = routing.threadIdOf(sessionHandle)
-  codexInput = mapAgentContentToUserInput(input.content) // §5.3 (AgentContent → UserInput[])
+  codexInput = mapAgentContentToUserInput(input.content) // §5.3d outbound (AgentContent → UserInput[])
   resp = await rpcRequest(runtimeId, "turn/start",
            { threadId, input: codexInput })              // ref-codex §6.5 TurnStartParams (안정 필드만)
   turnId = resp.turn.id                                  // ref-codex §3.2 TurnStartResponse {turn}
@@ -444,7 +446,9 @@ mapCodexNotification(method, p, routing):
                delta: p.delta }]
 
   case "serverRequest/resolved":                           // ref-codex §4.4
-     // 04 §4.2: 해당 requestId의 pending approval을 cancelled로 닫음
+     // 04 §4.2 규칙3: 해당 requestId의 pending approval을 cancelled로 닫음(사용자 응답 불필요).
+     // C4 단계4(멱등 무시): cancelTurn이 이미 closing/closed로 만든 뒤 늦게 도착하면
+     //   hasPendingApproval가 false라 [] 반환 → 중복 emit/이중 응답 없음(04 §4.2).
      reqId = String(p.requestId)
      if routing.hasPendingApproval(reqId):
         routing.resolveApproval(reqId)
@@ -534,6 +538,63 @@ joinTextElements(elements: TextElement[]):  // ref-codex §6.4 TextElement[]
   // element(있을 경우)는 건너뛰고 원본은 위 raw로 보존(드롭 아님).
   return elements.map(extractTextSpan).filter(Boolean).join("")
 ```
+
+**5.3d outbound: `AgentContent[]` → `UserInput[]`** (`sendPrompt`에서 호출, §2.4):
+
+5.3a가 **inbound**(Codex `UserInput` → `AgentContent`, item 재생용)라면, 이 절은 **outbound** 정본이다 — composer가 만든 `AgentContent[]`(15 §4)를 `turn/start`의 `input: UserInput[]`(ref-codex §6.5)로 변환한다. 5.3a와 반대 방향이며 **순수 함수**다(side-effect 없음). adapter capability(ref-codex §1.4 `initialize.capabilities`) 미opt-in 상황에서 미지원 content는 **드롭하지 않고** `[]` 자리에서 raw 보존 + debug 로깅으로 처리한다(15 §0.2).
+
+```ts
+// adapters/codex/codex-wire-mapper.ts (또는 codex-launch.ts와 공유)
+import type { AgentContent } from "../../contracts/normalized";
+// UserInput은 generated/codex-app-server/ 의 generate-ts 산출 타입을 import(§11, 수동 string literal 금지).
+
+/**
+ * composer content(15 §4) → Codex turn/start input(ref-codex §6.5/§6.4).
+ * - text  → UserInput text item
+ * - image → capability 확인 후 image input; 미지원이면 drop + raw 보존
+ * - resource → reference 매핑(아래 의사코드)
+ * - 그 외(terminal/diff/json 등 composer 비입력 variant) → drop + raw 보존(로깅).
+ * caps: initialize 응답/capability opt-in 상태(ref-codex §1.4). 없으면 보수적(image 미전송).
+ */
+export function mapAgentContentToUserInput(content: AgentContent[], caps?: CodexInputCaps): UserInput[];
+```
+
+```text
+mapAgentContentToUserInput(content, caps):
+  out = []
+  for c in content:
+    switch c.type:
+    case "text":
+       // ⚠️ outbound text variant 필드 결정 필요(아래 주석·13 OQ-33).
+       //   가능성 A(우선): { type:"text", text: c.text }
+       //     — ref-codex §6.5 TurnStartParams 예시는 outbound input에 평문 text만 보인다.
+       //   가능성 B(필요 시 동반): { type:"text", text: c.text, text_elements: toTextElements(c.text) }
+       //     — ref-codex §6.4 inbound item은 text_elements(snake_case, TextElement[], 필수)다.
+       //   둘 중 무엇이 schema 통과하는지 generate-ts(UserInput.ts)/실측 wire로 구현 전 확정(13 OQ-33).
+       out.push(makeTextUserInput(c.text))     // A 우선; B 필요 시 text_elements 동반
+       break
+    case "image":
+       if caps?.imageInput:                    // ref-codex §1.4 capability opt-in 확인
+          // data URI vs file path: file:// 스킴이면 localImage, 그 외 url(15 §4 image.uri)
+          out.push(c.uri.startsWith("file://")
+                   ? { type:"localImage", path: stripFileScheme(c.uri) }   // ref-codex §6.4
+                   : { type:"image", url: c.uri })                         // detail은 미설정(옵셔널)
+       else:
+          logDropped("image", c)               // 미지원 → drop + raw 보존(15 §0.2, 드롭 아님)
+       break
+    case "resource":
+       // ref-codex §6.4: 전용 resource variant 없음 → mention(reference)으로 근사 매핑.
+       //   uri/text를 mention name/path로 싣고 원본은 raw 보존(정확 매핑은 결정 필요, 13 OQ-33).
+       out.push({ type:"mention", name: c.text ?? c.uri, path: c.uri })   // reference 매핑(근사)
+       break
+    default:
+       // terminal/diff/json 등 composer 입력이 아닌 variant: drop + raw 보존(로깅).
+       logDropped(c.type, c)
+  return out
+```
+
+> **outbound text variant 필드 — 결정 필요(13 OQ-33)**: ref-codex §6.5 `TurnStartParams` 예시는 outbound `input`에 `{type:"text", text}`(평문 text만)을 보이지만, §6.4 inbound `UserInput.text`는 `text_elements`(snake_case, `TextElement[]`, **필수**)다. 어느 쪽을 보내야 server schema가 통과하는지는 **양립 가능성이 있어 구현 전 확정**한다 — 가능성 A(text only) 우선, 실측에서 거부되면 가능성 B(text_elements 동반). `codex app-server generate-ts`(§11)의 `UserInput.ts`와 실측 wire로 확정하고 13에 verify-at-impl로 등록한다.
+> image/resource 매핑의 capability opt-in 키와 resource→reference 정확 매핑도 동일 OQ로 묶는다(ref-codex §1.4·§6.4 unverified, [13](13-risks-open-questions.md) OQ-33).
 
 **5.3b `commandExecution` → `ToolCallUpdate`** (15 §5, ref-codex §6.3/§8):
 
@@ -639,9 +700,12 @@ export class CodexRouting {
     method: string,                  // server request method(예: "item/permissions/requestApproval")
     ref: { threadId?: string; turnId?: string; itemId?: string },
   ): void;
-  hasPendingApproval(requestId: string): boolean;
+  hasPendingApproval(requestId: string): boolean;            // closing/closed면 false(멱등 가드)
   resolveApproval(requestId: string): PendingApproval | undefined;
   pendingApprovalsForTurn(threadId: string, turnId: string): string[]; // cancel cleanup(§7.3)
+  // C4(04 §4.2 단계1): cancel 시 해당 turn의 pending approval을 원자적으로 closing으로 표시(이중 응답 방지).
+  //   이미 closing/closed인 항목은 제외하고, 새로 closing 표시한 requestId 목록만 반환(멱등).
+  markTurnApprovalsClosing(threadId: string, turnId: string): string[]; // §7.3
   allPendingApprovalIds(): string[];                         // process exit cleanup(§9)
 }
 
@@ -749,27 +813,38 @@ autoDeclinePermissions(reqId, originalRpcId, p):              // ref-codex §4.3
 
 ### 7.3 cancel cleanup (불변식)
 
-04 §4.2 불변식: turn cancel/process exit 시 **unresolved approval은 반드시 cancelled로 닫는다**.
+04 §4.2 불변식: turn cancel/process exit 시 **unresolved approval은 반드시 cancelled로 닫는다**. cleanup **순서**는 04 §4.2 정본을 그대로 따른다 — **(1) closing 표시 → (2) approval cancelled 응답 먼저 → (3) turn/interrupt 나중 → (4) 늦은 응답 멱등 무시**. approval을 turn cancel보다 **먼저** 닫는 이유: provider가 turn을 interrupt하면 곧 도착할 `serverRequest/resolved`(ref-codex §4.4)·`turn/completed`와 race가 생기는데, pending을 미리 `closing`으로 표시하고 cancelled 응답을 wire로 보내두면 이중 응답·중복 emit이 멱등하게 차단된다(04 §4.2).
 
 ```text
 cancelTurn(handle, turnId?):                               // 15 §6
   threadId = routing.threadIdOf(handle)
   tid = turnId ?? routing.activeTurnOf(threadId)
-  // 1) D5: turn/request cancel은 protocol 의미라 어댑터가 직접 turn/interrupt RPC를 보낸다.
-  //    backend agent_runtime_cancel은 {type:"process"}만 처리하고 turn/request는 no-op(07 §6.3·14 §5).
-  await rpcRequest(runtimeId, "turn/interrupt", { threadId, turnId: tid }) // ref-codex §3.2 TurnInterruptParams
-  // 2) 04 §4.2 규칙1: 이 turn의 pending approval을 cancelled로 닫고 wire로 cancel 응답
-  for reqId in routing.pendingApprovalsForTurn(threadId, tid):
-     pending = routing.resolveApproval(reqId)
-     await deps.send(runtimeId, { id: pending.rpcId, result: { decision: "cancel" } }) // ref-codex §4.1; 원본 id 타입(§6)
+
+  // (1) 04 §4.2: 이 turn의 pending approval을 원자적으로 closing으로 표시(이중 응답 방지).
+  reqIds = routing.markTurnApprovalsClosing(threadId, tid)  // §6; 이미 closing/closed면 제외(멱등)
+
+  // (2) 04 §4.2 규칙1: 각 pending approval에 cancelled 응답을 wire로 **먼저** 보낸다(turn/interrupt 전).
+  for reqId in reqIds:
+     pending = routing.resolveApproval(reqId)               // pending table에서 제거(closing→closed)
+     await deps.send(runtimeId, { id: pending.rpcId, result: { decision: "cancel" } }) // Codex; 원본 id 타입(§6, ref-codex §4.1)
      emitToListeners({ type:"approval_resolved",
                        ref:{provider:"codex", threadId, turnId:tid, requestId:reqId},
-                       decision: { requestId:reqId, outcome:"cancelled" } })
+                       decision: { requestId:reqId, outcome:"cancelled" } })            // 04 §4.2 단계2
+
+  // (3) 04 §4.2: 그 다음 provider turn cancel(turn/interrupt request)을 보낸다.
+  //    D5: turn/request cancel은 protocol 의미라 어댑터가 직접 보낸다(backend agent_runtime_cancel은
+  //        {type:"process"}만 처리, turn/request는 no-op; 07 §6.3·14 §5 정본).
+  await rpcRequest(runtimeId, "turn/interrupt", { threadId, turnId: tid }) // ref-codex §3.2 TurnInterruptParams
+
+  // (4) 04 §4.2: cancel 이후 도착하는 늦은 serverRequest/resolved·turn/completed·동일 requestId 응답은
+  //     이미 closing/closed이므로 멱등하게 무시한다(§5.2 serverRequest/resolved case의 hasPendingApproval 가드).
 ```
 
+> **순서 정본(04 §4.2)**: closing 표시(1) → approval cancelled 응답 먼저(2) → `turn/interrupt` 나중(3) → 늦은 응답 멱등 무시(4). 기존 초안은 `turn/interrupt`를 먼저 보냈으나, 04 §4.2 정본은 approval 정리를 **선행**한다(race·이중 응답 차단). Claude(ACP)는 동일 순서에서 (2)가 `{jsonrpc:"2.0", id, result:{outcome:{outcome:"cancelled"}}}`, (3)이 `session/cancel` notification이다(04 §4.2, 06 §4.3).
+>
 > **D5 정본**: `turn/interrupt`(ref-codex §3.2, `{threadId, turnId}`)는 protocol 의미라 **frontend 어댑터가 직접** `agentRuntimeSend`(=`rpcRequest`)로 보낸다. backend `agent_runtime_cancel`은 `{type:"process"}`(프로세스 kill)만 처리하고 `turn`/`request` cancel은 **no-op**이다(07 §6.3·14 §5가 정본). 어댑터는 `deps.cancel`을 turn cancel에 사용하지 않는다. approval cancel 응답(JSONRPCResponse)도 마찬가지로 protocol 의미라 **어댑터가 직접** `send`로 보낸다(backend는 framing만, 03 §).
 >
-> `serverRequest/resolved`(ref-codex §4.4)로도 닫힘 — §5.2 case 참조. 사용자 응답 없이 server가 먼저 해결한 경우 pending에서 제거하고 `approval_resolved{cancelled}` emit(04 §4.2 규칙3).
+> `serverRequest/resolved`(ref-codex §4.4)로도 닫힘 — §5.2 case 참조. 사용자 응답 없이 server가 먼저 해결한 경우 pending에서 제거하고 `approval_resolved{cancelled}` emit(04 §4.2 규칙3). cancel 이후(closing/closed) 도착하는 `serverRequest/resolved`는 `hasPendingApproval`가 false라 멱등 무시된다(단계4).
 
 ---
 

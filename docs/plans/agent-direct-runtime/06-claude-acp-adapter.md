@@ -405,29 +405,43 @@ interface ClaudeAcpSessionRuntime {
 
 > ACP는 한 process에 1 session이 일반적이지만(turn id가 wire에 없음, 04 §1), 어댑터는 `sessionId`로 라우팅해 멀티세션을 방어적으로 지원한다. `agent-runtime-message`는 runtimeId로 도착하므로 sessionHandle↔runtimeId 매핑 + message params의 `sessionId`로 dispatch한다.
 
-### 4.3 cancelTurn → session/cancel + cleanup
+### 4.3 cancelTurn → cleanup 순서 (approval cancelled 먼저 → session/cancel 나중)
 
-`session/cancel`은 notification(응답 없음, ref-acp §3.8). cancel 시 cleanup 불변식은 04 §4.2가 권위다.
+`session/cancel`은 notification(응답 없음, ref-acp §3.8). cancel 시 cleanup 순서·불변식은 **04 §4.2가 권위**다. cleanup 순서는 단일 정본으로 통일된다 — **pending approval에 `cancelled` 응답을 먼저 보내고 그 다음에 `session/cancel` notification을 보낸다**(approval-first). 이는 cancel을 받은 agent가 turn 종료를 진행하기 전에 client가 이미 모든 pending approval을 닫았음을 보장해, agent 쪽 turn 종료 처리와 client 쪽 approval 응답이 교차하며 생기는 이중 응답·deadlock을 막는다(04 §4.2).
+
+정본 순서(04 §4.2):
+1. **해당 turn의 pending approval을 원자적으로 `closing`으로 표시**한다(이중 응답 방지). 이후 도착하는 동일 requestId 응답·resolve는 멱등하게 무시(아래 4단계).
+2. **각 pending approval에 `cancelled` 응답을 wire로 먼저 보낸다**(ACP `{ jsonrpc:"2.0", id, result:{outcome:{outcome:"cancelled"}} }`, ref-acp §6·§3.8 MUST). 동시에 `approval_resolved{outcome:"cancelled"}` emit + pending table에서 제거.
+3. **그 다음 `session/cancel` notification을 보낸다**(id 없음, ref-acp §3.8).
+4. **cancel 이후 도착하는 늦은 resolved/stopReason/동일 requestId 응답은 멱등하게 무시**한다(이미 `closing`/closed). `stopReason:"cancelled"`는 `session/prompt` 응답으로 따로 도착 → `turn_completed{cancelled}`(이미 정리된 approval은 재처리하지 않음).
 
 ```ts
 async function cancelTurn(handle, turnId?) {
   const rt = byHandle(handle);
-  // 1. session/cancel notification (id 없음)
+  // 1. 해당 turn의 pending approval을 원자적으로 closing 표시(이중 응답 방지, 04 §4.2 규칙 1).
+  //    closing 표시 후 도착하는 동일 requestId 응답/resolve는 멱등 무시(4단계).
+  const closing = [...rt.pendingApprovals.entries()].filter(([, ap]) => !turnId || ap.ref.turnId === turnId);
+  for (const [id] of closing) rt.pendingApprovals.get(id)!.closing = true;
+  // 2. pending approval에 cancelled 응답을 wire로 먼저 보낸다(ref-acp §3.8 MUST, ref-acp §6).
+  //    + approval_resolved emit + pending table에서 제거.
+  for (const [id, ap] of closing) {
+    await deps.sendMessage(rt.runtimeId, buildPermissionResponse(id, { outcome: "cancelled" })); // §6.2
+    emit({ type: "approval_resolved", ref: ap.ref, decision: { requestId: String(id), outcome: "cancelled" } });
+    rt.pendingApprovals.delete(id);
+  }
+  // 3. 그 다음 session/cancel notification(id 없음, ref-acp §3.8).
   await deps.sendMessage(rt.runtimeId, {
     jsonrpc: "2.0", method: "session/cancel", params: { sessionId: rt.providerSessionId },
   });
-  // 2. pending approval은 MUST cancelled로 응답(ref-acp §3.8, 04 §4.2)
-  for (const [id, ap] of rt.pendingApprovals) {
-    await deps.sendMessage(rt.runtimeId, buildPermissionResponse(id, { outcome: "cancelled" })); // §6.2
-    emit({ type: "approval_resolved", ref: ap.ref, decision: { requestId: String(id), outcome: "cancelled" } });
-  }
-  rt.pendingApprovals.clear();
-  // 3. 미완료 tool call을 client가 cancelled로 합성(ACP wire엔 cancelled status 없음, ref-acp §5)
-  //    → store가 활성 turn의 미완료 tool call status를 "cancelled"로 표시(04 §3, 15 §5 주의)
-  // 4. stopReason:"cancelled"는 session/prompt 응답으로 따로 도착 → turn_completed{cancelled}
+  // 4. cancel 이후 도착하는 늦은 resolved/stopReason/동일 requestId 응답은 멱등 무시(이미 closing/closed, 04 §4.2 규칙 4).
+  //    미완료 tool call은 client가 cancelled로 합성(ACP wire엔 cancelled status 없음, ref-acp §5)
+  //    → store가 활성 turn의 미완료 tool call status를 "cancelled"로 표시(04 §3, 15 §5 주의).
+  //    stopReason:"cancelled"는 session/prompt 응답으로 따로 도착 → turn_completed{cancelled}.
 }
 ```
 
+> 순서 정본화 배경(Codex 검토): 기존 구현은 `session/cancel`을 먼저 보내고 approval cancelled를 나중에 처리했으나, approval-first(2단계) → session/cancel(3단계)로 **뒤집는다**. `closing` 표시(1단계)와 멱등 무시(4단계)로 cancel과 사용자 응답이 교차해도 한 requestId에 두 번 응답하지 않는다. 상태·멱등 규칙의 정본은 04 §4.2다.
+> `PendingApproval`에 `closing` 표시 필드를 둔다(어댑터 내부 전용, `contracts/claude-acp.ts`). `respondApproval`(§6.2)도 `closing`/부재 시 멱등 무시한다.
 > cleanup 누락은 approval deadlock 위험([`13-risks-open-questions.md`](13-risks-open-questions.md) "Approval deadlock"). cancel 시 모든 pending approval에 `cancelled` 응답은 ACP MUST(ref-acp §3.8, 04 §4.2 규칙 1).
 
 ### 4.4 shutdown
@@ -586,7 +600,7 @@ function buildPermissionResponse(id, decision: { outcome: "selected" | "cancelle
 async function respondApproval(handle, decision: ApprovalDecision) { // 15 §5
   const rt = byHandle(handle);
   const ap = rt.pendingApprovals.get(decision.requestId);
-  if (!ap) return; // 이미 cancel/resolve됨(idempotent)
+  if (!ap || ap.closing) return; // 이미 cancel/resolve/closing됨 → 멱등 무시(04 §4.2 규칙 4)
   // ApprovalDecision.outcome: "failed"는 client 내부 전용 → wire로 selected/cancelled만(15 §5, 04 §4.2 규칙 4)
   const wire = decision.outcome === "failed" ? { outcome: "cancelled" as const } : { outcome: decision.outcome, optionId: decision.optionId };
   await deps.sendMessage(rt.runtimeId, buildPermissionResponse(ap.request.id, wire));
@@ -600,10 +614,11 @@ async function respondApproval(handle, decision: ApprovalDecision) { // 15 §5
 ### 6.3 cancel/exit cleanup (불변식)
 
 04 §4.2가 권위. 요약:
-1. `cancelTurn`/`turn_completed{cancelled}` 시 해당 turn의 모든 pending approval을 `cancelled`로 닫고 wire로도 cancelled 응답(§4.3). ACP MUST(ref-acp §3.8).
-2. `process_exited` 시 모든 pending approval/request를 실패로 닫음(04 §5).
-3. ACP에는 Codex `serverRequest/resolved` 같은 외부 resolve 경로가 없다 — pending approval은 사용자 응답·cancel·exit으로만 닫힌다.
-4. `failed`는 wire로 보내지 않음(15 §5, 04 §4.2 규칙 4).
+1. `cancelTurn`/`turn_completed{cancelled}` 시 해당 turn의 pending approval을 원자적으로 `closing` 표시 → 각 approval에 `cancelled` 응답을 wire로 **먼저** 보내고(`approval_resolved` emit + table 제거) → 그 다음 `session/cancel` notification(§4.3). approval-first → session/cancel 순서가 정본이다. ACP MUST(ref-acp §3.8).
+2. cancel 이후 도착하는 늦은 resolved/stopReason/동일 requestId 응답은 멱등 무시(이미 `closing`/closed). `respondApproval`도 `closing`/부재 시 무시(§6.2).
+3. `process_exited` 시 모든 pending approval/request를 실패로 닫음(04 §5).
+4. ACP에는 Codex `serverRequest/resolved` 같은 외부 resolve 경로가 없다 — pending approval은 사용자 응답·cancel·exit으로만 닫힌다.
+5. `failed`는 wire로 보내지 않음(15 §5, 04 §4.2 규칙 4).
 
 > 응답하지 않은 permission request가 process shutdown 뒤에 남지 않도록 `pendingApprovals` 정리가 필수다(ref-claude-agent-acp 본 문서 기존 §Permission, [`13-risks-open-questions.md`](13-risks-open-questions.md) "Approval deadlock").
 

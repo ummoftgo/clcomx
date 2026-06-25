@@ -157,7 +157,7 @@ provider마다 같은 단어가 다른 것을 가리킨다. 아래는 **CLCOMX �
 | approval 요청 id | JSON-RPC `id` (+`approvalId?`) | JSON-RPC `id` | `ProviderRef.requestId` | 응답 매칭 키 |
 | agent 메시지 스트림 | `item/agentMessage/delta` → `item/completed` | `agent_message_chunk` (messageId) | `agent_message_delta` + `agent_message` | Codex는 reconcile, ACP는 chunk append |
 | 사용자 메시지 | `UserInput` item | `user_message_chunk` (replay 시) | `user_message` | |
-| reasoning/thought | `reasoning` item | `agent_thought_chunk` | (전용 없음, v1은 `agent_message` 또는 raw) | unverified — [13](13-risks-open-questions.md) ([15](15-data-contracts.md) §3 모델 gap) |
+| reasoning/thought | `reasoning` item | `agent_thought_chunk` | `agent_message_delta` + `agent_message`의 `channel:"thought"` | 전용 event 없이 thought 채널로 흐름(해소됨) — [15](15-data-contracts.md) §3, [04](04-normalized-agent-model.md) §3.2.2 |
 | 실행 계획 | `turn/plan/updated` (`TurnPlanStep`) | `plan` (`PlanEntry`) | `plan_updated` + `AgentPlanEntry` | replace-only |
 | tool 분류 | item type | `ToolKind` (10종, `switch_mode` 포함) | `ToolCallUpdate.kind` (9종) | `switch_mode`→`other` |
 | tool 상태 | `CommandExecutionStatus` (`inProgress`/`completed`/`failed`/`declined`) | `ToolCallStatus` (`pending`/`in_progress`/`completed`/`failed`) | `ToolCallUpdate.status` | ACP엔 `cancelled` 없음→client 합성, Codex `declined`→`failed` |

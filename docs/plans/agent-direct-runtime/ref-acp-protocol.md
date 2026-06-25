@@ -636,7 +636,7 @@ CLCOMX 공통 모델은 `04-normalized-agent-model.md` 기준. 아래는 ACP v1 
 |---|---|
 | `user_message_chunk` | `user_message { mode: chunk면 append }` (messageId로 upsert) |
 | `agent_message_chunk` | `agent_message_delta { delta }` 또는 `agent_message { mode:"append" }` |
-| `agent_thought_chunk` | (thought 전용 surface) — CLCOMX 모델에 thought event 미정의 → metadata/별도 처리 (unverified gap) |
+| `agent_thought_chunk` | `agent_message_delta { delta, channel:"thought" }` 또는 `agent_message { mode:"replace", channel:"thought" }` — thought 채널 스트림에 append/reconcile (정본 해소됨, 04 §3.2.2 / 04 §3.3, 15 §3) |
 | `plan` | `plan_updated { entries }` (전체 교체) |
 | `tool_call` | `tool_call_updated { update }` (신규 upsert) |
 | `tool_call_update` | `tool_call_updated { update }` (부분 갱신, 바뀐 필드만) |
@@ -698,7 +698,8 @@ ACP `ToolCall`/`ToolCallUpdate` → CLCOMX `ToolCallUpdate`:
 - (해소됨) `SessionConfigOption`/`SessionConfigSelect*` 계열 필드 단위 구조 → Section 10에서 verified로 전개.
 - (해소됨) `AuthMethodAgent` 필드 → Section 3.2에서 verified(`{id, name, description?, _meta?}`).
 - v2(draft)의 정확한 params/result shape — `meta.json` 메서드 목록만 확인, draft이므로 본문 미전개(unverifiable as stable).
-- CLCOMX 모델 gap: `agent_thought_chunk`(thought), `audio` content에 대응하는 CLCOMX event/content가 모델에 없음. v1 UI 처리 정책 결정 필요.
+- (해소됨) `agent_thought_chunk`(thought): 전용 event variant 없이 `agent_message`/`agent_message_delta`의 `channel:"thought"`로 매핑한다(정본 04 §3.2.2 / 04 §3.3, 15 §3). 잔여 gap은 `audio`뿐이다.
+- CLCOMX 모델 gap: `audio` content에 대응하는 CLCOMX content가 모델에 없음. v1은 미지원으로 두고 `raw` 보존만 함(15 §3 audio gap 주석). UI 처리 정책 결정 필요.
 - `requires_action` / `running` / `idle` 상태는 ACP wire 신호가 아니라 client 합성. 합성 규칙(특히 permission pending↔requires_action) 확정 필요.
 
 ---

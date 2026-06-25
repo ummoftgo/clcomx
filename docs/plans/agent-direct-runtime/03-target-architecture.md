@@ -319,7 +319,7 @@ backend `agent-runtime-exit`/`-error` → Transport Client → Adapter가 `proce
 
 - **(unverified)** backend 동시성 모델(`std::thread` vs tokio): 코드 현실은 100% `std::thread`이며 tokio 도입은 ADR 사안이다. trade-off는 `research/codebase-backend.md` §7, 결정은 [`adr-001`](adr-001-direct-agent-runtime.md). → [`13`](13-risks-open-questions.md).
 - **(unverified)** transcript late-attach용 message seq 필드: [`15`](15-data-contracts.md) §8.3 계약에는 아직 미포함(후속 단계 권고). → [`13`](13-risks-open-questions.md).
-- **(unverified)** ACP `agent_thought_chunk`(reasoning)·`audio` content의 전용 AgentEvent/AgentContent 부재: v1은 thought를 `agent_message` 또는 raw로, audio는 미지원. 최종 정책은 [`04`](04-normalized-agent-model.md) §"이벤트"에서 확정([`15`](15-data-contracts.md) §3 모델 gap 주석). → [`13`](13-risks-open-questions.md).
+- **(해소됨)** ACP `agent_thought_chunk`(reasoning)·Codex `reasoning` item의 thought 매핑: 전용 event variant를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel: "thought"`로 흘린다(미지정 시 `"response"`, [`15`](15-data-contracts.md) §3, [`04`](04-normalized-agent-model.md) §3.2.2). 잔여 미지원/미정은 `audio` content뿐이다 — v1은 미지원으로 두고 `raw` 보존만 한다([`15`](15-data-contracts.md) §3 audio gap 주석). → [`13`](13-risks-open-questions.md).
 - **(unverified)** `AgentDefinition` direct 지원 capability 플래그 위치/형태(`research/codebase-frontend.md` §10 #7 추정). → [`13`](13-risks-open-questions.md).
 - **(unverified)** terminal/agent 세션 혼재 시 `App.svelte`의 단일 `SessionShellComponent` 룬 가정과 `onPtyId` 흐름 우회 검증(`research/codebase-frontend.md` §11 위험). → [`13`](13-risks-open-questions.md).
 

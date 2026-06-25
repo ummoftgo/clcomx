@@ -70,7 +70,7 @@ flowchart TB
 
 경계별 책임(정본 위치):
 
-- **TB-1 (renderer → backend spawn)**: renderer가 보낸 `AgentRuntimeStartParams`(15 §8.1)의 `command`/`args`/`env`를 Rust handler가 provider allowlist로 **재검증**한다. renderer는 신뢰 경계 밖(웹뷰는 변조 가능)이라고 가정한다. §4 참조. 현 PTY엔 선례 없음 (`research/codebase-backend.md` §6, §10 권고 6).
+- **TB-1 (renderer → backend spawn)**: renderer가 보낸 `AgentRuntimeStartParams`(15 §8.1)의 `command`/`args`/`env`를 Rust handler가 provider allowlist로 **재검증**한다. renderer는 신뢰 경계 밖(웹뷰는 변조 가능)이라고 가정한다. §4 참조. 현 PTY엔 선례 없음 (`research/codebase-backend.md` §6, §10 권고 6). **`AgentRuntimeStartParams.env`는 non-secret env 전용 규약**이며, secret(API key/token 등)은 이 경계를 launch argv로 통과하지 않는다 — §5.3(secret env 경계, 07 launch 정본 인용).
 - **TB-2 (provider → backend framing)**: provider stdout은 **JSON-RPC만**, stderr는 **log만**. claude-agent-acp는 `console.*`를 stderr로 redirect해 stdout 청결을 보장한다 (ref-claude-agent-acp §1 "stdout 청결", ref-acp §1 stdout purity MUST). backend는 protocol 의미를 해석하지 않고 framing만 한다 (15 §8.3 주석, `07-tauri-process-runtime.md` §Framing).
 - **TB-3 (메모리 → 디스크)**: `providerSessionId`/`providerThreadId`/`providerResumeToken`을 디스크 직전 scrub. §7, 15 §7.3 정본, `research/codebase-backend.md` §4.2.
 - **TB-4 (store → 화면)**: redaction 적용 + approval option label을 i18n으로 감싸 표시. §5, §3.2.
@@ -195,6 +195,7 @@ provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_
 - **codex 허용 키**: codex가 요구하는 최소 집합 + API/account 관련(결정 필요).
 - **env key 형식 검증**: 기존 PTY와 동일하게 `^[A-Za-z_][A-Za-z0-9_]*$`로 검증한다(`assertValidEnvKey`, `research/codebase-backend.md` §6). adapter도 backend도 검증한다.
 - **redaction과 연동**: env value는 §5 redaction 대상이며 로그/transcript/디스크에 평문으로 나타나면 안 된다.
+- **secret/non-secret 분리 (§5.3)**: 위 allowlist를 통과한 키 중 secret(API key/token/gateway header 등)은 launch argv로 child에 합성하지 않는다. argv 경유는 non-secret 키 전용이고, secret이 꼭 필요하면 `Command::env()`+`WSLENV` passthrough(07 §5.1 launch 정본)로만 주입한다 — OS 관측면 평문 노출 차단. v1 기본값은 secret env를 런타임으로 넘기지 않음(§5.3, §9 인증 기본 경로).
 
 > **구현 시 점검 (§4)**
 > - [ ] `agent_runtime_start` Rust handler가 `command`/첫 argv를 provider allowlist로 검증하고 실패 시 Err를 반환하는가.
@@ -203,6 +204,7 @@ provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_
 > - [ ] `IS_SANDBOX` 등 권한 상승 env가 v1에서 차단되는가(§8.3 결정 따라).
 > - [ ] `npx` 등 비결정 launch가 거부되는가(ref-claude-agent-acp §1).
 > - [ ] allowlist 위반 시 거부 사유를 stderr/audit에 redacted로 남기는가.
+> - [ ] secret 키(API key/token 등)가 launch argv(`-e env KEY=VAL`)가 아닌 `Command::env()`+`WSLENV`로만 주입되는가(§5.3, 07 §5.1).
 
 ---
 
@@ -218,7 +220,7 @@ provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_
 | **OAuth / auth token** | gateway `ANTHROPIC_AUTH_TOKEN`/`AWS_BEARER_TOKEN_BEDROCK`(ref-claude-agent-acp §1), account token | env, auth stdout/stderr |
 | **session cookie / 자격증명 디렉터리 내용** | `~/.claude` credential (ref-claude-agent-acp §5) | stderr, error message |
 | **command environment 전체** | child env map (15 §8.1 `env`) | spawn 로그, snapshot |
-| **runtime startup command env** | `AgentRuntimeStartParams.env` (15 §8.1) | 로그, audit |
+| **runtime startup command env** | `AgentRuntimeStartParams.env` (15 §8.1, non-secret 전용 규약 §5.3) | 로그, audit, OS 관측면(secret이 잘못 들어간 경우 — §5.3로 차단) |
 | **auth 관련 stdout/stderr** | `--cli auth login` passthrough 출력(ref-claude-agent-acp §1) | stderr 채널 |
 | **MCP server credential** | MCP `McpServerStdio.env`(ref-acp §9), Codex mcp credential | tool 설정, 로그 |
 | **file content raw** | tool read/write 파일 내용, diff 본문 | transcript, raw 로그 |
@@ -229,12 +231,39 @@ provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_
 - **TB-4 (frontend 표시)**: transcript에 올라가는 content/`ToolCallUpdate.rawInput`/`rawOutput`(15 §5)을 표시할 때, env·credential 필드를 redact한다. raw payload를 그대로 펼치지 않는다(§3.1).
 - **audit**: §3.4대로 credential/명령 전문을 애초에 저장하지 않는다.
 
+### 5.3 secret env는 launch argv로 노출하지 않는다 (보안 경계 정본)
+
+redaction은 로그·transcript·디스크 평문 노출을 막지만, **OS 관측면(observability surface)에 들어간 secret은 redaction으로 막을 수 없다**. backend가 `wsl.exe` child를 spawn할 때 secret env를 launch argv로 넘기면(예: `wsl.exe … -e env ANTHROPIC_API_KEY=sk-… <executable> …` 형태) 그 값이 process 명령행에 평문으로 들어가, 아래 관측면에 그대로 노출된다.
+
+| 관측면 | 노출 경로 |
+|---|---|
+| Windows process 목록 | `wsl.exe`의 command line(`ps`류·Task Manager·`Get-CimInstance Win32_Process`) |
+| WSL 측 process 목록 | child의 `/proc/<pid>/cmdline`, `ps -ef`, `ps aux` |
+| WSL process tree | `wsl.exe -e env KEY=VAL …`의 argv가 그대로 노출 |
+
+이 노출은 CLCOMX의 로그·snapshot·persistence 바깥에서 일어나므로 §5.1/§5.2 redaction의 사정거리 밖이다. 따라서 **secret env는 launch argv 경유를 금지한다.** 여기서 secret = API key / OAuth·account token / gateway header / session cookie 등(§5.1 redaction 대상 중 credential류).
+
+**정본 결정:**
+
+1. **`-e env KEY=VAL …` argv 형태는 non-secret env 전용**이다(예: 비민감 플래그·라우팅 힌트). launch 정본 형태와 argv 규약은 07 §5.1(`spawn_wsl_process` / launch 커맨드 정본)이 권위이며, 본 절은 그 위의 보안 경계만 정의한다.
+2. **`AgentRuntimeStartParams.env`(15 §8.1)는 non-secret env 전용 규약**이다 — 타입 정의는 15 §8.1을 인용하며 여기서 재정의하지 않는다. adapter는 secret을 이 필드에 싣지 않는다.
+3. **v1 기본값**: provider 인증은 각 CLI의 WSL 측 자체 로그인/config(`claude login`, `codex auth`, 기존 `~/.claude` 자격)에 의존하고, CLCOMX는 secret env를 런타임으로 넘기지 않는다(§9 인증 기본 경로와 일치). 이로써 v1에서는 secret env 주입 경로 자체가 닫혀 있다.
+4. **secret env를 꼭 넘겨야 하는 경우(gateway 등)의 정본 메커니즘** — argv 비경유:
+   - Rust `std::process::Command::env()`로 `wsl.exe` 프로세스 **환경**에 secret을 설정(argv가 아니라 환경 블록에 들어가므로 명령행에 노출되지 않는다).
+   - `WSLENV`(예: `WSLENV=ANTHROPIC_API_KEY/u`)로 WSL 측에 passthrough해 child가 환경변수로 상속받게 한다.
+   - 이 메커니즘의 정확한 launch 구현은 07 §5.1 launch 정본에 통합돼 있다(argv는 non-secret, secret은 `Command::env()`+`WSLENV`). 본 절은 보안 요구만 명시하고 구현은 07을 인용한다.
+
+> **결정 필요(13, OQ-28 해소)**: secret env 주입(gateway 등)을 v1에 노출할지, env 키별로 어떤 키를 `WSLENV` passthrough 대상으로 둘지는 13 OQ-28에서 본 결정으로 해소됐다 — argv 비경유 원칙은 확정, 실제 gateway secret 주입 UI/설정 노출 여부만 잔여 결정. → [`13`](13-risks-open-questions.md).
+
 > **구현 시 점검 (§5)**
 > - [ ] env value가 어떤 로그/이벤트/디스크에도 평문으로 흐르지 않는가(spawn 시점 포함).
 > - [ ] auth passthrough(`--cli auth login`) 출력이 transcript가 아닌 stderr 채널로만 가고, 그마저 redacted/collapsed인가.
 > - [ ] MCP server `env`(ref-acp §9)가 표시·로그에서 마스킹되는가.
 > - [ ] tool `rawInput`/`rawOutput`(15 §5)을 펼칠 때 credential 패턴이 마스킹되는가.
 > - [ ] redaction이 normalize **이전**(원본 보존 raw)이 아니라 표시/저장 **직전**에 적용돼, 라우팅에 필요한 id는 보존되는가.
+> - [ ] secret env(API key/token/gateway header/cookie)가 launch argv(`-e env KEY=VAL`)로 들어가지 않는가 — OS 관측면(`ps`/`/proc/<pid>/cmdline`/WSL process 목록) 노출 차단(§5.3).
+> - [ ] secret 주입이 필요하면 argv가 아니라 `Command::env()`+`WSLENV` passthrough(07 §5.1 launch 정본)로만 가는가.
+> - [ ] adapter가 `AgentRuntimeStartParams.env`(15 §8.1)에 secret을 싣지 않고 non-secret만 채우는가(§5.3 규약).
 
 ---
 

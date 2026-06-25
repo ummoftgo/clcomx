@@ -429,12 +429,19 @@ pub struct ChildHandle {
 /// 정본 launch 커맨드 형태(셸 비경유 직접 실행):
 ///   wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY1=V1 KEY2=V2 <executable> <argv...>
 /// command/args/env는 §8 allowlist를 통과한 검증된 값만 들어온다.
+///
+/// **secret env 금지 (C1 보안 경계, §5.1 note)**: `non_secret_env`로 들어오는 `-e env KEY=VAL`
+/// argv는 **non-secret 전용**이다(비민감 플래그 등). API key / OAuth token / gateway header /
+/// session cookie 등 secret은 argv로 절대 넘기지 않는다 — argv는 OS 관측면(ps,
+/// /proc/<pid>/cmdline, WSL process 목록)에 평문 노출되어 redaction(§11)으로 막을 수 없다.
+/// secret이 필요한 경우 `Command::env()` + `WSLENV` passthrough로 전달한다(아래 §5.1 note).
 pub fn spawn_wsl_process(
     distro: &str,
     executable: &str,
     argv: &[String],
     work_dir: &str,                 // WSL absolute path (§9 canonicalize 완료)
-    env: &std::collections::HashMap<String, String>,
+    non_secret_env: &std::collections::HashMap<String, String>,  // C1: non-secret 전용
+    secret_env: &std::collections::HashMap<String, String>,      // C1: argv 비경유, Command::env()+WSLENV
 ) -> Result<(ChildHandle, ChildStdio), String> {
     let mut cmd = Command::new("wsl.exe");
     // -d <distro> --cd <wslWorkDir>: cwd를 WSL 내부 경로로 직접 설정(OQ-27 해소).
@@ -442,14 +449,27 @@ pub fn spawn_wsl_process(
     // -e env KEY=VAL ... <executable> <argv...>:
     //   로그인 셸(`bash -lic …`)을 거치지 않고 WSL 실제 `env` 바이너리로 환경변수를 주입한 뒤
     //   executable을 직접 exec한다(OQ-28 해소). 셸을 끼지 않으므로 rc 파일 stdout 오염이 없다.
+    //   주의(C1): 여기에 들어가는 env는 **non-secret 전용**이다(argv 노출).
     cmd.arg("-e").arg("env");
-    for (k, v) in env {
+    for (k, v) in non_secret_env {
         // KEY=VALUE 형태. `env` 바이너리에 직접 전달되므로 셸 메타문자 해석/확장이 없다.
+        // non-secret만 허용 — secret은 아래 Command::env()+WSLENV 경로로만 전달한다.
         cmd.arg(format!("{k}={v}"));
     }
     cmd.arg(executable);
     for a in argv {
         cmd.arg(a);
+    }
+    // C1 secret env 정본: argv 비경유. wsl.exe 프로세스 환경에 secret을 설정하고
+    // WSLENV로 WSL 측에 passthrough한다(예: WSLENV=ANTHROPIC_API_KEY/u).
+    // 이렇게 하면 secret 값이 ps/cmdline/process 목록에 평문으로 남지 않는다.
+    if !secret_env.is_empty() {
+        for (k, v) in secret_env {
+            cmd.env(k, v); // wsl.exe 프로세스 환경(argv 아님)
+        }
+        let passthrough = secret_env.keys().map(|k| format!("{k}/u")).collect::<Vec<_>>().join(":");
+        // 기존 WSLENV가 있으면 보존하며 append(여기서는 단순화).
+        cmd.env("WSLENV", passthrough);
     }
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -474,8 +494,12 @@ pub fn spawn_wsl_process(
 > ```
 > 이다. 핵심은 **로그인 셸 비경유 직접 실행**이다.
 > - **cwd = `--cd <wslWorkDir>` (OQ-27 해소)**: WSL 내부 cwd는 Windows `Command::current_dir`로 줄 수 없다(research §5.1: PTY는 `cwd: null`로 넘기고 스크립트 내부 `cd '<workDir>'`로 진입). direct runtime은 셸 스크립트를 끼지 않으므로 `wsl.exe --cd <wslPath>`로 cwd를 설정한다(provider 무관). provider CLI의 cwd 플래그(Codex `--cd`, Claude ACP launch param)는 fallback이다.
-> - **env = `-e env KEY=VAL` 바이너리 주입 (OQ-28 해소)**: PTY는 셸 스크립트 prefix(`<env>claude`, research §6)로 export했지만, direct runtime은 WSL 실제 `env` 바이너리에 `KEY=VALUE`를 직접 인자로 넘긴다. `env`는 WSL 내부 실제 바이너리이므로 셸 메타문자 해석/확장 없이 환경변수를 주입하고 그 자리에서 `<executable>`을 exec한다. 즉 06 §2.3가 우려한 `bash -lic … exec <node> <entry>` 형태의 **bash rc stdout 오염**(rc 파일이 stdout으로 무언가를 출력해 JSON-RPC framing을 깨뜨림)이 **셸 비경유로 원천 해소**된다(06 §2.3와 일치).
-> - **API key/token은 §11 redaction 대상이고 평문 영속화 금지**(10 §7.3 보안 경계). env 인자는 process argv에 노출되므로 로그·snapshot·persistence 어디에도 평문으로 남기지 않는다.
+> - **env = `-e env KEY=VAL` 바이너리 주입 (OQ-28 해소, non-secret 전용)**: PTY는 셸 스크립트 prefix(`<env>claude`, research §6)로 export했지만, direct runtime은 WSL 실제 `env` 바이너리에 `KEY=VALUE`를 직접 인자로 넘긴다. `env`는 WSL 내부 실제 바이너리이므로 셸 메타문자 해석/확장 없이 환경변수를 주입하고 그 자리에서 `<executable>`을 exec한다. 즉 06 §2.3가 우려한 `bash -lic … exec <node> <entry>` 형태의 **bash rc stdout 오염**(rc 파일이 stdout으로 무언가를 출력해 JSON-RPC framing을 깨뜨림)이 **셸 비경유로 원천 해소**된다(06 §2.3와 일치). 단 이 `-e env KEY=VAL` argv 경로는 **non-secret env 전용**이다(C1 보안 경계, 아래 별도 항목).
+> - **secret env는 argv 비경유 — `Command::env()` + `WSLENV` passthrough (C1 정본, OQ-28 보안 갱신)**: secret(API key / OAuth token / gateway header / session cookie 등)을 `-e env KEY=VAL` argv로 넘기면 OS 관측면(`ps`, `/proc/<pid>/cmdline`, WSL process 목록)에 **평문 노출**되어 §11 redaction으로 막을 수 없다. 따라서 launch 커맨드의 `-e env KEY=VAL …` argv 형태는 **non-secret env 전용**(비민감 플래그 등)으로 한정하고, secret env는 절대 argv에 싣지 않는다.
+>   - **v1 기본값 (정본)**: provider 인증은 각 CLI의 WSL 측 자체 로그인/config(`claude login`, `codex auth`)에 의존하고, CLCOMX는 **secret env를 런타임으로 넘기지 않는다**(secret env 미전달이 기본).
+>   - **secret env를 꼭 넘겨야 하는 경우(gateway 등)의 정본 메커니즘**: Rust `std::process::Command::env()`로 `wsl.exe` 프로세스 환경에 secret을 설정하고, `WSLENV`(예: `WSLENV=ANTHROPIC_API_KEY/u`)로 WSL 측에 passthrough한다. argv를 경유하지 않으므로 process 목록에 평문이 남지 않는다(§5.1 `spawn_wsl_process`의 `secret_env` 경로).
+>   - `AgentRuntimeStartParams.env`(15 §8.1)는 이 결정에 따라 **non-secret 전용 규약**이다(15 §8.1 타입 자체는 재정의하지 않고 07/09를 인용; 신뢰 경계 정본은 [09](09-permissions-security.md)). 관련 OQ-28은 이 결정으로 해소된다([13](13-risks-open-questions.md)).
+> - **API key/token은 §11 redaction 대상이고 평문 영속화 금지**(10 §7.3 보안 경계). secret은 argv·로그·snapshot·persistence 어디에도 평문으로 남기지 않는다.
 >
 > 배포 대상 WSL 버전의 `--cd` 지원 여부 확인 및 미지원 시 provider flag fallback 경로는 [13](13-risks-open-questions.md) OQ-27 참조.
 
@@ -489,12 +513,15 @@ pub fn start(state: &AgentRuntimeState, app: &AppHandle, params: AgentRuntimeSta
     if is_test_mode() {
         return start_mock(state, app, params);
     }
-    // 2) allowlist 검증 (§8) — provider별 executable/args 화이트리스트
-    let (provider, distro, work_dir, executable, argv, env) = validate_and_extract(&params)?;
+    // 2) allowlist 검증 (§8) — provider별 executable/args 화이트리스트.
+    //    env는 non-secret 전용(C1). secret env는 별도 secret 채널로만 들어온다(아래 note).
+    let (provider, distro, work_dir, executable, argv, non_secret_env, secret_env) =
+        validate_and_extract(&params)?;
     // 3) path canonicalize (§9)
     let work_dir = canonicalize_wsl_path(&work_dir)?;
-    // 4) spawn
-    let (child, stdio) = spawn_wsl_process(&distro, &executable, &argv, &work_dir, &env)?;
+    // 4) spawn — non-secret은 argv(`-e env`), secret은 Command::env()+WSLENV(C1)
+    let (child, stdio) =
+        spawn_wsl_process(&distro, &executable, &argv, &work_dir, &non_secret_env, &secret_env)?;
     // 5) RuntimeId 발급 + AgentRuntime 구성 + HashMap insert
     let id = next_runtime_id(state)?;
     let runtime = build_runtime(provider, child, &stdio); // stdin handle 보관 등
@@ -636,7 +663,7 @@ pub fn send(state: &AgentRuntimeState, runtime_id: RuntimeId, message: JsonRpcMe
 
 `AgentRuntimeCancelTarget`(15 §8.1): `request{requestId}` | `turn{turnId}` | `process`.
 
-**cancel wire 전송 주체 정본**: backend는 protocol cancel 메시지를 **만들지 않는다**(provider별 cancel wire가 다름 — Codex `turn/interrupt`(ref-codex §3.2 `TurnInterruptParams {threadId, turnId}`), ACP `session/cancel`; adapter가 안다). turn/request cancel은 **frontend adapter가 `agentRuntimeSend`로 직접 wire를 보내고**, backend `agent_runtime_cancel`은 `{type:"process"}`만 처리한다(이 경계는 14 §5 시퀀스가 정본: adapter가 `turn/interrupt`/`session/cancel`을 send, Transport는 framing만). 따라서:
+**cancel wire 전송 주체 정본**: backend는 protocol cancel 메시지를 **만들지 않는다**(provider별 cancel wire가 다름 — Codex `turn/interrupt`(ref-codex §3.2 `TurnInterruptParams {threadId, turnId}`), ACP `session/cancel`; adapter가 안다). turn/request cancel은 **frontend adapter가 `agentRuntimeSend`로 직접 wire를 보내고**, backend `agent_runtime_cancel`은 `{type:"process"}`만 처리한다. cancel cleanup 순서(pending approval을 먼저 `closing`으로 표시 → approval에 cancelled 응답 wire 전송 + `approval_resolved{outcome:"cancelled"}` emit → provider turn cancel 전송 → 늦은 응답 멱등 무시)의 **규칙 정본은 04 §4.2**이고, 시퀀스는 14 §5다. backend Transport는 이 순서에 관여하지 않고 adapter가 보내는 wire를 framing만 한다(C4). 따라서:
 
 - `target == process`: `shutdown(runtime_id)`을 호출(§5.2). 이것만 backend가 직접 한다.
 - `target == request | turn`: backend는 **할 일이 없다(no-op)**. frontend adapter가 적절한 cancel JSON-RPC(Codex `turn/interrupt` 등)를 `agent_runtime_send`로 보낸다. backend `cancel` core fn은 `request`/`turn`에 대해 no-op(또는 진단용 pending id 정리만)으로 둔다.
@@ -748,18 +775,25 @@ PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에
 
 1. **provider enum 검증**: `provider`는 `"codex"` 또는 `"claude"`만 허용. 그 외는 `Err`.
 2. **executable allowlist**: `command`의 basename이 provider별 화이트리스트에 있어야 한다.
-   - `codex` → `{"codex"}` (+ 후속에 절대경로 변형 허용 여부 결정)
-   - `claude` → `{"node"}` 1차 정본. Claude ACP를 `node`(절대경로) + adapterEntryPath(06 §2.2 1차 권고)로 직접 실행한다. `npx`는 1차에서 제거하고 후속(optional)으로만 검토한다. 정확한 launch executable은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·ref-claude-agent-acp §2가 권위.
+   - `codex` → `CODEX_ALLOWED_EXE = {"codex"}` (절대경로 허용 — basename이 `codex`면 통과). Codex app-server는 셸 비경유 직접 실행 `wsl.exe -d <distro> --cd <wslWorkDir> -e codex app-server --stdio`로 띄운다(05가 이 형태를 따른다, ref-codex §1.1: app-server 기본 stdio, 전역 experimental 플래그 불필요).
+   - `claude` → `CLAUDE_ALLOWED_EXE = {"node"}` 1차 정본. Claude ACP를 `node`(절대경로) + adapterEntryPath(06 §2.2 1차 권고)로 직접 실행한다. `npx`는 1차에서 제거하고 후속(optional)으로만 검토한다. 정확한 launch executable은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·ref-claude-agent-acp §2가 권위.
 3. **args 검증**: shell 메타문자(`;`, `|`, `&`, `` ` ``, `$(`, `>`, `<`, 개행) 포함 args 거부 — `wsl.exe -e`는 shell을 거치지 않지만(executable + argv 직접 실행, research §2.2와 동일 원칙) 방어적으로 검증. provider별 허용 flag prefix(예: codex `--`, claude `--acp`)만 통과시키는 화이트리스트가 더 안전(결정 필요).
 4. **command/args 출처**: adapter가 생성한 검증된 값만 허용. frontend가 자유 입력을 넣는 경로를 차단(§0).
+5. **env 분류 (C1)**: `env`는 **non-secret 전용**이다(§5.1 `-e env KEY=VAL` argv 경로). secret(API key/token/gateway header/cookie)은 이 argv 경로로 넘기지 않으며, 필요 시 `Command::env()`+`WSLENV` passthrough로만 전달한다(§5.1 note). v1 기본값은 secret env 미전달(provider 자체 WSL 인증 의존).
 
 ```rust
+// C1: provider별 executable allowlist. basename으로 비교하므로 절대경로도 통과한다.
 const CODEX_ALLOWED_EXE: &[&str] = &["codex"];
 // 1차 정본: node(절대경로) + adapterEntryPath만 허용(06 §2.2). npx는 후속(optional).
 const CLAUDE_ALLOWED_EXE: &[&str] = &["node"];
 
+// 반환 tuple: (provider, distro, work_dir, executable, argv, non_secret_env, secret_env).
+// C1: env는 non-secret만 argv(`-e env`)로 흐른다. secret_env는 Command::env()+WSLENV 경로(§5.1).
+// v1 기본값은 secret_env 빈 맵(provider 자체 WSL 인증 의존). AgentRuntimeStartParams.env(15 §8.1)는
+// non-secret 전용 규약이므로 여기서는 전부 non_secret_env로 분류한다(secret 주입 경로는 별도 채널).
 fn validate_and_extract(params: &AgentRuntimeStartParams)
-    -> Result<(String, String, String, String, Vec<String>, HashMap<String,String>), String>
+    -> Result<(String, String, String, String, Vec<String>,
+               HashMap<String,String>, HashMap<String,String>), String>
 {
     let AgentRuntimeStartParams::JsonrpcStdio { provider, distro, work_dir, command, args, env }
         = params else {
@@ -782,8 +816,13 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
         }
     }
     if distro.trim().is_empty() { return Err("distro is required".into()); }
+    // C1: env(15 §8.1)는 non-secret 전용 규약 → 전부 non_secret_env로 분류.
+    // secret_env는 빈 맵(v1 기본값: provider 자체 WSL 인증 의존). gateway 등 secret 주입이
+    // 필요하면 별도 secret 채널에서 secret_env를 채워 Command::env()+WSLENV로 전달한다(§5.1).
+    let non_secret_env = env.clone().unwrap_or_default();
+    let secret_env: HashMap<String, String> = HashMap::new();
     Ok((provider.clone(), distro.clone(), work_dir.clone(), command.clone(),
-        args.clone(), env.clone().unwrap_or_default()))
+        args.clone(), non_secret_env, secret_env))
 }
 ```
 
@@ -888,7 +927,7 @@ fn redact(s: &str) -> String {
 }
 ```
 
-- `agent_runtime_start`의 `env`(API key 등)는 로그·snapshot·persistence 어디에도 평문으로 남기지 않는다(10 §7.3 scrub 경계).
+- **secret env 경계 (C1)**: `agent_runtime_start`의 `env`(15 §8.1)는 **non-secret 전용 규약**이다(§5.1·§8.1). secret(API key/OAuth token/gateway header/session cookie)은 argv(`-e env KEY=VAL`)로 넘기지 않고, 필요 시 `Command::env()`+`WSLENV` passthrough로만 전달한다(§5.1 note) — argv 경유 시 OS 관측면(`ps`/`/proc/<pid>/cmdline`/WSL process 목록)에 평문 노출되어 redaction으로 막을 수 없기 때문이다. v1 기본값은 secret env 미전달(provider 자체 WSL 인증 의존). secret은 로그·snapshot·persistence 어디에도 평문으로 남기지 않는다(10 §7.3 scrub 경계, 신뢰 경계 정본은 [09](09-permissions-security.md)).
 - raw protocol log 활성화 시에도 `redact`를 거친 라인만 파일에 쓴다. 저장 위치는 `app_env::state_path("agent-runtime-debug.log")`(research §4.1).
 
 정책 정본은 [09](09-permissions-security.md)다. 이 절은 backend 구현 hook만 명시한다.
@@ -914,6 +953,7 @@ fn redact(s: &str) -> String {
 **process**
 - [ ] `spawn_wsl_process`(`wsl.exe -d -e`, piped stdio, CREATE_NO_WINDOW) (§5.1).
 - [ ] launch 커맨드 정본(`wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <exe> <argv>`, 셸 비경유)(§5.1).
+- [ ] C1 secret env 경계: `-e env KEY=VAL` argv는 non-secret 전용. secret은 `Command::env()`+`WSLENV` passthrough(argv 금지), v1 기본은 secret env 미전달(§5.1·§8.1·§11).
 - [ ] graceful shutdown(stdin drop → grace poll → kill) (§5.2).
 - [ ] child wait/kill 동시성 정본 패턴: Child를 wait 전용 thread로 move + 저장한 pid/handle로 kill(§5.3, terminal/mod.rs 2-thread 선례).
 
@@ -947,6 +987,7 @@ fn redact(s: &str) -> String {
 | AC-8 | Windows path·relative path workDir 거부, WSL absolute만 통과 | tests.rs(§9) |
 | AC-9 | `is_test_mode()`에서 실제 WSL 없이 mock JSON-RPC 스트림 emit | E2E mock 시나리오 |
 | AC-10 | API key/token이 stderr 로그·snapshot·persistence에 평문 노출 안 됨 | redact 단위 테스트 + persistence scrub 테스트(10 §7.3) |
+| AC-10b | secret env가 child argv(`-e env KEY=VAL`)에 실리지 않고 `Command::env()`+`WSLENV`로만 전달됨(C1). non-secret env만 argv 경유 | tests.rs: `spawn_wsl_process` argv 조립 검증(secret_env 키가 argv에 부재, WSLENV에 등재) |
 | AC-11 | 기존 PTY E2E(smoke/terminal-*) 회귀 없음(공존) | `scripts/run-e2e-project.mjs` |
 
 ---
