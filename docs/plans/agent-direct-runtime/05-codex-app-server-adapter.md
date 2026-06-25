@@ -327,7 +327,12 @@ export function mapCodexMessage(msg: JsonRpcMessage, routing: CodexRouting): Age
 /** 개별 notification 디스패치(테스트 단위 작게 쪼갬). method 문자열로 분기. */
 export function mapCodexNotification(method: string, params: unknown, routing: CodexRouting): AgentEvent[];
 
-/** server→client request(approval/elicitation) → approval_requested (§7.1). */
+/**
+ * server→client request(approval/elicitation) → approval_requested (§7.1).
+ * 미지원 method는 silent-drop 금지(04 §5 / 13 RD-10): pending 정리 후 JSON-RPC error(-32601) 또는
+ * 명시적 decline 응답을 wire로 **반드시** 보낸다(§7.1 default·§7.2 sendUnsupportedServerRequest).
+ * 무응답 폐기는 server를 영구 대기시켜 deadlock을 유발한다.
+ */
 export function mapCodexServerRequest(method: string, id: string | number, params: unknown, routing: CodexRouting): AgentEvent[];
 ```
 
@@ -762,9 +767,15 @@ mapCodexServerRequest(method, id, p, routing):              // §3.2 request 분
                  decision: { requestId:reqId, outcome:"failed" } }]  // 내부 전용(04 §4.2 규칙4)
     default:
        // item/tool/requestUserInput(EXPERIMENTAL), mcpServer/elicitation/request, item/tool/call 등
-       // v1 미지원: pending에서 제거하고 무시(또는 자동 cancel — 결정 필요 13)
-       routing.resolveApproval(reqId)
-       return []
+       // v1 미지원 server REQUEST(id 있음). 04 §5 / 13 RD-10 정본: server→client request의 미지원
+       //   method는 **silent-drop 금지**다. 무응답으로 폐기하면 server가 응답을 영구히 기다려 turn이
+       //   deadlock된다. 따라서 pending에서 제거한 뒤 **반드시 응답을 먼저 보낸다** — 표준 JSON-RPC error
+       //   (code -32601 method not found) 또는 명시적 decline. payload는 raw 보존 + 카운터 가시화(15 §0.2, 13 RD-10).
+       routing.resolveApproval(reqId)                        // pending에서 제거(이미 닫혔으면 no-op)
+       // (a) 미지원 method 응답 — JSONRPCError(jsonrpc 필드 없음, ref-codex §1.2/§4). approval 계열이 아닌
+       //     server request(elicitation/tool call 등)는 method-not-found가 의미상 맞다.
+       sendUnsupportedServerRequest(originalRpcId=id, method, p)  // §7.2 보조: error/decline 응답 후 raw 로깅+카운터
+       return []                                             // event는 없음(응답은 위에서 wire로 송신)
 ```
 
 `ApprovalOption.kind`(15 §5) → Codex decision(ref-codex §4.1/§8.1):
@@ -806,6 +817,17 @@ autoDeclinePermissions(reqId, originalRpcId, p):              // ref-codex §4.3
   //   GrantedPermissionProfile 구성이 미확정이라 보수적으로 빈 권한 + scope:"turn".
   await deps.send(runtimeId, { id: originalRpcId,            // 원본 JSON-RPC id 타입(string|number) 그대로
     result: { permissions: {}, scope: "turn" } })            // ref-codex §4.3 (granted 구성 후속, [13] OQ)
+
+// R5(04 §5 / 13 RD-10): 미지원 server REQUEST(id 있음)에 대한 의무 응답(§7.1 default에서 호출).
+//   무응답 silent-drop은 server를 영구 대기시켜 deadlock을 만들므로 금지. 반드시 응답을 먼저 보낸다.
+sendUnsupportedServerRequest(originalRpcId, method, p):      // ref-codex §1.2/§4
+  // JSONRPCError 응답(ref-codex §1.2 표: JSONRPCError { id, error:{code,message,data?} }, jsonrpc 필드 없음).
+  //   표준 코드 -32601(method not found)로 미지원임을 명시한다(ref-acp §13의 -32601과 동일 의미).
+  //   approval 계열이면 명시적 decline 응답을 대신 보낼 수도 있으나(§7.2 decision/permissions),
+  //   default 분기는 비-approval(elicitation/tool call 등)이라 method-not-found가 의미상 맞다.
+  await deps.send(runtimeId, { id: originalRpcId,            // 원본 JSON-RPC id 타입(string|number) 그대로(§6 rpcId)
+    error: { code: -32601, message: "method not found", data: { method } } }) // ref-codex §1.2
+  logDropped("server-request:" + method, p)                 // raw 보존 + unknown-request 카운터 증가(15 §0.2, 13 RD-10)
 ```
 
 > response의 `id`는 server가 보낸 request의 `id`와 **정확히 동일 타입/값**이어야 한다(ref-codex §1.3). server request id가 number였으면 number로 되돌린다. 어댑터는 `requestId`를 string으로 정규화(15 §1)하지만 **원본 JSON-RPC id의 실제 타입(`string|number`)을 routing pending에 함께 보관**해 응답 시 복원한다(§6 `rpcId`).

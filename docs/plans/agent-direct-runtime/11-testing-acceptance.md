@@ -233,6 +233,8 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 | CX-13 | allow_always 선택 | `decision:"acceptForSession"`(ref-codex §8.1) |
 | CX-14 | reject_always 선택 | `decision:"decline"` (영구 거부 등가물 없음 → decline, ref-codex §8.1, `결정 필요` → [13](13-risks-open-questions.md)) |
 | CX-15 | `serverRequest/resolved{threadId,requestId:7}` | 해당 requestId pending 닫기(ref-codex §4.4) |
+| CX-15b | **미지원 server→client request**(id 있는 요청이나 adapter가 모르는 method, 예 알 수 없는 elicitation method) | outbound로 JSON-RPC **error 응답**(`{id, error:{code:-32601, message}}`) 또는 명시적 decline 응답을 보낸다. **무응답으로 끝나지 않음**(provider deadlock 방지) — `drainOutbound()`에 정확히 1개 응답이 있고, 응답 `id`가 요청 `id`와 일치함을 assert(R5; 05 §7.1 default 분기는 `return []`로 끝내지 말고 unknown server request에 error/unsupported 응답 후 종료; 04 §5 edge 규칙, 13 unknown-variant silent-drop 금지) |
+| CX-15c | 미지원 **notification**(id 없음, 예 알 수 없는 v2 notification) | 응답 불필요 — raw 보존(`ProviderRef.raw`) + unknown counter 증가만, outbound 없음 assert(R5 notification 경로, 15 §0.2) |
 
 ### 3.5 interleaved turn 분리
 
@@ -304,9 +306,12 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 | CL-19 | `session/request_permission{id:42, toolCall, options}` | `approval_requested{request.id:"42", toolCallId}`, options optionId/name/kind 매핑(ref-acp §6, §13.4) |
 | CL-20 | PermissionOptionKind 4종(allow_once/allow_always/reject_once/reject_always) | `ApprovalOption.kind` 1:1(ref-acp §6) |
 | CL-21 | `respondApproval{selected, optionId}` 아웃바운드 | `{jsonrpc:"2.0", id:42, result:{outcome:{outcome:"selected", optionId}}}`(ref-acp §6) |
-| CL-22 | cancel 시 pending permission | `{outcome:{outcome:"cancelled"}}` 응답(ref-acp §3.8 MUST, 04 §4.2) |
+| CL-21b | **원본 numeric id 타입 보존(R3)**: `session/request_permission{id:42(number), ...}` 수신 → 사용자가 응답 → `buildPermissionResponse` 아웃바운드 | wire 응답의 `id`가 **숫자 `42`**(보존한 원본 `PendingApproval.rpcId`)여야 한다 — **문자열 `"42"`가 아님**. `ApprovalRequest.id`/`ProviderRef.requestId`는 `String(id)="42"`(UI·store 문자열 키)지만, wire 응답 `id`는 원본 타입 유지. 입력=numeric `42` → 기대 outbound `id:42(number)` (R3; 06 §6.1/§6.2 `PendingApproval.rpcId` 보존, 05 §6 CodexRouting rpcId 보존 동일 패턴; numeric→문자열 변질로 인한 매칭 실패/deadlock 방지) |
+| CL-21c | string id permission(`id:"req-1"`) | wire 응답 `id:"req-1"`(string 그대로 보존) — string·number 양쪽에서 원본 타입 미손실 assert(R3) |
+| CL-22 | cancel 시 pending permission | `{outcome:{outcome:"cancelled"}}` 응답, 응답 `id`는 보존한 원본 rpcId 타입(R3) (ref-acp §3.8 MUST, 04 §4.2) |
 | CL-23 | ExitPlanMode permission(claude 구현체) | optionId bypassPermissions/auto/acceptEdits/default/plan, kind 매핑(ref-claude-agent-acp §3 request_permission 표) |
 | CL-24 | 일반 tool 3-option(allow_always/allow/reject) | kind allow_always/allow_once/reject_once(ref-claude-agent-acp §3) |
+| CL-24b | **미지원 server→client request(R5)**: capability 미광고 상태에서 도착한 `fs/read_text_file`/`terminal/create` 등 또는 알 수 없는 method(id 있는 요청) | outbound로 JSON-RPC **error 응답**(`{jsonrpc:"2.0", id, error:{code:-32601, message:"Method not found"}}`) 또는 명시적 decline 응답을 보낸다. **무응답으로 끝나지 않음**(provider deadlock 방지) — `drainOutbound()`에 정확히 1개 응답, 응답 `id`가 요청 `id`와 (원본 타입 그대로) 일치함을 assert(R5; ref-acp §1·§"error code 표"의 `-32601` Method not found, 06 미지원 server request error/decline parity, 04 §5 edge 규칙) |
 
 ### 4.6 stdout invalid JSON framing error
 
@@ -314,7 +319,7 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 |---|---|---|
 | CL-25 | stdout 라인이 valid JSON 아님(ACP stdout purity 위반) | `error{recoverable:false, message}` emit, transcript 오염 안 함(ref-acp §1 stdout purity, ref-claude-agent-acp §5 stdout 청결) |
 | CL-26 | JSON이지만 ACP 메시지 아님(method/result/error 없음) | framing error(ref-acp §1) |
-| CL-27 | 알 수 없는 `sessionUpdate` variant(예: plan_update/plan_removed/session_info_update) | graceful 무시, crash 없음(ref-claude-agent-acp §2 — 클라이언트는 모르는 variant 무시 가능해야) |
+| CL-27 | 알 수 없는 `sessionUpdate` variant 또는 미지원 **notification**(id 없음, 예 plan_update/plan_removed/session_info_update) | graceful 무시, crash 없음, raw 보존(`ProviderRef.raw`) + unknown counter 증가, **outbound 없음** assert — notification(id 없음)은 응답 불필요(R5 notification 경로, ref-claude-agent-acp §2, 15 §0.2). id 있는 미지원 *request*는 CL-24b(error/decline 응답)와 구분 |
 
 > **참고**: stdout 라인 framing(byte 분리)은 backend(Rust)가 책임지고(§5.2, 15 §8.3), adapter는 이미 framed JSON 객체를 받는다. CL-25는 "backend가 라인은 줬으나 그 라인이 valid JSON-RPC가 아닐 때 adapter가 안전하게 error로 처리하는지"를 본다. 라인 분리 자체의 결함은 §5.2 Rust 테스트가 잡는다.
 
@@ -341,17 +346,21 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 | RS-6 | stdout에 JSON-RPC, stderr에 로그 라인 | stdout→`agent-runtime-message`, stderr→`agent-runtime-stderr` 별개 채널(15 §8.3, ref-acp §1 stderr MAY log) |
 | RS-7 | stderr가 비-UTF8/멀티라인 | stderr line emit, stdout framer 오염 없음 |
 
-### 5.3 allowlist 검증 (신규 강화 지점)
+### 5.3 allowlist 검증 (신규 강화 지점 — R4 절대경로+정확 args+env key)
 
-PTY와 달리 direct runtime은 backend가 provider별 executable/args를 allowlist로 재검증한다(15 §8.1 주석, `research/codebase-backend.md` §6, §10 권고 6 — 현 코드에 선례 없음).
+PTY와 달리 direct runtime은 backend가 provider별 command/args/env를 allowlist로 재검증한다(07 §8.1 정본, 15 §8.1 주석, `research/codebase-backend.md` §6, §10 권고 6 — 현 코드에 선례 없음). **R4 강화 정본(07 §8.1)**: command는 basename 비교가 아니라 (a) backend가 resolve한 신뢰 절대경로 또는 (b) 사전 등록된 절대경로 화이트리스트로 제한하고, args는 provider별 **정확 일치**(Codex `["app-server","--stdio"]`, Claude `[adapterEntryPath]`)로 검증하며, env key는 정규식 + provider별 허용 key 집합으로 강제한다(값은 non-secret, R1). shell metachar 검사는 방어용으로 유지한다. 아래 RS-8..RS-12b는 이 R4 정본의 수용 테스트다(09 untrusted renderer 위협모델, 07 §8.1 인용; 타입은 15 §8.1 비변경).
 
 | # | 입력 | 기대 |
 |---|---|---|
-| RS-8 | `agent_runtime_start{provider:"codex", command:"codex", args:["app-server"]}` | 허용, RuntimeId 반환 |
-| RS-9 | `provider:"claude"`, command가 node + claude-agent-acp dist 경로 | 허용(ref-claude-agent-acp §1) |
-| RS-10 | command가 임의 executable(예: `/bin/sh`, `rm`) | `Err(String)` 거부(allowlist 위반) |
-| RS-11 | args에 shell 메타문자/주입 시도 | 거부 또는 executable+argv로만 처리(shell string 아님, `research/codebase-backend.md` §2.2 executable+argv 규칙) |
-| RS-12 | env key가 `^[A-Za-z_][A-Za-z0-9_]*$` 위반 | 거부(registry `assertValidEnvKey` 선례, `research/codebase-backend.md` §6) |
+| RS-8 | `agent_runtime_start{provider:"codex", command="<승인 절대경로, 예 /usr/bin/codex>", args:["app-server","--stdio"]}` | 허용, RuntimeId 반환(승인 절대경로 + Codex 정확 args 통과, 07 §8.1) |
+| RS-8b | `provider:"codex"`, command=승인 절대경로지만 `args:["app-server"]`(또는 `["app-server","--stdio","--extra"]`) | `Err(String)` 거부 — Codex args는 정확히 `["app-server","--stdio"]`여야 함(07 §8.1 args 정확 검증) |
+| RS-9 | `provider:"claude"`, command=승인된 node 절대경로(예 `/usr/bin/node`), `args:[검증된 adapterEntryPath(절대경로, claude-agent-acp dist/index.js 패턴)]` | 허용 — `args.length==1` + `args[0]`가 검증된 adapterEntryPath(07 §8.1, 06 §2.2, ref-claude-agent-acp §1·§2) |
+| RS-9b | `provider:"claude"`, command=node 절대경로지만 `args:["/tmp/x.js"]`(임의 .js) 또는 `args.length!=1` | `Err(String)` 거부 — adapterEntryPath 미일치/임의 스크립트(07 §8.1 임의 .js 거부) |
+| RS-10 | command가 임의 절대경로/basename만 일치(예: `/bin/sh`, `/tmp/codex`, `rm`) | `Err(String)` 거부 — basename 일치만으로는 통과 못 함, 신뢰 절대경로/화이트리스트만 통과(07 §8.1 basename 비교 제거) |
+| RS-10b | `provider:"claude"`, `command="node"`(절대경로 아님) + `args:["/tmp/x.js"]` | `Err(String)` 거부 — command가 승인 절대경로 아님 + adapterEntryPath 미일치(R4 핵심 거부 케이스, 09 위협모델) |
+| RS-11 | args에 shell 메타문자/주입 시도(`;`/`|`/`$(`/개행 등) | 거부(executable+argv 직접 실행이라 셸 비경유지만 방어적 metachar 검사 유지, 07 §8.1 규칙 3, `research/codebase-backend.md` §2.2) |
+| RS-12 | env key가 `^[A-Za-z_][A-Za-z0-9_]*$` 위반(예: `1BAD`, `A-B`, `A B`) | `Err(String)` 거부(registry `assertValidEnvKey` 선례, 07 §8.1 규칙 5, `research/codebase-backend.md` §6) |
+| RS-12b | env key가 정규식은 통과하나 provider별 허용 key 집합 밖(미등록 key) | `Err(String)` 거부 — env key allowlist(provider별 허용 집합) 강제(07 §8.1 규칙 5, R4 env key allowlist). 값은 non-secret 전용(R1, 07 §5.1·§8.1·§11) |
 
 ### 5.4 process lifecycle: shutdown timeout → kill
 
@@ -477,11 +486,12 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 - [ ] Codex와 Claude 모두 **새 session, resume/load, prompt, stream, tool call, approval, cancel, error, process exit** 각각에 대해 문서(§3/§4 매핑)와 테스트(fixture FR-* + adapter CX-*/CL-*)가 존재한다.
 - [ ] normalized model의 upsert/append/reconcile/approval lifecycle/cancel cleanup/raw 보존(04 §3·§4·§5)이 unit test(NM-1..NM-30)로 검증된다.
 - [ ] interleaved turn 분리(CX-16/17, ref-codex §7.1)와 ACP chunk/replace 구분(CL-12..CL-16, ref-acp §4·§5)이 검증된다.
+- [ ] 미지원 server→client **request**(id 있는 요청)는 Codex·Claude 양쪽에서 JSON-RPC error(`-32601`)/decline 응답을 보내고 **무응답으로 끝나지 않는다**(CX-15b, CL-24b, R5; 04 §5 edge 규칙). 미지원 **notification**(id 없음)은 raw 보존+counter만, 응답 없음(CX-15c, CL-27).
 
 ### 8.2 transport / process
 
 - [ ] stdio JSON-RPC framing(newline·UTF-8 경계·부분 라인), stderr/stdout 분리, bounded queue overflow, shutdown timeout→kill이 Rust test(RS-1..RS-17)로 검증된다.
-- [ ] provider별 executable/args/env allowlist가 backend에서 검증되어 임의 executable/shell string을 차단한다(RS-8..RS-12, `research/codebase-backend.md` §6·§10 권고 6).
+- [ ] provider별 command(신뢰 절대경로/화이트리스트)·args(Codex 정확 `["app-server","--stdio"]`, Claude 검증된 adapterEntryPath)·env key allowlist가 backend에서 재검증되어 임의 executable·임의 .js·basename-only 우회·미등록 env key를 차단한다(RS-8..RS-12b, 07 §8.1 R4 정본, 09 untrusted renderer 위협모델).
 - [ ] `is_test_mode` mock 경로가 1급으로 제공되어 WSL/실제 CLI 없이 E2E·unit이 돈다(RS-18..RS-20).
 
 ### 8.3 legacy 보존
@@ -499,6 +509,7 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 ### 8.5 보안 / 추적성
 
 - [ ] provider id(threadId/sessionId/requestId)가 저장소와 debug view에서 추적 가능하다(NM-15, 15 §0.1).
+- [ ] approval wire 응답이 **원본 JSON-RPC id 타입을 보존**한다 — numeric id(예 `42`)가 `"42"`로 변질되지 않고, `ApprovalRequest.id`/`ProviderRef.requestId`는 문자열 키, wire 응답 `id`는 원본 타입 유지(CL-21b/21c, R3; 06 §6.1/§6.2 `rpcId`, 05 §6 CodexRouting).
 - [ ] provider session/thread id·resume token은 디스크 저장 시 scrub된다(RS-23, 15 §7.3, `research/codebase-backend.md` §4.2).
 - [ ] raw protocol log가 기본 비활성화이며 redaction 정책이 있다(E2E-10, 13 §raw log, 09 §감사).
 

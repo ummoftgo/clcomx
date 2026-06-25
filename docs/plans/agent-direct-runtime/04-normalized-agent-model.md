@@ -195,6 +195,23 @@ turn cancel(또는 process exit) 시 **unresolved approval은 반드시 cancelle
 - `error` event의 `recoverable`은 재시도 가능 여부다. Codex `error.willRetry`→`recoverable`, 그리고 `error.codexErrorInfo`(`usageLimitExceeded`/`contextWindowExceeded` 등)로 코드 분류 가능(ref-codex §6.9·§8). 매핑 불가 항목은 `raw` 보존.
 - `turn_completed{status:"failed"}`는 turn 실패이고 세션은 `idle`로 갈 수 있다. 세션 전체 `failed`(systemError)와 구분한다(§2.1 규칙 6).
 
+### 5.1 미지원/unknown server request·notification 응답 규칙 (불변식)
+
+provider server→client 메시지 중 **`id`가 있는 REQUEST**(응답을 기대하는 요청)와 **`id`가 없는 NOTIFICATION**(응답 불필요)은 처리 규칙이 다르다. 둘 다 unknown/미지원 method일 때 **silent-drop을 금지**한다 — 이유가 다르다. unknown notification을 버리면 transcript가 조용히 비고, unknown **request**를 버리면 provider가 응답을 영원히 기다리며 turn이 **deadlock**된다. request vs notification 구분 규칙은 ref-codex §1.2(`id` 유무)·ref-acp §1을 따른다.
+
+규칙:
+
+1. **미지원/unknown server REQUEST(`id` 있음)에는 반드시 응답한다 (MUST).** adapter가 해석할 수 없거나 v1이 지원하지 않는 method를 `id`와 함께 받으면, 무응답으로 폐기하지 말고 다음 중 하나를 **반드시** wire로 보낸다:
+   - **JSON-RPC error 응답** — `{ id, error: { code: -32601, message: "Method not found" } }`(method 미지원 시). ACP는 `-32601`이 verified error code다(ref-acp §11). Codex도 `JSONRPCError` 형태(`{ id, error: { code, message, data? } }`)를 request 실패 응답으로 받는다(ref-codex §1.2, `jsonrpc` 필드 없음). 매핑/파싱 실패류는 `-32602`(invalid params)·`-32603`(internal error)을 쓸 수 있다.
+   - **명시적 decline/cancel 응답** — approval류 server request처럼 도메인 의미가 있는 미지원 request는 error 대신 명시적 거부 응답으로 닫는다. Codex permission-profile escalation(`item/permissions/requestApproval`)은 v1 기본값(D12)으로 **자동 decline**하고 원본은 `raw` 보존한다(13 OQ-19, ref-codex §4.3). decline/cancel 응답에 쓰는 원본 JSON-RPC `id`는 **타입(`string|number`)을 보존**해 매칭 실패를 막는다(05 §6 CodexRouting id 타입 복원).
+   - 어느 경로든 응답을 보낸 뒤 해당 `requestId`의 pending 항목을 닫는다. **응답 없는 폐기는 금지**다(provider 영구 대기 방지).
+
+2. **unknown NOTIFICATION(`id` 없음)은 응답하지 않되 가시화한다.** 응답이 불필요하므로 wire 응답을 보내지 않는다. 대신 원본 payload를 `ProviderRef.raw`(또는 metadata)에 **보존**하고 unknown-method counter를 증가시켜 telemetry/로그로 가시화한다(13 RD-10·위험 1.1, 15 §0.2). transcript에서 조용히 사라지지 않게 한다.
+
+3. unknown variant 전반의 **silent-drop 금지 원칙**은 13 RD-10(`raw` 보존 + 로그/카운터)이 단일 정본이며, 위 1·2는 그 원칙을 server request/notification 축으로 구체화한 것이다. 타입은 15 §0.2·§5 정본을, wire(error code·decision enum)는 ref-acp §11 / ref-codex §1.2·§4를 인용하며 이 문서에서 재정의하지 않는다.
+
+> **다운스트림 인용**: 이 규칙은 Codex adapter `05 §7.1`(default 분기에서 `routing.resolveApproval` 후 `return []`로 끝내지 말고, unknown server request에 JSON-RPC error/unsupported 또는 명시적 decline 응답을 **먼저** 보낸다)과 Claude ACP adapter `06`(parity로 미지원 server request에 error/decline 응답)이 인용·준수한다. unknown-request 응답 테스트는 11에 추가한다.
+
 ---
 
 ## 6. 교차 참조
@@ -205,6 +222,7 @@ turn cancel(또는 process exit) 시 **unresolved approval은 반드시 cancelle
 | Agent Runtime Port·persistence·Tauri 계약(정본) | [`15-data-contracts.md`](15-data-contracts.md) §6–§8 |
 | Codex wire → normalized 매핑·reconcile 근거 | [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §6, §7, §8 |
 | ACP wire → normalized 매핑·chunk/replace 근거 | [`ref-acp-protocol.md`](ref-acp-protocol.md) §4, §5, §6, §13 |
+| unknown/미지원 server request·notification 응답(silent-drop 금지) | §5.1, [`13-risks-open-questions.md`](13-risks-open-questions.md) RD-10, [`ref-acp-protocol.md`](ref-acp-protocol.md) §11, [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §1.2, §4 |
 | hexagonal 구조·Store/Router 역할 | [`03-target-architecture.md`](03-target-architecture.md) |
 | process lifecycle·cancel·framing | [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) |
 | persistence·resume/load 정책 | [`10-persistence-migration.md`](10-persistence-migration.md) |

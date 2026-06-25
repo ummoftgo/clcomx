@@ -91,7 +91,13 @@ export interface ClaudeAcpLaunchConfig {
   nodePath?: string;
   /** WSL 안 claude-agent-acp dist/index.js 절대경로. */
   adapterEntryPath: string;
-  /** 인증/모델 env. ANTHROPIC_API_KEY 등(§3.3). 평문 영속화 금지. */
+  /**
+   * **non-secret env 전용**(C1 보안 경계, 07 §5.1 / 09 정본). 비민감 모델 플래그 등만 싣는다.
+   * `ANTHROPIC_API_KEY`/OAuth token/gateway header/session cookie 등 **secret은 여기에 넣지 않는다** —
+   * 이 env는 launch argv `-e env KEY=VAL` 경로(07 §5.1)로 흐르고 OS 관측면(ps, /proc/<pid>/cmdline)에
+   * 평문 노출되어 §9 redaction으로 막을 수 없다. secret 전달은 §3.3 참고(v1은 claude WSL 자체 인증 의존,
+   * 필요 시 backend `Command::env()`+`WSLENV`). 평문 영속화 금지(§9, 15 §7.3 scrub).
+   */
   env?: Record<string, string>;
 }
 
@@ -106,11 +112,16 @@ export function buildClaudeAcpLaunchParams(cfg: ClaudeAcpLaunchConfig): AgentRun
     // provider="claude"일 때 1차로 node(절대경로) + adapterEntryPath만 허용한다(npx 미허용, D9).
     command: cfg.nodePath ?? "node",
     args: [cfg.adapterEntryPath],
+    // C1 경계: env는 non-secret 전용이다(07 §5.1 `-e env KEY=VAL` argv 경로 = OS 관측면 노출).
+    // ANTHROPIC_API_KEY 등 secret은 절대 싣지 않는다 — secret이 필요하면 backend가
+    // Command::env()+WSLENV로 자식 프로세스 환경에 주입(argv 비경유, 07 §5.1 note, 09).
     env: cfg.env,
   };
 }
 ```
 
+> **secret env 경계 (C1 정본, 07 §5.1 / 09 인용)**: `buildClaudeAcpLaunchParams`가 만드는 `env`(= `AgentRuntimeStartParams.env`, 15 §8.1)는 backend에서 `wsl.exe … -e env KEY=VAL …` argv로 흐른다(07 §5.1). argv는 OS 관측면(`ps`, `/proc/<pid>/cmdline`, WSL process 목록)에 평문으로 남으므로 **secret(API key/OAuth token/gateway header/session cookie)을 절대 싣지 않는다** — §9 redaction으로도 막을 수 없다. 따라서 이 env는 **non-secret 전용**이다. secret 전달은 §3.3의 정본 경로(v1은 claude WSL 자체 인증 의존, gateway 등으로 꼭 필요하면 backend `std::process::Command::env()`+`WSLENV` passthrough = argv 비경유)를 따른다. 15 §8.1 타입 자체는 재정의하지 않으며 신뢰 경계 정본은 [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §5.1·[`09-permissions-security.md`](09-permissions-security.md)다.
+>
 > **node/entry 경로 resolve (결정 필요)**: WSL 안에서 `node` 절대경로와 `dist/index.js` 절대경로를 누가 어떻게 구하는가? 후보:
 > 1. CLCOMX가 자체 번들한 `node_modules`를 WSL에서 접근 가능한 경로(예: 앱 리소스를 WSL mount 경로로)로 두고 절대경로 고정.
 > 2. WSL 안 user 글로벌 설치(`npm i -g @agentclientprotocol/claude-agent-acp`)를 `which`로 resolve.
@@ -253,12 +264,12 @@ ref-claude-agent-acp §1 "인증 전제"가 권위다. **핵심: terminal 로그
 
 | 경로 | 전제 | 어댑터 동작 |
 |---|---|---|
-| **이미 로그인됨**(일반) | `~/.claude` 또는 `CLAUDE_CONFIG_DIR`에 자격증명 존재 | 별도 인증 없이 바로 `session/new`. |
-| **API key** | launch env에 `ANTHROPIC_API_KEY`(또는 Bedrock/Vertex/Foundry env) 주입 | interactive login 불필요. 1차 권고 경로(ref-claude-agent-acp §1 "branding/auth note": Anthropic은 서드파티에 API key 권장 — wording unverified, 13). env는 평문 영속화 금지(§9, 15 §7.3 scrub). |
+| **이미 로그인됨**(v1 기본) | WSL 측 `~/.claude` 또는 `CLAUDE_CONFIG_DIR`에 자격증명 존재(`claude login`/config) | 별도 인증 없이 바로 `session/new`. **v1 정본 경로** — secret을 런타임으로 전혀 넘기지 않는다(C1, 07 §5.1 v1 기본값). |
+| **API key (secret env)** | gateway 등으로 `ANTHROPIC_API_KEY`(또는 Bedrock/Vertex/Foundry env)가 꼭 필요한 경우 | **launch argv `-e env`로 넘기지 않는다**(C1: OS 관측면 평문 노출, 07 §5.1). backend가 `std::process::Command::env()`로 `wsl.exe` 프로세스 환경에 secret을 설정하고 `WSLENV`(예: `WSLENV=ANTHROPIC_API_KEY/u`)로 WSL 측에 passthrough(argv 비경유). interactive login 불필요. 평문 영속화 금지(§9, 15 §7.3 scrub). v1은 secret 미전달이 기본이며 이 경로는 gateway 등 명시적 필요 시에만. |
 | **terminal 구독/Console 로그인** | client가 `auth.terminal`/`_meta["terminal-auth"]` 광고 | 어댑터가 terminal auth method 제시, 실제 로그인은 `--cli auth login --claudeai`/`--console` passthrough를 **별도 터미널**에서 실행(ref-claude-agent-acp §1 표). non-remote에서만 `claude-ai-login`/`console-login` 제시, remote(SSH 등)는 `claude-login`만(ref-claude-agent-acp §1 "remote 분기 주의"). |
-| **gateway** | client가 `auth._meta.gateway===true` 광고 | `authenticate` 요청에 `_meta.gateway.{baseUrl, headers}` 채워 보냄. 어댑터가 query 시 env 합성(ref-claude-agent-acp §1 authenticate 처리). |
+| **gateway** | client가 `auth._meta.gateway===true` 광고 | `authenticate` 요청에 `_meta.gateway.{baseUrl, headers}` 채워 보냄. gateway header 등 secret 값은 argv가 아니라 backend `Command::env()`+`WSLENV` secret 경로로 자식 환경에 주입한다(C1, 07 §5.1). 어댑터가 query 시 env 합성(ref-claude-agent-acp §1 authenticate 처리). |
 
-> **1차 인증 정책(권고)**: API key(env 주입) 또는 사전 `claude` 로그인만 지원하고 terminal/gateway 인증은 후속으로 둔다. terminal auth를 켜려면 CLCOMX가 PTY로 `claude /login`을 띄우는 별도 UX가 필요(WSL 경계). 이는 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md). WSL 환경에서 SSH env(`SSH_CONNECTION` 등)가 설정돼 있으면 어댑터가 remote로 오판해 `claude-login`만 제시할 수 있으니 launch env를 점검한다(ref-claude-agent-acp §1).
+> **1차 인증 정책(정본)**: v1은 **WSL 측 자체 인증(`claude login`/config)에 의존**하고 secret env를 런타임으로 넘기지 않는다(C1 기본값, 07 §5.1). gateway 등으로 API key가 꼭 필요하면 launch argv(`-e env KEY=VAL`)가 아니라 backend `std::process::Command::env()`+`WSLENV` passthrough로만 secret을 자식 프로세스 환경에 주입한다(argv 비경유 → `ps`/`/proc/<pid>/cmdline` 평문 노출 방지). terminal/gateway interactive 인증은 후속으로 둔다 — terminal auth를 켜려면 CLCOMX가 PTY로 `claude /login`을 띄우는 별도 UX가 필요(WSL 경계). 이는 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md). WSL 환경에서 SSH env(`SSH_CONNECTION` 등)가 설정돼 있으면 어댑터가 remote로 오판해 `claude-login`만 제시할 수 있으니 launch env를 점검한다(ref-claude-agent-acp §1).
 
 ### 3.4 session/new
 
@@ -387,7 +398,7 @@ interface ClaudeAcpSessionRuntime {
   activeTurnId?: string;            // 현재 진행 turn(<sessionId>:t<n>)
   // pending 매칭(§4.3, §6.3)
   pendingRequests: Map<string | number, PendingRequest>; // client→agent 요청 응답 매칭
-  pendingApprovals: Map<string, PendingApproval>;        // agent→client request_permission, key=JSON-RPC id 문자열화
+  pendingApprovals: Map<string, PendingApproval>;        // agent→client request_permission, key=String(rpcId); PendingApproval.rpcId가 원본 타입 보존(§6.1, R3)
   loadingReplay: boolean;           // session/load replay 진행 플래그(§3.5)
   // session/update 상태
   currentMessageId?: string;        // ContentChunk.messageId 그룹핑(04 §3.3)
@@ -425,7 +436,8 @@ async function cancelTurn(handle, turnId?) {
   // 2. pending approval에 cancelled 응답을 wire로 먼저 보낸다(ref-acp §3.8 MUST, ref-acp §6).
   //    + approval_resolved emit + pending table에서 제거.
   for (const [id, ap] of closing) {
-    await deps.sendMessage(rt.runtimeId, buildPermissionResponse(id, { outcome: "cancelled" })); // §6.2
+    // wire 응답은 보존한 원본 rpcId(타입 유지)로 — Map 키 id(String)가 아니라 ap.rpcId 사용(R3, §6.2).
+    await deps.sendMessage(rt.runtimeId, buildPermissionResponse(ap.rpcId, { outcome: "cancelled" })); // §6.2
     emit({ type: "approval_resolved", ref: ap.ref, decision: { requestId: String(id), outcome: "cancelled" } });
     rt.pendingApprovals.delete(id);
   }
@@ -456,7 +468,7 @@ graceful: stdin close(EOF) → timeout → kill([`07-tauri-process-runtime.md`](
 
 `mapSessionUpdate(rt, update): AgentEvent[]`가 핵심 변환 함수다. discriminant는 `update.sessionUpdate`(snake_case). 런타임 wire에 등장할 수 있는 **정본 variant 집합은 13종**(sdk 0.29.0 schema 기준)이다: `user_message_chunk`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `plan`, `plan_update`, `plan_removed`, `available_commands_update`, `current_mode_update`, `config_option_update`, `session_info_update`, `usage_update`. ref-acp §2(출처별 11/13 분기 — `plan_update`/`plan_removed`는 sdk 0.29.0 전용), ref-claude-agent-acp §2 표(동일 13종)가 권위이며, 매핑 정본은 ref-acp §13.2/§13.3/§13.4다. 작업 지시가 명시한 **8개 핵심 variant**를 우선 구현하고, 나머지(`plan_update`/`plan_removed`/`config_option_update`/`session_info_update`/`usage_update`)는 방어적으로 처리한다.
 
-> **불변식(04 §3.3)**: ACP는 **chunk=append, update=replace** 두 의미가 섞인다. `*_chunk`는 `messageId` 기준 append(값 바뀌면 새 메시지), `tool_call_update.content`/`locations`와 `plan`은 **전체 교체**(replace). adapter는 수신 순서를 보존한다(04 §3.4). 알 수 없는 variant는 graceful하게 무시(ref-claude-agent-acp §2, ref-acp §2).
+> **불변식(04 §3.3)**: ACP는 **chunk=append, update=replace** 두 의미가 섞인다. `*_chunk`는 `messageId` 기준 append(값 바뀌면 새 메시지), `tool_call_update.content`/`locations`와 `plan`은 **전체 교체**(replace). adapter는 수신 순서를 보존한다(04 §3.4). 알 수 없는 `session/update` variant(=id 없는 **notification**)는 raw 보존 + counter로 가시화한 뒤 graceful하게 무시한다(응답 불필요, 04 §5, ref-claude-agent-acp §2, ref-acp §2). 단 **id가 있는 server→client REQUEST**는 무응답 폐기하면 안 된다 — 미지원 method라도 반드시 응답한다(§6.4, R5).
 
 ### 5.1 변환표 (8개 핵심 + 보조)
 
@@ -569,19 +581,34 @@ agent→client request. params/result: ref-acp §6. CLCOMX 매핑 정본: ref-ac
 ```ts
 function mapRequestPermission(rt, msg: JsonRpcMessage /* request */): AgentEvent {
   const { id, params } = msg as { id: string | number; params: { sessionId: string; toolCall: any; options: any[] } };
+  // requestId(=String(id))는 UI·store·pending 키 등 **문자열 키 전용**이다(04 §1, §4.1).
+  // 원본 JSON-RPC id는 **타입 그대로**(string|number) PendingApproval.rpcId에 보존해 wire 응답에 쓴다(R3 아래).
   const ref: ProviderRef = { provider: "claude", sessionId: params.sessionId, requestId: String(id), toolCallId: params.toolCall?.toolCallId, turnId: rt.activeTurnId, raw: params._meta };
   const request: ApprovalRequest = {                // 15 §5
-    id: String(id),                                 // JSON-RPC id 문자열화(04 §1, §4.1)
+    id: String(id),                                 // ApprovalRequest.id는 문자열 키(04 §1, §4.1). wire 응답에 쓰지 않는다.
     title: params.toolCall?.title ?? "",
     body: undefined,                                // toolCall content 요약 가능(선택)
     toolCallId: params.toolCall?.toolCallId,
     options: params.options.map((o) => ({ id: o.optionId, label: o.name, kind: o.kind })), // 15 §5 ApprovalOption
   };
-  rt.pendingApprovals.set(String(id), { ref, request });
+  // rpcId: 원본 JSON-RPC id를 타입 보존(string|number). String화 금지 — wire 응답은 이 값으로 복원(§6.2).
+  rt.pendingApprovals.set(String(id), { rpcId: id, ref, request });
   // status → requires_action (client 합성, 04 §2.1 규칙 3 + ref-acp §13.1)
   return { type: "approval_requested", ref, request };
 }
 ```
+
+> **원본 JSON-RPC id 타입 보존(R3, 05 §6 CodexRouting `rpcId`와 동일 패턴)**: `PendingApproval`에 `rpcId: string | number`(원본 JSON-RPC id)를 보존한다(어댑터 내부 전용, `contracts/claude-acp.ts`). `String(id)`로 정규화한 값은 **UI·store용 문자열 키**(`ApprovalRequest.id` / `ProviderRef.requestId` / `pendingApprovals` Map 키)에만 쓰고, wire 응답(`buildPermissionResponse`)에는 보존한 원본 `rpcId`를 **타입 그대로** 쓴다. numeric id(예: `42`)를 `"42"`로 바꿔 응답하면 agent가 자신이 보낸 request의 `id`(number)와 매칭하지 못해 응답 누락·deadlock이 난다(ref-acp §6 JSON-RPC id 타입 일치). `PendingApproval` 부분 미러 예시:
+>
+> ```ts
+> // contracts/claude-acp.ts (어댑터 내부 전용)
+> interface PendingApproval {
+>   rpcId: string | number;   // 원본 JSON-RPC id — 타입 보존, wire 응답 { id: rpcId, ... }에 그대로 사용(R3)
+>   ref: ProviderRef;         // ref.requestId는 String(rpcId) — 문자열 키 전용
+>   request: ApprovalRequest; // request.id도 String(rpcId) — UI/store 키 전용
+>   closing?: boolean;        // §4.3 cancel cleanup 멱등 플래그
+> }
+> ```
 
 - `PermissionOptionKind` 4종(`allow_once`/`allow_always`/`reject_once`/`reject_always`) → `ApprovalOption.kind`로 1:1(15 §5, ref-acp §6). ACP엔 `cancel`/`other` 없음.
 - 어댑터가 보내는 옵션 집합(일반 tool 3-option, ExitPlanMode 옵션, AskUserQuestion form 등)은 ref-claude-agent-acp §3 표대로 도착. UI는 label을 그대로 보여주되 **i18n key로 감싼다**(`agentRuntime.approval.*`, [`research/codebase-frontend.md`](research/codebase-frontend.md) §6.3, ref-claude-agent-acp §3 마지막).
@@ -590,20 +617,22 @@ function mapRequestPermission(rt, msg: JsonRpcMessage /* request */): AgentEvent
 ### 6.2 응답 (respondApproval → RequestPermissionResponse)
 
 ```ts
-function buildPermissionResponse(id, decision: { outcome: "selected" | "cancelled"; optionId?: string }): JsonRpcMessage {
+// id는 원본 JSON-RPC id 타입(string|number)을 그대로 받는다 — String화 금지(R3, ref-acp §6).
+function buildPermissionResponse(id: string | number, decision: { outcome: "selected" | "cancelled"; optionId?: string }): JsonRpcMessage {
   const outcome = decision.outcome === "selected"
     ? { outcome: "selected", optionId: decision.optionId }
     : { outcome: "cancelled" };                     // ref-acp §6
-  return { jsonrpc: "2.0", id, result: { outcome } };
+  return { jsonrpc: "2.0", id, result: { outcome } }; // id = 보존한 원본 rpcId(타입 유지)
 }
 
 async function respondApproval(handle, decision: ApprovalDecision) { // 15 §5
   const rt = byHandle(handle);
-  const ap = rt.pendingApprovals.get(decision.requestId);
+  const ap = rt.pendingApprovals.get(decision.requestId);  // decision.requestId = String 키
   if (!ap || ap.closing) return; // 이미 cancel/resolve/closing됨 → 멱등 무시(04 §4.2 규칙 4)
   // ApprovalDecision.outcome: "failed"는 client 내부 전용 → wire로 selected/cancelled만(15 §5, 04 §4.2 규칙 4)
   const wire = decision.outcome === "failed" ? { outcome: "cancelled" as const } : { outcome: decision.outcome, optionId: decision.optionId };
-  await deps.sendMessage(rt.runtimeId, buildPermissionResponse(ap.request.id, wire));
+  // wire 응답은 보존한 원본 rpcId(타입 유지)로 — ap.request.id(String화 값)가 아니라 ap.rpcId 사용(R3).
+  await deps.sendMessage(rt.runtimeId, buildPermissionResponse(ap.rpcId, wire));
   rt.pendingApprovals.delete(decision.requestId);
   emit({ type: "approval_resolved", ref: ap.ref, decision });   // status → running(04 §4.1)
 }
@@ -621,6 +650,35 @@ async function respondApproval(handle, decision: ApprovalDecision) { // 15 §5
 5. `failed`는 wire로 보내지 않음(15 §5, 04 §4.2 규칙 4).
 
 > 응답하지 않은 permission request가 process shutdown 뒤에 남지 않도록 `pendingApprovals` 정리가 필수다(ref-claude-agent-acp 본 문서 기존 §Permission, [`13-risks-open-questions.md`](13-risks-open-questions.md) "Approval deadlock").
+
+### 6.4 미지원 server→client request 응답 (무응답 폐기 금지, R5)
+
+**규칙 정본은 04 §5(error/edge)다**: provider(agent)가 client로 보내는 **REQUEST(id 있는 요청)** 중 어댑터가 지원하지 않는 method(예: client capability를 광고하지 않은 `fs/read_text_file`·`fs/write_text_file`·`terminal/*`, 또는 미지의 method)는 **반드시 JSON-RPC error 응답 또는 명시적 decline 응답을 보낸다**. 무응답 silent-drop은 금지된다 — agent가 client 응답을 영구 대기하다 turn이 멈추는 deadlock을 유발한다(05 §7.1 unknown server request 처리와 동일 원칙, 13 "unknown-variant silent-drop 금지").
+
+- **REQUEST(id 있음)**: 지원 안 하면 JSON-RPC error로 회신한다 — `{ jsonrpc:"2.0", id, error:{ code:-32601, message:"Method not found" } }`(method not found, ref-acp §11 error code 표). 의미상 거부가 맞는 method(예: capability 미광고 fs/terminal)는 error 대신 명시적 decline 응답을 보낼 수도 있다(어느 쪽이든 **응답은 필수**). id는 §6.1/§6.2와 동일하게 **원본 타입 보존**(String화 금지, R3, ref-acp §6).
+- **NOTIFICATION(id 없음)**: 응답 불필요. unknown notification은 raw 보존 + counter로 가시화하고 무시한다(§5 intro, 04 §5).
+
+```ts
+// 어댑터 메시지 dispatch의 server→client request default 분기(개념)
+function handleServerRequest(rt, msg: JsonRpcMessage /* request, id 있음 */): void {
+  const { id, method } = msg as { id: string | number; method: string };
+  switch (method) {
+    case "session/request_permission": /* §6.1 */ break;
+    case "authenticate":               /* §3.3 (gateway만) */ break;
+    // fs/*·terminal/*는 client capability 광고 시에만 도달(§3.2). 1차는 미광고 → 여기로 떨어지면 미지원.
+    default:
+      // R5: 미지원 server request는 무응답 폐기 금지 — JSON-RPC error(또는 명시적 decline) 응답 필수(04 §5).
+      // id는 원본 JSON-RPC id 타입 보존(String화 금지, R3, ref-acp §6).
+      deps.sendMessage(rt.runtimeId, {
+        jsonrpc: "2.0", id,
+        error: { code: -32601, message: "Method not found" }, // ref-acp §11
+      });
+      // raw + counter로 가시화(04 §5, §9).
+  }
+}
+```
+
+> Codex 어댑터(05 §7.1 default 분기)와 **parity**: unknown server request에 대해 `routing.resolveApproval` 후 빈 응답으로 끝내지 않고 JSON-RPC error/unsupported(또는 명시적 decline)를 먼저 보낸다. 11에 unknown-request 응답 테스트를 추가한다(§11.2).
 
 ---
 
@@ -717,6 +775,8 @@ function buildSetConfigOption(id, sessionId, configId, value): JsonRpcMessage {
 | `protocolVersion !== 1` | initialize 응답 | protocol error(§3.2), 연결 종료, fallback |
 | JSON-RPC error response | `{id, error:{code,message}}` | pending request 매칭 후 처리. `-32000 Authentication required` → §3.3. `-32601 Method not found`(capability 미스매치) → `error{recoverable:false}` |
 | `authenticate` Method not implemented | terminal method를 ACP authenticate로 보냈을 때 throw(ref-claude-agent-acp §1) | 어댑터는 terminal 로그인을 ACP authenticate로 보내지 **않는다**(§3.3) — gateway만 authenticate |
+| 미지원 server→client request | id 있는 REQUEST가 미지원 method(미광고 fs/terminal, 미지의 method) | **무응답 폐기 금지** — JSON-RPC error(`-32601`) 또는 명시적 decline 응답 필수(§6.4, 04 §5, R5). id 원본 타입 보존(R3) |
+| unknown notification | id 없는 알 수 없는 `session/update` 등 | raw 보존 + counter 가시화 후 무시(응답 불필요, §5, 04 §5) |
 | process exit | `agent-runtime-exit` | `process_exited` emit + pending 전부 실패로 닫음(§4.4, 04 §5) |
 | backpressure | `agent-runtime-backpressure`(15 §8.3) | `error{recoverable:true}` warning, pending approval 자동 방치 금지([`13-risks-open-questions.md`](13-risks-open-questions.md)) |
 | 0.x minor capability 회귀 | initialize capability 변화 | capability 회귀 테스트로 조기 감지(§11, ref-claude-agent-acp §4) |
@@ -747,7 +807,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 ### 11.1 단위 테스트 (순수 매핑)
 
 - `mapSessionUpdate`: 8개 핵심 variant 각각 fixture → 기대 `AgentEvent[]` 검증. messageId 그룹핑(바뀌면 새 메시지, §5.2), tool_call_update content **replace**(§5.4), plan 전체 교체(§5.5).
-- `mapRequestPermission`/`buildPermissionResponse`: option kind 1:1, selected/cancelled wire shape(§6, ref-acp §6).
+- `mapRequestPermission`/`buildPermissionResponse`: option kind 1:1, selected/cancelled wire shape(§6, ref-acp §6). **rpcId 타입 보존**: numeric id(예: `42`)로 온 request_permission에 대해 wire 응답 `id`가 `42`(number)로 유지되는지(String `"42"` 금지, R3). `ApprovalRequest.id`/`ProviderRef.requestId`는 `"42"`(문자열 키)인지.
 - `mapContentBlock`/`toAcpPromptContent`: image base64↔uri, diff patch 생성, path absolute 정규화(§7).
 - `buildInitializeRequest`/`parseInitializeResponse`: protocolVersion=1 검증, capability 위치 비대칭(loadSession top-level vs resume in sessionCapabilities, §3.2).
 - `buildSetMode`/`buildSetConfigOption`: 6 modes, set_config_option 응답 `{configOptions}` 비-빈 가정(§8).
@@ -759,6 +819,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 - cancel cleanup: cancelTurn 시 pending approval이 모두 cancelled wire 응답 + `approval_resolved` emit(§4.3, 04 §4.2). **deadlock 회귀 방지 핵심**.
 - process exit: pending request/approval 전부 실패로 닫힘(§4.4, 04 §5).
 - protocol error: protocolVersion≠1 / 비-JSON stdout → failed + fallback 신호(§9, §10).
+- unknown server request: id 있는 미지원 method REQUEST 수신 → JSON-RPC error(`-32601`)/decline 응답을 보내고 무응답 폐기하지 않는지(§6.4, 04 §5, R5). 응답 `id`가 원본 타입 보존인지(R3). unknown notification(id 없음)은 응답 없이 raw 보존만 하는지.
 
 ### 11.3 수용 기준 (Acceptance)
 
@@ -778,7 +839,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 
 1. **node/entry 경로 resolve 방식**(§2.2): 번들 vs WSL 글로벌 설치 vs backend resolve+캐시. 1차 권고 backend resolve.
 2. ~~**WSL launch 셸**(§2.3)~~: **해소됨** — 정본은 로그인 셸 비경유 `wsl.exe -d <distro> --cd <wslWorkDir> -e env ... <node> <entry>` 형태(D8, 07 §5.1). 셸 startup 출력이 없으므로 stdout framing 오염 우려 없음. OQ-27(cwd=--cd)·OQ-28(env=env 바이너리)도 함께 해소.
-3. **인증 1차 범위**(§3.3): API key/사전 로그인만 지원, terminal/gateway auth 후속. WSL SSH env 오판 위험.
+3. **인증 1차 범위**(§3.3): v1은 **WSL 측 자체 인증(`claude login`/config) 의존 + secret env 미전달**이 정본이다(C1, 07 §5.1). gateway 등으로 API key가 꼭 필요하면 launch argv(`-e env`)가 아니라 backend `Command::env()`+`WSLENV` secret 경로로만 주입(argv 비경유). terminal/gateway interactive auth는 후속. WSL SSH env 오판 위험은 잔존.
 4. **client capability 1차 값**(§3.2): `fs`/`terminal`/`terminal_output`/`elicitation` 모두 false 시작 — `AskUserQuestion`/command terminal surface UX 영향.
 5. ~~**agent_thought_chunk 정책**(§5.3)~~: **해소됨** — reasoning/thinking은 `agent_message`/`agent_message_delta`의 `channel:"thought"`로 누적, UI는 접이식 thinking 블록(기본 collapsed)으로 렌더(D11, 15 §3·04 §3.2.2/§3.2.5·13 OQ-01/RD-13).
 6. **audio content**(§7.2): 미지원/raw 보존(모델 gap, 15 §4).

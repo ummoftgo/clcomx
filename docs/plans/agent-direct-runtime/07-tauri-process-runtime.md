@@ -24,7 +24,7 @@ backend `agent_runtime` 레이어는 **transport·process lifecycle만** 책임�
 - process exit 감지 → `agent-runtime-exit` emit + pending 정리 신호 (§5.3).
 - framing/transport 에러 → `agent-runtime-error` emit (§4.4).
 - bounded queue / backpressure → `agent-runtime-backpressure` emit (§7).
-- provider별 executable allowlist 검증 (§8).
+- provider별 allowlist 검증 (§8): command(신뢰 절대경로)·args(정확 일치)·env key(allowlist) 재검증.
 - WSL/Windows path canonicalize (§9).
 - graceful shutdown (stdin EOF → timeout → kill) (§5.2).
 - test-mode mock JSON-RPC 스트림 (§10).
@@ -767,25 +767,49 @@ research §7·§11이 두 옵션(std::thread vs tokio)을 제시한다. **v1은 
 
 ## 8. Allowlist 검증 (provider별, 신규 강화 지점)
 
-PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에 executable allowlist가 **없다**(research §6, §10 권고 6). direct runtime은 이를 의도적으로 강화한다: renderer가 임의 executable/shell string을 넘길 수 없게 backend가 provider별로 검증한다(07 기존 계약, 15 §8.1 주석).
+PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에 executable allowlist가 **없다**(research §6, §10 권고 6). direct runtime은 이를 의도적으로 강화한다: renderer를 untrusted로 간주하고, backend가 provider별로 **command(신뢰 절대경로)·args(정확 일치)·env key(allowlist)**를 재검증한다(R4 정본; 07 기존 계약, 15 §8.1 주석, 신뢰 경계 정본은 [09](09-permissions-security.md)). basename만 비교하던 1차 안은 폐지한다.
 
 ### 8.1 검증 규칙
 
-`AgentRuntimeStartParams::JsonrpcStdio { provider, command, args, .. }`에 대해:
+`AgentRuntimeStartParams::JsonrpcStdio { provider, command, args, .. }`에 대해 (R4 정본 — basename 비교 제거, 절대경로·정확 args·env key allowlist로 강화):
 
 1. **provider enum 검증**: `provider`는 `"codex"` 또는 `"claude"`만 허용. 그 외는 `Err`.
-2. **executable allowlist**: `command`의 basename이 provider별 화이트리스트에 있어야 한다.
-   - `codex` → `CODEX_ALLOWED_EXE = {"codex"}` (절대경로 허용 — basename이 `codex`면 통과). Codex app-server는 셸 비경유 직접 실행 `wsl.exe -d <distro> --cd <wslWorkDir> -e codex app-server --stdio`로 띄운다(05가 이 형태를 따른다, ref-codex §1.1: app-server 기본 stdio, 전역 experimental 플래그 불필요).
-   - `claude` → `CLAUDE_ALLOWED_EXE = {"node"}` 1차 정본. Claude ACP를 `node`(절대경로) + adapterEntryPath(06 §2.2 1차 권고)로 직접 실행한다. `npx`는 1차에서 제거하고 후속(optional)으로만 검토한다. 정확한 launch executable은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·ref-claude-agent-acp §2가 권위.
-3. **args 검증**: shell 메타문자(`;`, `|`, `&`, `` ` ``, `$(`, `>`, `<`, 개행) 포함 args 거부 — `wsl.exe -e`는 shell을 거치지 않지만(executable + argv 직접 실행, research §2.2와 동일 원칙) 방어적으로 검증. provider별 허용 flag prefix(예: codex `--`, claude `--acp`)만 통과시키는 화이트리스트가 더 안전(결정 필요).
-4. **command/args 출처**: adapter가 생성한 검증된 값만 허용. frontend가 자유 입력을 넣는 경로를 차단(§0).
-5. **env 분류 (C1)**: `env`는 **non-secret 전용**이다(§5.1 `-e env KEY=VAL` argv 경로). secret(API key/token/gateway header/cookie)은 이 argv 경로로 넘기지 않으며, 필요 시 `Command::env()`+`WSLENV` passthrough로만 전달한다(§5.1 note). v1 기본값은 secret env 미전달(provider 자체 WSL 인증 의존).
+2. **command = 신뢰 절대경로 (basename 비교 폐지)**: `command`는 **basename으로 비교하지 않는다**. provider별로 `command`는 (a) **backend가 resolve한 신뢰 절대경로**(예: `which codex` / `node` resolve 결과를 backend가 직접 구해 캐시; 06 §2.2 node/entry resolve 방식 3) 또는 (b) **사전 등록된 절대경로 화이트리스트**에 정확히 일치하는 값만 허용한다. 임의 디렉터리의 동명 바이너리(`/tmp/codex`, `/tmp/node` 등)는 basename만 같아도 거부된다.
+   - `codex` → backend가 신뢰 절대경로로 resolve한 `codex` app-server 바이너리. 셸 비경유 직접 실행 `wsl.exe -d <distro> --cd <wslWorkDir> -e env … <codexAbsPath> app-server --stdio`로 띄운다(05가 이 형태를 따른다, ref-codex §1.1: app-server 기본 stdio, 전역 experimental 플래그 불필요).
+   - `claude` → backend가 신뢰 절대경로로 resolve한 `node`. **1차 argv 검증의 핵심은 `args[0]` = 검증된 `adapterEntryPath`(절대경로) 일치**다(아래 3-claude). `npx`는 1차에서 제거하고 후속(optional)으로만 검토한다(06 §2.2 D9). 정확한 launch executable·entry resolve는 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·ref-acp §1·ref-claude-agent-acp §5가 권위.
+3. **args 정확 검증 (provider별 exact match)**: shell 메타문자(`;`, `|`, `&`, `` ` ``, `$(`, `>`, `<`, 개행) 검사는 방어용으로 유지하되, 1차 게이트는 **provider별 정확 일치**다.
+   - `codex` → `args`가 **정확히** `["app-server", "--stdio"]`일 것(ref-codex §1.1). 그 외 길이/값은 거부.
+   - `claude` → `args.length == 1` 이고 `args[0]`이 **검증된 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js` 패턴)**일 것. 임의 `.js`·임의 바이너리·복수 인자는 거부(06 §2.2: bin은 `dist/index.js` 하나, args = `[adapterEntryPath]`). **이 `adapterEntryPath` 절대경로 검증이 Claude의 1차 argv 검증이다** — `command`(node) 자체는 신뢰 절대경로 resolve로 고정되므로, 실제 실행 대상의 신뢰성은 `args[0]` 절대경로 화이트리스트/검증으로 보장된다.
+4. **command/args 출처**: adapter가 생성한 검증된 값만 허용. frontend가 자유 입력을 넣는 경로를 차단(§0). renderer는 untrusted로 간주하며, backend는 command(절대경로)·args(정확 일치)·env key를 재검증한다(09 위협모델, 11 테스트).
+5. **env key allowlist + non-secret 값 (C1)**: `env` 각 key는 `^[A-Za-z_][A-Za-z0-9_]*$`(POSIX env 이름 규칙)를 만족하고 **provider별 허용 key 집합**에 속해야 한다. 값은 **non-secret 전용**(§5.1 `-e env KEY=VAL` argv 경로). secret(API key/token/gateway header/cookie)은 이 argv 경로로 넘기지 않으며, 필요 시 `Command::env()`+`WSLENV` passthrough로만 전달한다(§5.1 note). v1 기본값은 secret env 미전달(provider 자체 WSL 인증 의존). shell 메타문자 검사는 값에 대한 방어용으로 유지한다.
 
 ```rust
-// C1: provider별 executable allowlist. basename으로 비교하므로 절대경로도 통과한다.
-const CODEX_ALLOWED_EXE: &[&str] = &["codex"];
-// 1차 정본: node(절대경로) + adapterEntryPath만 허용(06 §2.2). npx는 후속(optional).
-const CLAUDE_ALLOWED_EXE: &[&str] = &["node"];
+// R4: provider별 신뢰 command 출처. basename 비교는 폐지한다.
+//  - (a) backend가 resolve한 신뢰 절대경로(권고; 06 §2.2 resolve 방식 3 + 캐시), 또는
+//  - (b) 사전 등록된 절대경로 화이트리스트.
+// 절대경로(`/`로 시작)이며 신뢰 출처에 정확히 일치해야 한다. 동명 바이너리(/tmp/...)는 거부.
+fn is_trusted_abs_command(provider: &str, command: &str) -> bool {
+    // 절대경로 강제(WSL POSIX absolute). resolve 캐시/사전 등록 화이트리스트와 정확 일치 확인.
+    command.starts_with('/') && trusted_command_set(provider).contains(command)
+}
+
+// Codex args 정본(ref-codex §1.1): 정확히 ["app-server", "--stdio"].
+const CODEX_REQUIRED_ARGS: &[&str] = &["app-server", "--stdio"];
+
+// provider별 env key allowlist. POSIX env 이름 규칙 + 허용 key 집합.
+// (정확한 key 집합은 05/06/09와 동기화; 값은 non-secret 전용, secret은 별도 채널 §5.1.)
+const CODEX_ALLOWED_ENV_KEYS: &[&str] = &[/* 05/09와 동기화: 비민감 플래그 key만 */];
+const CLAUDE_ALLOWED_ENV_KEYS: &[&str] = &[/* 06/09와 동기화: 비민감 플래그 key만 */];
+
+fn is_valid_env_key(key: &str) -> bool {
+    // ^[A-Za-z_][A-Za-z0-9_]*$
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
 
 // 반환 tuple: (provider, distro, work_dir, executable, argv, non_secret_env, secret_env).
 // C1: env는 non-secret만 argv(`-e env`)로 흐른다. secret_env는 Command::env()+WSLENV 경로(§5.1).
@@ -799,15 +823,42 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
         = params else {
         return Err("only jsonrpc-stdio transport is supported in v1".into());
     };
-    let allowed = match provider.as_str() {
-        "codex" => CODEX_ALLOWED_EXE,
-        "claude" => CLAUDE_ALLOWED_EXE,
+    // 1) provider enum
+    let allowed_env_keys: &[&str] = match provider.as_str() {
+        "codex" => CODEX_ALLOWED_ENV_KEYS,
+        "claude" => CLAUDE_ALLOWED_ENV_KEYS,
         other => return Err(format!("unknown provider: {other}")),
     };
-    let exe_base = command.rsplit('/').next().unwrap_or(command);
-    if !allowed.contains(&exe_base) {
-        return Err(format!("executable '{command}' not allowed for provider '{provider}'"));
+    // 2) command = 신뢰 절대경로 (basename 비교 폐지)
+    if !is_trusted_abs_command(provider, command) {
+        return Err(format!(
+            "command '{command}' is not a trusted absolute path for provider '{provider}'"
+        ));
     }
+    // 3) args 정확 검증 (provider별 exact match)
+    match provider.as_str() {
+        "codex" => {
+            if args.as_slice() != CODEX_REQUIRED_ARGS {
+                return Err(format!(
+                    "codex args must be exactly {CODEX_REQUIRED_ARGS:?}, got {args:?}"
+                ));
+            }
+        }
+        "claude" => {
+            // 1차 argv 검증: args.length == 1 && args[0] == 검증된 adapterEntryPath(절대경로).
+            if args.len() != 1 {
+                return Err(format!("claude args must be exactly [adapterEntryPath], got {args:?}"));
+            }
+            let entry = &args[0];
+            // adapterEntryPath는 WSL 절대경로 + claude-agent-acp dist/index.js 패턴.
+            // 신뢰 출처(backend resolve/사전 등록 화이트리스트)와 정확 일치해야 한다(06 §2.2).
+            if !entry.starts_with('/') || !is_trusted_adapter_entry_path(entry) {
+                return Err(format!("claude adapterEntryPath not trusted: {entry}"));
+            }
+        }
+        _ => unreachable!("provider already validated"),
+    }
+    // 3b) shell 메타문자 방어(정확 검증 통과 후에도 잔여 방어용)
     for a in args {
         if a.chars().any(|c| matches!(c, ';' | '|' | '&' | '`' | '>' | '<' | '\n' | '\r'))
             || a.contains("$(")
@@ -816,17 +867,31 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
         }
     }
     if distro.trim().is_empty() { return Err("distro is required".into()); }
+    // 5) env key allowlist + non-secret 값.
+    //    key: ^[A-Za-z_][A-Za-z0-9_]*$ + provider별 허용 key 집합. 값: non-secret + 메타문자 방어.
+    let env_map = env.clone().unwrap_or_default();
+    for (k, v) in &env_map {
+        if !is_valid_env_key(k) {
+            return Err(format!("env key '{k}' violates ^[A-Za-z_][A-Za-z0-9_]*$"));
+        }
+        if !allowed_env_keys.contains(&k.as_str()) {
+            return Err(format!("env key '{k}' not allowed for provider '{provider}'"));
+        }
+        if v.chars().any(|c| matches!(c, '`' | '\n' | '\r')) || v.contains("$(") {
+            return Err(format!("env value for '{k}' contains shell metacharacter"));
+        }
+    }
     // C1: env(15 §8.1)는 non-secret 전용 규약 → 전부 non_secret_env로 분류.
     // secret_env는 빈 맵(v1 기본값: provider 자체 WSL 인증 의존). gateway 등 secret 주입이
     // 필요하면 별도 secret 채널에서 secret_env를 채워 Command::env()+WSLENV로 전달한다(§5.1).
-    let non_secret_env = env.clone().unwrap_or_default();
+    let non_secret_env = env_map;
     let secret_env: HashMap<String, String> = HashMap::new();
     Ok((provider.clone(), distro.clone(), work_dir.clone(), command.clone(),
         args.clone(), non_secret_env, secret_env))
 }
 ```
 
-> allowlist 상수의 정확한 값(특히 Claude launch executable)은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·[`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)와 동기화해야 한다. distro 자체도 `list_wsl_distros`(wsl.rs:297) 결과 집합으로 검증할지 결정 필요([13](13-risks-open-questions.md) "distro allowlist 검증 여부").
+> **command/adapterEntryPath 신뢰 출처 (정본)**: `is_trusted_abs_command`/`is_trusted_adapter_entry_path`가 비교하는 신뢰 절대경로는 **backend가 resolve해 캐시한 값**(06 §2.2 resolve 방식 3: `wsl.exe -e bash -lc "command -v node"` / `node -e require.resolve(...)` 1회 resolve 후 캐시) 또는 **사전 등록 절대경로 화이트리스트**에서 온다. 정확한 resolve 주체·캐시 무효화·distro 검증(`list_wsl_distros` wsl.rs:297 결과 집합) 여부와 `*_ALLOWED_ENV_KEYS` 정확 집합은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·[`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)·[`09-permissions-security.md`](09-permissions-security.md)와 동기화해야 한다(결정 필요 항목 [13](13-risks-open-questions.md) "command/entry resolve 주체", "distro allowlist 검증 여부", "provider env key allowlist 집합").
 
 ---
 
@@ -958,7 +1023,7 @@ fn redact(s: &str) -> String {
 - [ ] child wait/kill 동시성 정본 패턴: Child를 wait 전용 thread로 move + 저장한 pid/handle로 kill(§5.3, terminal/mod.rs 2-thread 선례).
 
 **보안·경계**
-- [ ] provider별 allowlist 검증(§8).
+- [ ] provider별 allowlist 검증(§8, R4): command=신뢰 절대경로(basename 비교 폐지), args 정확 일치(Codex `["app-server","--stdio"]`, Claude `[adapterEntryPath]` 절대경로), env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + provider 허용 key) + 값 non-secret.
 - [ ] WSL absolute path canonicalize(§9).
 - [ ] redaction hook(§11), env 평문 미저장(10 §7.3).
 
@@ -983,7 +1048,7 @@ fn redact(s: &str) -> String {
 | AC-4 | invalid JSON 라인이 `agent-runtime-error{recoverable:true}` emit, 5연속 시 `false` | tests.rs |
 | AC-5 | `shutdown`이 stdin EOF → grace(2s) → kill 순으로 동작, 정상 종료 시 kill 미발생 | tests.rs(mock child) + 수동 확인 |
 | AC-6 | process exit 시 `agent-runtime-exit` emit, frontend가 pending 정리 가능(04 §5) | E2E |
-| AC-7 | allowlist 외 executable/shell 메타문자 args 거부(`Err`) | tests.rs(§8) |
+| AC-7 | allowlist 검증(R4) 거부: 신뢰 절대경로 아닌 command(예: `command=/tmp/x` 또는 `node`+`args=[/tmp/x.js]`) 거부, Codex args≠`["app-server","--stdio"]` 거부, Claude args≠`[검증된 adapterEntryPath]` 거부, env key allowlist 위반·`^[A-Za-z_][A-Za-z0-9_]*$` 위반 거부, shell 메타문자 args/값 거부. 승인된 절대경로·정확 args·허용 env key만 통과 | tests.rs(§8) |
 | AC-8 | Windows path·relative path workDir 거부, WSL absolute만 통과 | tests.rs(§9) |
 | AC-9 | `is_test_mode()`에서 실제 WSL 없이 mock JSON-RPC 스트림 emit | E2E mock 시나리오 |
 | AC-10 | API key/token이 stderr 로그·snapshot·persistence에 평문 노출 안 됨 | redact 단위 테스트 + persistence scrub 테스트(10 §7.3) |

@@ -15,7 +15,7 @@ Direct runtime은 terminal byte stream보다 **훨씬 풍부한 구조화 권한
 | 위협 (STRIDE) | 시나리오 | 1차 방어 | 본 문서 절 |
 |---|---|---|---|
 | **Spoofing** | renderer가 provider가 보여주지 않은 approval option을 임의로 선택해 응답 | option id 보존 + 표시된 것만 선택 | §2, §3 |
-| **Tampering** | renderer가 임의 executable/shell string을 `agent_runtime_start`로 넘겨 코드 실행 | command/args/env allowlist를 Rust handler에서 재검증 | §4 |
+| **Tampering** | renderer가 임의 executable/shell string·임의 `.js`·임의 args·임의 env 키를 `agent_runtime_start`로 넘겨 코드 실행 | command(절대경로/backend-resolved trusted path)·args(provider별 정확 일치)·env key allowlist를 Rust handler에서 재검증(basename-only 불충분) | §4 |
 | **Repudiation** | 어떤 approval을 누가 언제 허용했는지 추적 불가 | audit trail(결정·시각·optionId·scope) | §3.4, §6 |
 | **Information disclosure** | API key·OAuth token·env·MCP credential·파일 내용이 로그/디스크/transcript에 평문 노출 | redaction 목록 + raw 로그 기본 비활성 + persistence scrub | §5, §6, §7 |
 | **Denial of service** | pending approval이 닫히지 않아 agent가 영구 정지(approval deadlock) | cancel/exit 시 pending cleanup 불변식 | §3.5 |
@@ -70,7 +70,7 @@ flowchart TB
 
 경계별 책임(정본 위치):
 
-- **TB-1 (renderer → backend spawn)**: renderer가 보낸 `AgentRuntimeStartParams`(15 §8.1)의 `command`/`args`/`env`를 Rust handler가 provider allowlist로 **재검증**한다. renderer는 신뢰 경계 밖(웹뷰는 변조 가능)이라고 가정한다. §4 참조. 현 PTY엔 선례 없음 (`research/codebase-backend.md` §6, §10 권고 6). **`AgentRuntimeStartParams.env`는 non-secret env 전용 규약**이며, secret(API key/token 등)은 이 경계를 launch argv로 통과하지 않는다 — §5.3(secret env 경계, 07 launch 정본 인용).
+- **TB-1 (renderer → backend spawn)**: renderer가 보낸 `AgentRuntimeStartParams`(15 §8.1)의 `command`/`args`/`env`를 Rust handler가 provider allowlist로 **재검증**한다. renderer는 신뢰 경계 밖(웹뷰는 변조 가능)이라고 가정하므로, **검증은 절대경로·정확 args·env key 수준까지 내려가야 한다**: `command`는 backend가 resolve한 신뢰 절대경로 또는 사전 등록된 절대경로 화이트리스트, `args`는 provider별 정확 일치(Codex `["app-server","--stdio"]`, Claude는 검증된 `adapterEntryPath` 단일 인자), `env`는 key allowlist + 형식 검증을 통과한 non-secret 키만. **basename만 비교하면 불충분**하다(공격자가 `/tmp/codex` 같은 임의 경로의 동명 바이너리를 통과시킬 수 있음). §4, 07 §8.1 참조. 현 PTY엔 선례 없음 (`research/codebase-backend.md` §6, §10 권고 6). **`AgentRuntimeStartParams.env`는 non-secret env 전용 규약**이며, secret(API key/token 등)은 이 경계를 launch argv로 통과하지 않는다 — §5.3(secret env 경계, 07 launch 정본 인용).
 - **TB-2 (provider → backend framing)**: provider stdout은 **JSON-RPC만**, stderr는 **log만**. claude-agent-acp는 `console.*`를 stderr로 redirect해 stdout 청결을 보장한다 (ref-claude-agent-acp §1 "stdout 청결", ref-acp §1 stdout purity MUST). backend는 protocol 의미를 해석하지 않고 framing만 한다 (15 §8.3 주석, `07-tauri-process-runtime.md` §Framing).
 - **TB-3 (메모리 → 디스크)**: `providerSessionId`/`providerThreadId`/`providerResumeToken`을 디스크 직전 scrub. §7, 15 §7.3 정본, `research/codebase-backend.md` §4.2.
 - **TB-4 (store → 화면)**: redaction 적용 + approval option label을 i18n으로 감싸 표시. §5, §3.2.
@@ -164,6 +164,8 @@ approval deadlock은 명시적 위험으로 분류돼 있다([`13`](13-risks-ope
 
 현 PTY는 frontend가 자유롭게 shell 문자열을 만들어 `pty_spawn`에 넘기고, **backend에 executable allowlist 검증이 없다**(`research/codebase-backend.md` §6, §10 권고 6). Direct runtime은 이 자유 shell 모델을 따르지 않는다. 15 §8.1 주석이 정본 요구를 명시한다: *"`command`/`args`/`env`는 adapter가 생성한 검증된 값만 허용하고, Rust handler가 provider별 allowlist로 재검증한다(임의 executable/shell string 차단)."* 이는 PTY 대비 **의도적 강화 지점**이며 현 코드에 선례가 없어 신규 구현이다.
 
+**basename-only는 불충분 (Tampering 정본)**: `command`의 basename만 화이트리스트와 비교하면(예: basename이 `codex`/`node`이면 통과), renderer가 `/tmp/codex`·`/dev/shm/node` 같은 **임의 경로의 동명 바이너리**를 심어 통과시킬 수 있어 코드 실행 우회가 된다. 따라서 검증 정본(07 §8.1, R4)은 basename 비교를 제거하고 (a) backend가 resolve한 신뢰 절대경로 또는 (b) 사전 등록된 절대경로 화이트리스트로 `command`를 제한하고, `args`는 provider별 **정확 일치**, `env`는 **key allowlist**까지 함께 재검증한다. 즉 "이름이 맞나"가 아니라 "정확히 이 절대경로 + 이 args + 이 env key 집합인가"를 확인한다.
+
 ### 4.2 이중 방어 (defense in depth)
 
 renderer는 신뢰 경계 밖(TB-1)이므로 frontend 검증만으로는 부족하다. 두 층에서 검증한다.
@@ -173,17 +175,17 @@ renderer는 신뢰 경계 밖(TB-1)이므로 frontend 검증만으로는 부족�
 
 ### 4.3 provider별 allowlist 사양 (권고 — 일부 결정 필요)
 
-| provider | 허용 `command` | 허용 core `args` 형태 | 근거 |
+| provider | 허용 `command` (절대경로/backend-resolved) | 허용 core `args` 형태 (정확 일치) | 근거 |
 |---|---|---|---|
-| `claude` | node 절대경로(`CLAUDE_RUNTIME_NODE` 등으로 핀) 또는 `wsl.exe`(distro 경유) | 첫 인자가 `…/@agentclientprotocol/claude-agent-acp/dist/index.js` (절대경로). 추가 argv는 `--cli`/`--hide-claude-auth`만 (ref-claude-agent-acp §1) | ref-claude-agent-acp §1, §5 |
-| `codex` | `codex` 바이너리 절대경로 또는 `wsl.exe` 경유 | app-server 모드 진입 argv(검증된 고정 형태). experimental flag는 §0 experimental 경고 게이트 뒤에서만 | ref-codex (app-server 진입), `13` Experimental surface |
+| `claude` | node 절대경로(`CLAUDE_RUNTIME_NODE` 등으로 핀, backend resolve 또는 사전 등록 절대경로) | `args.length == 1` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `…/claude-agent-acp/dist/index.js` 패턴). 임의 `.js`/임의 바이너리 거부 | ref-claude-agent-acp §1, §5; 07 §8.1; 06 §2.2 |
+| `codex` | `codex` 바이너리 절대경로(backend resolve 또는 사전 등록 절대경로) | `args`가 정확히 `["app-server","--stdio"]`. experimental flag는 §0 experimental 경고 게이트 뒤에서만 | ref-codex §1.1 (app-server 기본 stdio); 07 §8.1 |
 
-allowlist 검증 규칙(Rust handler):
+allowlist 검증 규칙(Rust handler — 정본 07 §8.1, basename-only 금지):
 
-1. **executable 형태 검증**: `command`는 (a) 사전 등록된 절대경로 집합에 속하거나 (b) `wsl.exe`(distro launcher)여야 한다. PATH lookup으로 임의 바이너리를 찾지 않는다(nvm 등 비표준 node는 절대경로 핀, ref-claude-agent-acp §5).
-2. **shell 메타문자 차단**: `args` 각 원소를 그대로 argv로 전달하며 shell을 거치지 않는다. PTY와 달리 `bash -lc <string>`을 합성하지 않는다(`research/codebase-backend.md` §2.2 "executable + argv 배열" 규칙은 유지하되 free shell string 금지).
-3. **첫 스크립트 인자 검증(claude)**: claude adapter는 첫 비-flag argv가 허용된 `dist/index.js` 절대경로 패턴인지 확인. `npx`는 비결정성/네트워크 fetch 때문에 runtime launch에서 거부한다(ref-claude-agent-acp §1 표 "npx 비권장").
-4. **env allowlist (§4.4)**: §4.4의 키 allowlist를 통과한 키만 child env에 합성. 그 외는 drop.
+1. **executable 절대경로 검증 (basename-only 금지)**: `command`는 (a) backend가 resolve한 신뢰 절대경로이거나 (b) 사전 등록된 절대경로 화이트리스트에 속해야 한다. **basename 일치만으로 통과시키지 않는다** — basename이 `codex`/`node`인 임의 경로(`/tmp/codex` 등)는 거부. PATH lookup으로 임의 바이너리를 찾지 않는다(nvm 등 비표준 node는 절대경로 핀, ref-claude-agent-acp §5).
+2. **args 정확 검증 (provider별 exact match)**: Codex는 `args`가 정확히 `["app-server","--stdio"]`일 것. Claude는 `args.length == 1` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴)일 것. 임의 `.js`/임의 바이너리는 거부한다. shell 메타문자 검사는 **방어용으로 유지**하되(`wsl.exe -e`가 shell을 거치지 않더라도, `research/codebase-backend.md` §2.2 "executable + argv 배열" 규칙), 일차 방어선은 위 정확 일치다(free shell string 합성 금지).
+3. **`npx` 등 비결정 launch 거부(claude)**: 검증된 `adapterEntryPath` 외의 진입(특히 `npx`)은 비결정성/네트워크 fetch 때문에 runtime launch에서 거부한다(ref-claude-agent-acp §1 표 "npx 비권장").
+4. **env key allowlist (§4.4)**: env key는 `^[A-Za-z_][A-Za-z0-9_]*$` 형식 + provider별 허용 key 집합을 모두 통과한 키만 child env에 합성하고, 값은 non-secret(§5.3). 그 외 key는 drop.
 
 > **결정 필요(13)**: allowlist를 (a) Rust 상수로 하드코딩할지, (b) settings에서 절대경로만 주입받아 검증할지. WSL 경로/node 위치가 배포 대상마다 달라(ref-claude-agent-acp §5 "unverified for target") 절대경로를 settings로 받되 **형태 검증은 Rust가** 하는 절충을 권고. → [`13`](13-risks-open-questions.md).
 
@@ -193,18 +195,26 @@ provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_
 
 - **claude 허용 키(예시, ref-claude-agent-acp §1 환경변수 표)**: `CLAUDE_CODE_EXECUTABLE`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL`(gateway), `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX` 등 provider 라우팅, `MAX_THINKING_TOKENS`. **`IS_SANDBOX`는 v1에서 주입하지 않는다**(root bypass 게이트 — §8.3, 결정 필요).
 - **codex 허용 키**: codex가 요구하는 최소 집합 + API/account 관련(결정 필요).
-- **env key 형식 검증**: 기존 PTY와 동일하게 `^[A-Za-z_][A-Za-z0-9_]*$`로 검증한다(`assertValidEnvKey`, `research/codebase-backend.md` §6). adapter도 backend도 검증한다.
+- **env key 형식 + allowlist 검증**: 기존 PTY와 동일하게 key 형식을 `^[A-Za-z_][A-Za-z0-9_]*$`로 검증하고(`assertValidEnvKey`, `research/codebase-backend.md` §6), **그 위에 provider별 허용 key 집합(위 claude/codex 목록)으로 한 번 더 제한**한다. 형식만 맞고 allowlist에 없는 key는 drop한다. adapter도 backend도 검증한다(07 §8.1).
 - **redaction과 연동**: env value는 §5 redaction 대상이며 로그/transcript/디스크에 평문으로 나타나면 안 된다.
 - **secret/non-secret 분리 (§5.3)**: 위 allowlist를 통과한 키 중 secret(API key/token/gateway header 등)은 launch argv로 child에 합성하지 않는다. argv 경유는 non-secret 키 전용이고, secret이 꼭 필요하면 `Command::env()`+`WSLENV` passthrough(07 §5.1 launch 정본)로만 주입한다 — OS 관측면 평문 노출 차단. v1 기본값은 secret env를 런타임으로 넘기지 않음(§5.3, §9 인증 기본 경로).
 
-> **구현 시 점검 (§4)**
-> - [ ] `agent_runtime_start` Rust handler가 `command`/첫 argv를 provider allowlist로 검증하고 실패 시 Err를 반환하는가.
-> - [ ] child를 shell 없이 executable+argv로 spawn하는가(free shell string 합성 없음).
-> - [ ] env 키가 allowlist + `^[A-Za-z_][A-Za-z0-9_]*$`를 모두 통과하는가.
+> **구현 시 점검 (§4 — untrusted renderer 재검증, 07 §8.1 정본)**
+> - [ ] `agent_runtime_start` Rust handler가 `command`를 **절대경로(backend-resolved 또는 사전 등록 화이트리스트)** 로 검증하고, **basename-only 비교를 쓰지 않는가**(`/tmp/codex`·`/dev/shm/node` 류 거부).
+> - [ ] Codex `args`가 정확히 `["app-server","--stdio"]`인지 검증하는가(임의 args 거부).
+> - [ ] Claude `args.length == 1` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴)인지 검증하는가(임의 `.js`/임의 바이너리 거부).
+> - [ ] env key가 `^[A-Za-z_][A-Za-z0-9_]*$` 형식 + **provider별 허용 key 집합**을 모두 통과하는가(형식만 맞고 allowlist 밖인 key는 drop).
+> - [ ] child를 shell 없이 executable+argv로 spawn하고, shell 메타문자 검사를 방어용으로 유지하는가(free shell string 합성 없음).
 > - [ ] `IS_SANDBOX` 등 권한 상승 env가 v1에서 차단되는가(§8.3 결정 따라).
 > - [ ] `npx` 등 비결정 launch가 거부되는가(ref-claude-agent-acp §1).
-> - [ ] allowlist 위반 시 거부 사유를 stderr/audit에 redacted로 남기는가.
+> - [ ] 위 검증 중 하나라도 실패하면 `Err`로 거부하고, 거부 사유를 stderr/audit에 redacted로 남기는가.
 > - [ ] secret 키(API key/token 등)가 launch argv(`-e env KEY=VAL`)가 아닌 `Command::env()`+`WSLENV`로만 주입되는가(§5.3, 07 §5.1).
+>
+> **수용 기준 (11 테스트 연동, R4)**: 아래는 backend allowlist 단위 테스트로 검증해야 한다(07 §8.1 → 11).
+> - [ ] 승인된 절대경로만 통과하고, basename은 같지만 경로가 다른 `command`(예: `/tmp/codex`)는 `Err`로 거부.
+> - [ ] Codex `args`가 정확히 `["app-server","--stdio"]`가 아니면 거부(추가/변경 인자 포함 시 `Err`).
+> - [ ] Claude `args[0]`이 검증된 `adapterEntryPath`가 아니면 거부(특히 `command=node`+`args=["/tmp/x.js"]` 거부).
+> - [ ] env key allowlist: 허용 key만 통과하고 형식 불일치/비허용 key는 drop 또는 `Err`.
 
 ---
 
@@ -379,6 +389,7 @@ legacy PTY fallback은 provider terminal policy에 맡기되, CLCOMX UI는 direc
 | approval 생명주기·cleanup 불변식 | [`04-normalized-agent-model.md`](04-normalized-agent-model.md) | §4, §5 |
 | persistence scrub 타입·정책 | [`15-data-contracts.md`](15-data-contracts.md) / [`10-persistence-migration.md`](10-persistence-migration.md) | 15 §7.3 |
 | spawn/shutdown·framing·process lifecycle | [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) | 전체 |
+| spawn allowlist 재검증(절대경로·정확 args·env key) | [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) | §8.1 |
 | approval UI·badge·modal | [`08-ui-composition.md`](08-ui-composition.md) | permission/status 절 |
 | Codex sandbox/approval wire 사실 | [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) | §4, §6 |
 | ACP permission/mode wire 사실 | [`ref-acp-protocol.md`](ref-acp-protocol.md) | §3.8, §6, §10 |

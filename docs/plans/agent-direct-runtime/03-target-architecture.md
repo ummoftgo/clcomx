@@ -283,7 +283,16 @@ UI composer → Router → Runtime Port `sendPrompt` → Adapter가 provider pro
 
 ### 4.3 취소
 
-UI cancel → Runtime Port `cancelTurn` → Adapter가 provider cancel method 호출(`agent_runtime_cancel` target=`turn`, [`15`](15-data-contracts.md) §8.1) → **pending approval이 있으면 cancelled로 닫고 wire로도 cancelled 응답을 보낸다**([`04`](04-normalized-agent-model.md) §4.2 불변식: ACP MUST, Codex turn interrupt) → store가 turn status를 `cancelled` 또는 provider 보고 terminal state로 갱신([`04`](04-normalized-agent-model.md) §2.1 규칙 5). 상세: [`14`](14-sequence-and-state.md) §"취소".
+UI cancel → Runtime Port `cancelTurn` → Adapter가 **cancel cleanup 정본 순서**([`04`](04-normalized-agent-model.md) §4.2)를 그대로 따른다:
+
+1. 해당 turn의 모든 pending approval을 pending table에서 **원자적으로 `closing` 표시**(동시 도착한 사용자 `respondApproval`과의 이중 응답 차단; `closing`은 wire로 나가지 않는 내부 상태).
+2. 각 pending approval에 **cancelled wire 응답을 provider turn cancel보다 먼저** 전송(Codex `{ id, result:{ decision:"cancel" } }`, ACP `{ jsonrpc:"2.0", id, result:{ outcome:{ outcome:"cancelled" } } }`)하고 `approval_resolved{outcome:"cancelled"}` emit 후 pending table에서 제거. approval을 매단 채로 turn을 끊으면 wire에 응답 없는 pending request가 남아 provider deadlock이 되므로 이 선후가 핵심이다.
+3. 그 다음 Adapter가 **provider turn cancel을 `agentRuntimeSend`로 직접 전송**한다 — Codex `turn/interrupt` request `{threadId, turnId}`([`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §3.2 `TurnInterruptParams`), ACP `session/cancel` notification `{sessionId}`([`ref-acp-protocol.md`](ref-acp-protocol.md) §3.8, notification이므로 응답 없음).
+4. cancel 이후 도착하는 늦은 `serverRequest/resolved`(Codex)/`stopReason`(ACP)/동일 `requestId` resolved 응답은 대상이 이미 `closing`/closed이면 **멱등하게 무시**한다(상태 변경·재emit 없음).
+
+이후 store가 turn status를 `cancelled` 또는 provider 보고 terminal state로 갱신한다([`04`](04-normalized-agent-model.md) §2.1 규칙 5).
+
+> **`agent_runtime_cancel`은 process shutdown 전용이다.** turn/request cancel wire(Codex `turn/interrupt`, ACP `session/cancel`)는 위 3단계처럼 **frontend adapter가 `agent_runtime_send`로 직접 보낸다**. backend `agent_runtime_cancel`은 `{type:"process"}`만 `shutdown`으로 처리하고 `request`/`turn` target에는 **no-op**이다([`07`](07-tauri-process-runtime.md) §6.3; backend는 protocol cancel 메시지를 만들지 않는다). 즉 `agent_runtime_cancel target=turn`으로 provider cancel을 호출하는 경로는 없다. 상세 시퀀스: [`14`](14-sequence-and-state.md) §5.
 
 ### 4.4 process exit / 에러
 
