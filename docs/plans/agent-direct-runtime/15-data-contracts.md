@@ -17,6 +17,9 @@
 
 이 규칙들은 본 문서의 모든 타입에 무조건 적용된다.
 
+> **권위 경계**: 본 §0은 **데이터/serde 직렬화 컨벤션**(camelCase, rename, optional 호환)의 정본이다. **코드 조직(파일 분리)·주석(doc-comment)** 규약은 [`17-coding-conventions.md`](17-coding-conventions.md)가 정본이다. 본 문서의 타입 정의에 다는 JSDoc 한글 주석도 17 §B.1을 따른다(타입 자체는 본 문서가 정본).
+
+
 1. **provider 원본 id 보존**: provider가 준 `threadId`/`turnId`/`itemId`/`sessionId`/`messageId`/`toolCallId`/`requestId`는 **절대 덮어쓰지 않고** `ProviderRef`의 대응 필드에 그대로 보존한다. CLCOMX가 내부 id를 따로 만들더라도 원본을 잃지 않는다 (04 §"핵심 식별자", `03-target-architecture.md` §설계 원칙).
 2. **raw 필드 보존**: normalized 타입으로 매핑되지 않은 provider-specific payload는 `ProviderRef.raw`, `ToolCallUpdate.rawInput`, `ToolCallUpdate.rawOutput`에 원본 그대로 보존한다. experimental/unstable 필드(Codex `#[experimental]`, ACP `_meta`)는 raw에만 둔다 (ref-codex §1.4, ref-acp §extensibility).
 3. **TS 직렬화**: frontend 타입은 camelCase. discriminated union은 `type` 또는 `sessionUpdate` 같은 string discriminator(값은 snake_case 가능).

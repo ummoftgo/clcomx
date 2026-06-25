@@ -52,6 +52,8 @@ src/lib/features/agent-runtime/
 
 > `contracts/normalized.ts`(15 §1–§5)와 `contracts/runtime-port.ts`(15 §6)는 정본이며 어댑터가 import한다. `contracts/claude-acp.ts`는 **ACP wire shape 중 어댑터가 직접 다루는 부분 타입**(SessionUpdate discriminant, RequestPermission shape 등)과 deps interface만 둔다. wire 타입 권위는 ref-acp와 sdk `dist/schema/types.gen.d.ts`다(아래 §1.2).
 
+> **코드 스타일 규약**: 위 파일은 매핑 함수별로 도메인 단위 분리(`session-update`/`permission`/`content`/`pending` 등)를 유지하고(한 파일이 2000줄을 넘으면 추가 분리를 검토), 모든 클래스/함수에 한글 JSDoc 주석을 단다 — 분리·주석 정본은 [`17-coding-conventions.md`](17-coding-conventions.md) §A·§B. 본 문서의 의사코드/시그니처 예시는 그 doc-comment 문체(`/** 기능 1줄 + @param */`)를 따른다.
+
 ### 1.2 wire 타입 출처 (재정의 금지 vs 부분 정의 허용)
 
 - **CLCOMX 공통 타입**: 재정의 금지. 15에서 import.
@@ -891,3 +893,4 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 | 위험·기본값·결정 필요 항목 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | 전체 |
 | backend 코드 현실(process spawn·framing·allowlist·scrub) | [`research/codebase-backend.md`](research/codebase-backend.md) | §2, §5, §6, §9, §10 |
 | frontend 코드 현실(feature 레이어·DI·host 분기·i18n·testid) | [`research/codebase-frontend.md`](research/codebase-frontend.md) | §1, §4, §6, §8, §9 |
+| 파일 분리(도메인·2000줄)·doc-comment(한글 JSDoc/rustdoc) 규약 | [`17-coding-conventions.md`](17-coding-conventions.md) | §A, §B |

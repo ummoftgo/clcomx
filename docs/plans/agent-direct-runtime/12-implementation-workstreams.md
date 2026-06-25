@@ -5,12 +5,14 @@
 > **권위 분리**: 타입은 [`15-data-contracts.md`](15-data-contracts.md)가, 규칙(상태머신·upsert·reconcile·approval 생명주기)은 [`04-normalized-agent-model.md`](04-normalized-agent-model.md)가, 아키텍처 역할은 [`03-target-architecture.md`](03-target-architecture.md)가, process/transport는 [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md)가, 테스트·수용 기준은 [`11-testing-acceptance.md`](11-testing-acceptance.md)가 정본이다. 이 문서는 그 정본을 **재정의하지 않고 인용**한다.
 >
 > 코드 현실 인용은 [`research/codebase-backend.md`](research/codebase-backend.md)(이하 BE §), [`research/codebase-frontend.md`](research/codebase-frontend.md)(이하 FE §), [`research/ux-reference.md`](research/ux-reference.md)(이하 UX §)를 따른다.
+>
+> **공통 구현 규약(모든 task 적용)**: 이 plan의 모든 신규 코드와 코드 예시는 [`17-coding-conventions.md`](17-coding-conventions.md)를 따른다 — 도메인 단위 파일 분리(§A), 2000줄 임계 분리 검토(§A.3), 한글 doc-comment(TS=JSDoc/Rust=rustdoc, §B). 아래 각 task의 **공통 DoD**(별도 반복 없이): **파일 분리 기준 충족(도메인 단위·2000줄 검토) + 새/수정 클래스·함수에 doc-comment(한글) 작성**(17 §C.2). 개별 task DoD는 task 고유 항목만 명시한다.
 
 ---
 
 ## 0. 모듈 배치표 (정본 — research 경로로 확정)
 
-다운스트림이 파일을 만들 때 **이 표가 위치의 단일 출처**다. 모든 경로는 저장소 루트(`/home/melbin/work/clcomx`) 기준. 신설(new)/수정(edit)을 표기한다.
+다운스트림이 파일을 만들 때 **이 표가 위치의 단일 출처**다. 모든 경로는 저장소 루트(`/home/melbin/work/clcomx`) 기준. 신설(new)/수정(edit)을 표기한다. 이 표의 책임 단위 분리(특히 adapter를 `*-adapter`/`*-wire-mapper`/`*-launch`/`*-routing`으로 나눈 것, backend `agent_runtime/{mod,transport,process,...}`)는 도메인 단위 파일 분리 규약(17 §A.2)의 적용 사례다.
 
 ### 0.1 Frontend — contracts / state / controller / service / adapters / view
 
@@ -96,7 +98,7 @@
 - 대상: §0.1/§0.3 표의 디렉토리만 빈 파일/`mod.rs` 선언으로 생성. 기존 파일 수정 없음.
 - 선행: 없음.
 - 산출물: `src/lib/features/agent-runtime/{contracts,state,controller,service,adapters,view,generated}/` 디렉토리, `src-tauri/src/features/agent_runtime/{mod,transport,process,types,allowlist,tests}.rs` 스텁(빈 `pub fn` 또는 `// TODO`).
-- DoD: `npm run check:frontend`와 `npm run check:rust`가 빈 스캐폴드 상태에서 통과(미참조 모듈은 컴파일에 영향 없음). `mod.rs`는 아직 `lib.rs`에 등록하지 않는다.
+- DoD: `npm run check:frontend`와 `npm run check:rust`가 빈 스캐폴드 상태에서 통과(미참조 모듈은 컴파일에 영향 없음). `mod.rs`는 아직 `lib.rs`에 등록하지 않는다. 디렉토리·파일 분할은 도메인 단위 분리 규약(17 §A)을 따른다(이후 task의 공통 DoD 적용 시작점).
 - 테스트(11): 없음(스캐폴드).
 - 계약(15 §): §9 type 인덱스(어떤 파일에 무엇이 들어갈지).
 - ref §: 없음.
@@ -170,7 +172,7 @@
   - Codex delta→completed reconcile: message는 completed `text` 권위, plan/reasoning은 completed 권위(delta는 점진 렌더만) (04 §3.2).
   - ACP chunk(append) vs `tool_call_update.content`(전체 교체) 구분 (04 §3.3).
   - 순서 보존 + sequence 정렬·dedup (04 §3.4).
-- DoD: 함수가 부수효과 없음(룬 미사용). 아래 테스트 통과.
+- DoD: 함수가 부수효과 없음(룬 미사용). 아래 테스트 통과. `applyEvent` 등 함수에 JSDoc(한글) + reconcile 분기에 한 줄 주석(17 §B.1·§B.2; 예시는 17 §B.1).
 - 테스트(11): "message replace/append 순서", "tool call upsert", "provider raw id 보존". co-located `agent-event-reducer.test.ts`, `vi.fn` 불필요(순수).
 - 계약(15 §): §3 `AgentEvent`, §4 `AgentContent`, §5 하위 타입.
 - ref §: 매핑 전제는 ref-codex §7, ref-acp §4·§5(규칙은 04에서 인용).
@@ -257,7 +259,7 @@
 - 대상: `src-tauri/src/features/agent_runtime/transport.rs`.
 - 선행: T2.2, §0.3 UTF-8 framer 공유 결정.
 - 산출물: stdout reader thread(newline framing, `decode_utf8_stream_chunk`로 byte→str), stderr reader thread(별도), stdin writer(`Mutex` 잠금). 각 라인을 `JsonRpcMessage`로 파싱해 `agent-runtime-message` emit. invalid JSON·embedded newline은 `agent-runtime-error`(recoverable 분류, 07 §Framing). stderr 라인은 `agent-runtime-stderr`. exit는 `agent-runtime-exit`. bounded queue overflow는 `agent-runtime-backpressure`(07 §Process lifecycle).
-- DoD: 아래 framing 테스트 전부 통과. stdout/stderr 분리. PTY reader loop(BE §2.2 mod.rs:513-582)를 newline framer로 치환.
+- DoD: 아래 framing 테스트 전부 통과. stdout/stderr 분리. PTY reader loop(BE §2.2 mod.rs:513-582)를 newline framer로 치환. framing·decode 같은 핵심 로직에는 한 줄 한글 주석을 단다(17 §B.2).
 - 테스트(11): "newline-delimited message framing", "stderr와 stdout 분리", "bounded queue overflow event", "stdio JSON-RPC process start/stop".
 - 계약(15 §): §8.3 event payload.
 - ref §: 07 §Framing.
@@ -553,6 +555,7 @@ graph TD
 | 권한·보안·scrub·감사 | [`09-permissions-security.md`](09-permissions-security.md) | 전체 |
 | persistence·migration·resume/load·scrub | [`10-persistence-migration.md`](10-persistence-migration.md) | 전체 |
 | 테스트·수용 기준(정본) | [`11-testing-acceptance.md`](11-testing-acceptance.md) | 전체 |
+| 코딩 규약(파일 분리·doc-comment, 정본) | [`17-coding-conventions.md`](17-coding-conventions.md) | §A, §B, §C.2 |
 | 위험·기본값·결정 필요 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | 전체 |
 | Codex wire 매핑·핵심 타입 | [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) | §1, §4, §6, §7, §8 |
 | ACP wire 매핑·content/tool/permission | [`ref-acp-protocol.md`](ref-acp-protocol.md) | §1, §3, §4, §5, §6, §13 |

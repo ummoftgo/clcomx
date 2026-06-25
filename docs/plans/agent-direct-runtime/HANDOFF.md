@@ -44,6 +44,7 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
 | 14-sequence-and-state | 시퀀스/상태 다이어그램 |
 | **15-data-contracts** | **타입 정본** — 모든 TS/Rust 타입 |
 | 16-glossary | 용어집·Codex/ACP/CLCOMX 대응표·3축 구분 |
+| **17-coding-conventions** | **코딩 규약 정본** — 도메인 단위 파일 분리·2000줄 임계, 한글 doc-comment(JSDoc/rustdoc) |
 | adr-001 | 아키텍처 결정 기록 |
 | ref-* | **wire 정본** — Codex/ACP/Claude 프로토콜 사실 |
 | research/* | 코드 현실 **스냅샷**(backend/frontend, 해당 ref 시점; 충돌 시 실제 코드 우선) + 외부 UX 참고(ux-reference) |
@@ -55,7 +56,7 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
    - **타입은 [15](15-data-contracts.md)가 정본.** `AgentEvent`/`ProviderRef`/`ToolCallUpdate`/`Approval*`/`AgentRuntimeMetadata`/`JsonRpcMessage`/`AgentRuntimeStartParams` 등은 15를 복사/import한다. 다른 문서에서 본 타입과 충돌하면 15가 이긴다([15](15-data-contracts.md) §9 type 인덱스).
    - **규칙은 [04](04-normalized-agent-model.md)가 정본.** 상태 전이·upsert/reconcile·approval cleanup 불변식은 04를 따른다.
    - **wire 사실은 `ref-*`가 정본.** provider 메시지 shape/필드/enum 값은 ref 문서 §번호로 확인한다. 추측하지 않는다.
-3. **빌드 컨벤션을 따른다.** TS는 `src/lib/tauri/core.ts`의 `invoke`, `src/lib/tauri/event.ts`의 `listen`만 사용(직접 `@tauri-apps/api` import 금지). Rust command는 `Result<T, String>` 반환, 경계 struct는 `#[serde(rename_all="camelCase")]`([15](15-data-contracts.md) §0 컨벤션).
+3. **빌드 컨벤션을 따른다.** TS는 `src/lib/tauri/core.ts`의 `invoke`, `src/lib/tauri/event.ts`의 `listen`만 사용(직접 `@tauri-apps/api` import 금지). Rust command는 `Result<T, String>` 반환, 경계 struct는 `#[serde(rename_all="camelCase")]`([15](15-data-contracts.md) §0 컨벤션). 코드 스타일 — 도메인 단위 파일 분리(2000줄 임계 검토)와 클래스/함수 한글 doc-comment(JSDoc/rustdoc) — 은 [17](17-coding-conventions.md)이 정본이며, 12의 각 task DoD에도 편입돼 있다([17](17-coding-conventions.md) §C.2).
 4. **보안 경계를 먼저 세운다.** `provider_session_id`/`provider_thread_id`/`provider_resume_token`은 디스크 저장 직전 scrub([15](15-data-contracts.md) §7.3). `command`/`args`/`env`는 Rust handler에서 provider별 allowlist 재검증([15](15-data-contracts.md) §8.1, [09](09-permissions-security.md)). approval cleanup(turn cancel/shutdown은 `cancelled`+wire, process exit은 `failed`(내부)로 pending을 닫기)은 runtime 필수 기능이다([04](04-normalized-agent-model.md) §4.2·§5.0).
 
 ## 시작 전 반드시 확인
@@ -73,4 +74,4 @@ CLCOMX `AGENTS.md`의 Build/Run gate를 지킨다.
 
 ## 이 세션 산출물에 대한 명시
 
-이 문서 집합(00–16, adr-001, ref-*, research/*, HANDOFF)은 **설계·조사·문서화만 수행한 세션의 결과물**이다. `src/`/`src-tauri/` 코드는 변경되지 않았다. 다운스트림 구현 에이전트는 이 문서만으로 구현을 시작할 수 있어야 하며, 모호한 지점은 추측 대신 정본(15/04/ref)·레지스트리(13)를 참조한다.
+이 문서 집합(00–17, adr-001, ref-*, research/*, HANDOFF)은 **설계·조사·문서화만 수행한 세션의 결과물**이다. `src/`/`src-tauri/` 코드는 변경되지 않았다. 다운스트림 구현 에이전트는 이 문서만으로 구현을 시작할 수 있어야 하며, 모호한 지점은 추측 대신 정본(15/04/ref)·레지스트리(13)를 참조한다.

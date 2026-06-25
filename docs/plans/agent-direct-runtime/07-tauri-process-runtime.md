@@ -57,7 +57,7 @@ backend `agent_runtime` 레이어는 **transport·process lifecycle만** 책임�
 
 ## 2. 모듈 구조와 등록 (정확한 신설 위치)
 
-research/codebase-backend.md §9 표를 그대로 따른다. `commands/<x>.rs`는 얇은 wrapper, 로직·상태는 `features/<x>/`에 둔다(같은 문서 §3.1 컨벤션).
+research/codebase-backend.md §9 표를 그대로 따른다. `commands/<x>.rs`는 얇은 wrapper, 로직·상태는 `features/<x>/`에 둔다(같은 문서 §3.1 컨벤션). 아래 `features/agent_runtime/{mod,transport,process,types,tests}.rs` 배치는 transport·process·types를 도메인 단위로 나눈 것으로, 파일/디렉토리 분리 규약([`17-coding-conventions.md`](17-coding-conventions.md) §A)을 따른다.
 
 ```
 src-tauri/src/
@@ -193,6 +193,8 @@ tauri::Builder::default()
 ## 3. 상태 모델 (`AgentRuntimeState` / `AgentRuntime`)
 
 PTY `PtyState`(research §2.1)와 **별도**로 둔다 — RuntimeId 공간을 PTY `u32` 세션 ID와 섞지 않는다(research §10 권고 1). 동시성은 기존 컨벤션(`std::sync::{Mutex, Arc, AtomicU64, AtomicBool}`)을 따른다(같은 문서 §7). **tokio·channel은 도입하지 않는다** (v1 결정, §7.4·[13](13-risks-open-questions.md) "tokio 도입 여부").
+
+> 아래 struct/함수의 doc-comment는 rustdoc(`///`) 한글 보고서체 규약([`17-coding-conventions.md`](17-coding-conventions.md) §B)을 따른다. framing·shutdown·reconcile 등 핵심 로직에는 한 줄 한글 주석을 단다(17 §B.2).
 
 ```rust
 // features/agent_runtime/mod.rs
@@ -1111,3 +1113,4 @@ fn redact(s: &str) -> String {
 | persistence scrub 경계·migration | [`10-persistence-migration.md`](10-persistence-migration.md) | §7 |
 | 위험·결정 필요 항목 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | 전체 |
 | sequence/state 다이어그램 | [`14-sequence-and-state.md`](14-sequence-and-state.md) | 전체 |
+| 파일 분리·rustdoc 한글 주석 규약 | [`17-coding-conventions.md`](17-coding-conventions.md) | §A, §B |

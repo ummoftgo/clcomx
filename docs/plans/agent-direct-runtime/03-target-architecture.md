@@ -187,7 +187,7 @@ flowchart TB
 
 ## 3. 모듈 배치 (기존 feature 레이어 규약 정합)
 
-신규 코드는 기존 feature 레이어 규약(`view/controller/state/contracts/service`, `commands/` + `features/`)에 정확히 맞춰 배치한다.
+신규 코드는 기존 feature 레이어 규약(`view/controller/state/contracts/service`, `commands/` + `features/`)에 정확히 맞춰 배치한다. 파일은 **도메인/기능 단위로 분리**하며 분리·doc-comment 규약은 [`17`](17-coding-conventions.md) §A·§B가 정본이다. 아래 `adapters/<provider>/`(Codex를 매퍼/launch/routing으로 나눔)·backend `features/agent_runtime/{mod,transport,process,types,tests}.rs` 분리가 이미 그 규약에 정합한다([`17`](17-coding-conventions.md) §A.2).
 
 ### 3.1 Frontend — `src/lib/features/agent-runtime/`
 

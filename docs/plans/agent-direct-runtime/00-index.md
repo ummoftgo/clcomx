@@ -76,6 +76,7 @@ CLCOMX의 현재 에이전트 화면은 `claude`와 `codex`를 터미널 프로�
 - **[14-sequence-and-state.md](14-sequence-and-state.md)**: 시퀀스/상태 다이어그램(세션 시작·prompt turn·approval·cancel·process exit·resume의 mermaid 시각화).
 - **[adr-001-direct-agent-runtime.md](adr-001-direct-agent-runtime.md)**: direct runtime 도입 아키텍처 결정 기록(맥락·결정·대안·결과).
 - **[16-glossary.md](16-glossary.md)**: 용어집(provider 식별자, normalized 개념, protocol 용어, CLCOMX 내부 용어 정의).
+- **[17-coding-conventions.md](17-coding-conventions.md)** — **코딩 규약 정본**: 도메인 단위 파일/디렉토리 분리·2000줄 임계, 한글 보고서체 주석, 클래스/함수 doc-comment(JSDoc/rustdoc). 모든 신규 코드·문서 코드 예시가 따른다(타입은 15, 규칙은 04, 파일 위치는 12 §0이 정본; 17은 재정의하지 않고 인용).
 
 ### 프로토콜 레퍼런스 (wire 정본)
 
@@ -98,4 +99,5 @@ CLCOMX의 현재 에이전트 화면은 `claude`와 `codex`를 터미널 프로�
 - 현재 PTY 기반 기능과 새 direct runtime의 **경계가 명확**하다(`pty_*` vs `agent_runtime_*`, runtimeKind, viewMode 분리).
 - session, turn, message, tool call, approval, command output, file change, process exit가 공통 모델(`04`/`15`)에서 표현된다.
 - 테스트 계획(`11`)이 fixture replay, adapter unit test, Tauri command test, frontend rendering test, E2E 회귀를 모두 포함한다.
+- 모든 신규 코드와 문서 코드 예시가 **코딩 규약(`17`)**을 따른다: 도메인 단위 파일 분리(2000줄 임계 검토)와 클래스/함수 한글 doc-comment, 그리고 12의 각 task DoD에 그 두 항목이 편입된다(`17` §C.2).
 - 모든 **미확정·결정 필요** 항목이 `unverified`/`결정 필요`로 표시되어 13에 등록되어 있다.

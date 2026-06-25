@@ -67,6 +67,8 @@ src/lib/features/agent-runtime/
 - `codex-routing.ts`는 라우팅/pending table 상태를 plain class로 보유(룬 불필요 — 어댑터 내부 상태이며 transcript store가 아니다). controller가 주입받아 사용.
 - `codex-app-server-adapter.ts`는 `AgentRuntimePort` 구현체이며 transport 래퍼(`transport.ts`)와 mapper/routing을 DI로 받는다.
 
+> **코드 스타일 규약**: 위 파일은 도메인 단위로 분리하고(한 파일이 2000줄을 넘으면 wire 종류별 순수 함수 등으로 추가 분리를 검토), 모든 클래스/함수에 한글 JSDoc 주석을 단다 — 분리·주석 정본은 [`17-coding-conventions.md`](17-coding-conventions.md) §A·§B. 본 문서의 의사코드/시그니처 예시는 그 doc-comment 문체(`/** 기능 1줄 + @param */`)를 따른다.
+
 ---
 
 ## 2. Lifecycle 오케스트레이션 (연결 → ready → turn)
@@ -1005,4 +1007,5 @@ mapper/routing은 순수 함수/plain class라 vitest로 단독 테스트([`rese
 | 권한·보안·redaction·auth | [09-permissions-security.md](09-permissions-security.md) | 전체 |
 | persistence·resume/load·scrub | [10-persistence-migration.md](10-persistence-migration.md) | 전체 |
 | 테스트·수용 기준 | [11-testing-acceptance.md](11-testing-acceptance.md) | 전체 |
+| 파일 분리(도메인·2000줄)·doc-comment(한글 JSDoc/rustdoc) 규약 | [17-coding-conventions.md](17-coding-conventions.md) | §A, §B |
 | 미확정·결정 필요 항목 | [13-risks-open-questions.md](13-risks-open-questions.md) | 전체 |

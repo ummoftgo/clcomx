@@ -27,7 +27,7 @@
 
 ## 2. 컴포넌트 트리 (정보구조)
 
-신규 트리는 research/codebase-frontend.md §8의 배치안을 정본화한 것이다. 기존 `Terminal.svelte` host와 대등한 위치에 `AgentRuntimeShell.svelte`(host)를 둔다.
+신규 트리는 research/codebase-frontend.md §8의 배치안을 정본화한 것이다. 기존 `Terminal.svelte` host와 대등한 위치에 `AgentRuntimeShell.svelte`(host)를 둔다. 아래처럼 `view/*.svelte`를 컴포넌트 단위로 다수 분리하고 view/controller/state/service 레이어를 나누는 것은 파일/디렉토리 분리 규약([`17-coding-conventions.md`](17-coding-conventions.md) §A)을 따른다.
 
 ```mermaid
 graph TD
@@ -74,6 +74,8 @@ graph TD
 ### 2.2 host 조립부 (`AgentRuntimeShell.svelte`)
 
 `Terminal.svelte`(research/codebase-frontend.md §2.4)와 동형으로, host가 룬 `$state`/`$derived`/`$effect`를 보유하고 controller에 getter/콜백으로 연결한다.
+
+> 컴포넌트·controller·reducer 등 신규 코드의 클래스/함수에는 JSDoc(`/** */`) 한글 보고서체 doc-comment를 단다([`17-coding-conventions.md`](17-coding-conventions.md) §B). reconcile·approval cleanup 같은 핵심 로직에는 한 줄 한글 주석을 둔다(17 §B.2).
 
 ```svelte
 <script lang="ts">
@@ -529,3 +531,4 @@ direct runtime은 ptyId가 없다. `onPtyId`/`onAuxStateChange`/`onExit`/`onResu
 | persistence·runtimeKind 전파·resume/load | [`10-persistence-migration.md`](10-persistence-migration.md) | 전체 |
 | 테스트·수용 기준 | [`11-testing-acceptance.md`](11-testing-acceptance.md) | 전체 |
 | 결정 필요/위험 항목 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | 전체 |
+| 파일 분리·JSDoc 한글 주석 규약 | [`17-coding-conventions.md`](17-coding-conventions.md) | §A, §B |
