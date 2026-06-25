@@ -473,12 +473,13 @@ async function cancelTurn(handle, turnId?) {
 
 `agent_runtime_shutdown`을 **authoritative cleanup 경계**로 정의한다(S3 정본). pending 종료는 멱등하며 정확히 한 번만 수행된다(이중 종료/누락 없음). 순서·멱등 규칙의 권위는 04 §5, 14다.
 
-**(a) adapter — shutdown 호출 전 pending 종료 후 listener 해제**: 어댑터는 `deps.shutdownRuntime`(15 §8.2 `agentRuntimeShutdown`)을 부르기 **전에**:
-1. 모든 pending approval을 `cancelled`로 닫는다(04 §4.2/§5, ref-acp §3.8 MUST). §4.3/§6.3 cleanup과 동일한 `closing` 표시 + wire cancelled 응답(가능하면) + `approval_resolved{cancelled}` emit + table 제거 경로를 쓴다.
+**(a) adapter — pending 종료 → backend shutdown await → listener 해제 순서**:
+1. (process가 아직 살아 있으므로) 모든 pending approval을 `cancelled`로 닫는다(04 §4.2/§5, ref-acp §3.8 MUST). §4.3/§6.3 cleanup과 동일한 `closing` 표시 + wire `cancelled` 응답 + `approval_resolved{cancelled}` emit + table 제거 경로를 쓴다. **이때 listener는 살아 있어야** 닫는 도중 처리가 정상 동작한다.
 2. pending RPC(client→agent 요청, `pendingRequests`)를 **로컬에서 reject**한다(응답을 더 못 받으므로 `error`/실패로 settle).
-3. 그 뒤에 `subscribeRuntime`의 `UnlistenFn`을 호출해 listener를 해제하고 세션 런타임(`ClaudeAcpSessionRuntime`)을 삭제한다.
+3. `deps.shutdownRuntime`(15 §8.2 `agentRuntimeShutdown`)을 **await**한다 — backend가 stdin close → grace → kill → child reap까지 끝낸 뒤 반환한다((b)). 그 사이 도착하는 늦은 exit/응답은 멱등 무시된다((c)).
+4. shutdown이 **반환된 뒤에만** `subscribeRuntime`의 `UnlistenFn`을 호출해 listener를 해제하고 세션 런타임(`ClaudeAcpSessionRuntime`)을 삭제한다.
 
-   순서가 핵심이다 — **pending 종료가 unlisten/세션 삭제보다 먼저**여야 늦은 exit/응답이 와도 pending이 이미 정리돼 있고, listener 해제 후 도착하는 메시지로 인한 누락이 없다.
+   순서가 핵심이다 — **pending 종료 → backend shutdown(reap) await → 그다음 unlisten/세션 삭제**여야, shutdown 도중의 최종 exit과 늦은 응답을 listener가 멱등 처리한 뒤 안전하게 정리된다. unlisten을 backend shutdown보다 **먼저** 하면 exit event·늦은 메시지를 놓친다.
 
 **(b) backend — reap 후 반환**: backend `agent_runtime_shutdown`은 graceful stdin close(EOF) → grace timeout → kill → **child reap(`wait`)까지 끝낸 뒤 반환**한다(07 §5.2/§5.3). 최종 exit이 반영·계상된 후에만 teardown(HashMap 제거 등)이 일어난다.
 

@@ -231,8 +231,8 @@
 
 - 대상: `src-tauri/src/features/agent_runtime/types.rs`.
 - 선행: T0.1.
-- 산출물: 15 §8.1/§8.2/§8.3 Rust struct/enum 그대로(`RuntimeId`, `JsonRpcMessage`(untagged), `JsonRpcError`, `AgentRuntimeStartParams`(tag=transportKind kebab), `AgentRuntimeCancelTarget`, `AgentRuntimeSnapshot`, `AgentRuntimeEvent`). 모두 `#[serde(rename_all="camelCase")]`.
-- DoD: `cargo check` 통과. serde round-trip 단위 테스트(JSON↔struct)로 TS와 1:1 미러 확인.
+- 산출물: 15 §8.1/§8.2/§8.3 Rust struct/enum 그대로(`RuntimeId`, `JsonRpcMessage`(untagged), `JsonRpcError`, `AgentRuntimeStartParams`(tag=transportKind kebab), `AgentRuntimeCancelTarget`, `AgentRuntimeSnapshot`, `AgentRuntimeEvent`). **struct**(`JsonRpcError`/`AgentRuntimeSnapshot`/`AgentRuntimeMetadataRecord`)는 `#[serde(rename_all="camelCase")]`. **variant 필드를 가진 enum**(`AgentRuntimeStartParams`/`AgentRuntimeCancelTarget`/`AgentRuntimeEvent`/`JsonRpcMessage`)은 `#[serde(rename_all_fields="camelCase")]`(serde≥1.0.181) 또는 필드별 `#[serde(rename)]`로 variant 필드(`workDir`/`requestId`/`runtimeId`/`droppedMessages` 등)까지 camelCase 직렬화(15 §8, S2) — enum 레벨 `rename_all`만으로는 variant 필드가 snake_case로 남는다.
+- DoD: `cargo check` 통과. serde round-trip 단위 테스트(JSON↔struct)로 TS와 1:1 미러 확인 — 특히 `AgentRuntimeStartParams`/`AgentRuntimeCancelTarget`/`AgentRuntimeEvent`의 variant 필드가 camelCase로 round-trip되는지(S2). Cargo.toml serde 버전이 `rename_all_fields`(≥1.0.181) 지원인지 확인(미만이면 필드별 rename — 13).
 - 테스트(11): framing/직렬화 단위(tests.rs).
 - 계약(15 §): §8.1–§8.3 전체.
 - ref §: ref-codex §1.2(jsonrpc 생략), ref-acp §1(jsonrpc 2.0).

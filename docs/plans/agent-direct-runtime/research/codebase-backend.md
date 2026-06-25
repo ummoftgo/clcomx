@@ -371,7 +371,7 @@ interface AgentCommandOptions { extraArgs?: readonly string[]; envVars?: Record<
 | --- | --- | --- |
 | `src-tauri/src/features/agent_runtime/mod.rs` | runtime 본체: `AgentRuntimeState`(= `Mutex<HashMap<RuntimeId, AgentRuntime>>` + `next_id`), spawn/send/cancel/shutdown core fn, snapshot | `features/terminal/mod.rs`(PtyState/PtySession/`pty_spawn` 구조) |
 | `src-tauri/src/features/agent_runtime/transport.rs` | newline-delimited JSON-RPC framing, stdin write, stdout/stderr reader thread | `features/terminal/parsing.rs::decode_utf8_stream_chunk` 재사용 + terminal reader loop(mod.rs:513-582) |
-| `src-tauri/src/features/agent_runtime/process.rs` | `wsl.exe -d <distro> -e <executable> <argv>` child spawn, graceful shutdown(stdin close→timeout→kill) | `commands/wsl.rs::WslShell::spawn`(비-PTY `std::process::Command` + `CREATE_NO_WINDOW`) |
+| `src-tauri/src/features/agent_runtime/process.rs` | child spawn + graceful shutdown(stdin close→timeout→kill→reap). **launch 정본 형태는 07 §5.1·12 T2.2**: `wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL <backend-resolved-exe> <argv>`(non-secret env argv + secret은 `Command::env()`+`WSLENV`). 이 표의 옛 `-e <executable> <argv>`는 위치 안내용 스냅샷일 뿐 launch 권위가 아니다 | `commands/wsl.rs::WslShell::spawn`(비-PTY `std::process::Command` + `CREATE_NO_WINDOW`) |
 | `src-tauri/src/features/agent_runtime/tests.rs` | fixture replay, snapshot/delta, framing 단위 테스트 | `features/terminal/tests.rs` |
 | `src-tauri/src/commands/agent_runtime.rs` | 얇은 `#[tauri::command]` 래퍼 5종 + re-export | `commands/pty.rs`(re-export) / `commands/workspace.rs`(wrapper) |
 | `src/lib/features/agent-runtime/*.ts` | frontend transport client + normalized event store + adapter | `src/lib/pty.ts`(invoke wrapper) + 기존 controller 패턴 |

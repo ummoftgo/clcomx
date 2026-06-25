@@ -595,8 +595,13 @@ pub fn shutdown(state: &AgentRuntimeState, runtime_id: RuntimeId) -> Result<(), 
         reap_waited += POLL_MS;
     }
 
-    // 6) teardown — 최종 exit 반영 후에만 HashMap 제거. exit/shutdown pending 종료는 멱등·정확히 한 번
-    //    (04 §5): backend는 exit event를 한 번만 올리고, frontend adapter가 pending을 정확히 한 번 닫는다.
+    // 6) teardown — reap 확인 후에만 HashMap 제거·Ok 반환. REAP_GRACE_MS 내 reap 실패(exited=false)면
+    //    runtime을 제거하지 않고 Err를 반환한다(teardown이 늦은 exit 계상보다 앞서는 것을 금지, S3 정본).
+    //    exit/shutdown pending 종료는 멱등·정확히 한 번(04 §5): backend는 exit event를 한 번만 올리고,
+    //    frontend adapter가 pending을 정확히 한 번 닫는다.
+    if !exited.load(Ordering::SeqCst) {
+        return Err("shutdown: child not reaped within REAP_GRACE_MS".into());
+    }
     state.runtimes.lock().map_err(|e| e.to_string())?.remove(&runtime_id);
     Ok(())
 }

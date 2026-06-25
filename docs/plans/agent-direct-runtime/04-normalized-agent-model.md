@@ -202,15 +202,15 @@ turn cancel(또는 process exit) 시 **unresolved approval은 반드시 cancelle
 규칙:
 
 1. **종료 분류 (정본)**: pending cleanup 시 각 pending은 의미에 따라 닫는다.
-   - pending **approval**(server→client request)은 `ApprovalDecision{outcome:"cancelled"}`로 닫고 `approval_resolved{decision}`를 emit한다. (`outcome:"failed"`는 client 내부 전용이며 wire로 나가지 않는다 — §4.2 규칙 4.)
+   - pending **approval**(server→client request)은: process가 **살아 있는** cancel/shutdown 경로에서는 `outcome:"cancelled"`로 닫고 wire `cancelled` 응답을 보낸다(§4.2); process가 **이미 종료된** exit 경로에서는 wire 응답이 불가하므로 `outcome:"failed"`(client 내부 전용, wire 미전송 — §4.2 규칙 4, 14 process exit, 15 §5)로 닫는다. 어느 쪽이든 `approval_resolved{decision}`를 emit한다.
    - pending **RPC**(client가 보낸 요청의 응답 대기분)는 로컬에서 **failed로 reject**한다. process가 이미 종료됐거나 종료 중이면 wire 응답이 도착하지 않으므로, adapter가 대기 중인 promise/continuation을 실패로 정리한다.
 
 2. **정확히 한 번 · 멱등 (불변식)**: 한 `requestId`(approval 또는 RPC)의 종료는 그 pending의 생애 동안 **정확히 한 번만** 일어난다. 종료 시 pending table에서 제거(또는 closed 표시)하고, 그 `requestId`에 대해 **늦게 도착하는** exit notification·provider 응답·`serverRequest/resolved`(Codex)·`stopReason`(ACP)·동일 `requestId`에 대한 resolve는 대상이 이미 종료/부재이면 **멱등하게 무시**한다(상태 변경·재emit 없음). 이는 §4.2 cancel cleanup의 `closing`/closed 멱등 무시 규칙(§4.2 규칙 4)과 동일한 메커니즘을 exit/shutdown 축으로 확장한 것이다.
 
-3. **exit(process 종료) 경로**: `process_exited`(15 §3, backend `agent-runtime-exit` event 수신) 시 adapter는 그 시점의 **모든** pending approval을 cancelled로, 모든 pending RPC를 failed로 규칙 1·2에 따라 닫는다. 세션 상태는 `exited`로 전이한다(§2.1 규칙 7). backend는 exit event를 알릴 뿐 실제 pending 정리는 frontend adapter가 수행한다(07 §5.3와 일치).
+3. **exit(process 종료) 경로**: `process_exited`(15 §3, backend `agent-runtime-exit` event 수신) 시 adapter는 그 시점의 **모든** pending approval을 `failed`로(process가 죽어 wire 응답 불가, client 내부 전용), 모든 pending RPC를 failed로 규칙 1·2에 따라 닫는다. 세션 상태는 `exited`로 전이한다(§2.1 규칙 7). backend는 exit event를 알릴 뿐 실제 pending 정리는 frontend adapter가 수행한다(07 §5.3와 일치).
 
 4. **shutdown(세션 종료) 경계 — authoritative cleanup**: `shutdown`(15 §6 Port)은 **authoritative cleanup 경계**다. shutdown은 adapter 측과 backend 측 책임이 분리되며, 순서가 정본이다.
-   - **(a) adapter는 backend shutdown 호출 전에 pending을 먼저 닫는다**: adapter는 unlisten(`subscribeEvents` 해제)·세션 삭제보다 **먼저** 모든 pending approval을 cancelled로 닫고(§4.2) 모든 pending RPC를 로컬에서 failed로 reject한다(규칙 1·2). listener를 살아 있는 상태로 둔 채 pending을 닫아야, 닫는 도중 발생하는 `approval_resolved` emit과 멱등 처리가 정상 동작한다. pending을 다 닫은 **뒤에** listener를 해제하고 세션을 삭제한다.
+   - **(a) adapter 순서: pending 종료 → backend shutdown await → unlisten/삭제**: adapter는 (process가 살아 있는 동안) 모든 pending approval을 cancelled로 닫고(§4.2) 모든 pending RPC를 로컬에서 failed로 reject한다(규칙 1·2). listener를 **살아 있는 상태로 둔 채** pending을 닫아야 `approval_resolved` emit과 멱등 처리가 정상 동작한다. 그다음 `agent_runtime_shutdown`을 **await**하고((b)에서 reap 후 반환), **반환된 뒤에만** listener를 해제(`subscribeEvents` 해제)하고 세션을 삭제한다. unlisten을 backend shutdown보다 먼저 하면 shutdown 도중의 최종 exit·늦은 응답을 놓친다.
    - **(b) backend shutdown은 reap 후 반환한다**: backend `agent_runtime_shutdown`은 graceful stdin close → timeout → kill → **child reap(`wait`)** 까지 끝낸 뒤 반환한다(07 §5.2/§5.3). 최종 exit이 반영·계상된 후에만 teardown(runtime 제거)이 일어나도록 하여, 늦은 exit으로 인한 pending 누락을 방지한다.
    - **(c) 멱등 합류**: shutdown 경로의 adapter 측 pending 종료(a)와 exit event 경로(규칙 3)는 같은 pending을 가리킬 수 있다. 규칙 2의 정확히-한-번 멱등 불변식에 의해 어느 쪽이 먼저 닫든 **두 번 닫히지 않고 누락되지도 않는다**.
 

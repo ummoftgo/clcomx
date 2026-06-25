@@ -385,7 +385,7 @@ sequenceDiagram
 
 ### 6.1 Graceful shutdown — authoritative cleanup 경계 (S3 정본)
 
-흐름: `shutdown` → **① adapter가 shutdown 호출 전에 모든 pending을 정리(approval cancelled로 닫고 04 §4.2, pending RPC 로컬 reject) → ② listener 해제·세션 삭제 → ③ backend가 stdin close → grace timeout → kill → child reap까지 끝낸 뒤 반환 → ④ 최종 exit이 반영/계상된 후에만 teardown**. `agent_runtime_shutdown`을 **authoritative cleanup 경계**로 정의한다. exit/shutdown으로 인한 pending 종료는 **멱등**하며 정확히 **한 번만** 수행된다(이중 종료·누락 없음).
+흐름: `shutdown` → **① adapter가 shutdown 호출 전에 모든 pending을 정리(approval은 process가 살아 있으면 `cancelled`+wire로 닫고 04 §4.2, pending RPC 로컬 reject; listener는 살린 채) → ② adapter가 `agent_runtime_shutdown`을 await(backend가 stdin close → grace timeout → kill → child reap까지 끝낸 뒤 반환) → ③ 반환(최종 exit 반영/계상) 후에만 listener 해제·세션 삭제**. `agent_runtime_shutdown`을 **authoritative cleanup 경계**로 정의한다. exit/shutdown으로 인한 pending 종료는 **멱등**하며 정확히 **한 번만** 수행된다(이중 종료·누락 없음).
 
 순서 정본: 04 §5(exit/shutdown 시 모든 pending을 정확히 한 번, 멱등 종료) + 07 §5.2(backend graceful shutdown: stdin EOF → grace poll → kill → child wait reap 후 반환) + 07 §5.3(child wait thread가 reap 후 `agent-runtime-exit` emit).
 
@@ -418,7 +418,7 @@ sequenceDiagram
         Adapter->>Adapter: 남은 pending RPC를 로컬에서 reject (wire 대기 해제)
     end
 
-    Note over Adapter: ② listener 해제 · 세션 삭제는 ①(pending 정리) 이후에만 수행
+    Note over Adapter: listener 해제·세션 삭제는 ③ agentRuntimeShutdown 반환(reap 완료) 이후에만 수행 — 그 전까지 listener 유지
     Adapter->>Transport: agentRuntimeShutdown(rt)
 
     rect rgb(230, 240, 230)
