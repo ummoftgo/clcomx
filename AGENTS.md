@@ -35,3 +35,18 @@ Do not continue iterative patching until that review loop is complete.
 - Keep review comments actionable: include the affected file or line, the observed issue, why it matters, and the recommended fix.
 - Order review findings by severity when multiple issues are reported: Critical, High, Medium, Low, Info.
 - Use English technical identifiers, API names, command names, and exact code symbols as written in the source when translating them would reduce precision.
+
+## Coding Conventions
+
+### File and directory layout
+
+- Split code by domain/feature across directories and files. Do not write long, monolithic single files — one file should carry one clear responsibility. This favors long-term maintainability.
+- Follow the existing layered split: frontend `features/<feature>/{view,controller,state,contracts,service}`; backend keeps thin command wrappers plus a `features/<x>/` module (for Tauri/Rust: `commands/<x>.rs` wrapper + `features/<x>/{mod,...}.rs`).
+- If a single file exceeds ~2000 lines — even for one cohesive feature — review whether it can be split into subclasses, submodules, or pure functions. This is a review obligation, not a hard mandate: keep it whole if splitting would hurt cohesion, but state that you checked.
+
+### Comments
+
+- Write comments in Korean, report-style and plain; avoid unnecessary jargon/slang (판교어). Keep English for technical identifiers, API names, and code symbols.
+- Give every class and function a language-appropriate doc-comment — PHP: PHPDoc; JS/TS: JSDoc; Rust: rustdoc (`///`) — stating the purpose in one line plus a brief note on each argument.
+- Add a short one-line Korean comment on key or non-obvious logic (branching, algorithms, lifecycle/cleanup, framing, etc.).
+- Avoid redundant or self-evident comments that merely restate the code.
