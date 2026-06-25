@@ -512,25 +512,36 @@ export interface JsonRpcError {
   data?: unknown;
 }
 
-/** process/transport 기동 파라미터. provider별 variant. command/args/env는 adapter 생성값만 허용. */
+/**
+ * process/transport 기동 파라미터. provider별 variant.
+ *
+ * **command 비제어 (S1 정본 — R4 allowlist 충돌 해소)**: renderer/adapter는 **실행 파일
+ * command를 넘기지 않는다**. backend가 `provider`로 신뢰 절대경로를 resolve한다(codex →
+ * resolve된 codex app-server 절대경로; claude → resolve된 node 절대경로). 동명 바이너리
+ * (`/tmp/codex`, `/tmp/node`) 우회를 원천 차단한다. adapter는 provider/distro/workDir/args/env만
+ * 채우며, 이 중 `args`만 검증 대상이고 `env`는 non-secret 전용이다(07 §5.1·§8.1, secret 경계는 09).
+ * - codex `args`: backend가 정확히 `["app-server","--stdio"]`로 검증(07 §8.1).
+ * - claude `args`: `args.length == 1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`
+ *   절대경로(`claude-agent-acp` `dist/index.js`). adapterEntryPath는 renderer 자유 입력이 아니라
+ *   backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록 절대경로)한다(06 §2.2, 07 §8.1).
+ * - command resolve 주체·캐시 무효화·adapterEntryPath 탐색 방식은 결정 필요(13).
+ */
 export type AgentRuntimeStartParams =
   | {
       transportKind: "jsonrpc-stdio";
       provider: "codex";
       distro: string;
       workDir: string;
-      command: string;
-      args: string[];
-      env?: Record<string, string>;
+      args: string[];   // backend 검증: 정확히 ["app-server","--stdio"]
+      env?: Record<string, string>; // non-secret 전용
     }
   | {
       transportKind: "jsonrpc-stdio";
       provider: "claude";
       distro: string;
       workDir: string;
-      command: string;
-      args: string[];
-      env?: Record<string, string>;
+      args: string[];   // backend 검증: [adapterEntryPath](절대경로, backend resolve)
+      env?: Record<string, string>; // non-secret 전용
     }
   | {
       transportKind: "websocket"; // Codex websocket, 검증 후 optional(1차 미구현 권고)
@@ -558,7 +569,7 @@ export interface AgentRuntimeSnapshot {
 }
 ```
 
-> `transportKind`(process/transport 실행 방식)와 `SessionRuntimeKind`(persistence)는 **별개 축**이다 (`07-tauri-process-runtime.md` §). `command`/`args`/`env`는 adapter가 생성한 검증된 값만 허용하고, Rust handler가 provider별 allowlist로 재검증한다(임의 executable/shell string 차단). 이는 PTY 대비 의도적 강화 지점으로 현 코드에 선례가 없다 (`research/codebase-backend.md` §6, §10 권고 6).
+> `transportKind`(process/transport 실행 방식)와 `SessionRuntimeKind`(persistence)는 **별개 축**이다 (`07-tauri-process-runtime.md` §). **command는 renderer가 넘기지 않는다(S1 정본)**: backend가 `provider`로 신뢰 절대경로를 resolve하므로, adapter는 `args`/`env`만 채운다. `args`는 adapter가 생성하되 Rust handler가 provider별로 **정확 일치 재검증**하고(codex `["app-server","--stdio"]`, claude `[adapterEntryPath]`), `env`는 non-secret 전용 + key allowlist로 재검증한다(임의 executable/shell string 차단; 07 §8.1, 신뢰 경계 정본 09). 이는 PTY 대비 의도적 강화 지점으로 현 코드에 선례가 없다 (`research/codebase-backend.md` §6, §10 권고 6).
 
 ### 8.2 Command 시그니처 (TS ↔ Rust 미러)
 
@@ -607,8 +618,12 @@ pub struct JsonRpcError {
 }
 
 // JsonRpcMessage: serde untagged로 4종 표현. jsonrpc는 Option(Codex는 생략).
+// S2 note: variant 필드(jsonrpc/id/method/params/result/error)는 모두 단일어 lowercase라
+//   camelCase와 동일하므로 직렬화 불일치가 없다. 그래도 다른 enum 미러와 일관성을 위해
+//   #[serde(rename_all_fields = "camelCase")](serde >= 1.0.181)를 명시한다(JSON-RPC wire
+//   필드명은 고정이므로 동작 변화 없음).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, rename_all_fields = "camelCase")]
 pub enum JsonRpcMessage {
     Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -639,35 +654,42 @@ pub enum JsonRpcMessage {
     },
 }
 
+// S2: variant 내부 필드(work_dir/auth_token)를 camelCase로 직렬화하려면 enum 레벨
+//     #[serde(rename_all = ...)](variant 이름만 변환)만으로는 부족하다 →
+//     #[serde(rename_all_fields = "camelCase")] 추가(serde >= 1.0.181).
+//     이게 없으면 TS workDir/authToken ↔ Rust work_dir/auth_token 역직렬화가 실패한다.
+//     S1: command 필드 제거(renderer 비제어). backend가 provider로 신뢰 절대경로를 resolve한다.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "transportKind", rename_all = "kebab-case")]
+#[serde(tag = "transportKind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
 pub enum AgentRuntimeStartParams {
     #[serde(rename = "jsonrpc-stdio")]
     JsonrpcStdio {
         provider: String, // "codex" | "claude"
         distro: String,
-        work_dir: String,
-        command: String,
-        args: Vec<String>,
+        work_dir: String,       // → "workDir"
+        // command 없음(S1): backend가 provider로 신뢰 절대경로 resolve(07 §8.1).
+        args: Vec<String>,      // backend 정확 검증(codex/claude provider별)
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        env: Option<std::collections::HashMap<String, String>>,
+        env: Option<std::collections::HashMap<String, String>>, // non-secret 전용
     },
     #[serde(rename = "websocket")]
     Websocket {
         provider: String, // "codex"
         distro: String,
-        work_dir: String,
+        work_dir: String,       // → "workDir"
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        auth_token: Option<String>,
+        auth_token: Option<String>, // → "authToken"
     },
 }
 
+// S2: variant 필드 request_id/turn_id를 camelCase(requestId/turnId)로 직렬화하려면
+//     rename_all_fields 필요(serde >= 1.0.181). tag/variant rename_all만으로는 필드명이 안 바뀐다.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentRuntimeCancelTarget {
-    Request { request_id: String },
-    Turn { turn_id: String },
+    Request { request_id: String }, // → "requestId"
+    Turn { turn_id: String },       // → "turnId"
     Process,
 }
 
@@ -685,6 +707,8 @@ pub struct AgentRuntimeSnapshot {
 ```
 
 > Rust 등록은 `commands/mod.rs`에 `pub mod agent_runtime;`, `lib.rs`에 `use` + `.manage(AgentRuntimeState::default())` + `generate_handler![]` 3곳을 손댄다 (`research/codebase-backend.md` §3.2). `AgentRuntimeState`는 PTY `PtyState`와 별도(`Mutex<HashMap<RuntimeId, AgentRuntime>>` + `next_id`)로 둔다(같은 문서 §10 권고 1).
+>
+> **S2 — enum variant 필드 camelCase (역직렬화 정합 정본)**: enum 레벨 `#[serde(rename_all = ...)]`은 **variant 이름만** 바꾸고 variant 내부 필드는 snake_case로 남는다. 따라서 variant 필드를 가진 enum 미러(`AgentRuntimeStartParams`의 `work_dir`/`auth_token`, `AgentRuntimeCancelTarget`의 `request_id`/`turn_id`, `AgentRuntimeEvent`의 `runtime_id`/`dropped_messages`, `JsonRpcMessage`)는 추가로 **`#[serde(rename_all_fields = "camelCase")]`**(또는 필드별 `#[serde(rename = "...")]`)를 붙여야 TS의 `workDir`/`requestId`/`runtimeId`/`droppedMessages` 등과 Tauri command/event payload가 1:1 역직렬화된다. 이게 없으면 역직렬화가 조용히 실패한다. `rename_all_fields`는 **serde >= 1.0.181**에서만 지원되므로 구현 전 `src-tauri/Cargo.toml`의 serde 버전을 확인한다(미만이면 필드별 `rename`으로 대체; 결정 필요 항목 [13](13-risks-open-questions.md) "serde 버전 확인"). **struct 미러**(`AgentRuntimeSnapshot`, `JsonRpcError`, `AgentRuntimeMetadataRecord`(§7.3))는 struct 레벨 `#[serde(rename_all = "camelCase")]`가 필드까지 적용되므로 추가 속성이 **불필요**하다(유지). round-trip(TS↔Rust) 테스트는 11이 필수화한다.
 
 ### 8.3 Event 계약 (Rust emit → frontend listen)
 
@@ -710,14 +734,17 @@ export type AgentRuntimeEvent =
 
 ```rust
 // Rust emit payload 미러 (features/agent_runtime/types.rs)
+// S2: variant 필드 runtime_id/dropped_messages를 camelCase(runtimeId/droppedMessages)로
+//     직렬화하려면 rename_all_fields 필요(serde >= 1.0.181). tag/variant rename_all만으로는
+//     필드명이 snake_case로 남아 frontend listen payload 역직렬화가 깨진다.
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentRuntimeEvent {
-    Message { runtime_id: RuntimeId, message: JsonRpcMessage },
+    Message { runtime_id: RuntimeId, message: JsonRpcMessage }, // → "runtimeId"
     Stderr { runtime_id: RuntimeId, line: String },
     Exit { runtime_id: RuntimeId, #[serde(skip_serializing_if = "Option::is_none")] code: Option<i32>, #[serde(skip_serializing_if = "Option::is_none")] signal: Option<String> },
     Error { runtime_id: RuntimeId, message: String, recoverable: bool },
-    Backpressure { runtime_id: RuntimeId, dropped_messages: u64 },
+    Backpressure { runtime_id: RuntimeId, dropped_messages: u64 }, // → "droppedMessages"
 }
 ```
 

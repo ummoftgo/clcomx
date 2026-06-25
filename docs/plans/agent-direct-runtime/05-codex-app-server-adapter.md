@@ -30,7 +30,7 @@ CLCOMX는 hexagonal 경계를 둔다([03](03-target-architecture.md) §Provider 
 
 - process spawn / stdio framing / stderr 캡처 / bounded queue: Rust backend(`agent_runtime_*` command, 15 §8 / [07](07-tauri-process-runtime.md)). 어댑터는 **raw JSON-RPC만** `agentRuntimeSend`로 내보내고 `agent-runtime-message`로 받는다(15 §8.3). protocol 의미 해석은 backend가 하지 않는다.
 - transcript store 적용(upsert 실제 mutation): `agent-runtime-controller` + `transcript-reducer`([`research/codebase-frontend.md`](research/codebase-frontend.md) §8). 어댑터는 `AgentEvent`를 emit만 하고 store를 직접 만지지 않는다.
-- WSL path canonicalize / executable allowlist: backend command handler(15 §8.1 주석, [07](07-tauri-process-runtime.md) §WSL/Windows 경계). 어댑터는 검증된 `command`/`args`만 만든다.
+- WSL path canonicalize / executable resolve / allowlist: backend command handler([07](07-tauri-process-runtime.md) §8.1, §WSL/Windows 경계). **S1 정본**: 어댑터는 실행 파일 `command`를 **만들지 않는다** — backend가 `provider`로 신뢰 절대경로를 resolve한다. 어댑터는 `args`(검증 대상)와 `env`(non-secret)만 채운다(§2.2).
 - UI 렌더(tool card/approval dialog): [08](08-ui-composition.md).
 
 > 결론: 이 어댑터는 **순수 변환 + lifecycle 상태 기계**다. I/O는 transport 래퍼(15 §8.2의 `agentRuntimeSend`/`agentRuntimeStart` 등)를 통해서만 한다([`research/codebase-frontend.md`](research/codebase-frontend.md) §4.1). 직접 `@tauri-apps/api`를 import하지 않는다(15 §0.6).
@@ -83,7 +83,7 @@ ref-codex §1.1(로컬 `codex app-server --help` 0.142.0 실행 결과)에 근�
 
 1. stdio + newline-delimited JSON-RPC를 **유일한 1차 transport**로 한다(`transportKind: "jsonrpc-stdio"`, 15 §8.1). websocket(`ws://`)은 검증 후 optional, 1차 미구현([07](07-tauri-process-runtime.md) §Runtime 종류, [13](13-risks-open-questions.md)).
 2. `codex exec` JSONL SDK 경로는 fixture 참고로만 쓰고 런타임 경로로 쓰지 않는다(ref-codex §10 마지막 항목 — SDK는 app-server JSON-RPC와 1:1이 아닐 수 있음).
-3. WSL 경계 유지: backend가 **로그인 셸 비경유(shell-less)** 정본으로 띄운다 — `wsl.exe -d <distro> --cd <wslWorkDir> -e codex app-server --stdio`(executable=`codex`, argv=`["app-server","--stdio"]`). 07 §5.1 launch 정본(`wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <executable> <argv...>`)과 동일 형태이며, non-secret env가 없으면 `env KEY=VAL` prefix 없이 `-e codex …`로 직접 exec한다([07](07-tauri-process-runtime.md) §5.1, §8). 기존 PTY가 쓰던 `bash -li -c "<cmd>"` 형태(로그인 셸 경유)는 **쓰지 않는다** — rc 파일 stdout 출력이 JSON-RPC framing(purity)을 깨뜨릴 위험을 셸 비경유로 원천 차단한다(07 §5.1 OQ-28 해소 주석, 06 §2.3와 일치). executable basename `codex`는 backend allowlist `CODEX_ALLOWED_EXE = {codex}`(절대경로 허용)로 재검증된다(07 §8.1).
+3. WSL 경계 유지: backend가 **로그인 셸 비경유(shell-less)** 정본으로 띄운다 — `wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <codexAbsPath> app-server --stdio`(executable=**backend가 resolve한 codex 신뢰 절대경로(S1)**, argv=`["app-server","--stdio"]`). 07 §5.1 launch 정본(`wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <executable> <argv...>`)과 동일 형태이며, non-secret env가 없으면 `env KEY=VAL` prefix 없이 `-e <codexAbsPath> …`로 직접 exec한다([07](07-tauri-process-runtime.md) §5.1, §8). 기존 PTY가 쓰던 `bash -li -c "<cmd>"` 형태(로그인 셸 경유)는 **쓰지 않는다** — rc 파일 stdout 출력이 JSON-RPC framing(purity)을 깨뜨릴 위험을 셸 비경유로 원천 차단한다(07 §5.1 OQ-28 해소 주석, 06 §2.3와 일치). **S1 정본**: executable은 renderer가 넘기지 않으며 backend가 `provider="codex"`로 신뢰 절대경로를 resolve해 R4 절대경로 allowlist로 재검증한다(07 §8.1 — basename 비교 폐지; 동명 `/tmp/codex` 거부). args는 backend가 정확히 `["app-server","--stdio"]`로 재검증한다(07 §8.1).
 
 **미확정 → [13](13-risks-open-questions.md)**:
 
@@ -92,7 +92,7 @@ ref-codex §1.1(로컬 `codex app-server --help` 0.142.0 실행 결과)에 근�
 
 ### 2.2 launch params 생성 (`codex-launch.ts`)
 
-어댑터는 `command`/`args`/`env`를 직접 만들어 `AgentRuntimeStartParams`(15 §8.1, `transportKind:"jsonrpc-stdio"`, `provider:"codex"`)로 backend에 넘긴다. backend는 provider별 allowlist로 재검증한다(15 §8.1 주석, [`research/codebase-backend.md`](research/codebase-backend.md) §6·§10 권고 6).
+**S1 정본**: 어댑터/renderer는 **실행 파일 `command`를 생성하지 않는다**. renderer는 untrusted이므로 `AgentRuntimeStartParams`(15 §8.1)에서 `command` 필드가 제거되었고, backend가 `provider`로 **신뢰 절대경로를 resolve**한다(`codex` → backend가 resolve·캐시한 `codex` app-server 절대경로). 동명 바이너리(`/tmp/codex`) 우회는 불가하다(07 §8.1 R4 — basename 비교 폐지, 절대경로·정확 args·env key allowlist). 어댑터는 `provider`/`distro`/`workDir`/`args`(검증 대상)/`env`(non-secret)만 넘기고, backend가 provider별 allowlist로 재검증한다([07](07-tauri-process-runtime.md) §8.1, [`research/codebase-backend.md`](research/codebase-backend.md) §6·§10 권고 6).
 
 ```ts
 // adapters/codex/codex-launch.ts
@@ -101,7 +101,6 @@ import type { AgentRuntimeStartParams } from "../../service/transport";
 export interface CodexLaunchInput {
   distro: string;
   workDir: string;            // WSL absolute path (backend가 canonicalize, 07 §WSL 경계)
-  codexBin?: string;          // 기본 "codex" (PATH). settings로 override 가능 (결정 필요, 13)
   extraEnv?: Record<string, string>;  // ⚠️ non-secret env 전용(07 §5.1·09). secret(API key/token/header)은
                                       //    argv 경유 금지 — env() + WSLENV passthrough만(07/09, OQ-28).
 }
@@ -112,17 +111,20 @@ export function buildCodexStartParams(input: CodexLaunchInput): AgentRuntimeStar
     provider: "codex",
     distro: input.distro,
     workDir: input.workDir,
-    command: input.codexBin ?? "codex",
+    // S1 정본: command 미생성. backend가 provider="codex"로 신뢰 절대경로(codex app-server)를
+    //   resolve·재검증한다(07 §8.1 validate_and_extract; renderer 비제어).
     // ref-codex §1.1: stdio 기본. 명시적으로 --stdio 부여(실험 플래그 불필요).
-    // 07 §5.1 정본: backend는 이 값을 셸 비경유로 `wsl.exe -d <distro> --cd <workDir> -e codex app-server --stdio`로 exec한다.
-    args: ["app-server", "--stdio"],
-    env: input.extraEnv,          // non-secret 전용(07 §5.1·09). secret은 argv 비경유(env()+WSLENV).
+    // 07 §5.1 정본: backend는 셸 비경유로
+    //   `wsl.exe -d <distro> --cd <workDir> -e env … <codexAbsPath> app-server --stdio`로 exec한다.
+    args: ["app-server", "--stdio"],   // 07 §8.1: backend가 정확히 ["app-server","--stdio"]로 재검증.
+    env: input.extraEnv,               // non-secret 전용(07 §5.1·09). secret은 argv 비경유(env()+WSLENV).
   };
 }
 ```
 
+> **S1 — `command` 미생성 (정본)**: codex 실행 파일은 backend가 `provider`로 resolve한 신뢰 절대경로를 사용한다(07 §8.1 `resolve_trusted_executable`/`validate_and_extract`: backend resolve 또는 사전 등록 절대경로 화이트리스트와 정확 일치). renderer가 `command`/`codexBin`을 넣을 경로 자체가 없어 동명 바이너리(`/tmp/codex`) 우회가 불가하다. resolve 주체·캐시 무효화·`codex` 탐색 방식은 [13](13-risks-open-questions.md) "command/entry resolve 주체"에 결정 필요로 등록.
 > `args`에 `--experimental`을 넣지 않는다(ref-codex §1.1: 기동에 불필요). experimental 필드가 필요해지면 `initialize.capabilities`로 opt-in해야 하며 이는 v1 범위 밖([13](13-risks-open-questions.md)).
-> `codexBin` 절대경로/버전 확인은 startup preflight에서 별도 수행한다([11](11-testing-acceptance.md), [09](09-permissions-security.md)). 로컬 `codex --version`과 pinned ref 일치(`0.142.0`)는 ref-codex §0에 기록.
+> codex 절대경로/버전 확인은 backend resolve 시점·startup preflight에서 수행한다([11](11-testing-acceptance.md), [09](09-permissions-security.md)). 로컬 `codex --version`과 pinned ref 일치(`0.142.0`)는 ref-codex §0에 기록.
 
 ### 2.3 핸드셰이크 시퀀스 (의사코드)
 
@@ -901,22 +903,50 @@ case "backpressure":  emit { type:"error", ref:{provider:"codex"},
 
 ```text
 handleExit(code?, signal?):                                // §3.2 "exit"
-  // 04 §5: process_exited는 모든 pending request(approval 포함)를 실패로 닫는다
-  for reqId in routing.allPendingApprovalIds():
-     routing.resolveApproval(reqId)
-     // 이미 process 죽음 → wire 응답 불가. 내부적으로만 닫고 UI에 cancelled 표시.
-     emitToListeners({ type:"approval_resolved",
-                       ref:{provider:"codex", requestId:reqId},
-                       decision:{ requestId:reqId, outcome:"failed" } }) // 내부 전용(04 §4.2 규칙4)
-  for [id, p] in pendingRpc: p.reject(new Error("process exited"))       // §3.1 pending RPC 실패
+  // S3 정본(04 §5): process exit으로 인한 pending 종료는 shutdown과 공용 루틴·멱등 가드를 공유한다.
+  //   process가 이미 죽었으므로 wire 응답 불가 → 내부 전용 outcome으로 닫는다(reason="exit").
+  closePending(handle, "exit")                             // 아래 공용 루틴(rt.closed 가드로 정확히 한 번)
   emitToListeners({ type:"process_exited", ref:{provider:"codex"}, code, signal })
 
 shutdown(handle):                                          // 15 §6
-  // graceful: backend가 stdin close → timeout → kill (07 §Process lifecycle)
+  // S3 정본(04 §5·14): agent_runtime_shutdown을 authoritative cleanup 경계로 본다.
+  //   (a) shutdown 호출 **전에** 모든 pending을 어댑터가 정확히 한 번 닫는다(멱등).
+  //   (b) 그 다음에야 graceful shutdown(backend)·unlisten·세션 삭제를 한다.
+  rt = sessions.get(handle); if !rt or rt.closed: return   // 멱등: 이미 닫힌 세션이면 no-op(이중 종료 금지)
+
+  // (a) shutdown 전에 pending 정리 — closePending(handle, reason="shutdown") (아래)
+  //     이미 handleExit이 닫았으면(rt.closed) 위 가드로 진입 안 함 → 정확히 한 번만 수행.
+  closePending(handle, "shutdown")
+
+  // (b) graceful: backend가 stdin close → timeout → kill → child reap 까지 끝낸 뒤 반환(07 §5.2).
+  //     최종 exit이 반영·계상된 후에만 teardown이 일어나도록 backend가 reap 후 반환한다.
   await deps.shutdown(runtimeId)
+
+  // (c) reap 이후에만 listener 해제·세션 삭제(pending은 이미 (a)에서 닫힘 → 늦은 exit로도 누락 없음).
   for u in unlistens: u()                                  // listener 해제
+  rt.closed = true                                         // 멱등 가드 확정
   sessions.delete(handle)
+
+// S3 정본: exit/shutdown 공용 pending 종료 루틴. 정확히 한 번·멱등(04 §5·§4.2 규칙2).
+//   handleExit(§위)과 shutdown(여기)이 같은 루틴을 호출하며, rt.closed 가드로 이중 종료/누락을 막는다.
+closePending(handle, reason):                              // reason: "exit" | "shutdown"
+  rt = sessions.get(handle); if !rt or rt.closed: return   // 멱등(이미 닫힘이면 no-op)
+  // (1) 모든 pending approval을 닫는다(server→client request; pending RPC와 별개).
+  //   - reason="shutdown": process가 아직 살아있으므로 cancelled 응답을 wire로 보낼 수 있다(04 §4.2).
+  //       단 shutdown은 곧 stdin close→kill이므로, wire 응답 송신은 best-effort이고 내부 종료가 권위.
+  //   - reason="exit": process가 이미 죽어 wire 응답 불가 → 내부 전용 outcome:"failed"만(04 §4.2 규칙4).
+  outcome = reason == "shutdown" ? "cancelled" : "failed"  // 04 §4.2 규칙2(shutdown) / 규칙4·§5(exit, 내부 전용)
+  for reqId in routing.allPendingApprovalIds():
+     routing.resolveApproval(reqId)                         // closing→closed(멱등 가드)
+     emitToListeners({ type:"approval_resolved",
+                       ref:{provider:"codex", requestId:reqId},
+                       decision:{ requestId:reqId, outcome } })
+  // (2) pending RPC를 로컬에서 reject(§3.1) — 응답이 영구히 안 오므로.
+  for [id, p] in pendingRpc: p.reject(new Error(reason + ": runtime closing"))
+  pendingRpc.clear()
 ```
+
+> **S3 — shutdown cleanup 경계 (정본, 04 §5·14)**: `agent_runtime_shutdown`은 authoritative cleanup 경계다. **(a)** 어댑터는 shutdown 호출 **전에** 모든 pending approval을 cancelled로 닫고(04 §4.2) pending RPC를 로컬에서 reject한 뒤, **(b)** backend shutdown(graceful stdin close → timeout → kill → **child reap 후 반환**, 07 §5.2)을 await하고, **(c)** 그 다음에 listener 해제·세션 삭제를 한다. 이렇게 해야 최종 exit이 반영·계상된 후에만 teardown이 일어나 늦은 exit로 인한 pending 누락이 없다. **(c-멱등)** exit/shutdown 어느 경로로 pending이 닫히든 `rt.closed` 가드로 정확히 한 번만 수행한다(이중 종료/누락 없음, 04 §5). `handleExit`(§위)도 `closePending(handle, "exit")` 공용 루틴을 거치며 동일 가드를 공유한다.
 
 에러 처리 시나리오(기존 05 초안 보존·확장):
 
@@ -941,7 +971,8 @@ mapper/routing은 순수 함수/plain class라 vitest로 단독 테스트([`rese
 7. **serverRequest/resolved**(ref-codex §4.4): pending approval을 사용자 응답 없이 닫고 `approval_resolved{cancelled}`.
 8. **enum 변환**(§5.5): ThreadStatus/TurnStatus/CommandExecutionStatus/TurnPlanStepStatus 전 분기 매핑.
 9. **token usage 결합**(§5.6): `thread/tokenUsage/updated` 후 `turn/completed`에 `usage` 동승.
-10. **process exit**(04 §5): pending approval/RPC 모두 닫히고 `process_exited` emit.
+10. **process exit**(04 §5): pending approval/RPC 모두 닫히고 `process_exited` emit. exit과 shutdown은 공용 `closePending` 루틴 + `rt.closed` 가드를 공유해 **정확히 한 번**만 닫는다(이중 종료/누락 없음).
+11. **shutdown 경계**(S3, 04 §5·14): pending approval 있는 상태에서 `shutdown` → (a) `agent_runtime_shutdown` 호출 **전에** pending approval이 `approval_resolved{cancelled}`로 닫히고 pending RPC가 reject된 뒤, (b) `deps.shutdown` await, (c) 그 다음 unlisten·세션 삭제 순서. shutdown 후 늦은 exit이 도착해도 `rt.closed` 가드로 pending이 **재차 닫히거나 누락되지 않음**(멱등).
 
 수용 기준: 위 10케이스 + `jsonrpc` 필드 미포함 검증(ref-codex §1.2) + raw 보존 검증(15 §0.2). [11](11-testing-acceptance.md)에 통합.
 

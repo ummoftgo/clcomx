@@ -66,30 +66,35 @@ src/lib/features/agent-runtime/
 
 ACP transport는 **stdio**다(ref-acp §1 stdio transport, ref-claude-agent-acp §1 "ACP transport는 stdio"). CLCOMX는 `wsl.exe`를 통해 WSL 안에서 node bin을 실행하고, stdin/stdout으로 newline-delimited JSON-RPC 2.0만 주고받는다. stderr는 log stream으로 분리한다.
 
-backend가 받는 기동 파라미터는 정본 `AgentRuntimeStartParams`(15 §8.1)의 `jsonrpc-stdio` + `provider:"claude"` variant다. 어댑터는 이 값을 **생성만** 하고, Rust handler가 provider별 allowlist로 재검증한다([`research/codebase-backend.md`](research/codebase-backend.md) §6, §10 권고 6, 15 §8.1 주석).
+backend가 받는 기동 파라미터는 정본 `AgentRuntimeStartParams`(15 §8.1)의 `jsonrpc-stdio` + `provider:"claude"` variant다. **renderer/adapter는 실행 파일 `command`를 넘기지 않는다**(S1 정본, R4). backend가 provider로 신뢰 절대경로를 resolve한다 — `claude`는 backend가 resolve한 신뢰 `node` 절대경로다. 어댑터는 `provider`/`distro`/`workDir`/`args`(검증 대상)/`env`(non-secret)만 넘기고, Rust handler가 provider별 allowlist로 command(절대경로)·args(정확 일치)·env key를 재검증한다([`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §8.1, [`research/codebase-backend.md`](research/codebase-backend.md) §6, §10 권고 6, 15 §8.1 주석). 동명 바이너리(`/tmp/node`)로 우회할 수 없다.
 
-### 2.2 executable + argv 결정 (WSL, absolute path 필수)
+### 2.2 argv 결정 (WSL, absolute path 필수; executable은 backend resolve)
+
+> **S1 정본 (command 비제어)**: adapter는 실행 executable(`node` 절대경로)을 **생성하지 않는다**. backend가 provider=`claude`로 신뢰 `node` 절대경로를 resolve한다(R4, 07 §8.1). adapter가 제어하는 것은 `args`(= `[adapterEntryPath]`, 검증 대상)·`distro`·`workDir`·`env`(non-secret)뿐이다. `adapterEntryPath`도 renderer 자유 입력이 아니라 backend가 resolve/검증하는 절대경로다.
 
 ref-claude-agent-acp §1·§5에서 확정된 사실:
 
 - bin은 `dist/index.js` **하나뿐**이고 transport 선택용 CLI 플래그가 없다(stdio 기본). 어댑터가 argv로 해석하는 건 `--cli`, `--hide-claude-auth`뿐.
-- shebang은 `#!/usr/bin/env node`. nvm 등으로 node가 비표준 경로면 **node 절대경로를 직접 쓰는 편이 안전**(ref-claude-agent-acp §5).
-- **npx는 비권장**(첫 실행 fetch/resolve 지연·비결정성, ref-claude-agent-acp §1 실행 커맨드 표). 1차 backend allowlist(07 §8.1 `CLAUDE_ALLOWED_EXE`)는 **node(절대경로) + adapterEntryPath만 허용**하고 npx는 제외한다(D9). npx 허용은 후속(optional)로만 검토.
+- shebang은 `#!/usr/bin/env node`. nvm 등으로 node가 비표준 경로면 node 절대경로 실행이 안전하나, **이 node 절대경로 resolve는 renderer가 아니라 backend의 책임**이다(S1 정본, R4). adapter는 node 경로를 만들지 않는다(ref-claude-agent-acp §5, 07 §8.1).
+- **npx는 비권장**(첫 실행 fetch/resolve 지연·비결정성, ref-claude-agent-acp §1 실행 커맨드 표). 1차 backend allowlist(07 §8.1)는 **backend-resolve한 node(신뢰 절대경로) + 검증된 `adapterEntryPath`(절대경로)만 허용**하고 npx는 제외한다(D9). `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록 절대경로)해 검증하는 대상이다(아래 resolve note, 07 §8.1 `is_trusted_adapter_entry_path`). npx 허용은 후속(optional)로만 검토.
 - claude native 바이너리는 SDK 번들 optional dependency. `--omit=optional` 설치 금지(ref-claude-agent-acp §1 "claude native binary 해석").
 
-`buildClaudeAcpLaunchParams`가 만드는 값(권장 = 직접 node 실행):
+`buildClaudeAcpLaunchParams`가 만드는 값(command 미생성 — backend resolve):
 
 ```ts
 // src/lib/features/agent-runtime/adapters/claude-acp/claude-acp-launch.ts
-import type { AgentRuntimeStartParams } from "../../service/transport"; // 15 §8.1 정본
+import type { AgentRuntimeStartParams } from "../../service/transport"; // 15 §8.1 정본 (command 필드 없음, S1)
 
 export interface ClaudeAcpLaunchConfig {
   distro: string;
   /** WSL absolute path. ACP cwd는 absolute 필수(§7.3). */
   workDir: string;
-  /** WSL 안 node 절대경로(예: which node 결과). 미지정이면 backend가 resolve(아래 주의). */
-  nodePath?: string;
-  /** WSL 안 claude-agent-acp dist/index.js 절대경로. */
+  /**
+   * WSL 안 claude-agent-acp dist/index.js 절대경로.
+   * **renderer 자유 입력이 아니다(S1)**: backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록 절대경로)해
+   * `is_trusted_adapter_entry_path`로 검증하는 대상이다(07 §8.1, §2.2 resolve note). adapter는 backend가
+   * resolve해 deps.resolveLaunch(§4.1)로 돌려준 값을 args[0]에 실어 전달할 뿐 임의 경로를 생성하지 않는다.
+   */
   adapterEntryPath: string;
   /**
    * **non-secret env 전용**(C1 보안 경계, 07 §5.1 / 09 정본). 비민감 모델 플래그 등만 싣는다.
@@ -107,10 +112,10 @@ export function buildClaudeAcpLaunchParams(cfg: ClaudeAcpLaunchConfig): AgentRun
     provider: "claude",
     distro: cfg.distro,
     workDir: cfg.workDir,
-    // command/args는 backend가 wsl.exe로 감싼다(아래 2.3). 여기서는 WSL 내부에서 실행할
-    // executable + argv를 넘긴다. backend allowlist(07 §8.1 CLAUDE_ALLOWED_EXE)는
-    // provider="claude"일 때 1차로 node(절대경로) + adapterEntryPath만 허용한다(npx 미허용, D9).
-    command: cfg.nodePath ?? "node",
+    // S1 정본: command(node)를 **생성하지 않는다**. backend가 provider="claude"로 신뢰 node 절대경로를
+    // resolve한다(R4, 07 §8.1 resolve_trusted_executable). 15 §8.1 AgentRuntimeStartParams에는 command 필드가
+    // 없다 — renderer 비제어. adapter가 제어하는 실행 대상은 args[0]=adapterEntryPath(검증된 절대경로)뿐이다.
+    // backend allowlist(07 §8.1)는 claude일 때 args.length==1 && args[0]==검증된 adapterEntryPath를 요구한다.
     args: [cfg.adapterEntryPath],
     // C1 경계: env는 non-secret 전용이다(07 §5.1 `-e env KEY=VAL` argv 경로 = OS 관측면 노출).
     // ANTHROPIC_API_KEY 등 secret은 절대 싣지 않는다 — secret이 필요하면 backend가
@@ -120,21 +125,25 @@ export function buildClaudeAcpLaunchParams(cfg: ClaudeAcpLaunchConfig): AgentRun
 }
 ```
 
+> **command 비제어 (S1 정본, 15 §8.1 동기화)**: 15 §8.1 `AgentRuntimeStartParams`의 `jsonrpc-stdio`+`provider:"claude"` variant에서 `command` 필드는 **제거**된다(renderer 비제어, TS+Rust 미러 동일). 따라서 `buildClaudeAcpLaunchParams`도 `command`/`nodePath`를 만들지 않는다. backend가 provider로 신뢰 node 절대경로를 resolve하고(07 §8.1 `resolve_trusted_executable`), `args[0]`(adapterEntryPath)는 backend가 resolve/검증한 절대경로와 정확 일치해야 한다. 동명 바이너리(`/tmp/node`) 및 임의 `.js` 우회는 거부된다(07 §8.1 3-claude).
+
 > **secret env 경계 (C1 정본, 07 §5.1 / 09 인용)**: `buildClaudeAcpLaunchParams`가 만드는 `env`(= `AgentRuntimeStartParams.env`, 15 §8.1)는 backend에서 `wsl.exe … -e env KEY=VAL …` argv로 흐른다(07 §5.1). argv는 OS 관측면(`ps`, `/proc/<pid>/cmdline`, WSL process 목록)에 평문으로 남으므로 **secret(API key/OAuth token/gateway header/session cookie)을 절대 싣지 않는다** — §9 redaction으로도 막을 수 없다. 따라서 이 env는 **non-secret 전용**이다. secret 전달은 §3.3의 정본 경로(v1은 claude WSL 자체 인증 의존, gateway 등으로 꼭 필요하면 backend `std::process::Command::env()`+`WSLENV` passthrough = argv 비경유)를 따른다. 15 §8.1 타입 자체는 재정의하지 않으며 신뢰 경계 정본은 [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §5.1·[`09-permissions-security.md`](09-permissions-security.md)다.
 >
-> **node/entry 경로 resolve (결정 필요)**: WSL 안에서 `node` 절대경로와 `dist/index.js` 절대경로를 누가 어떻게 구하는가? 후보:
+> **node/entry 경로 resolve (S1 정본: backend resolve; 세부 방식은 결정 필요)**: `node` 절대경로와 `dist/index.js`(`adapterEntryPath`) 절대경로는 **모두 backend가 resolve/검증하는 대상이며 renderer/adapter가 생성하지 않는다**(S1, R4, 07 §8.1). adapter는 backend가 resolve해 `deps.resolveLaunch`(§4.1)로 돌려준 `adapterEntryPath`만 `args[0]`에 싣는다. backend resolve 후보:
 > 1. CLCOMX가 자체 번들한 `node_modules`를 WSL에서 접근 가능한 경로(예: 앱 리소스를 WSL mount 경로로)로 두고 절대경로 고정.
 > 2. WSL 안 user 글로벌 설치(`npm i -g @agentclientprotocol/claude-agent-acp`)를 `which`로 resolve.
 > 3. backend가 `wsl.exe -d <distro> -e bash -lc "command -v node"` / `node -e "console.log(require.resolve(...))"`로 1회 resolve 후 캐시.
-> WSL과 Windows는 홈/노드 설치가 다르므로 어느 쪽 node·패키지를 쓰는지 명확히 해야 한다(ref-claude-agent-acp §5 "node 위치", "자격증명 경로"). 1차 구현 권고: **방식 3(backend resolve) + 캐시**, 실패 시 명확한 setup 에러. → [`13-risks-open-questions.md`](13-risks-open-questions.md).
+> WSL과 Windows는 홈/노드 설치가 다르므로 어느 쪽 node·패키지를 쓰는지 명확히 해야 한다(ref-claude-agent-acp §5 "node 위치", "자격증명 경로"). 1차 구현 권고: **방식 3(backend resolve) + 캐시**, 실패 시 명확한 setup 에러. resolve 주체·캐시 무효화·adapterEntryPath 탐색 방식은 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md)("command/entry resolve 주체"). 어느 방식이든 결과 절대경로를 backend가 `resolve_trusted_executable`(node)·`is_trusted_adapter_entry_path`(entry)로 재검증한다(07 §8.1).
 
 ### 2.3 backend가 조립하는 실제 WSL 커맨드
 
 backend(`features/agent_runtime/process.rs`)는 PTY와 동일한 WSL 경계를 유지하되 PTY가 아니라 piped stdio로 띄운다([`research/codebase-backend.md`](research/codebase-backend.md) §5.1, §9). 정본 커맨드 형태는 **로그인 셸 비경유 직접 실행**이다([`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §5.1 backend 정본):
 
 ```
-wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY1=V1 KEY2=V2 <nodePath> <adapterEntryPath> <argv...>
+wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY1=V1 KEY2=V2 <backend-resolved node 절대경로> <adapterEntryPath> <argv...>
 ```
+
+> executable(`node` 절대경로)은 adapter가 넘기지 않고 **backend가 provider로 resolve한 신뢰 절대경로**다(S1, 07 §8.1). adapter가 제어하는 argv는 `[adapterEntryPath]`(검증된 절대경로)뿐이다.
 
 - `--cd <wslWorkDir>`로 cwd를 설정한다(셸 `cd` 불필요, OQ-27 해소).
 - `env KEY=VAL ...`는 WSL 실제 `env(1)` 바이너리로, 셸 메타문자 해석 없이 환경변수를 그대로 주입한다(OQ-28 해소). node/argv는 그 뒤에 직접 온다.
@@ -372,8 +381,12 @@ export interface ClaudeAcpAdapterDeps {
   shutdownRuntime(runtimeId: RuntimeId): Promise<void>;
   /** 15 §8.3 agent-runtime-* 이벤트 구독. */
   subscribeRuntime(runtimeId: RuntimeId, handler: (e: AgentRuntimeEvent) => void): UnlistenFn;
-  /** WSL node/entry 경로 resolve(§2.2 결정 필요). */
-  resolveLaunch(p: StartSessionParams | ResumeSessionParams): Promise<{ nodePath?: string; adapterEntryPath: string; env?: Record<string, string> }>;
+  /**
+   * WSL entry 경로 resolve(§2.2). S1 정본: `node` 절대경로(command)는 backend가 resolve하고 start params에
+   * 싣지 않으므로 여기서 돌려주지 않는다. adapter가 받는 값은 backend가 resolve/검증할 `adapterEntryPath`
+   * (args[0]에 실음) + non-secret env뿐이다.
+   */
+  resolveLaunch(p: StartSessionParams | ResumeSessionParams): Promise<{ adapterEntryPath: string; env?: Record<string, string> }>;
   /** 단조 증가 JSON-RPC id 발급기. */
   nextRequestId(): number;
   /** 앱 버전(initialize clientInfo). */
@@ -456,9 +469,20 @@ async function cancelTurn(handle, turnId?) {
 > `PendingApproval`에 `closing` 표시 필드를 둔다(어댑터 내부 전용, `contracts/claude-acp.ts`). `respondApproval`(§6.2)도 `closing`/부재 시 멱등 무시한다.
 > cleanup 누락은 approval deadlock 위험([`13-risks-open-questions.md`](13-risks-open-questions.md) "Approval deadlock"). cancel 시 모든 pending approval에 `cancelled` 응답은 ACP MUST(ref-acp §3.8, 04 §4.2 규칙 1).
 
-### 4.4 shutdown
+### 4.4 shutdown (authoritative cleanup 경계, S3)
 
-graceful: stdin close(EOF) → timeout → kill([`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §Process lifecycle). backend `agentRuntimeShutdown`(15 §8.2)이 수행. shutdown/`process_exited` 시 **모든 pending request·approval을 실패로 닫는다**(04 §5, ref-acp §13.1). 어댑터는 `agent-runtime-exit` 수신 시 `emit { type:"process_exited", ref, code?, signal? }`하고 pending table을 정리한다.
+`agent_runtime_shutdown`을 **authoritative cleanup 경계**로 정의한다(S3 정본). pending 종료는 멱등하며 정확히 한 번만 수행된다(이중 종료/누락 없음). 순서·멱등 규칙의 권위는 04 §5, 14다.
+
+**(a) adapter — shutdown 호출 전 pending 종료 후 listener 해제**: 어댑터는 `deps.shutdownRuntime`(15 §8.2 `agentRuntimeShutdown`)을 부르기 **전에**:
+1. 모든 pending approval을 `cancelled`로 닫는다(04 §4.2/§5, ref-acp §3.8 MUST). §4.3/§6.3 cleanup과 동일한 `closing` 표시 + wire cancelled 응답(가능하면) + `approval_resolved{cancelled}` emit + table 제거 경로를 쓴다.
+2. pending RPC(client→agent 요청, `pendingRequests`)를 **로컬에서 reject**한다(응답을 더 못 받으므로 `error`/실패로 settle).
+3. 그 뒤에 `subscribeRuntime`의 `UnlistenFn`을 호출해 listener를 해제하고 세션 런타임(`ClaudeAcpSessionRuntime`)을 삭제한다.
+
+   순서가 핵심이다 — **pending 종료가 unlisten/세션 삭제보다 먼저**여야 늦은 exit/응답이 와도 pending이 이미 정리돼 있고, listener 해제 후 도착하는 메시지로 인한 누락이 없다.
+
+**(b) backend — reap 후 반환**: backend `agent_runtime_shutdown`은 graceful stdin close(EOF) → grace timeout → kill → **child reap(`wait`)까지 끝낸 뒤 반환**한다(07 §5.2/§5.3). 최종 exit이 반영·계상된 후에만 teardown(HashMap 제거 등)이 일어난다.
+
+**(c) 멱등·정확히 한 번**: exit(`agent-runtime-exit`)으로 인한 pending 종료와 shutdown으로 인한 pending 종료는 **멱등하며 정확히 한 번만** 수행된다. 어댑터는 `agent-runtime-exit` 수신 시 `emit { type:"process_exited", ref, code?, signal? }`하고 남은 pending approval/request를 닫되, 이미 (a)에서 닫힌 항목은 `closing`/closed 표시로 멱등 무시한다(04 §4.2 규칙 4, §5). exit이 shutdown보다 먼저 오든 나중에 오든 같은 pending을 두 번 닫지 않고, 어느 경로로도 빠뜨리지 않는다.
 
 > ACP는 `session/close`(`sessionCapabilities.close`)도 있다(ref-acp §2). 1차는 process shutdown으로 충분하나, 한 process에 여러 session을 둘 경우 session별 close가 필요할 수 있다(`결정 필요`, 13).
 
@@ -645,11 +669,11 @@ async function respondApproval(handle, decision: ApprovalDecision) { // 15 §5
 04 §4.2가 권위. 요약:
 1. `cancelTurn`/`turn_completed{cancelled}` 시 해당 turn의 pending approval을 원자적으로 `closing` 표시 → 각 approval에 `cancelled` 응답을 wire로 **먼저** 보내고(`approval_resolved` emit + table 제거) → 그 다음 `session/cancel` notification(§4.3). approval-first → session/cancel 순서가 정본이다. ACP MUST(ref-acp §3.8).
 2. cancel 이후 도착하는 늦은 resolved/stopReason/동일 requestId 응답은 멱등 무시(이미 `closing`/closed). `respondApproval`도 `closing`/부재 시 무시(§6.2).
-3. `process_exited` 시 모든 pending approval/request를 실패로 닫음(04 §5).
-4. ACP에는 Codex `serverRequest/resolved` 같은 외부 resolve 경로가 없다 — pending approval은 사용자 응답·cancel·exit으로만 닫힌다.
+3. **shutdown/`process_exited` 시 모든 pending approval/request를 닫음(04 §5, §4.4 S3)**: `shutdown`은 `agentRuntimeShutdown` 호출 **전에** pending approval을 `cancelled`로, pending RPC를 reject로 닫고 그 뒤 unlisten/세션 삭제한다(§4.4 (a)). `process_exited`(exit)도 남은 pending을 닫는다. 두 경로의 pending 종료는 **멱등하며 정확히 한 번**만 수행된다 — `closing`/closed 표시로 이미 닫힌 항목은 재처리하지 않는다(04 §4.2 규칙 4, §4.4 (c)).
+4. ACP에는 Codex `serverRequest/resolved` 같은 외부 resolve 경로가 없다 — pending approval은 사용자 응답·cancel·shutdown·exit으로만 닫힌다.
 5. `failed`는 wire로 보내지 않음(15 §5, 04 §4.2 규칙 4).
 
-> 응답하지 않은 permission request가 process shutdown 뒤에 남지 않도록 `pendingApprovals` 정리가 필수다(ref-claude-agent-acp 본 문서 기존 §Permission, [`13-risks-open-questions.md`](13-risks-open-questions.md) "Approval deadlock").
+> 응답하지 않은 permission request가 process shutdown 뒤에 남지 않도록 `pendingApprovals` 정리가 필수다(ref-claude-agent-acp 본 문서 기존 §Permission, [`13-risks-open-questions.md`](13-risks-open-questions.md) "Approval deadlock"). shutdown은 authoritative cleanup 경계이므로 pending 종료가 unlisten/세션 삭제·backend reap보다 먼저 일어나도록 순서를 지킨다(§4.4 S3, 14 shutdown 시퀀스).
 
 ### 6.4 미지원 server→client request 응답 (무응답 폐기 금지, R5)
 
@@ -777,7 +801,7 @@ function buildSetConfigOption(id, sessionId, configId, value): JsonRpcMessage {
 | `authenticate` Method not implemented | terminal method를 ACP authenticate로 보냈을 때 throw(ref-claude-agent-acp §1) | 어댑터는 terminal 로그인을 ACP authenticate로 보내지 **않는다**(§3.3) — gateway만 authenticate |
 | 미지원 server→client request | id 있는 REQUEST가 미지원 method(미광고 fs/terminal, 미지의 method) | **무응답 폐기 금지** — JSON-RPC error(`-32601`) 또는 명시적 decline 응답 필수(§6.4, 04 §5, R5). id 원본 타입 보존(R3) |
 | unknown notification | id 없는 알 수 없는 `session/update` 등 | raw 보존 + counter 가시화 후 무시(응답 불필요, §5, 04 §5) |
-| process exit | `agent-runtime-exit` | `process_exited` emit + pending 전부 실패로 닫음(§4.4, 04 §5) |
+| process exit | `agent-runtime-exit` | `process_exited` emit + 남은 pending 전부 닫음. shutdown/exit pending 종료는 멱등·정확히 한 번(§4.4 S3, 04 §5) |
 | backpressure | `agent-runtime-backpressure`(15 §8.3) | `error{recoverable:true}` warning, pending approval 자동 방치 금지([`13-risks-open-questions.md`](13-risks-open-questions.md)) |
 | 0.x minor capability 회귀 | initialize capability 변화 | capability 회귀 테스트로 조기 감지(§11, ref-claude-agent-acp §4) |
 
@@ -817,7 +841,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 - lifecycle: startSession → initialize → session/new → sendPrompt → session/update 스트림 → stopReason → turn_completed. status 전이(starting→ready→running→idle) 검증(04 §2).
 - replay: session/load 시 응답 전 update가 transcript 재구성 경로로 처리되는지(§3.5).
 - cancel cleanup: cancelTurn 시 pending approval이 모두 cancelled wire 응답 + `approval_resolved` emit(§4.3, 04 §4.2). **deadlock 회귀 방지 핵심**.
-- process exit: pending request/approval 전부 실패로 닫힘(§4.4, 04 §5).
+- shutdown/process exit (S3): `shutdown` 시 `agentRuntimeShutdown` 호출 **전에** pending approval cancelled 종료 + pending RPC reject가 일어나고 그 뒤 unlisten/세션 삭제됨을 검증(§4.4 (a)). 늦은 exit이 와도 pending이 두 번 닫히지 않고(멱등·정확히 한 번, §4.4 (c)) 누락도 없음. `process_exited`만 단독으로 와도 남은 pending이 닫힘(§4.4, 04 §5).
 - protocol error: protocolVersion≠1 / 비-JSON stdout → failed + fallback 신호(§9, §10).
 - unknown server request: id 있는 미지원 method REQUEST 수신 → JSON-RPC error(`-32601`)/decline 응답을 보내고 무응답 폐기하지 않는지(§6.4, 04 §5, R5). 응답 `id`가 원본 타입 보존인지(R3). unknown notification(id 없음)은 응답 없이 raw 보존만 하는지.
 
@@ -837,7 +861,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 
 본 문서에서 확정하지 못해 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 라우팅하는 항목:
 
-1. **node/entry 경로 resolve 방식**(§2.2): 번들 vs WSL 글로벌 설치 vs backend resolve+캐시. 1차 권고 backend resolve.
+1. **node/entry 경로 resolve 세부 방식**(§2.2): resolve **주체는 backend로 확정**(S1, R4 — renderer는 command 비제어, `adapterEntryPath`도 backend resolve/검증). 남은 결정은 backend resolve 방식(번들 vs WSL 글로벌 설치 vs `wsl.exe` 1회 resolve+캐시)·캐시 무효화·`adapterEntryPath` 탐색 방식이다. 1차 권고 backend resolve+캐시.
 2. ~~**WSL launch 셸**(§2.3)~~: **해소됨** — 정본은 로그인 셸 비경유 `wsl.exe -d <distro> --cd <wslWorkDir> -e env ... <node> <entry>` 형태(D8, 07 §5.1). 셸 startup 출력이 없으므로 stdout framing 오염 우려 없음. OQ-27(cwd=--cd)·OQ-28(env=env 바이너리)도 함께 해소.
 3. **인증 1차 범위**(§3.3): v1은 **WSL 측 자체 인증(`claude login`/config) 의존 + secret env 미전달**이 정본이다(C1, 07 §5.1). gateway 등으로 API key가 꼭 필요하면 launch argv(`-e env`)가 아니라 backend `Command::env()`+`WSLENV` secret 경로로만 주입(argv 비경유). terminal/gateway interactive auth는 후속. WSL SSH env 오판 위험은 잔존.
 4. **client capability 1차 값**(§3.2): `fs`/`terminal`/`terminal_output`/`elicitation` 모두 false 시작 — `AskUserQuestion`/command terminal surface UX 영향.

@@ -39,6 +39,8 @@
 
 wire 근거: ref-codex §2 (`initialize`/`initialized`), §3.1 (`thread/start`), §5.1 (`thread/started`), §9 (대표 시퀀스). 단 ref-codex §10은 `initialize`→`initialized` 핸드셰이크가 **필수인지 unverified**라고 명시한다 → [13 결정 필요](13-risks-open-questions.md).
 
+> **command resolve 경계 (S1 정본, 15 §8.1·07 §8.1)**: renderer/adapter는 실행 파일 `command`를 **넘기지 않는다**. `AgentRuntimeStartParams`에서 `command` 필드는 제거됐고(15 §8.1), adapter는 `provider`/`distro`/`workDir`/`args`(검증 대상)/`env`(non-secret)만 넘긴다. backend가 provider로 신뢰 절대경로를 resolve한다(Codex → resolve된 codex 절대경로). 동명 바이너리(`/tmp/codex`) 우회는 불가하다. resolve 주체·캐시 무효화 방식은 [13 결정 필요](13-risks-open-questions.md).
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -53,9 +55,9 @@ sequenceDiagram
     Note over Store: status = starting (15 §2)
     UI->>Port: startSession(StartSessionParams)
     Port->>Adapter: startSession(params)
-    Adapter->>Transport: agentRuntimeStart(AgentRuntimeStartParams{transportKind:"jsonrpc-stdio", provider:"codex", command, args})
-    Note right of Transport: command/args allowlist 재검증 (15 §8.1, backend §6)
-    Transport->>Provider: spawn `codex app-server --stdio` (WSL)
+    Adapter->>Transport: agentRuntimeStart(AgentRuntimeStartParams{transportKind:"jsonrpc-stdio", provider:"codex", distro, workDir, args:["app-server","--stdio"], env})
+    Note right of Transport: command는 renderer가 안 넘김 — backend가 provider로 신뢰 절대경로 resolve(S1)<br/>args 정확 검증(=["app-server","--stdio"]) · env non-secret (15 §8.1, 07 §8.1)
+    Transport->>Provider: spawn resolve된 codex 절대경로 `app-server --stdio` (WSL)
     Transport-->>Adapter: RuntimeId
 
     Adapter->>Transport: agentRuntimeSend(rt, {id:1, method:"initialize", params})
@@ -88,6 +90,8 @@ sequenceDiagram
 
 wire 근거: ref-acp §3.1 (`initialize` + capability 구조), §3.3 (`session/new`), §13.1 (매핑). 주의: ACP에는 `initialized` notification이 **없다**(Codex와 다름) — `initialize` 응답 직후 바로 `session/new` 가능.
 
+> **command resolve 경계 (S1 정본, 15 §8.1·07 §8.1)**: Claude도 `command`를 renderer가 넘기지 않는다. backend가 신뢰 `node` 절대경로를 resolve하고, `args`는 `args.length==1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(claude-agent-acp `dist/index.js`) 절대경로여야 한다. `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록 절대경로)한다. resolve 주체·`adapterEntryPath` 탐색 방식은 [13 결정 필요](13-risks-open-questions.md).
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -102,8 +106,9 @@ sequenceDiagram
     Note over Store: status = starting (15 §2)
     UI->>Port: startSession(StartSessionParams)
     Port->>Adapter: startSession(params)
-    Adapter->>Transport: agentRuntimeStart({transportKind:"jsonrpc-stdio", provider:"claude", command, args})
-    Transport->>Provider: spawn claude-agent-acp (WSL stdio)
+    Adapter->>Transport: agentRuntimeStart({transportKind:"jsonrpc-stdio", provider:"claude", distro, workDir, args:[adapterEntryPath], env})
+    Note right of Transport: command(node)는 renderer가 안 넘김 — backend가 신뢰 node 절대경로 resolve(S1)<br/>args.length==1 && args[0]==backend가 resolve/등록한 adapterEntryPath(claude-agent-acp dist/index.js) 절대경로 (15 §8.1, 07 §8.1)
+    Transport->>Provider: spawn resolve된 node 절대경로 <adapterEntryPath> (WSL stdio)
     Transport-->>Adapter: RuntimeId
 
     Adapter->>Transport: agentRuntimeSend(rt, {jsonrpc:"2.0", id:1, method:"initialize", params:{protocolVersion:1, clientCapabilities, clientInfo}})
@@ -378,6 +383,70 @@ sequenceDiagram
 > 주의: process exit으로 닫는 pending approval은 wire로 응답을 보내지 않는다(process가 이미 죽음). 따라서 `ApprovalDecision.outcome:"failed"`(client 내부 전용)를 쓴다 — §5 cancel cleanup이 wire로 `cancelled`를 보내는 것과 대비된다(04 §4.2 규칙 4, 15 §5).
 > `turn_completed{status:"failed"}`(turn 실패)와 `process_exited`(세션 exit)는 다르다(04 §2.1 규칙 6): turn 실패는 세션이 `idle`로 갈 수 있지만, process exit은 항상 `exited`다.
 
+### 6.1 Graceful shutdown — authoritative cleanup 경계 (S3 정본)
+
+흐름: `shutdown` → **① adapter가 shutdown 호출 전에 모든 pending을 정리(approval cancelled로 닫고 04 §4.2, pending RPC 로컬 reject) → ② listener 해제·세션 삭제 → ③ backend가 stdin close → grace timeout → kill → child reap까지 끝낸 뒤 반환 → ④ 최종 exit이 반영/계상된 후에만 teardown**. `agent_runtime_shutdown`을 **authoritative cleanup 경계**로 정의한다. exit/shutdown으로 인한 pending 종료는 **멱등**하며 정확히 **한 번만** 수행된다(이중 종료·누락 없음).
+
+순서 정본: 04 §5(exit/shutdown 시 모든 pending을 정확히 한 번, 멱등 종료) + 07 §5.2(backend graceful shutdown: stdin EOF → grace poll → kill → child wait reap 후 반환) + 07 §5.3(child wait thread가 reap 후 `agent-runtime-exit` emit).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as UI
+    participant Store as Session Store
+    participant Router as Event Router
+    participant Port as Runtime Port
+    participant Adapter as Codex/Claude Adapter
+    participant Transport as Tauri Process Runtime
+    participant Provider as Provider process
+
+    Note over Store: pending table = [r1, r2] 가능, listener 활성, status = idle/running/requires_action
+    UI->>Port: shutdown(handle)
+    Port->>Adapter: shutdown(handle)
+
+    rect rgb(245, 230, 230)
+        Note over Adapter,Store: ① shutdown 호출 전 pending 정리 (멱등, 정확히 한 번 — 04 §4.2·§5)
+        Adapter->>Store: 모든 pending approval을 cancelled로 닫음 (04 §4.2: closing 원자 표시 → wire cancelled 응답 → table 제거)
+        loop pending approval r (process 아직 살아있음)
+            alt Codex
+                Adapter->>Transport: agentRuntimeSend(rt, {id:r, result:{decision:"cancel"}})
+            else Claude (ACP)
+                Adapter->>Transport: agentRuntimeSend(rt, {jsonrpc:"2.0", id:r, result:{outcome:{outcome:"cancelled"}}})
+            end
+            Adapter->>Router: AgentEvent{type:"approval_resolved", ref:{requestId:r}, decision:{outcome:"cancelled"}}
+        end
+        Adapter->>Adapter: 남은 pending RPC를 로컬에서 reject (wire 대기 해제)
+    end
+
+    Note over Adapter: ② listener 해제 · 세션 삭제는 ①(pending 정리) 이후에만 수행
+    Adapter->>Transport: agentRuntimeShutdown(rt)
+
+    rect rgb(230, 240, 230)
+        Note over Transport,Provider: ③ backend shutdown: reap 완료 후에만 반환 (07 §5.2/§5.3)
+        Transport->>Provider: stdin close (EOF 신호)
+        Provider--xTransport: graceful exit (grace timeout 내) 또는 timeout → kill
+        Transport->>Transport: child.wait reap (exited 플래그 set, exitedAt 계상)
+        Transport-->>Adapter: agent-runtime-exit {runtimeId, code?, signal?} (reap 후 emit, 07 §5.3)
+        Transport-->>Adapter: agentRuntimeShutdown 반환 (reap·teardown 완료 후)
+    end
+
+    Note over Adapter,Store: ④ 최종 exit 반영/계상 후 teardown — exit으로 인한 pending 종료도 멱등(이미 ①에서 닫힘 → 무시)
+    opt 늦은/중복 exit 또는 늦은 응답 (멱등 무시)
+        Provider-->>Transport: 늦은 message | 동일 requestId 응답
+        Transport-->>Adapter: agent-runtime-message (late)
+        Adapter->>Router: AgentEvent (late)
+        Router->>Store: 이미 closed/exited → 멱등하게 무시 (재emit·이중 종료 없음, 04 §4.2·§5)
+    end
+    Adapter->>Adapter: listener unlisten · 세션 핸들 삭제
+    Adapter-->>Port: shutdown 완료
+    Router->>Store: status = exited (04 §2.1 규칙 7)
+    Store-->>UI: render exited
+```
+
+> **순서 정본(04 §5 + 07 §5.2/§5.3)**: ① **pending 정리(approval cancelled close + pending RPC reject)를 listener 해제·세션 삭제보다 먼저** 한다 — listener를 먼저 끊으면 늦게 도착하는 exit이 pending 누락(처리되지 않은 채 사라짐)을 일으킨다(B3). shutdown 시점엔 process가 아직 살아있으므로 approval은 wire로 `cancelled`를 보내 닫는다(04 §4.2; process가 이미 죽은 §6 exit 경로의 `failed` 내부 종료와 대비). ② 그 뒤에 listener를 해제하고 세션을 삭제한다.
+> **backend reap 후 반환(07 §5.2/§5.3)**: backend `agent_runtime_shutdown`은 stdin EOF → grace poll → 필요 시 kill → `child.wait`로 **reap(exit 계상)까지 끝낸 뒤** 반환한다. 최종 `agent-runtime-exit`은 reap 후 emit되며(07 §5.3), teardown은 이 최종 exit이 반영/계상된 후에만 일어난다.
+> **멱등·정확히 한 번(04 §4.2·§5)**: exit/shutdown으로 인한 pending 종료는 멱등하며 정확히 한 번 수행한다. ①에서 이미 닫은 pending에 대해 뒤늦은 exit·늦은 응답·중복 exit이 와도 이미 `closing`/closed/exited 상태이므로 멱등하게 무시한다(이중 종료·재emit·누락 없음). pending 멱등 판정 키는 `requestId`(JSON-RPC id)다.
+
 ---
 
 ## 7. Resume / Load replay
@@ -399,8 +468,9 @@ sequenceDiagram
 
     UI->>Port: resumeSession(ResumeSessionParams{providerSessionId|providerThreadId, replay})
     Port->>Adapter: resumeSession(params)
-    Adapter->>Transport: agentRuntimeStart(...) → spawn
-    Transport->>Provider: spawn provider process
+    Adapter->>Transport: agentRuntimeStart({provider, distro, workDir, args, env}) → spawn
+    Note right of Transport: command는 backend resolve(S1, 15 §8.1·07 §8.1) — renderer 비제어
+    Transport->>Provider: spawn provider process (backend-resolved 절대경로)
     Adapter->>Transport: initialize (+ initialized for Codex)
     Provider-->>Transport: initialize result
 

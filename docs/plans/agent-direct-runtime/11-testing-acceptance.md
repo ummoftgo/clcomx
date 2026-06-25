@@ -165,6 +165,9 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 | NM-16 | pending "7" 존재 중 `turn_completed{status:"cancelled"}` (해당 turn) | "7"을 `ApprovalDecision{outcome:"cancelled"}`로 닫고 pending에서 제거(04 §4.2 규칙 1) |
 | NM-17 | NM-16에서 cancel된 turn의 미완료 tool call | client가 `cancelled`로 합성 표시(ACP는 wire status에 cancelled 없음, ref-acp §5, 15 §5 status note) |
 | NM-18 | `process_exited` 시 pending "7","8" 존재 | 모든 pending request를 **실패로 닫음**(04 §4.2 규칙 2, §5) |
+| NM-18b | shutdown 시퀀스(S3): pending approval "7" + pending RPC 존재 상태에서 adapter `shutdown()` 호출 | **unlisten/세션 삭제 전에** pending approval을 cancelled로 닫고(04 §4.2) pending RPC를 로컬 reject한 뒤 listener 해제·세션 삭제. 종료 순서를 assert — pending 종료 콜백이 unlisten보다 먼저 호출됨(S3 (a); 05/06 adapter shutdown 순서, 04 §5) |
+| NM-18c | shutdown으로 pending "7"을 이미 cancelled로 닫은 **후** 늦은 `process_exited`(또는 늦은 exit) 도착 | "7"은 **재차 닫히지 않음** — exit/shutdown으로 인한 pending 종료는 **멱등하며 정확히 한 번**(이중 종료/누락 없음). `approval_resolved`가 "7"에 대해 1회만 emit됨을 assert(S3 (c); 04 §4.2 규칙 4 멱등 무시, §5) |
+| NM-18d | pending 없는 상태에서 shutdown → 늦은 exit | teardown이 멱등, crash·중복 emit 없음(S3 (c) 정확히 한 번 — pending 0건도 동일 규칙) |
 | NM-19 | Codex `serverRequest/resolved{requestId:"7"}` 수신 | "7"만 닫고 사용자 응답 불필요(04 §4.2 규칙 3) |
 | NM-20 | `ApprovalDecision{outcome:"failed"}` 발생 | client 내부 처리만, wire로 전송 안 함(04 §4.2 규칙 4) — outbound 캡처에 없음 assert |
 
@@ -346,29 +349,37 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 | RS-6 | stdout에 JSON-RPC, stderr에 로그 라인 | stdout→`agent-runtime-message`, stderr→`agent-runtime-stderr` 별개 채널(15 §8.3, ref-acp §1 stderr MAY log) |
 | RS-7 | stderr가 비-UTF8/멀티라인 | stderr line emit, stdout framer 오염 없음 |
 
-### 5.3 allowlist 검증 (신규 강화 지점 — R4 절대경로+정확 args+env key)
+### 5.3 allowlist 검증 (신규 강화 지점 — R4 backend-resolve command + 정확 args + env key)
 
-PTY와 달리 direct runtime은 backend가 provider별 command/args/env를 allowlist로 재검증한다(07 §8.1 정본, 15 §8.1 주석, `research/codebase-backend.md` §6, §10 권고 6 — 현 코드에 선례 없음). **R4 강화 정본(07 §8.1)**: command는 basename 비교가 아니라 (a) backend가 resolve한 신뢰 절대경로 또는 (b) 사전 등록된 절대경로 화이트리스트로 제한하고, args는 provider별 **정확 일치**(Codex `["app-server","--stdio"]`, Claude `[adapterEntryPath]`)로 검증하며, env key는 정규식 + provider별 허용 key 집합으로 강제한다(값은 non-secret, R1). shell metachar 검사는 방어용으로 유지한다. 아래 RS-8..RS-12b는 이 R4 정본의 수용 테스트다(09 untrusted renderer 위협모델, 07 §8.1 인용; 타입은 15 §8.1 비변경).
+PTY와 달리 direct runtime은 backend가 provider별로 command를 resolve하고 args/env를 allowlist로 재검증한다(07 §8.1 정본, 15 §8.1 주석, `research/codebase-backend.md` §6, §10 권고 6 — 현 코드에 선례 없음). **S1 정본(B1 정정)**: renderer/adapter는 **실행 파일 command를 넘기지 않는다**. `AgentRuntimeStartParams`(15 §8.1)에서 `command` 필드가 **제거**되어 renderer 비제어이며, backend가 `provider`로 신뢰 절대경로를 resolve한다 — `codex` → resolve된 codex app-server 절대경로, `claude` → resolve된 node 절대경로. 따라서 동명 바이너리(`/tmp/codex`, `/tmp/node`)로 우회할 입력 자체가 존재하지 않는다(renderer가 경로를 못 넘김). adapter가 넘기는 것은 `provider`, `distro`, `workDir`, `args`(검증 대상), `env`(non-secret) 뿐이다.
+
+**args 검증(backend)**: Codex는 `args`가 **정확히** `["app-server","--stdio"]`. Claude는 `args.length == 1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(절대경로, `claude-agent-acp` `dist/index.js` 패턴)와 정확 일치. `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 **고정 npm 의존 위치에서 resolve(또는 사전 등록된 절대경로)**한 값이다. env key는 정규식 + provider별 허용 key 집합으로 강제한다(값은 non-secret, C1). shell metachar 검사는 방어용으로 유지한다. 아래 RS-8..RS-12b는 이 S1 정본의 수용 테스트다(09 untrusted renderer 위협모델, 07 §8.1 인용; 타입 정본 15 §8.1은 S1로 `command` 필드 제거).
+
+> **resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식은 `결정 필요`(→ [13](13-risks-open-questions.md) "command/entry resolve 주체")**. 테스트는 "renderer가 command를 못 넘기고 backend가 provider로 신뢰 경로를 resolve한다"는 계약과 args/env 거부 규칙만 고정 assert하고, resolve 구현 디테일(어느 cache/탐색)은 mock으로 주입한다.
 
 | # | 입력 | 기대 |
 |---|---|---|
-| RS-8 | `agent_runtime_start{provider:"codex", command="<승인 절대경로, 예 /usr/bin/codex>", args:["app-server","--stdio"]}` | 허용, RuntimeId 반환(승인 절대경로 + Codex 정확 args 통과, 07 §8.1) |
-| RS-8b | `provider:"codex"`, command=승인 절대경로지만 `args:["app-server"]`(또는 `["app-server","--stdio","--extra"]`) | `Err(String)` 거부 — Codex args는 정확히 `["app-server","--stdio"]`여야 함(07 §8.1 args 정확 검증) |
-| RS-9 | `provider:"claude"`, command=승인된 node 절대경로(예 `/usr/bin/node`), `args:[검증된 adapterEntryPath(절대경로, claude-agent-acp dist/index.js 패턴)]` | 허용 — `args.length==1` + `args[0]`가 검증된 adapterEntryPath(07 §8.1, 06 §2.2, ref-claude-agent-acp §1·§2) |
-| RS-9b | `provider:"claude"`, command=node 절대경로지만 `args:["/tmp/x.js"]`(임의 .js) 또는 `args.length!=1` | `Err(String)` 거부 — adapterEntryPath 미일치/임의 스크립트(07 §8.1 임의 .js 거부) |
-| RS-10 | command가 임의 절대경로/basename만 일치(예: `/bin/sh`, `/tmp/codex`, `rm`) | `Err(String)` 거부 — basename 일치만으로는 통과 못 함, 신뢰 절대경로/화이트리스트만 통과(07 §8.1 basename 비교 제거) |
-| RS-10b | `provider:"claude"`, `command="node"`(절대경로 아님) + `args:["/tmp/x.js"]` | `Err(String)` 거부 — command가 승인 절대경로 아님 + adapterEntryPath 미일치(R4 핵심 거부 케이스, 09 위협모델) |
+| RS-8 | `agent_runtime_start{provider:"codex", distro, workDir, args:["app-server","--stdio"]}` (command 필드 **없음** — 타입에서 제거) | 허용, RuntimeId 반환. backend가 `codex` provider로 신뢰 절대경로를 resolve해 spawn하고 Codex 정확 args 통과(S1, 07 §8.1). spawn된 executable이 backend-resolve한 codex 절대경로임을 assert(mock resolve 주입) |
+| RS-8b | `provider:"codex"`, `args:["app-server"]`(또는 `["app-server","--stdio","--extra"]`) | `Err(String)` 거부 — Codex args는 정확히 `["app-server","--stdio"]`여야 함(07 §8.1 args 정확 검증) |
+| RS-9 | `provider:"claude"`, `args:[검증된 adapterEntryPath(절대경로, claude-agent-acp dist/index.js 패턴)]` (command 필드 **없음**) | 허용. backend가 `claude` provider로 node 신뢰 절대경로를 resolve하고 `args.length==1` + `args[0]`가 backend가 검증한 adapterEntryPath임을 통과(S1, 07 §8.1, 06 §2.2, ref-claude-agent-acp §1·§2). spawn된 executable이 backend-resolve한 node 절대경로임을 assert |
+| RS-9b | `provider:"claude"`, `args:["/tmp/x.js"]`(임의 .js, backend 신뢰 adapterEntryPath 아님) 또는 `args.length!=1` | `Err(String)` 거부 — `args[0]`가 backend 검증 adapterEntryPath와 미일치/임의 스크립트(07 §8.1 임의 .js 거부) |
+| RS-10 | **renderer가 command를 넣을 경로가 없음(구조적 차단)**: 직렬화 시 추가 `command` 키가 붙은 payload를 deserialize | `command` 필드는 타입에 없으므로 무시되거나(미정의 필드) deny — renderer가 executable 경로를 제어할 입력 자체가 없음을 assert. 동명 바이너리(`/tmp/codex`,`/tmp/node`) 우회 불가가 구조적으로 성립(S1; 07 §8.1 basename 비교 제거, 15 §8.1 command 제거) |
+| RS-10b | `provider:"claude"`, `args:["/tmp/x.js"]` (backend node resolve 사용, adapterEntryPath 미일치) | `Err(String)` 거부 — executable은 backend가 고정 resolve하므로 renderer가 못 바꾸고, `args[0]`가 신뢰 adapterEntryPath 아니라 거부(S1 핵심 거부 케이스, 09 위협모델). renderer가 임의 .js를 실행시킬 수 없음을 assert |
+| RS-10c | backend resolve가 신뢰 codex/node 절대경로를 못 찾음(미설치/탐색 실패) | `Err(String)` — provider 신뢰 경로 resolve 실패 시 spawn하지 않음(S1 backend-resolve 계약; resolve 주체는 13 결정 필요, mock으로 실패 주입) |
 | RS-11 | args에 shell 메타문자/주입 시도(`;`/`|`/`$(`/개행 등) | 거부(executable+argv 직접 실행이라 셸 비경유지만 방어적 metachar 검사 유지, 07 §8.1 규칙 3, `research/codebase-backend.md` §2.2) |
 | RS-12 | env key가 `^[A-Za-z_][A-Za-z0-9_]*$` 위반(예: `1BAD`, `A-B`, `A B`) | `Err(String)` 거부(registry `assertValidEnvKey` 선례, 07 §8.1 규칙 5, `research/codebase-backend.md` §6) |
-| RS-12b | env key가 정규식은 통과하나 provider별 허용 key 집합 밖(미등록 key) | `Err(String)` 거부 — env key allowlist(provider별 허용 집합) 강제(07 §8.1 규칙 5, R4 env key allowlist). 값은 non-secret 전용(R1, 07 §5.1·§8.1·§11) |
+| RS-12b | env key가 정규식은 통과하나 provider별 허용 key 집합 밖(미등록 key) | `Err(String)` 거부 — env key allowlist(provider별 허용 집합) 강제(07 §8.1 규칙 5, S1 env key allowlist). 값은 non-secret 전용(C1, 07 §5.1·§8.1·§11) |
 
-### 5.4 process lifecycle: shutdown timeout → kill
+### 5.4 process lifecycle: shutdown timeout → kill (S3 — reap 후 반환 + cleanup 경계)
+
+**S3 정본(B3 정정)**: `agent_runtime_shutdown`은 **authoritative cleanup 경계**다. backend shutdown은 graceful stdin close → timeout → kill → **child reap까지 끝낸 뒤 반환**하며, 최종 exit이 반영/계상된 후에만 teardown이 일어나도록 한다(늦은 exit로 pending이 누락되지 않게). 아래 RS-13..RS-15b는 backend 경계 테스트다. adapter-side pending 종료 순서(unlisten 전에 정확히 한 번)는 §2.5 NM-18b/18c가 검증한다.
 
 | # | 입력 | 기대 |
 |---|---|---|
-| RS-13 | `agent_runtime_shutdown` → child가 stdin EOF에 정상 종료 | graceful, `agent-runtime-exit{code}` emit(15 §8, 07 §Process lifecycle) |
-| RS-14 | child가 timeout 내 종료 안 함 | timeout 후 강제 kill, exit emit(`research/codebase-backend.md` §10 권고 5 — PTY와 달리 명시적 kill) |
+| RS-13 | `agent_runtime_shutdown` → child가 stdin EOF에 정상 종료 | graceful, child reap 완료 후 반환, `agent-runtime-exit{code}` emit(S3 reap-후-반환, 15 §8, 07 §5.2) |
+| RS-14 | child가 timeout 내 종료 안 함 | timeout 후 강제 kill, **child reap 후 반환**, exit emit(`research/codebase-backend.md` §10 권고 5 — PTY와 달리 명시적 kill; S3) |
 | RS-15 | shutdown 시 pending request 존재 | process exit이 모든 pending을 실패로 닫음 신호(04 §5; backend는 framing만, 의미 처리는 frontend지만 exit 이벤트는 backend) |
+| RS-15b | shutdown 반환 시점 vs 최종 exit 반영 순서 | `agent_runtime_shutdown`이 반환할 때 child가 이미 reap되어 exit이 계상됨 — 반환 후 늦게 도착하는 exit이 **없음**을 assert(S3: 최종 exit 반영 후에만 teardown). 반환 전에 exit emit 또는 exited 플래그 set 확인(07 §5.2·§5.3) |
 
 ### 5.5 bounded queue overflow (backpressure)
 
@@ -387,13 +398,21 @@ PTY와 달리 direct runtime은 backend가 provider별 command/args/env를 allow
 | RS-19 | mock runtime에 send | 미리 정의된 mock 응답 emit(WSL/실제 CLI 없이) |
 | RS-20 | snapshot/delta 단위 테스트 | `test_*` state 생성기로 mock 상태 만들어 검증(`research/codebase-backend.md` §8.1, §9) |
 
-### 5.7 serde 미러 (TS↔Rust 1:1)
+### 5.7 serde 미러 (TS↔Rust 1:1) — camelCase **필드** round-trip 필수화 (S2)
+
+**S2 정본(B2 정정)**: enum 레벨 `#[serde(rename_all="camelCase")]`는 **variant 이름만** 바꾸고 variant **내부 필드**(`work_dir`/`request_id`/`runtime_id`/`dropped_messages` 등)는 snake_case로 남아 TS의 `workDir`/`requestId`/`runtimeId`/`droppedMessages`와 불일치 → Tauri command/event payload **역직렬화 실패**한다. 정본 해결: variant 필드를 가진 enum(`AgentRuntimeStartParams`, `AgentRuntimeCancelTarget`, `AgentRuntimeEvent`, `JsonRpcMessage` 등)에 `#[serde(rename_all_fields = "camelCase")]`(serde ≥ 1.0.181) 추가 또는 필드별 `#[serde(rename="...")]`. struct 미러(`AgentRuntimeSnapshot`, `JsonRpcError`, `AgentRuntimeMetadataRecord`)는 struct 레벨 `rename_all`로 이미 정상이라 유지한다(15 §8).
+
+따라서 **camelCase 필드까지 일치하는 TS↔Rust JSON round-trip 테스트를 필수화**한다(enum variant 필드가 camelCase로 직렬화/역직렬화되는지). 아래 RS-21..RS-25는 그 round-trip 수용 테스트다(RS-21..RS-24는 variant 필드를 가진 enum, RS-25는 struct 미러). TS가 보내는 camelCase JSON 문자열(고정 fixture)을 Rust가 deserialize → 같은 값으로 serialize 시 다시 camelCase가 나오는지(왕복 동일) assert한다.
+
+> **serde 버전 의존성**: `rename_all_fields`는 **serde ≥ 1.0.181**에서만 동작한다. 구현 전 `src-tauri/Cargo.toml`의 serde 버전을 확인해야 한다(`결정 필요` → [13](13-risks-open-questions.md) "serde 버전 확인"). 미만이면 필드별 `#[serde(rename="camelCaseName")]`로 대체한다. round-trip 테스트는 이 둘 중 어느 방식이든 **camelCase 필드 일치**만 검증한다.
 
 | # | 입력 | 기대 |
 |---|---|---|
-| RS-21 | `AgentRuntimeStartParams`(camelCase JSON) deserialize | `#[serde(rename_all="camelCase")]` 정확 파싱(15 §8.2, §0.4) |
-| RS-22 | `JsonRpcMessage`(jsonrpc 생략, Codex 케이스) untagged 파싱 | Request/Notification/Response/Error 4종 분기(15 §8.1, §8.2) |
-| RS-23 | `AgentRuntimeMetadataRecord` round-trip | scrub 필드 제외 직렬화(15 §7.3) |
+| RS-21 | `AgentRuntimeStartParams` **camelCase 필드** JSON round-trip: `{transportKind:"jsonrpc-stdio", provider:"codex", distro, workDir, args, env}`(S1로 `command` 없음) deserialize → re-serialize | variant 필드 `workDir`가 camelCase로 정확 파싱·재직렬화(snake_case `work_dir`로 새지 않음). enum `rename_all_fields`/필드별 rename 검증(S2, 15 §8.1·§8.2) |
+| RS-22 | `AgentRuntimeCancelTarget` round-trip 3종: `{type:"request", requestId:"7"}`, `{type:"turn", turnId:"t1"}`, `{type:"process"}` | variant 필드 `requestId`/`turnId`가 camelCase로 round-trip 일치(snake_case `request_id`/`turn_id`로 새지 않음). type discriminator + 필드 camelCase 동시 검증(S2, 15 §8.1) |
+| RS-23 | `AgentRuntimeEvent` round-trip 5종: `message{runtimeId,message}`/`stderr{runtimeId,line}`/`exit{runtimeId,code?,signal?}`/`error{runtimeId,message,recoverable}`/`backpressure{runtimeId,droppedMessages}` | 모든 variant 필드 `runtimeId`/`droppedMessages`가 camelCase round-trip 일치(snake_case `runtime_id`/`dropped_messages`로 새지 않음). frontend `listen`이 받는 payload와 1:1(S2, 15 §8.3) |
+| RS-24 | `JsonRpcMessage` round-trip: (a) jsonrpc 생략 Codex 케이스, (b) `jsonrpc:"2.0"` ACP 케이스, 4종(Request/Notification/Response/Error) untagged 분기 | untagged 4종 정확 분기 + `id`/`method`/`params`/`result`/`error` 필드 보존, jsonrpc optional round-trip(S2, 15 §8.1·§8.2) |
+| RS-25 | `AgentRuntimeSnapshot`/`JsonRpcError`/`AgentRuntimeMetadataRecord` struct round-trip | struct 레벨 `rename_all="camelCase"`로 `runtimeId`/`startedAt`/`pendingRequestIds` 등 camelCase 정상(struct 미러는 S2 변경 불필요, 유지 확인). metadata는 scrub 필드 제외 직렬화(15 §7.3) |
 
 ---
 
@@ -485,13 +504,15 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 
 - [ ] Codex와 Claude 모두 **새 session, resume/load, prompt, stream, tool call, approval, cancel, error, process exit** 각각에 대해 문서(§3/§4 매핑)와 테스트(fixture FR-* + adapter CX-*/CL-*)가 존재한다.
 - [ ] normalized model의 upsert/append/reconcile/approval lifecycle/cancel cleanup/raw 보존(04 §3·§4·§5)이 unit test(NM-1..NM-30)로 검증된다.
+- [ ] shutdown cleanup ordering(S3): adapter shutdown이 **unlisten/세션 삭제 전에** 모든 pending approval/RPC를 정확히 한 번 닫고, 늦은 exit이 멱등 처리되어 이중 종료·누락이 없다(NM-18b/18c/18d, 04 §4.2·§5; backend reap 경계는 RS-13/14/15b).
 - [ ] interleaved turn 분리(CX-16/17, ref-codex §7.1)와 ACP chunk/replace 구분(CL-12..CL-16, ref-acp §4·§5)이 검증된다.
 - [ ] 미지원 server→client **request**(id 있는 요청)는 Codex·Claude 양쪽에서 JSON-RPC error(`-32601`)/decline 응답을 보내고 **무응답으로 끝나지 않는다**(CX-15b, CL-24b, R5; 04 §5 edge 규칙). 미지원 **notification**(id 없음)은 raw 보존+counter만, 응답 없음(CX-15c, CL-27).
 
 ### 8.2 transport / process
 
-- [ ] stdio JSON-RPC framing(newline·UTF-8 경계·부분 라인), stderr/stdout 분리, bounded queue overflow, shutdown timeout→kill이 Rust test(RS-1..RS-17)로 검증된다.
-- [ ] provider별 command(신뢰 절대경로/화이트리스트)·args(Codex 정확 `["app-server","--stdio"]`, Claude 검증된 adapterEntryPath)·env key allowlist가 backend에서 재검증되어 임의 executable·임의 .js·basename-only 우회·미등록 env key를 차단한다(RS-8..RS-12b, 07 §8.1 R4 정본, 09 untrusted renderer 위협모델).
+- [ ] stdio JSON-RPC framing(newline·UTF-8 경계·부분 라인), stderr/stdout 분리, bounded queue overflow, shutdown timeout→kill(**child reap 후 반환**)이 Rust test(RS-1..RS-17)로 검증된다(S3 reap 경계 RS-13/14/15b).
+- [ ] renderer/adapter는 **command를 넘기지 않고**(15 §8.1 `command` 필드 제거), backend가 `provider`로 신뢰 절대경로를 resolve한다(codex→codex 절대경로, claude→node 절대경로). args(Codex 정확 `["app-server","--stdio"]`, Claude `args.length==1`+검증된 adapterEntryPath)·env key allowlist가 backend에서 재검증되어 임의 .js·동명 바이너리 우회(`/tmp/codex`,`/tmp/node`)·미등록 env key를 차단하고, renderer가 executable 경로를 제어할 입력 자체가 없다(RS-8..RS-12b, 07 §8.1 S1 정본, 09 untrusted renderer 위협모델).
+- [ ] Tauri 경계 enum payload의 **camelCase 필드 round-trip(TS↔Rust)** 이 일치한다 — `AgentRuntimeStartParams`/`AgentRuntimeCancelTarget`/`AgentRuntimeEvent`/`JsonRpcMessage`의 variant 필드(`workDir`/`requestId`/`runtimeId`/`droppedMessages` 등)가 snake_case로 새지 않는다(RS-21..RS-25, S2 `rename_all_fields` 또는 필드별 rename; serde ≥ 1.0.181 확인 → 13).
 - [ ] `is_test_mode` mock 경로가 1급으로 제공되어 WSL/실제 CLI 없이 E2E·unit이 돈다(RS-18..RS-20).
 
 ### 8.3 legacy 보존
@@ -510,7 +531,7 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 
 - [ ] provider id(threadId/sessionId/requestId)가 저장소와 debug view에서 추적 가능하다(NM-15, 15 §0.1).
 - [ ] approval wire 응답이 **원본 JSON-RPC id 타입을 보존**한다 — numeric id(예 `42`)가 `"42"`로 변질되지 않고, `ApprovalRequest.id`/`ProviderRef.requestId`는 문자열 키, wire 응답 `id`는 원본 타입 유지(CL-21b/21c, R3; 06 §6.1/§6.2 `rpcId`, 05 §6 CodexRouting).
-- [ ] provider session/thread id·resume token은 디스크 저장 시 scrub된다(RS-23, 15 §7.3, `research/codebase-backend.md` §4.2).
+- [ ] provider session/thread id·resume token은 디스크 저장 시 scrub된다(RS-25, 15 §7.3, `research/codebase-backend.md` §4.2).
 - [ ] raw protocol log가 기본 비활성화이며 redaction 정책이 있다(E2E-10, 13 §raw log, 09 §감사).
 
 ### 8.6 게이트
@@ -531,6 +552,8 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 5. **message seq + snapshot/delta-since** late-attach: 현 계약(15 §8.3)에는 seq 미포함, 후속 추가 권고. E2E late-attach 신뢰성 테스트는 그 후(04 §3.4, `research/codebase-backend.md` §10 권고 3).
 6. **14-sequence-and-state.md 동기화**: 14는 존재함. E2E §7 표가 14 시퀀스와 1:1로 유지돼야 함. 14 시퀀스 갱신 시 본 표 번호와 일치시킬 것.
 7. **fixture 캡처 신뢰도**: 실제 wire 캡처 전까지 ref 예시 기반 fixture는 ordering `unverified`(ref-codex §9·§10). 실제 캡처로 교체 필요.
+8. **command/entry resolve 주체**(S1, RS-8..RS-10c): backend가 `provider`로 신뢰 절대경로를 resolve하는 주체·캐시 무효화·`adapterEntryPath` 탐색 방식 미확정. 테스트는 계약(renderer 비제어 + provider resolve)과 args/env 거부만 고정 assert하고 resolve 구현은 mock 주입(→ [13](13-risks-open-questions.md) "command/entry resolve 주체").
+9. **serde 버전 확인**(S2, RS-21..RS-24): `#[serde(rename_all_fields="camelCase")]`는 serde ≥ 1.0.181 필요. 구현 전 `src-tauri/Cargo.toml` serde 버전 확인, 미만이면 필드별 `#[serde(rename="...")]`로 대체. round-trip 테스트는 어느 방식이든 camelCase 필드 일치만 검증(→ [13](13-risks-open-questions.md) "serde 버전 확인").
 
 ---
 

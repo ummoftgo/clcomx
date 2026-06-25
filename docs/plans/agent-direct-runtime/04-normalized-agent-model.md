@@ -181,7 +181,7 @@ turn cancel(또는 process exit) 시 **unresolved approval은 반드시 cancelle
 규칙 요약:
 
 1. `cancelTurn` 호출 또는 `turn_completed{status:"cancelled"}` 수신 시, 위 cancel cleanup 정본 순서(1~4)를 따라 해당 turn에 속한 모든 pending approval을 `ApprovalDecision{outcome:"cancelled"}`로 닫고 wire cancelled 응답을 provider turn cancel보다 먼저 보낸다.
-2. `process_exited` 시 모든 pending approval(및 pending request)을 실패로 닫는다(§5).
+2. `process_exited`(및 shutdown) 시 모든 pending approval(및 pending RPC)을 정확히 한 번 멱등 종료한다(§5.0).
 3. `serverRequest/resolved`(Codex) 수신 시 해당 requestId만 닫는다(사용자 응답 불필요). cancel cleanup 중/후 도착분은 규칙 4(멱등 무시)를 따른다.
 4. `ApprovalDecision.outcome: "failed"`는 client 내부 에러용이며 **wire로 보내지 않는다**(ACP는 selected/cancelled만, Codex도 decision enum만).
 
@@ -191,9 +191,30 @@ turn cancel(또는 process exit) 시 **unresolved approval은 반드시 cancelle
 
 ## 5. process exit / 에러 정리
 
-- `process_exited`는 모든 pending request(approval 포함)를 실패로 닫는다 (`07-tauri-process-runtime.md` §Process lifecycle "process exit은 모든 pending request를 실패로 닫는다").
+- `process_exited`는 모든 pending request(approval 포함)를 실패로 닫는다 (`07-tauri-process-runtime.md` §Process lifecycle "process exit은 모든 pending request를 실패로 닫는다"). 정확히-한-번 멱등 종료 규칙과 shutdown authoritative cleanup 경계는 **§5.0 정본**.
 - `error` event의 `recoverable`은 재시도 가능 여부다. Codex `error.willRetry`→`recoverable`, 그리고 `error.codexErrorInfo`(`usageLimitExceeded`/`contextWindowExceeded` 등)로 코드 분류 가능(ref-codex §6.9·§8). 매핑 불가 항목은 `raw` 보존.
 - `turn_completed{status:"failed"}`는 turn 실패이고 세션은 `idle`로 갈 수 있다. 세션 전체 `failed`(systemError)와 구분한다(§2.1 규칙 6).
+
+### 5.0 exit/shutdown pending cleanup 정본 (불변식 — 정확히 한 번 멱등 종료)
+
+이 절이 **exit 또는 shutdown 시 pending 정리의 규칙 정본**이다(S3). exit(process 종료)과 shutdown(세션 종료 요청)은 둘 다 그 시점에 살아 있는 모든 pending approval과 pending RPC를 닫아야 한다. 핵심 불변식은 **각 pending을 정확히 한 번만, 멱등하게 종료**하는 것이다 — 늦게 도착하는 exit·응답·resolve가 이중 종료나 누락을 만들지 않는다. 타입은 15 §5 정본(`ApprovalDecision`), wire는 ref-* 인용이며 이 문서에서 재정의하지 않는다.
+
+규칙:
+
+1. **종료 분류 (정본)**: pending cleanup 시 각 pending은 의미에 따라 닫는다.
+   - pending **approval**(server→client request)은 `ApprovalDecision{outcome:"cancelled"}`로 닫고 `approval_resolved{decision}`를 emit한다. (`outcome:"failed"`는 client 내부 전용이며 wire로 나가지 않는다 — §4.2 규칙 4.)
+   - pending **RPC**(client가 보낸 요청의 응답 대기분)는 로컬에서 **failed로 reject**한다. process가 이미 종료됐거나 종료 중이면 wire 응답이 도착하지 않으므로, adapter가 대기 중인 promise/continuation을 실패로 정리한다.
+
+2. **정확히 한 번 · 멱등 (불변식)**: 한 `requestId`(approval 또는 RPC)의 종료는 그 pending의 생애 동안 **정확히 한 번만** 일어난다. 종료 시 pending table에서 제거(또는 closed 표시)하고, 그 `requestId`에 대해 **늦게 도착하는** exit notification·provider 응답·`serverRequest/resolved`(Codex)·`stopReason`(ACP)·동일 `requestId`에 대한 resolve는 대상이 이미 종료/부재이면 **멱등하게 무시**한다(상태 변경·재emit 없음). 이는 §4.2 cancel cleanup의 `closing`/closed 멱등 무시 규칙(§4.2 규칙 4)과 동일한 메커니즘을 exit/shutdown 축으로 확장한 것이다.
+
+3. **exit(process 종료) 경로**: `process_exited`(15 §3, backend `agent-runtime-exit` event 수신) 시 adapter는 그 시점의 **모든** pending approval을 cancelled로, 모든 pending RPC를 failed로 규칙 1·2에 따라 닫는다. 세션 상태는 `exited`로 전이한다(§2.1 규칙 7). backend는 exit event를 알릴 뿐 실제 pending 정리는 frontend adapter가 수행한다(07 §5.3와 일치).
+
+4. **shutdown(세션 종료) 경계 — authoritative cleanup**: `shutdown`(15 §6 Port)은 **authoritative cleanup 경계**다. shutdown은 adapter 측과 backend 측 책임이 분리되며, 순서가 정본이다.
+   - **(a) adapter는 backend shutdown 호출 전에 pending을 먼저 닫는다**: adapter는 unlisten(`subscribeEvents` 해제)·세션 삭제보다 **먼저** 모든 pending approval을 cancelled로 닫고(§4.2) 모든 pending RPC를 로컬에서 failed로 reject한다(규칙 1·2). listener를 살아 있는 상태로 둔 채 pending을 닫아야, 닫는 도중 발생하는 `approval_resolved` emit과 멱등 처리가 정상 동작한다. pending을 다 닫은 **뒤에** listener를 해제하고 세션을 삭제한다.
+   - **(b) backend shutdown은 reap 후 반환한다**: backend `agent_runtime_shutdown`은 graceful stdin close → timeout → kill → **child reap(`wait`)** 까지 끝낸 뒤 반환한다(07 §5.2/§5.3). 최종 exit이 반영·계상된 후에만 teardown(runtime 제거)이 일어나도록 하여, 늦은 exit으로 인한 pending 누락을 방지한다.
+   - **(c) 멱등 합류**: shutdown 경로의 adapter 측 pending 종료(a)와 exit event 경로(규칙 3)는 같은 pending을 가리킬 수 있다. 규칙 2의 정확히-한-번 멱등 불변식에 의해 어느 쪽이 먼저 닫든 **두 번 닫히지 않고 누락되지도 않는다**.
+
+> **다운스트림 인용**: 이 정리 규칙은 Codex adapter `05`(adapter shutdown이 unlisten·세션 삭제 전에 pending을 닫음)·Claude ACP adapter `06`(동형)·`07 §5.2`(shutdown이 reap 후 반환, authoritative cleanup 경계)·검증 매트릭스 `14`(shutdown 시퀀스 순서/멱등 노트)가 인용·준수하는 **단일 정본**이다. exit·shutdown pending cleanup의 정확히-한-번 멱등 종료 테스트는 11에 추가한다.
 
 ### 5.1 미지원/unknown server request·notification 응답 규칙 (불변식)
 
@@ -223,6 +244,7 @@ provider server→client 메시지 중 **`id`가 있는 REQUEST**(응답을 기�
 | Codex wire → normalized 매핑·reconcile 근거 | [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §6, §7, §8 |
 | ACP wire → normalized 매핑·chunk/replace 근거 | [`ref-acp-protocol.md`](ref-acp-protocol.md) §4, §5, §6, §13 |
 | unknown/미지원 server request·notification 응답(silent-drop 금지) | §5.1, [`13-risks-open-questions.md`](13-risks-open-questions.md) RD-10, [`ref-acp-protocol.md`](ref-acp-protocol.md) §11, [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §1.2, §4 |
+| exit/shutdown pending cleanup(정확히 한 번 멱등 종료·authoritative 경계) | §5.0, [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §5.2, §5.3 |
 | hexagonal 구조·Store/Router 역할 | [`03-target-architecture.md`](03-target-architecture.md) |
 | process lifecycle·cancel·framing | [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) |
 | persistence·resume/load 정책 | [`10-persistence-migration.md`](10-persistence-migration.md) |

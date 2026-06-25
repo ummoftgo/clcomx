@@ -24,9 +24,9 @@ backend `agent_runtime` 레이어는 **transport·process lifecycle만** 책임�
 - process exit 감지 → `agent-runtime-exit` emit + pending 정리 신호 (§5.3).
 - framing/transport 에러 → `agent-runtime-error` emit (§4.4).
 - bounded queue / backpressure → `agent-runtime-backpressure` emit (§7).
-- provider별 allowlist 검증 (§8): command(신뢰 절대경로)·args(정확 일치)·env key(allowlist) 재검증.
+- provider별 allowlist 검증 (§8): command은 **renderer가 넘기지 않고 backend가 provider로 신뢰 절대경로를 resolve**(codex→resolve된 codex 절대경로, claude→resolve된 node 절대경로)하며, args(정확 일치)·env key(allowlist)를 재검증한다. 동명 바이너리(`/tmp/codex`, `/tmp/node`) 우회 불가.
 - WSL/Windows path canonicalize (§9).
-- graceful shutdown (stdin EOF → timeout → kill) (§5.2).
+- graceful shutdown (stdin EOF → timeout → kill → child reap) — authoritative cleanup 경계: reap 후 반환, teardown은 최종 exit 반영 후, exit/shutdown pending 종료는 멱등·정확히 한 번 (§5.2, §5.3, 04 §5).
 - test-mode mock JSON-RPC 스트림 (§10).
 - redacted debug logging (§11).
 
@@ -537,24 +537,31 @@ pub fn start(state: &AgentRuntimeState, app: &AppHandle, params: AgentRuntimeSta
 
 > **process start ≠ protocol initialize (정본)**: `agent_runtime_start`는 process를 띄우고 status를 `"running"`(backend transport 관점)으로만 둔다. normalized 세션 상태(15 §2)의 `starting`→`ready` 전이(initialize/session 생성 완료)는 **frontend adapter**가 `agent_runtime_send`로 initialize를 보내고 응답을 받아 합성한다(04 §2.1 규칙 1). backend `AgentRuntimeSnapshot.status`(15 §8.1: `starting`/`running`/`exited`/`failed`)는 transport-level 상태이지 normalized session status가 아니다 — 둘을 혼동하지 말 것.
 
-### 5.2 graceful shutdown (정본 — PTY Drop 의존과 다름)
+### 5.2 graceful shutdown (정본 — authoritative cleanup 경계)
 
-PTY는 `HashMap::remove` + Drop에 의존하지만(research §2.4, §10 권고 5), direct runtime은 protocol상 graceful shutdown이 필요하다. 순서:
+PTY는 `HashMap::remove` + Drop에 의존하지만(research §2.4, §10 권고 5), direct runtime은 protocol상 graceful shutdown이 필요하다. **S3 정본: `agent_runtime_shutdown`을 authoritative cleanup 경계로 정의한다.** backend shutdown은 graceful stdin close → timeout → kill → **child reap(`wait` 완료)** 까지 끝낸 뒤 반환하며, runtime teardown(HashMap 제거)은 **최종 exit이 반영·계상된 후에만** 일어난다. 늦은 exit으로 pending 종료가 누락되지 않도록, exit·shutdown 어느 경로로 트리거되든 pending 종료는 **멱등하며 정확히 한 번** 수행된다(아래 §5.3 정본 + 04 §5 규칙 인용).
+
+순서:
 
 ```text
 shutdown(runtime_id):
   1. stdin handle을 drop하여 EOF 신호 (provider가 stdin EOF에 정상 종료하도록)
-  2. child.wait를 별도 thread에서 감시 (이미 spawn_child_wait가 돌고 있음)
+  2. child.wait는 spawn_child_wait thread가 이미 감시 중 (§5.3); 이 thread가 reap + exit event를 책임진다
   3. SHUTDOWN_GRACE_MS(예: 2000ms) 동안 exited 플래그 polling
-  4. 여전히 살아있으면 child.kill() (강제 종료)
-  5. HashMap에서 runtime 제거
-  6. pending_request_ids가 비어있지 않으면, exit event에 의존해 frontend가 모든 pending을 실패로 닫음(04 §5, §6.4)
+  4. 여전히 살아있으면 저장된 pid/handle로 강제 종료(kill) (§5.3 정본 패턴)
+  5. child reap 보장: exited 플래그가 set될 때까지(=wait thread가 reap + exit event emit 완료) 대기 후 반환.
+     teardown(HashMap 제거)은 이 최종 exit 반영 이후에만 수행한다 — 늦은 exit가 pending 정리를
+     누락시키지 않도록 reap 후 반환이 정본이다.
+  6. exit/shutdown으로 인한 pending 종료는 멱등·정확히 한 번이다(§5.3, 04 §5). backend는 exit event를
+     올릴 뿐이고, 실제 pending approval cancelled/ pending RPC reject는 frontend adapter가 04 §5 규칙에
+     따라 정확히 한 번 수행한다(§6.4, 05/06 adapter shutdown이 unlisten/세션 삭제 *전에* pending을 닫는다).
 ```
 
 ```rust
 pub fn shutdown(state: &AgentRuntimeState, runtime_id: RuntimeId) -> Result<(), String> {
     const SHUTDOWN_GRACE_MS: u64 = 2000;
     const POLL_MS: u64 = 50;
+    const REAP_GRACE_MS: u64 = 1000; // S3: kill 후 wait thread reap 반영 대기 상한
 
     let (stdin, child, exited) = {
         let mut runtimes = state.runtimes.lock().map_err(|e| e.to_string())?;
@@ -580,7 +587,16 @@ pub fn shutdown(state: &AgentRuntimeState, runtime_id: RuntimeId) -> Result<(), 
         kill_by_stored_pid(&child); // 저장된 pid/handle로 OS kill (deadlock 회피, §5.3 note)
     }
 
-    // 5) remove
+    // 5) S3: child reap 보장 — kill 후 wait thread가 reap + exit event emit을 끝내(exited=true)도록
+    //    최종 exit이 반영될 때까지 짧게 대기한 뒤 반환한다. teardown은 그 이후에만 한다.
+    let mut reap_waited = 0u64;
+    while !exited.load(Ordering::SeqCst) && reap_waited < REAP_GRACE_MS {
+        std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+        reap_waited += POLL_MS;
+    }
+
+    // 6) teardown — 최종 exit 반영 후에만 HashMap 제거. exit/shutdown pending 종료는 멱등·정확히 한 번
+    //    (04 §5): backend는 exit event를 한 번만 올리고, frontend adapter가 pending을 정확히 한 번 닫는다.
     state.runtimes.lock().map_err(|e| e.to_string())?.remove(&runtime_id);
     Ok(())
 }
@@ -590,7 +606,9 @@ pub fn shutdown(state: &AgentRuntimeState, runtime_id: RuntimeId) -> Result<(), 
 
 ### 5.3 child wait thread + exit event
 
-PTY thread1(child wait, terminal/mod.rs:491-502)을 본뜬다. exit 시 `exited.store(true)` + `agent-runtime-exit` emit. **process exit은 모든 pending request를 실패로 닫는다** — 단, backend는 frontend에 exit event를 알릴 뿐이고, 실제 pending 정리(approval cancelled/failed)는 frontend adapter가 04 §5 규칙에 따라 수행한다.
+PTY thread1(child wait, terminal/mod.rs:491-502)을 본뜬다. 이 thread가 **child reap(`child.wait()`)의 단일 책임자**다 — `child.wait()`가 반환하면 `exited.store(true)` + `exited_at`/`status` 기록 + `agent-runtime-exit`를 **정확히 한 번** emit한다. shutdown(§5.2)의 kill도 이 thread의 wait를 풀어 reap을 완료시키며, shutdown은 이 `exited` 플래그를 보고 reap 완료를 확인한 뒤 teardown한다(S3 reap-후-반환).
+
+**S3 정본 (exit/shutdown pending 종료는 멱등·정확히 한 번)**: `agent-runtime-exit`은 exit 경로와 shutdown 경로가 동시에 트리거되어도 **정확히 한 번만** emit된다(`exited` 플래그로 이중 emit 차단). **process exit은 모든 pending request(approval 포함)를 실패로 닫는다** — 단, backend는 frontend에 exit event를 알릴 뿐이고, 실제 pending 정리는 frontend adapter가 04 §5 규칙에 따라 **멱등하게 정확히 한 번** 수행한다: 모든 pending approval을 cancelled로 닫고(04 §4.2) pending RPC를 로컬에서 reject한 **뒤에** listener 해제·세션 삭제를 한다(05/06 adapter shutdown 순서; unlisten/삭제가 pending 종료보다 앞서면 늦은 exit로 pending이 누락된다). 이중 종료·누락 없이 정확히 한 번이라는 불변식의 정본은 04 §5다.
 
 ```rust
 fn spawn_child_wait(
@@ -605,9 +623,14 @@ fn spawn_child_wait(
         // 여기서는 move된 child 소유권으로 직접 wait한다(terminal/mod.rs Thread 1 선례).
         let exit_status = {
             let mut guard = child.lock().unwrap();
-            guard.as_mut().map(|h| h.child.wait())
+            guard.as_mut().map(|h| h.child.wait()) // reap: 이 thread가 child를 거둔다(zombie 방지)
         };
-        exited.store(true, Ordering::SeqCst);
+        // S3: exit event는 정확히 한 번. compare_exchange로 최초 1회만 통과시켜
+        // exit/shutdown 동시 트리거 시 이중 emit을 막는다.
+        let first = exited
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        if !first { return; } // 이미 종료 반영됨 — 멱등 무시
         *exited_at.lock().unwrap() = Some(now_millis());
         *status.lock().unwrap() = "exited".to_string();
 
@@ -767,30 +790,44 @@ research §7·§11이 두 옵션(std::thread vs tokio)을 제시한다. **v1은 
 
 ## 8. Allowlist 검증 (provider별, 신규 강화 지점)
 
-PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에 executable allowlist가 **없다**(research §6, §10 권고 6). direct runtime은 이를 의도적으로 강화한다: renderer를 untrusted로 간주하고, backend가 provider별로 **command(신뢰 절대경로)·args(정확 일치)·env key(allowlist)**를 재검증한다(R4 정본; 07 기존 계약, 15 §8.1 주석, 신뢰 경계 정본은 [09](09-permissions-security.md)). basename만 비교하던 1차 안은 폐지한다.
+PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에 executable allowlist가 **없다**(research §6, §10 권고 6). direct runtime은 이를 의도적으로 강화한다: renderer를 untrusted로 간주하고, **renderer/adapter는 실행 파일 command를 아예 넘기지 않으며**, backend가 provider로 **신뢰 절대경로(executable)를 직접 resolve**한 뒤 **args(정확 일치)·env key(allowlist)**를 재검증한다(S1 정본; R4 정본; 15 §8.1 주석, 신뢰 경계 정본은 [09](09-permissions-security.md)). basename만 비교하던 1차 안은 폐지하고, command 자체를 renderer 비제어로 만든다 — 동명 바이너리(`/tmp/codex`, `/tmp/node` 등) 우회를 원천 차단한다.
+
+> **S1 정본 (renderer 비제어 command)**: `AgentRuntimeStartParams::JsonrpcStdio`에서 **`command` 필드는 제거**되었다(15 §8.1). adapter는 `provider`·`distro`·`work_dir`·`args`(검증 대상)·`env`(non-secret)만 넘긴다. backend는 `provider`로 신뢰 절대경로를 resolve한다: `codex` → resolve된 `codex` app-server 절대경로, `claude` → resolve된 `node` 절대경로. resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식은 [13](13-risks-open-questions.md) "command/entry resolve 주체" 결정 필요 항목이다.
 
 ### 8.1 검증 규칙
 
-`AgentRuntimeStartParams::JsonrpcStdio { provider, command, args, .. }`에 대해 (R4 정본 — basename 비교 제거, 절대경로·정확 args·env key allowlist로 강화):
+`AgentRuntimeStartParams::JsonrpcStdio { provider, distro, work_dir, args, env }`에 대해 (S1 정본 — command는 renderer가 넘기지 않고 backend가 provider로 resolve; basename 비교 제거, 절대경로·정확 args·env key allowlist로 강화):
 
 1. **provider enum 검증**: `provider`는 `"codex"` 또는 `"claude"`만 허용. 그 외는 `Err`.
-2. **command = 신뢰 절대경로 (basename 비교 폐지)**: `command`는 **basename으로 비교하지 않는다**. provider별로 `command`는 (a) **backend가 resolve한 신뢰 절대경로**(예: `which codex` / `node` resolve 결과를 backend가 직접 구해 캐시; 06 §2.2 node/entry resolve 방식 3) 또는 (b) **사전 등록된 절대경로 화이트리스트**에 정확히 일치하는 값만 허용한다. 임의 디렉터리의 동명 바이너리(`/tmp/codex`, `/tmp/node` 등)는 basename만 같아도 거부된다.
+2. **executable = backend가 provider로 resolve한 신뢰 절대경로 (S1; command 파라미터 비수신)**: backend는 **renderer가 넘긴 command를 받지 않는다**(필드 자체가 제거됨, 15 §8.1). 대신 `provider`로 executable을 직접 resolve한다 — (a) **backend가 resolve한 신뢰 절대경로**(예: `which codex` / `node` resolve 결과를 backend가 직접 구해 캐시; 06 §2.2 node/entry resolve 방식 3) 또는 (b) **사전 등록된 절대경로 화이트리스트**에서 가져온다. resolve 결과는 항상 절대경로(`/`로 시작)이며, 임의 디렉터리의 동명 바이너리(`/tmp/codex`, `/tmp/node` 등)는 renderer가 지정할 경로 자체가 없으므로 우회 불가다.
    - `codex` → backend가 신뢰 절대경로로 resolve한 `codex` app-server 바이너리. 셸 비경유 직접 실행 `wsl.exe -d <distro> --cd <wslWorkDir> -e env … <codexAbsPath> app-server --stdio`로 띄운다(05가 이 형태를 따른다, ref-codex §1.1: app-server 기본 stdio, 전역 experimental 플래그 불필요).
-   - `claude` → backend가 신뢰 절대경로로 resolve한 `node`. **1차 argv 검증의 핵심은 `args[0]` = 검증된 `adapterEntryPath`(절대경로) 일치**다(아래 3-claude). `npx`는 1차에서 제거하고 후속(optional)으로만 검토한다(06 §2.2 D9). 정확한 launch executable·entry resolve는 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·ref-acp §1·ref-claude-agent-acp §5가 권위.
+   - `claude` → backend가 신뢰 절대경로로 resolve한 `node`. **1차 argv 검증의 핵심은 `args[0]` = backend가 검증한 `adapterEntryPath`(절대경로) 일치**다(아래 3-claude). `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 고정 npm 의존 위치(`claude-agent-acp` `dist/index.js`)에서 resolve하거나 사전 등록된 절대경로다. `npx`는 1차에서 제거하고 후속(optional)으로만 검토한다(06 §2.2 D9). 정확한 launch executable·entry resolve는 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·ref-acp §1·ref-claude-agent-acp §5가 권위.
 3. **args 정확 검증 (provider별 exact match)**: shell 메타문자(`;`, `|`, `&`, `` ` ``, `$(`, `>`, `<`, 개행) 검사는 방어용으로 유지하되, 1차 게이트는 **provider별 정확 일치**다.
    - `codex` → `args`가 **정확히** `["app-server", "--stdio"]`일 것(ref-codex §1.1). 그 외 길이/값은 거부.
-   - `claude` → `args.length == 1` 이고 `args[0]`이 **검증된 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js` 패턴)**일 것. 임의 `.js`·임의 바이너리·복수 인자는 거부(06 §2.2: bin은 `dist/index.js` 하나, args = `[adapterEntryPath]`). **이 `adapterEntryPath` 절대경로 검증이 Claude의 1차 argv 검증이다** — `command`(node) 자체는 신뢰 절대경로 resolve로 고정되므로, 실제 실행 대상의 신뢰성은 `args[0]` 절대경로 화이트리스트/검증으로 보장된다.
-4. **command/args 출처**: adapter가 생성한 검증된 값만 허용. frontend가 자유 입력을 넣는 경로를 차단(§0). renderer는 untrusted로 간주하며, backend는 command(절대경로)·args(정확 일치)·env key를 재검증한다(09 위협모델, 11 테스트).
+   - `claude` → `args.length == 1` 이고 `args[0]`이 **backend가 검증한 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js` 패턴)**일 것. 임의 `.js`·임의 바이너리·복수 인자는 거부(06 §2.2: bin은 `dist/index.js` 하나, args = `[adapterEntryPath]`). **이 `adapterEntryPath` 절대경로 검증이 Claude의 1차 argv 검증이다** — executable(node)은 backend가 provider로 resolve한 신뢰 절대경로로 고정되고, `adapterEntryPath`도 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록)하므로, renderer는 실행 대상 어느 쪽도 제어하지 못한다. backend는 `args[0]`이 그 신뢰 출처와 정확히 일치하는지 재검증한다.
+4. **executable·args 출처 (S1)**: executable은 renderer가 넘기지 않고 backend가 provider로 resolve한다(위 2). `args`는 adapter가 생성한 검증된 값만 허용하되 backend가 provider별 정확 일치로 재검증한다. frontend가 executable 경로 또는 임의 argv를 자유 입력으로 주입하는 경로를 차단(§0). renderer는 untrusted로 간주하며, backend는 resolve된 executable(절대경로)·args(정확 일치)·env key를 재검증한다(09 위협모델, 11 테스트).
 5. **env key allowlist + non-secret 값 (C1)**: `env` 각 key는 `^[A-Za-z_][A-Za-z0-9_]*$`(POSIX env 이름 규칙)를 만족하고 **provider별 허용 key 집합**에 속해야 한다. 값은 **non-secret 전용**(§5.1 `-e env KEY=VAL` argv 경로). secret(API key/token/gateway header/cookie)은 이 argv 경로로 넘기지 않으며, 필요 시 `Command::env()`+`WSLENV` passthrough로만 전달한다(§5.1 note). v1 기본값은 secret env 미전달(provider 자체 WSL 인증 의존). shell 메타문자 검사는 값에 대한 방어용으로 유지한다.
 
 ```rust
-// R4: provider별 신뢰 command 출처. basename 비교는 폐지한다.
+// S1: executable은 renderer가 넘기지 않는다. backend가 provider로 신뢰 절대경로를 resolve한다.
 //  - (a) backend가 resolve한 신뢰 절대경로(권고; 06 §2.2 resolve 방식 3 + 캐시), 또는
 //  - (b) 사전 등록된 절대경로 화이트리스트.
-// 절대경로(`/`로 시작)이며 신뢰 출처에 정확히 일치해야 한다. 동명 바이너리(/tmp/...)는 거부.
-fn is_trusted_abs_command(provider: &str, command: &str) -> bool {
-    // 절대경로 강제(WSL POSIX absolute). resolve 캐시/사전 등록 화이트리스트와 정확 일치 확인.
-    command.starts_with('/') && trusted_command_set(provider).contains(command)
+// 반환값은 항상 절대경로(`/`로 시작)이며 신뢰 출처에서만 온다. renderer가 동명 바이너리
+// (/tmp/codex, /tmp/node)를 지정할 경로가 애초에 없다(command 파라미터 비수신).
+// resolve 주체·캐시 무효화는 13 "command/entry resolve 주체" 결정 필요.
+fn resolve_trusted_executable(provider: &str) -> Result<String, String> {
+    // codex  → resolve된 codex app-server 절대경로
+    // claude → resolve된 node 절대경로
+    // resolve 실패(미설치 등) 시 Err.
+    trusted_executable_for(provider).ok_or_else(|| {
+        format!("failed to resolve trusted executable for provider '{provider}'")
+    })
+}
+
+// Claude adapterEntryPath: backend가 고정 npm 의존 위치(claude-agent-acp dist/index.js)에서
+// resolve하거나 사전 등록한 신뢰 절대경로. args[0]이 이 값과 정확히 일치해야 통과.
+fn is_trusted_adapter_entry_path(entry: &str) -> bool {
+    entry.starts_with('/') && trusted_adapter_entry_set().contains(entry)
 }
 
 // Codex args 정본(ref-codex §1.1): 정확히 ["app-server", "--stdio"].
@@ -812,6 +849,7 @@ fn is_valid_env_key(key: &str) -> bool {
 }
 
 // 반환 tuple: (provider, distro, work_dir, executable, argv, non_secret_env, secret_env).
+// S1: executable은 params에서 받지 않고 backend가 provider로 resolve한 신뢰 절대경로다.
 // C1: env는 non-secret만 argv(`-e env`)로 흐른다. secret_env는 Command::env()+WSLENV 경로(§5.1).
 // v1 기본값은 secret_env 빈 맵(provider 자체 WSL 인증 의존). AgentRuntimeStartParams.env(15 §8.1)는
 // non-secret 전용 규약이므로 여기서는 전부 non_secret_env로 분류한다(secret 주입 경로는 별도 채널).
@@ -819,7 +857,8 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
     -> Result<(String, String, String, String, Vec<String>,
                HashMap<String,String>, HashMap<String,String>), String>
 {
-    let AgentRuntimeStartParams::JsonrpcStdio { provider, distro, work_dir, command, args, env }
+    // S1: command 필드는 제거되었다(15 §8.1). renderer는 executable을 넘기지 않는다.
+    let AgentRuntimeStartParams::JsonrpcStdio { provider, distro, work_dir, args, env }
         = params else {
         return Err("only jsonrpc-stdio transport is supported in v1".into());
     };
@@ -829,12 +868,8 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
         "claude" => CLAUDE_ALLOWED_ENV_KEYS,
         other => return Err(format!("unknown provider: {other}")),
     };
-    // 2) command = 신뢰 절대경로 (basename 비교 폐지)
-    if !is_trusted_abs_command(provider, command) {
-        return Err(format!(
-            "command '{command}' is not a trusted absolute path for provider '{provider}'"
-        ));
-    }
+    // 2) executable = backend가 provider로 resolve한 신뢰 절대경로 (S1; command 비수신)
+    let executable = resolve_trusted_executable(provider)?;
     // 3) args 정확 검증 (provider별 exact match)
     match provider.as_str() {
         "codex" => {
@@ -886,12 +921,13 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
     // 필요하면 별도 secret 채널에서 secret_env를 채워 Command::env()+WSLENV로 전달한다(§5.1).
     let non_secret_env = env_map;
     let secret_env: HashMap<String, String> = HashMap::new();
-    Ok((provider.clone(), distro.clone(), work_dir.clone(), command.clone(),
+    // S1: executable은 위에서 backend가 resolve한 신뢰 절대경로(renderer 비제어).
+    Ok((provider.clone(), distro.clone(), work_dir.clone(), executable,
         args.clone(), non_secret_env, secret_env))
 }
 ```
 
-> **command/adapterEntryPath 신뢰 출처 (정본)**: `is_trusted_abs_command`/`is_trusted_adapter_entry_path`가 비교하는 신뢰 절대경로는 **backend가 resolve해 캐시한 값**(06 §2.2 resolve 방식 3: `wsl.exe -e bash -lc "command -v node"` / `node -e require.resolve(...)` 1회 resolve 후 캐시) 또는 **사전 등록 절대경로 화이트리스트**에서 온다. 정확한 resolve 주체·캐시 무효화·distro 검증(`list_wsl_distros` wsl.rs:297 결과 집합) 여부와 `*_ALLOWED_ENV_KEYS` 정확 집합은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·[`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)·[`09-permissions-security.md`](09-permissions-security.md)와 동기화해야 한다(결정 필요 항목 [13](13-risks-open-questions.md) "command/entry resolve 주체", "distro allowlist 검증 여부", "provider env key allowlist 집합").
+> **executable/adapterEntryPath 신뢰 출처 (S1 정본)**: `resolve_trusted_executable`이 돌려주는 executable 절대경로와 `is_trusted_adapter_entry_path`가 비교하는 `adapterEntryPath`는 모두 **backend가 resolve해 캐시한 값**(06 §2.2 resolve 방식 3: `wsl.exe -e bash -lc "command -v node"` / `node -e require.resolve(...)` 1회 resolve 후 캐시) 또는 **사전 등록 절대경로 화이트리스트**에서 온다 — **renderer가 넘긴 command를 검증하는 게 아니라 backend가 직접 resolve**한다(command 필드 제거, 15 §8.1). 정확한 resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식·distro 검증(`list_wsl_distros` wsl.rs:297 결과 집합) 여부와 `*_ALLOWED_ENV_KEYS` 정확 집합은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·[`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)·[`09-permissions-security.md`](09-permissions-security.md)와 동기화해야 한다(결정 필요 항목 [13](13-risks-open-questions.md) "command/entry resolve 주체", "distro allowlist 검증 여부", "provider env key allowlist 집합").
 
 ---
 
@@ -1019,11 +1055,11 @@ fn redact(s: &str) -> String {
 - [ ] `spawn_wsl_process`(`wsl.exe -d -e`, piped stdio, CREATE_NO_WINDOW) (§5.1).
 - [ ] launch 커맨드 정본(`wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <exe> <argv>`, 셸 비경유)(§5.1).
 - [ ] C1 secret env 경계: `-e env KEY=VAL` argv는 non-secret 전용. secret은 `Command::env()`+`WSLENV` passthrough(argv 금지), v1 기본은 secret env 미전달(§5.1·§8.1·§11).
-- [ ] graceful shutdown(stdin drop → grace poll → kill) (§5.2).
+- [ ] graceful shutdown(stdin drop → grace poll → kill → child reap; reap 후 반환, teardown은 최종 exit 반영 후, exit/shutdown pending 종료 멱등·정확히 한 번) (§5.2, §5.3, 04 §5).
 - [ ] child wait/kill 동시성 정본 패턴: Child를 wait 전용 thread로 move + 저장한 pid/handle로 kill(§5.3, terminal/mod.rs 2-thread 선례).
 
 **보안·경계**
-- [ ] provider별 allowlist 검증(§8, R4): command=신뢰 절대경로(basename 비교 폐지), args 정확 일치(Codex `["app-server","--stdio"]`, Claude `[adapterEntryPath]` 절대경로), env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + provider 허용 key) + 값 non-secret.
+- [ ] provider별 allowlist 검증(§8, S1/R4): executable=**backend가 provider로 resolve한 신뢰 절대경로**(command 파라미터 비수신, basename 비교 폐지), args 정확 일치(Codex `["app-server","--stdio"]`, Claude `[backend가 검증한 adapterEntryPath]` 절대경로), env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + provider 허용 key) + 값 non-secret.
 - [ ] WSL absolute path canonicalize(§9).
 - [ ] redaction hook(§11), env 평문 미저장(10 §7.3).
 
@@ -1046,9 +1082,9 @@ fn redact(s: &str) -> String {
 | AC-2 | `agent_runtime_*` 5 command가 `generate_handler!`에 등록되어 invoke 가능 | E2E mock 시나리오에서 `invoke("agent_runtime_start", ...)` 성공 |
 | AC-3 | newline framer가 multi-chunk·UTF-8 경계 분할 stdout에서 정확히 메시지 경계 복원 | tests.rs: 한 JSON을 byte 단위로 쪼개 reader에 주입, 1메시지로 복원 검증 |
 | AC-4 | invalid JSON 라인이 `agent-runtime-error{recoverable:true}` emit, 5연속 시 `false` | tests.rs |
-| AC-5 | `shutdown`이 stdin EOF → grace(2s) → kill 순으로 동작, 정상 종료 시 kill 미발생 | tests.rs(mock child) + 수동 확인 |
-| AC-6 | process exit 시 `agent-runtime-exit` emit, frontend가 pending 정리 가능(04 §5) | E2E |
-| AC-7 | allowlist 검증(R4) 거부: 신뢰 절대경로 아닌 command(예: `command=/tmp/x` 또는 `node`+`args=[/tmp/x.js]`) 거부, Codex args≠`["app-server","--stdio"]` 거부, Claude args≠`[검증된 adapterEntryPath]` 거부, env key allowlist 위반·`^[A-Za-z_][A-Za-z0-9_]*$` 위반 거부, shell 메타문자 args/값 거부. 승인된 절대경로·정확 args·허용 env key만 통과 | tests.rs(§8) |
+| AC-5 | `shutdown`이 stdin EOF → grace(2s) → kill → **child reap** 순으로 동작, 정상 종료 시 kill 미발생, reap 완료(`exited`) 후 반환·teardown(S3) | tests.rs(mock child) + 수동 확인 |
+| AC-6 | process exit 시 `agent-runtime-exit`가 **정확히 한 번** emit(exit/shutdown 동시 트리거에도 이중 emit 없음, S3), frontend가 pending을 멱등하게 한 번 정리 가능(04 §5) | E2E + tests.rs(compare_exchange exactly-once) |
+| AC-7 | allowlist 검증(S1/R4) 거부: command는 renderer가 넘길 수 없고 backend가 provider로 resolve(executable resolve 실패 시 Err), Claude `args=[/tmp/x.js]`(신뢰 adapterEntryPath 아님) 거부, Codex args≠`["app-server","--stdio"]` 거부, Claude args≠`[검증된 adapterEntryPath]` 거부, env key allowlist 위반·`^[A-Za-z_][A-Za-z0-9_]*$` 위반 거부, shell 메타문자 args/값 거부. backend resolve된 executable·정확 args·허용 env key만 통과 | tests.rs(§8) |
 | AC-8 | Windows path·relative path workDir 거부, WSL absolute만 통과 | tests.rs(§9) |
 | AC-9 | `is_test_mode()`에서 실제 WSL 없이 mock JSON-RPC 스트림 emit | E2E mock 시나리오 |
 | AC-10 | API key/token이 stderr 로그·snapshot·persistence에 평문 노출 안 됨 | redact 단위 테스트 + persistence scrub 테스트(10 §7.3) |

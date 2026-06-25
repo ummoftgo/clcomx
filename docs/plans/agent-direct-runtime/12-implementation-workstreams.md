@@ -25,7 +25,7 @@
 | service | `src/lib/features/agent-runtime/service/transport.ts` | new | 15 §8.2 invoke 래퍼 + 15 §8.3 listen 구독만(`pty.ts` 대응; **adapter는 여기 두지 않음**) | FE §4.1, §4.2 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/codex-app-server-adapter.ts` | new | Codex wire↔`AgentEvent`/Port (05) | FE §8 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/codex-wire-mapper.ts` | new | Codex notification/request↔normalized 매핑(05) | FE §8 |
-| adapters | `src/lib/features/agent-runtime/adapters/codex/codex-launch.ts` | new | Codex stdio launch command 생성(05·07) | FE §8 |
+| adapters | `src/lib/features/agent-runtime/adapters/codex/codex-launch.ts` | new | Codex stdio start params 생성(provider/distro/workDir/args/env; **command 미생성 — backend resolve, S1**)(05·07) | FE §8 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/codex-routing.ts` | new | 삼중 키 라우팅 + JSON-RPC id 타입 보존(05 §6) | FE §8 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/*.test.ts` | new | 동일 디렉토리 co-located 테스트 | FE §8 |
 | adapters | `src/lib/features/agent-runtime/adapters/claude-acp/claude-acp-adapter.ts` 외 06 §1.1 파일들 | new | Claude ACP wire↔`AgentEvent`/Port (06) (+ `*.test.ts`) | FE §8 |
@@ -65,9 +65,9 @@
 |---|---|---|---|
 | `src-tauri/src/features/agent_runtime/mod.rs` | new | `AgentRuntimeState`(`Mutex<HashMap<RuntimeId, AgentRuntime>>` + `next_id`), spawn/send/cancel/shutdown core fn, snapshot | BE §9 표, §2.1 PtyState |
 | `src-tauri/src/features/agent_runtime/transport.rs` | new | newline-delimited JSON-RPC framing, stdin write, stdout/stderr reader thread | BE §2.2 reader loop, §2.6 `decode_utf8_stream_chunk` |
-| `src-tauri/src/features/agent_runtime/process.rs` | new | `wsl.exe -d <distro> -e <exe> <argv>` spawn, graceful shutdown(stdin close→timeout→kill) | BE §5.1 `WslShell::spawn`, §2.4 |
+| `src-tauri/src/features/agent_runtime/process.rs` | new | `wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL <backend-resolved-exe> <argv>` spawn(non-secret env argv·secret은 `Command::env()`+`WSLENV`, 07 §5.1), graceful shutdown(stdin close→timeout→kill) | BE §5.1 `WslShell::spawn`, §2.4 |
 | `src-tauri/src/features/agent_runtime/types.rs` | new | 15 §8 Rust 미러 struct/enum (serde camelCase) | BE §3.3, 15 §8 |
-| `src-tauri/src/features/agent_runtime/allowlist.rs` | new | provider별 command/args allowlist 검증 (신규 강화점) | BE §6, §10 권고 6 |
+| `src-tauri/src/features/agent_runtime/allowlist.rs` | new | provider별 검증: backend-resolved 신뢰 절대경로 command(renderer 비제어, S1) + 정확 args + env key allowlist (신규 강화점, 07 §8.1) | BE §6, §10 권고 6 |
 | `src-tauri/src/features/agent_runtime/tests.rs` | new | fixture replay, framing, snapshot/delta, allowlist 단위 테스트 | BE §8.1, §2.3 |
 | `src-tauri/src/commands/agent_runtime.rs` | new | 얇은 `#[tauri::command]` 래퍼 5종 + re-export | BE §3.1, `commands/pty.rs` |
 | `src-tauri/src/commands/mod.rs` | edit | `pub mod agent_runtime;` 추가 | BE §3.2 |
@@ -241,11 +241,15 @@
 
 - 대상: `src-tauri/src/features/agent_runtime/process.rs`.
 - 선행: T2.1.
-- 산출물: `wsl.exe -d <distro> -e <exe> <argv>` child spawn(stdin/stdout/stderr piped, `CREATE_NO_WINDOW`). PTY의 `HashMap::remove`+Drop에 의존하지 말고 명시적 child handle 보관(BE §2.4, §10 권고 5). graceful shutdown: stdin close→`SHUTDOWN_TIMEOUT_MS` 대기→kill(07 §Process lifecycle).
-- DoD: child handle 보관·kill 동작. `cargo test`로 mock(non-WSL) 경로 검증. **executable+argv** 모델 준수(shell string 금지, BE §2.2).
-- 테스트(11): "shutdown timeout 후 kill".
-- 계약(15 §): §8.2 `command`/`args`/`env`.
-- ref §: 07 §Process lifecycle, §WSL/Windows 경계.
+- 산출물: 07 §5.1 launch 정본 형태 `wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY1=V1 KEY2=V2 <backend-resolved-exe> <argv...>`로 child spawn(stdin/stdout/stderr piped, `CREATE_NO_WINDOW`). 로그인 셸 비경유 직접 실행(`-e env` 바이너리 주입 → `<executable>` exec)으로 rc 파일 stdout 오염 원천 차단(07 §5.1, 06 §2.3). **executable은 renderer가 넘기지 않고 backend가 provider로 신뢰 절대경로를 resolve한다**(S1: codex→resolve된 codex 절대경로, claude→resolve된 node 절대경로; 동명 바이너리 `/tmp/codex`·`/tmp/node` 우회 불가, 07 §8.1). cwd는 `--cd <wslWorkDir>`로 WSL 내부 경로 직접 설정(09 §canonicalize 완료 값). env 경계: **non-secret env만 `-e env KEY=VAL` argv 경유**(비민감 플래그), **secret env(API key/OAuth token/gateway header/cookie)는 argv 비경유 — `Command::env()`+`WSLENV` passthrough**(07 §5.1 C1; v1 기본값은 secret env 미전달=provider 자체 WSL 인증 의존). PTY의 `HashMap::remove`+Drop에 의존하지 말고 명시적 child handle 보관(BE §2.4, §10 권고 5). graceful shutdown: stdin close→`SHUTDOWN_GRACE_MS`(2000ms) 대기→kill(07 §5.2). wait-중-kill deadlock 회피 정본 패턴(child는 wait 전용 thread로 move, kill은 저장된 OS pid/handle, 07 §5.3).
+- DoD: child handle 보관·kill 동작. `cargo test`로 mock(non-WSL) 경로 검증. **executable+argv** 모델 준수(shell string 금지, BE §2.2). 추가 검증:
+  - **`--cd <wslWorkDir>` cwd 경계**: spawn argv에 `--cd`와 canonicalize된 WSL absolute workDir이 정확히 포함되는지(Windows path·relative workDir 거부는 §9/T2.4 allowlist 책임이나 spawn 조립에서 cwd 인자 위치를 검증).
+  - **non-secret env argv 경계**: `non_secret_env`의 `KEY=VAL`만 `-e env` 뒤 argv에 조립되는지.
+  - **secret env 경계**: `secret_env` 키가 child argv(`-e env KEY=VAL`)에 **부재**하고 `Command::env()`+`WSLENV`(`KEY/u` 형태)에만 등재되는지(07 §5.1 C1, AC-10b).
+  - **allowlist(backend-resolved command + 정확 args) 경계**: spawn에 들어오는 executable이 backend resolve 신뢰 절대경로이고, argv가 provider별 정확 일치(Codex `["app-server","--stdio"]`, Claude `[검증된 adapterEntryPath]`)인 검증을 통과한 값만 spawn되는지(07 §8.1, T2.4 연계). renderer는 command를 넘기지 않음(S1).
+- 테스트(11): "shutdown timeout 후 kill", "`spawn_wsl_process` argv 조립(`--cd` cwd·non-secret env argv·secret env는 `Command::env()`+`WSLENV`)", "backend-resolved command + 정확 args allowlist"(T2.4와 교차).
+- 계약(15 §): §8.1 `AgentRuntimeStartParams`(provider/distro/workDir/args/env; **command 필드 없음 — backend가 provider로 신뢰 절대경로 resolve, S1**), §8.2 시그니처.
+- ref §: 07 §5.1(launch 정본 형태·cwd·non-secret/secret env 경계), §5.2/§5.3(shutdown·wait/kill), §8.1(R4 allowlist·backend-resolved command·정확 args), §9(WSL path 경계).
 - 본뜰 코드: `commands/wsl.rs::WslShell::spawn`(BE §5.1 비-PTY spawn 레퍼런스).
 
 ### T2.3 — newline-delimited JSON-RPC framing + reader threads
@@ -263,11 +267,11 @@
 
 - 대상: `src-tauri/src/features/agent_runtime/allowlist.rs`.
 - 선행: T2.1.
-- 산출물: provider enum(`codex`|`claude`)별 허용 `command`/`args` prefix 검증. renderer가 임의 executable/shell string을 넘기면 `Err(String)`(15 §8.1 주석, 07 §Tauri command v1 계약). PTY에 선례 없는 신규 강화점(BE §6, §10 권고 6).
-- DoD: 허용/거부 케이스 단위 테스트. `agent_runtime_start`가 spawn 전에 이 검증을 호출.
-- 테스트(11): "provider별 startup command allowlist 검증".
-- 계약(15 §): §8.1 `AgentRuntimeStartParams`.
-- ref §: 07 §Tauri command v1 계약.
+- 산출물: provider enum(`codex`|`claude`)별 검증(07 §8.1 R4 정본 — basename/prefix 비교 폐지). **command는 renderer가 넘기지 않는다**: backend가 provider로 신뢰 절대경로를 resolve(codex→codex 절대경로, claude→node 절대경로; 06 §2.2 resolve 방식 3 + 캐시, 또는 사전 등록 절대경로 화이트리스트)하고 동명 바이너리(`/tmp/codex`·`/tmp/node`)를 거부한다(S1). args는 **provider별 정확 일치**: Codex `["app-server","--stdio"]`, Claude `args.length==1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js`). env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + provider별 허용 key, 값은 non-secret 전용). renderer가 임의 args/shell string/비신뢰 entry를 넘기면 `Err(String)`(15 §8.1 주석, 07 §8.1). PTY에 선례 없는 신규 강화점(BE §6, §10 권고 6).
+- DoD: 허용/거부 케이스 단위 테스트(backend-resolved 절대경로 통과 vs 동명 바이너리 거부, Codex 정확 args vs 그 외 거부, Claude `adapterEntryPath` 신뢰 vs 비신뢰 거부, env key allowlist 위반 거부). `agent_runtime_start`가 spawn 전에 이 검증을 호출.
+- 테스트(11): "provider별 startup command allowlist 검증"(backend-resolved command + 정확 args + env key, 07 AC-7).
+- 계약(15 §): §8.1 `AgentRuntimeStartParams`(command 필드 없음 — backend resolve, S1).
+- ref §: 07 §8.1(R4 allowlist 정본), §5.1(launch 형태).
 
 ### T2.5 — runtime state + command 5종 + 등록
 
@@ -299,9 +303,9 @@
 
 ### T3.1 — Codex Port 구현 (initialize/thread/turn)
 
-- 대상: `src/lib/features/agent-runtime/adapters/codex/codex-app-server-adapter.ts`(+ `codex-launch.ts` launch command).
+- 대상: `src/lib/features/agent-runtime/adapters/codex/codex-app-server-adapter.ts`(+ `codex-launch.ts` start params 생성).
 - 선행: T2.6, T0.3.
-- 산출물: `AgentRuntimePort` 구현(15 §6). `startSession`=process start→initialize→thread start, `resumeSession`=thread/resume·thread/read(replay), `sendPrompt`=turn start, `cancelTurn`, `respondApproval`, `subscribeEvents`, `shutdown`. Codex는 envelope에 `jsonrpc` 미포함(15 §8.1 주석, ref-codex §1.2).
+- 산출물: `AgentRuntimePort` 구현(15 §6). `startSession`=process start→initialize→thread start, `resumeSession`=thread/resume·thread/read(replay), `sendPrompt`=turn start, `cancelTurn`, `respondApproval`, `subscribeEvents`, `shutdown`. Codex는 envelope에 `jsonrpc` 미포함(15 §8.1 주석, ref-codex §1.2). `codex-launch.ts`는 `AgentRuntimeStartParams`(provider/distro/workDir/args=`["app-server","--stdio"]`/env)만 생성하고 **executable command는 넘기지 않는다 — backend가 codex 신뢰 절대경로를 resolve한다(S1, 07 §8.1)**.
 - DoD: 아래 mapping 테스트 통과.
 - 테스트(11): "thread start/resume mapping", "app-server process exit 처리".
 - 계약(15 §): §6 Port, §7.1 `ResumeSessionParams`.
@@ -339,7 +343,7 @@
 
 - 대상: `src/lib/features/agent-runtime/adapters/claude-acp/claude-acp-adapter.ts`.
 - 선행: T2.6, T0.4.
-- 산출물: `claude-agent-acp` bin launch command(ref-claude §2) + ACP initialize(`protocolVersion=1`)→`session/new`/`session/load`. `AgentRuntimePort` 구현. envelope는 JSON-RPC 2.0(`jsonrpc:"2.0"`, ref-acp §1).
+- 산출물: Claude ACP start params 생성(ref-claude §2) + ACP initialize(`protocolVersion=1`)→`session/new`/`session/load`. `AgentRuntimePort` 구현. envelope는 JSON-RPC 2.0(`jsonrpc:"2.0"`, ref-acp §1). start params는 `args = [adapterEntryPath]`(claude-agent-acp `dist/index.js`)만 넘기고 **executable command(node)는 넘기지 않는다 — backend가 node 신뢰 절대경로를 resolve하고 `adapterEntryPath`도 backend 검증(고정 npm 의존 위치 resolve/사전 등록 절대경로) 대상이다(S1, 07 §8.1)**.
 - DoD: initialize/session new/load flow 테스트 통과. capability mismatch 처리.
 - 테스트(11): "initialize/session new/session load flow", "capability mismatch".
 - 계약(15 §): §6 Port.
