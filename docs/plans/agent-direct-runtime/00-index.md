@@ -28,7 +28,7 @@ CLCOMX의 현재 에이전트 화면은 `claude`와 `codex`를 터미널 프로�
 | **타입 정의**(`AgentEvent`/`ProviderRef`/`ToolCallUpdate`/`Approval*`/`AgentRuntimeMetadata`/`JsonRpcMessage`/`AgentRuntimeStartParams` 등 모든 TS·Rust 타입) | **[15-data-contracts.md](15-data-contracts.md)** | 재정의 금지. §번호로 인용·링크만 한다. |
 | **개념·규칙·불변식**(상태 머신 전이, upsert/append/reconcile, 순서 보존, approval 생명주기, 식별자 라우팅) | **[04-normalized-agent-model.md](04-normalized-agent-model.md)** | 규칙은 04를 인용. 타입은 15로 링크. |
 | **provider wire 사실**(Codex/ACP/Claude 실제 메서드·payload·매핑표) | **ref-\*** (`ref-codex-app-server-protocol.md`, `ref-acp-protocol.md`, `ref-claude-agent-acp.md`) | wire shape는 ref §번호로 인용. |
-| **코드 현실**(현 backend/frontend 구조·심볼·경로) | **`research/*`** (`codebase-backend.md`, `codebase-frontend.md`, `ux-reference.md`) | 코드 인용은 research §번호로. |
+| **코드 현실**(현 backend/frontend 구조·심볼·경로) | **실제 코드(`src/`·`src-tauri/`)가 정본.** 보조 스냅샷: **`research/codebase-backend.md`·`codebase-frontend.md`**(해당 git ref 시점 매핑) | 코드 인용은 research §번호로 하되 **충돌 시 실제 코드가 우선**이며 대조 후 사용. `research/ux-reference.md`는 외부 UX 참고자료(코드 아님). |
 | **위험·open question·확정 기본값** | **[13-risks-open-questions.md](13-risks-open-questions.md)** | 미확정(unverified)·결정 필요 항목은 13으로 연결한다. |
 
 추정과 확인된 사실을 항상 구분한다. 미확정 항목은 `unverified` 또는 `결정 필요`로 명시하고 13에 등록한다.
@@ -83,11 +83,13 @@ CLCOMX의 현재 에이전트 화면은 `claude`와 `codex`를 터미널 프로�
 - **[ref-acp-protocol.md](ref-acp-protocol.md)**: Agent Client Protocol wire 레퍼런스(content/tool/permission, session/update, 매핑표). pinned `schema-v1.16.0`, wire `protocolVersion=1`.
 - **[ref-claude-agent-acp.md](ref-claude-agent-acp.md)**: `@agentclientprotocol/claude-agent-acp` + Claude Agent SDK 외부 사실(capability·launch·auth). pinned `@0.51.0`.
 
-### 코드 현실 (research)
+### 코드 현실·참고 (research)
 
-- **[research/codebase-backend.md](research/codebase-backend.md)**: 현 Rust backend 구조(PTY 상태 모델, command/event 등록, scrub, allowlist) 조사.
-- **[research/codebase-frontend.md](research/codebase-frontend.md)**: 현 frontend 구조(feature 레이어, host 분기, transport 래퍼, 타입 확장 지점) 조사.
-- **[research/ux-reference.md](research/ux-reference.md)**: 구조화 transcript UI 패턴 UX 레퍼런스.
+> `research/codebase-*.md`는 해당 git ref 시점의 코드 구조를 박제한 **스냅샷**이다. **충돌 시 실제 코드(`src/`·`src-tauri/`)가 정본**이고, 인용된 경로·심볼·줄번호는 실제 코드와 대조해 쓴다. `ux-reference.md`는 코드가 아닌 **외부 UX 참고자료**다.
+
+- **[research/codebase-backend.md](research/codebase-backend.md)**: 현 Rust backend 구조(PTY 상태 모델, command/event 등록, scrub, allowlist) 스냅샷.
+- **[research/codebase-frontend.md](research/codebase-frontend.md)**: 현 frontend 구조(feature 레이어, host 분기, transport 래퍼, 타입 확장 지점) 스냅샷.
+- **[research/ux-reference.md](research/ux-reference.md)**: 구조화 transcript UI 패턴 외부 UX 레퍼런스(코드 아님).
 
 ## 완료 기준
 

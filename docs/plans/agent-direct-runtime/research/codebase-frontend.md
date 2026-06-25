@@ -1,5 +1,7 @@
 # Frontend Architecture Research — Direct Agent Runtime
 
+> **⚠️ 스냅샷 — 코드 현실의 *시점* 매핑**: 이 문서는 아래 git ref 시점의 frontend 코드 구조를 박제한 조사 스냅샷이다. 코드가 바뀌면 낡을 수 있으므로 **충돌 시 실제 코드(`src/`)가 정본이고 이 문서가 아니다.** 인용된 경로·심볼·줄번호는 실제 코드와 대조한 뒤 사용한다.
+
 > 조사 대상 ref: `git e7a5f9e` (`v0.6.0-3-ge7a5f9e`, branch `feat/claude-tui-fullscreen-option`)
 > 저장소 루트: `/home/melbin/work/clcomx`
 > 스택: Tauri v2 + Svelte 5 (runes), TypeScript, Vite, Vitest, svelte-i18n

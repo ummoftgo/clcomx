@@ -46,7 +46,7 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
 | 16-glossary | 용어집·Codex/ACP/CLCOMX 대응표·3축 구분 |
 | adr-001 | 아키텍처 결정 기록 |
 | ref-* | **wire 정본** — Codex/ACP/Claude 프로토콜 사실 |
-| research/* | 코드 현실 근거(backend/frontend/ux) |
+| research/* | 코드 현실 **스냅샷**(backend/frontend, 해당 ref 시점; 충돌 시 실제 코드 우선) + 외부 UX 참고(ux-reference) |
 
 ## 구현 시작 방법
 
