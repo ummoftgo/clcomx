@@ -159,7 +159,7 @@ approval은 server→client request이며, **request id로 pending table을 관�
 
 ### 4.2 cancel 시 정리 (불변식)
 
-turn cancel(또는 process exit) 시 **unresolved approval은 반드시 cancelled로 닫는다**. 이는 두 protocol의 MUST와 정확히 대응한다.
+turn cancel 시 **unresolved approval은 반드시 cancelled로 닫는다**(이때 process는 살아 있으므로 wire `cancelled` 응답을 보낸다). 이는 두 protocol의 MUST와 정확히 대응한다. (process **exit**(process 사망) 경로의 pending 정리는 wire 응답이 불가하므로 `cancelled`가 아니라 `failed`(client 내부 전용)로 닫는다 — §5.0 규칙 1·3.)
 
 - ACP: "Client는 pending된 모든 `session/request_permission`에 `cancelled` outcome으로 **MUST** 응답"(ref-acp §3.8). 즉 cancel 시 모든 pending approval에 `{ outcome: { outcome:"cancelled" } }`를 보낸다.
 - Codex: `serverRequest/resolved` notification(`{threadId, requestId}`)을 받으면 해당 `requestId`의 pending approval을 닫는다(다른 경로로 이미 해결됨). turn interrupt 시에도 unresolved를 cancelled로 정리(ref-codex §4.4).

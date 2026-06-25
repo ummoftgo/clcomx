@@ -380,6 +380,7 @@ PTY와 달리 direct runtime은 backend가 provider별로 command를 resolve하�
 | RS-14 | child가 timeout 내 종료 안 함 | timeout 후 강제 kill, **child reap 후 반환**, exit emit(`research/codebase-backend.md` §10 권고 5 — PTY와 달리 명시적 kill; S3) |
 | RS-15 | shutdown 시 pending request 존재 | process exit이 모든 pending을 실패로 닫음 신호(04 §5; backend는 framing만, 의미 처리는 frontend지만 exit 이벤트는 backend) |
 | RS-15b | shutdown 반환 시점 vs 최종 exit 반영 순서 | `agent_runtime_shutdown`이 반환할 때 child가 이미 reap되어 exit이 계상됨 — 반환 후 늦게 도착하는 exit이 **없음**을 assert(S3: 최종 exit 반영 후에만 teardown). 반환 전에 exit emit 또는 exited 플래그 set 확인(07 §5.2·§5.3) |
+| RS-15c | `REAP_GRACE_MS` 초과해도 child가 reap되지 않음(`exited=false`) | `agent_runtime_shutdown`이 `Err(String)` 반환, `state.runtimes`에서 runtime을 **제거하지 않음**(teardown 금지) — 늦은 exit 계상 가능성 보존(S3 reap-실패 분기, 07 §5.2). happy-path만 통과하고 실패 분기에서 runtime을 제거하는 회귀를 잠금 |
 
 ### 5.5 bounded queue overflow (backpressure)
 

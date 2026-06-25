@@ -837,7 +837,7 @@ sendUnsupportedServerRequest(originalRpcId, method, p):      // ref-codex §1.2/
 
 ### 7.3 cancel cleanup (불변식)
 
-04 §4.2 불변식: turn cancel/process exit 시 **unresolved approval은 반드시 cancelled로 닫는다**. cleanup **순서**는 04 §4.2 정본을 그대로 따른다 — **(1) closing 표시 → (2) approval cancelled 응답 먼저 → (3) turn/interrupt 나중 → (4) 늦은 응답 멱등 무시**. approval을 turn cancel보다 **먼저** 닫는 이유: provider가 turn을 interrupt하면 곧 도착할 `serverRequest/resolved`(ref-codex §4.4)·`turn/completed`와 race가 생기는데, pending을 미리 `closing`으로 표시하고 cancelled 응답을 wire로 보내두면 이중 응답·중복 emit이 멱등하게 차단된다(04 §4.2).
+04 §4.2 불변식: **turn cancel** 시 unresolved approval은 반드시 cancelled로 닫는다(process가 살아 있어 wire `cancelled` 전송 가능). process **exit**(process 사망) 경로는 §9 `closePending(reason="exit")`에서 `failed`로 닫는다(wire 미전송, 04 §5). cleanup **순서**는 04 §4.2 정본을 그대로 따른다 — **(1) closing 표시 → (2) approval cancelled 응답 먼저 → (3) turn/interrupt 나중 → (4) 늦은 응답 멱등 무시**. approval을 turn cancel보다 **먼저** 닫는 이유: provider가 turn을 interrupt하면 곧 도착할 `serverRequest/resolved`(ref-codex §4.4)·`turn/completed`와 race가 생기는데, pending을 미리 `closing`으로 표시하고 cancelled 응답을 wire로 보내두면 이중 응답·중복 emit이 멱등하게 차단된다(04 §4.2).
 
 ```text
 cancelTurn(handle, turnId?):                               // 15 §6

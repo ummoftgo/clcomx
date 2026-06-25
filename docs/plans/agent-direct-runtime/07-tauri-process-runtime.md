@@ -618,18 +618,15 @@ PTY thread1(child wait, terminal/mod.rs:491-502)을 본뜬다. 이 thread가 **c
 ```rust
 fn spawn_child_wait(
     app: AppHandle, runtime_id: RuntimeId,
-    child: Arc<Mutex<Option<ChildHandle>>>,
+    mut child: ChildHandle,                 // Child를 이 wait 전용 thread로 move(소유) — wait 중 Mutex 미보유
     exited: Arc<AtomicBool>, exited_at: Arc<Mutex<Option<i64>>>,
     status: Arc<Mutex<String>>,
 ) {
     std::thread::spawn(move || {
-        // 정본 패턴(아래 note): Child는 이 wait 전용 thread로 move되어 blocking wait 중
-        // Mutex를 보유하지 않는다. kill은 §5.2가 별도로 저장한 OS pid/handle로 수행한다.
-        // 여기서는 move된 child 소유권으로 직접 wait한다(terminal/mod.rs Thread 1 선례).
-        let exit_status = {
-            let mut guard = child.lock().unwrap();
-            guard.as_mut().map(|h| h.child.wait()) // reap: 이 thread가 child를 거둔다(zombie 방지)
-        };
+        // 정본 패턴: Child는 이 thread가 소유하므로 blocking wait 중 어떤 Mutex도 잡지 않는다.
+        // kill은 §5.2가 별도로 저장한 OS pid/handle로 수행한다(이 thread와 lock 경쟁 없음;
+        // terminal/mod.rs Thread 1 선례).
+        let exit_status = child.child.wait(); // reap: 이 thread가 child를 거둔다(zombie 방지)
         // S3: exit event는 정확히 한 번. compare_exchange로 최초 1회만 통과시켜
         // exit/shutdown 동시 트리거 시 이중 emit을 막는다.
         let first = exited
@@ -640,8 +637,8 @@ fn spawn_child_wait(
         *status.lock().unwrap() = "exited".to_string();
 
         let (code, signal) = match exit_status {
-            Some(Ok(st)) => (st.code(), unix_signal(&st)),
-            _ => (None, None),
+            Ok(st) => (st.code(), unix_signal(&st)),
+            Err(_) => (None, None),
         };
         let _ = app.emit("agent-runtime-exit",
             AgentRuntimeEvent::Exit { runtime_id, code, signal });
@@ -653,7 +650,7 @@ fn spawn_child_wait(
 >
 > **정본 패턴**: spawn 직후 `Child`를 **wait 전용 thread로 `move`**하고, 그 thread가 소유권으로 `child.wait()`를 호출한다(blocking wait 중 Mutex 미보유). `kill`은 spawn 시점에 **저장해 둔 OS pid/handle**로 수행한다 — `ChildHandle.pid`(§5.1, Windows는 `child.id()`로 얻은 PID, Unix는 동일)를 별도로 보관하고, §5.2의 강제 종료는 이 저장된 pid/handle로 OS kill을 호출한다(wait thread가 가진 `Child`를 다시 잠그지 않는다). 이는 `terminal/mod.rs`의 **2-thread 선례**(Thread 1이 `child`를 move해 `child.wait()`만 하고, kill은 `portable_pty`의 killer handle로 분리; terminal/mod.rs:491-502)와 동형이다. PTY는 child를 reader/wait가 공유하지 않아 이 문제가 없었고, direct runtime도 동일하게 wait 소유권과 kill 경로를 분리해 회피한다.
 >
-> 위 `spawn_child_wait` 의사코드의 `Arc<Mutex<Option<ChildHandle>>>` 공유는 가독성용 골격이다. 실제 구현은 `Child`를 wait thread로 move하고 kill용 pid/handle만 `AgentRuntime`에 남긴다. 구현 시 wait-중-kill deadlock 미발생을 반드시 테스트한다(§13 AC-5).
+> 위 `spawn_child_wait` 의사코드는 `Child`(`ChildHandle`)를 wait 전용 thread로 **move**해 소유하므로 blocking wait 중 어떤 lock도 잡지 않는다(forbidden한 wait-중-lock 패턴을 보이지 않는다). kill용 pid/handle만 `AgentRuntime`에 남긴다(§5.2). 구현 시 wait-중-kill deadlock 미발생을 반드시 테스트한다(§13 AC-5).
 
 ---
 
