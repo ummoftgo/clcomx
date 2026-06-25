@@ -181,7 +181,7 @@
   - `mode:"replace"` 전체 교체, `mode:"append"` 누적 (04 §3.1).
   - Codex delta→completed reconcile: message는 completed `text` 권위, plan/reasoning은 completed 권위(delta는 점진 렌더만) (04 §3.2).
   - ACP chunk(append) vs `tool_call_update.content`(전체 교체) 구분 (04 §3.3).
-  - 순서 보존 + sequence 정렬·dedup (04 §3.4).
+  - **순서 보존: per-(라우팅 키) receive-order** (단일 stdio 스트림이라 같은 키 내 순서 보존) + reconcile 멱등·notice dedup (04 §3.4·§3.6). **cross-key event-level seq 정렬/dedup은 v1 미도입(후속)** — v1 `AgentEvent`에 seq 필드 없음(15 §8.3, 11 NM-29 후속).
 - DoD: 함수가 부수효과 없음(룬 미사용). 아래 테스트 통과. `applyEvent` 등 함수에 JSDoc(한글) + reconcile 분기에 한 줄 주석(17 §B.1·§B.2; 예시는 17 §B.1).
 - 테스트(11): "message replace/append 순서", "tool call upsert", "provider raw id 보존". co-located `agent-event-reducer.test.ts`, `vi.fn` 불필요(순수).
 - 계약(15 §): §3 `AgentEvent`, §4 `AgentContent`, §5 하위 타입.

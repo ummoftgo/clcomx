@@ -307,7 +307,7 @@ export interface ComposerCapabilities {
 }
 ```
 
-> **approval 파생 관계(이중 소유 아님)**: `pendingApprovals`/`escalationApproval`은 별도 권위 store가 아니라, Event Router가 소유하는 pending request table(`requestId → ApprovalRequest`, [`03`](03-target-architecture.md) §2.3)을 15 §5 `ApprovalRequest.severity`로 분류해 노출하는 **표시용 파생 값**이다. 권위는 pending table 한 곳이며 store 형상·소유 관계 정본은 [`03`](03-target-architecture.md) §2.2(owns 주의)다. `severity==="escalation"`만 `escalationApproval`(modal), 그 외는 `pendingApprovals`(inline). v1 기본은 `normal`이되 [09](09-permissions-security.md) §8.3 고위험 집합(`bypassPermissions`/`danger-full-access`/sandbox 우회)은 v1부터 `escalation`으로 분류되어 escalation 분기가 작동한다([`13`](13-risks-open-questions.md) OQ-47).
+> **approval 파생 관계(이중 소유 아님)**: `pendingApprovals`/`escalationApproval`은 별도 권위 store가 아니라, Event Router가 소유하는 pending request table(`(sessionHandle, requestId) → ApprovalRequest`, [`03`](03-target-architecture.md) §2.3 — `requestId` 단독은 runtime 간 충돌)을 15 §5 `ApprovalRequest.severity`로 분류해 노출하는 **표시용 파생 값**이다. 권위는 pending table 한 곳이며 store 형상·소유 관계 정본은 [`03`](03-target-architecture.md) §2.2(owns 주의)다. `severity==="escalation"`만 `escalationApproval`(modal), 그 외는 `pendingApprovals`(inline). v1 기본은 `normal`이되 [09](09-permissions-security.md) §8.3 고위험 집합(`bypassPermissions`/`danger-full-access`/sandbox 우회)은 v1부터 `escalation`으로 분류되어 escalation 분기가 작동한다([`13`](13-risks-open-questions.md) OQ-47).
 
 > `transcript-reducer.ts`(service, research/codebase-frontend.md §8)는 **순수 함수** `apply(state, event: AgentEvent): void`(또는 immutable 변형)로 04의 upsert/append/replace 규칙을 구현한다. controller는 이 reducer를 호출만 한다. reducer는 vitest 단위 테스트 대상(§9.4).
 

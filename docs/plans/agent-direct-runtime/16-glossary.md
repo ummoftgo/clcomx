@@ -77,7 +77,7 @@ provider마다 같은 단어가 다른 것을 가리킨다. 아래는 **CLCOMX �
 | **append** | 기존 content 뒤에 chunk를 붙인다. `mode:"append"` 또는 ACP `*_chunk`(같은 `messageId` 누적). | [04](04-normalized-agent-model.md) §3.1, §3.3 |
 | **replace** | 기존 content를 통째로 교체한다. `mode:"replace"`, ACP `tool_call_update.content`/`locations`, `plan`은 전부 replace. | [04](04-normalized-agent-model.md) §3.1, §3.3 |
 | **reconcile** | streaming delta로 점진 렌더 후, 최종 completed item을 권위로 삼아 정합화. 키는 Codex `itemId`. 메시지는 delta=completed 가정 가능, plan/reasoning은 completed가 권위. | [04](04-normalized-agent-model.md) §3.2, [ref-codex-app-server-protocol.md](ref-codex-app-server-protocol.md) §7 |
-| **sequence (seq)** | provider가 순서를 보장하지 않을 때 adapter가 event에 부여하는 단조 증가 번호. store dedup/정렬·late-attach 신뢰성용. | [04](04-normalized-agent-model.md) §3.4, [15](15-data-contracts.md) §8.3 |
+| **sequence (seq)** | cross-key 정렬/dedup·late-attach 신뢰성용 단조 증가 번호. **v1 미도입** — v1은 per-(라우팅 키) receive-order가 권위이고, event-level seq(`AgentEvent`)·backend message seq(delta-since)는 **후속**이다. | [04](04-normalized-agent-model.md) §3.4, [15](15-data-contracts.md) §8.3, [13](13-risks-open-questions.md) OQ-50 |
 | **순서 보존** | 같은 session 안에서 message/tool 갱신의 수신 순서를 보존하는 불변식. | [04](04-normalized-agent-model.md) §3, §3.4 |
 
 ---
