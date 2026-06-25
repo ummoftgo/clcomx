@@ -120,7 +120,7 @@ Codex zsh-exec-bridge 분기 시 한 `itemId`에 복수 approval callback이 붙
 자동 허용을 도입하든 안 하든, 모든 approval 결정은 추적 가능해야 한다. v1 최소 audit 레코드(메모리 + opt-in redacted 로그):
 
 ```ts
-// 결정 필요(13): audit 저장 위치/보존기간/포맷은 미확정. 아래는 최소 필드 권고.
+// 결정 필요(13 OQ-51): audit 저장 위치/보존기간/포맷은 미확정. 아래는 최소 필드 권고.
 interface ApprovalAuditEntry {
   sessionHandle: string;       // AgentSessionHandle (15 §6)
   provider: AgentProvider;     // 15 §1
@@ -137,6 +137,8 @@ interface ApprovalAuditEntry {
 
 - audit에는 **명령 전문/파일 내용/credential을 저장하지 않는다** — `requestId`/`optionId`/`kind`/`outcome`/시각만. raw 명령은 §5 redaction 대상.
 - `decidedBy:"auto"`는 향후 auto-approve가 생길 때만 발생하며, 그 자체가 보안 감사 신호다.
+
+> **구현·검증·저장 분담 (cross-ref)**: 본 §3.4는 approval audit의 **정책 권위**(어떤 필드를 남기고 무엇을 저장 금지하는지)다. v1 기본 형태는 **in-memory audit + opt-in redacted 영속 로그**(위 `ApprovalAuditEntry` 형식, 명령 전문/credential/파일 내용 비저장)이며, 실제 audit task로의 작업분해는 [`12-implementation-workstreams.md`](12-implementation-workstreams.md), 모든 결정 1건 기록 + 비밀 비포함 수용 케이스는 [`11-testing-acceptance.md`](11-testing-acceptance.md), audit 저장 위치·보존기간·포맷의 잔여 결정은 [`13`](13-risks-open-questions.md) **OQ-51**에서 다룬다. 여기서 audit 형식을 재정의하지 않고 위 분담 문서를 인용만 한다.
 
 > **구현 시 점검 (§3)**
 > - [ ] Codex 응답에 `jsonrpc` 필드를 넣지 않는가 / ACP 응답에 `jsonrpc:"2.0"`을 넣는가(ref-codex §1.2, ref-acp §1).
@@ -228,6 +230,7 @@ provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_
 |---|---|---|
 | **API key** | `ANTHROPIC_API_KEY`, codex API key (ref-claude-agent-acp §1) | env, stderr, MCP 설정 |
 | **OAuth / auth token** | gateway `ANTHROPIC_AUTH_TOKEN`/`AWS_BEARER_TOKEN_BEDROCK`(ref-claude-agent-acp §1), account token | env, auth stdout/stderr |
+| **websocket auth token** | `AgentRuntimeStartParams.websocket.authToken`(15 §8.1) | start 파라미터 로깅, snapshot, error message |
 | **session cookie / 자격증명 디렉터리 내용** | `~/.claude` credential (ref-claude-agent-acp §5) | stderr, error message |
 | **command environment 전체** | child env map (15 §8.1 `env`) | spawn 로그, snapshot |
 | **runtime startup command env** | `AgentRuntimeStartParams.env` (15 §8.1, non-secret 전용 규약 §5.3) | 로그, audit, OS 관측면(secret이 잘못 들어간 경우 — §5.3로 차단) |
@@ -240,10 +243,12 @@ provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_
 | 패턴 부류 | 매칭 신호 (최소 집합) | 비고 |
 |---|---|---|
 | **provider key prefix** | `sk-`, `sk-ant-`(Anthropic), `AKIA`(AWS access key id) 로 시작하는 토큰 | prefix + 뒤따르는 영숫자/`-`/`_` 런을 통째로 마스킹. codex/anthropic API key, AWS 자격 모두 포괄 (ref-claude-agent-acp §1) |
-| **bearer / auth token** | `ANTHROPIC_AUTH_TOKEN`/`AWS_BEARER_TOKEN_BEDROCK` 등 §5.1 token류의 값 | env value 마스킹 경로로 함께 처리 |
+| **bearer / auth token** | `ANTHROPIC_AUTH_TOKEN`/`AWS_BEARER_TOKEN_BEDROCK`, `websocket.authToken`(15 §8.1) 등 §5.1 token류의 값 | env value 마스킹 경로로 함께 처리. websocket은 v1 reject(13 RD-2)이나 `authToken` 필드가 public 계약에 존재하므로 로깅/snapshot 노출 전 마스킹(§5.3 note) |
 | **주입된 env value** | 이 child에 주입한 env(§4.4 allowlist 통과분)의 **값** + `AgentRuntimeStartParams.env`(15 §8.1) 값 | 키가 secret이 아니어도 값이 stderr/로그에 그대로 echo될 수 있으므로 **주입한 env value는 값 기준으로 마스킹**. secret env는 §5.3대로 애초에 argv로 흐르지 않음 |
 
 > prefix 목록은 1차 소스에서 확인된 형태이고(`sk-`/`sk-ant-`/`AKIA`), 다른 provider/포맷(예: 향후 key 스킴)은 OQ-28 잔여 결정과 무관하게 패턴을 **추가**해 대응한다. 이 표는 "여기까지는 무조건 마스킹"의 하한이다.
+
+> **websocket `authToken` 누출 표면 차단**: `AgentRuntimeStartParams.websocket.authToken`(15 §8.1)은 websocket transport가 v1에서 **reject**됨(13 RD-2 — handler가 `Err("websocket transport not yet supported")` 반환)에도 불구하고 **public 계약(15 §8.1 variant)에 노출된 secret 필드**다. 따라서 token이 실제로 쓰이지 않아도 reject 직전 start 파라미터가 로깅·snapshot·error message로 새어나갈 수 있으므로, `authToken`을 위 secret scrub/redaction 집합(§5.1 bearer/auth token)에 포함한다. 방어 순서: 07 handler가 `transportKind:"websocket"`을 **로깅 전 즉시 reject**(07 §transport, reject-before-log)하고, reject 사유를 stderr/audit에 남길 때도 `authToken` 값은 마스킹한다(token이 redacted 로그에도 평문으로 남지 않음). variant 타입 자체는 future-sketch로 유지하되 token 필드는 본 redaction 집합으로 상시 방어한다(13 RD-2).
 
 ### 5.2 redaction 적용 지점
 
@@ -284,6 +289,7 @@ redaction은 로그·transcript·디스크 평문 노출을 막지만, **OS 관�
 > - [ ] secret env(API key/token/gateway header/cookie)가 launch argv(`-e env KEY=VAL`)로 들어가지 않는가 — OS 관측면(`ps`/`/proc/<pid>/cmdline`/WSL process 목록) 노출 차단(§5.3).
 > - [ ] secret 주입이 필요하면 argv가 아니라 `Command::env()`+`WSLENV` passthrough(07 §5.1 launch 정본)로만 가는가.
 > - [ ] adapter가 `AgentRuntimeStartParams.env`(15 §8.1)에 secret을 싣지 않고 non-secret만 채우는가(§5.3 규약).
+> - [ ] `transportKind:"websocket"` start가 **token 로깅 없이** reject되는가 — 07 handler가 로깅 전 즉시 reject하고, reject 사유에 `authToken`(15 §8.1)이 평문으로 포함되지 않는가(13 RD-2, 11 수용 케이스 연동).
 
 ---
 

@@ -1027,12 +1027,20 @@ shutdown(handle):                                          // 15 §6
 closePending(handle, reason):                              // reason: "exit" | "shutdown"
   rt = sessions.get(handle); if !rt or rt.closed: return   // 멱등(이미 닫힘이면 no-op)
   // (1) 모든 pending approval을 닫는다(server→client request; pending RPC와 별개).
-  //   - reason="shutdown": process가 아직 살아있으므로 cancelled 응답을 wire로 보낼 수 있다(04 §4.2).
-  //       단 shutdown은 곧 stdin close→kill이므로, wire 응답 송신은 best-effort이고 내부 종료가 권위.
-  //   - reason="exit": process가 이미 죽어 wire 응답 불가 → 내부 전용 outcome:"failed"만(04 §4.2 규칙4).
+  //   - reason="shutdown": process가 아직 살아있으므로 cancelled 응답을 wire로 **먼저 보낸다**
+  //       (§7.3 turn cancel cleanup과 동일 패턴: deps.send + 원본 rpcId 복원, ref-codex §4.1 응답 shape).
+  //       Claude(06 §4.3/§9)가 cancel/shutdown 시 wire 응답을 보내는 것과 대칭이다(비대칭 제거).
+  //       단 shutdown은 곧 stdin close→kill이므로 wire 송신은 best-effort이고 내부 종료가 권위 —
+  //       송신이 실패해도(연결 종료 race) resolveApproval+emit으로 내부 종료를 권위 있게 마감한다.
+  //   - reason="exit": process가 이미 죽어 wire 응답 불가 → 내부 전용 outcome:"failed"만(04 §4.2 규칙4·§5).
   outcome = reason == "shutdown" ? "cancelled" : "failed"  // 04 §4.2 규칙2(shutdown) / 규칙4·§5(exit, 내부 전용)
   for reqId in routing.allPendingApprovalIds():
-     routing.resolveApproval(reqId)                         // closing→closed(멱등 가드)
+     pending = routing.resolveApproval(reqId)               // closing→closed(멱등 가드); rpcId 포함(§6)
+     if reason == "shutdown" and pending:
+        // best-effort cancelled wire 응답(§7.3와 동일: 원본 JSON-RPC id 타입 복원, jsonrpc 필드 없음).
+        //   try/catch로 감싸 송신 실패가 내부 종료(아래 emit)를 막지 않게 한다 — 곧 kill되므로 권위는 내부.
+        try: await deps.send(runtimeId, { id: pending.rpcId, result: { decision: "cancel" } }) // ref-codex §4.1
+        catch: /* best-effort: 연결 사망 race면 무시, 내부 종료가 권위 */
      emitToListeners({ type:"approval_resolved",
                        ref:{provider:"codex", requestId:reqId},
                        decision:{ requestId:reqId, outcome } })
@@ -1041,7 +1049,7 @@ closePending(handle, reason):                              // reason: "exit" | "
   pendingRpc.clear()
 ```
 
-> **S3 — shutdown cleanup 경계 (정본, 04 §5·14)**: `agent_runtime_shutdown`은 authoritative cleanup 경계다. **(a)** 어댑터는 shutdown 호출 **전에** 모든 pending approval을 cancelled로 닫고(04 §4.2) pending RPC를 로컬에서 reject한 뒤, **(b)** backend shutdown(graceful stdin close → timeout → kill → **child reap 후 반환**, 07 §5.2)을 await하고, **(c)** 그 다음에 listener 해제·세션 삭제를 한다. 이렇게 해야 최종 exit이 반영·계상된 후에만 teardown이 일어나 늦은 exit로 인한 pending 누락이 없다. **(c-멱등)** exit/shutdown 어느 경로로 pending이 닫히든 `rt.closed` 가드로 정확히 한 번만 수행한다(이중 종료/누락 없음, 04 §5). `handleExit`(§위)도 `closePending(handle, "exit")` 공용 루틴을 거치며 동일 가드를 공유한다.
+> **S3 — shutdown cleanup 경계 (정본, 04 §5·14)**: `agent_runtime_shutdown`은 authoritative cleanup 경계다. **(a)** 어댑터는 shutdown 호출 **전에** 모든 pending approval을 cancelled로 닫고(04 §4.2; process가 아직 살아 있으므로 각 approval에 **best-effort cancelled wire 응답**을 §7.3 turn cancel과 동일하게 먼저 보낸 뒤 — Claude 06 §4.3/§9와 대칭 — 내부 emit으로 권위 있게 마감한다. 송신 실패해도 곧 kill이므로 내부 종료가 권위) pending RPC를 로컬에서 reject한 뒤, **(b)** backend shutdown(graceful stdin close → timeout → kill → **child reap 후 반환**, 07 §5.2)을 await하고, **(c)** 그 다음에 listener 해제·세션 삭제를 한다. 이렇게 해야 최종 exit이 반영·계상된 후에만 teardown이 일어나 늦은 exit로 인한 pending 누락이 없다. **(c-멱등)** exit/shutdown 어느 경로로 pending이 닫히든 `rt.closed` 가드로 정확히 한 번만 수행한다(이중 종료/누락 없음, 04 §5). `handleExit`(§위)도 `closePending(handle, "exit")` 공용 루틴을 거치며 동일 가드를 공유한다.
 
 에러 처리 시나리오(기존 05 초안 보존·확장):
 
@@ -1067,7 +1075,7 @@ mapper/routing은 순수 함수/plain class라 vitest로 단독 테스트([`rese
 8. **enum 변환**(§5.5): ThreadStatus/TurnStatus/CommandExecutionStatus/TurnPlanStepStatus 전 분기 매핑.
 9. **token usage 결합**(§5.6): `thread/tokenUsage/updated` 후 `turn/completed`에 `usage` 동승.
 10. **process exit**(04 §5): pending approval/RPC 모두 닫히고 `process_exited` emit. exit과 shutdown은 공용 `closePending` 루틴 + `rt.closed` 가드를 공유해 **정확히 한 번**만 닫는다(이중 종료/누락 없음).
-11. **shutdown 경계**(S3, 04 §5·14): pending approval 있는 상태에서 `shutdown` → (a) `agent_runtime_shutdown` 호출 **전에** pending approval이 `approval_resolved{cancelled}`로 닫히고 pending RPC가 reject된 뒤, (b) `deps.shutdown` await, (c) 그 다음 unlisten·세션 삭제 순서. shutdown 후 늦은 exit이 도착해도 `rt.closed` 가드로 pending이 **재차 닫히거나 누락되지 않음**(멱등).
+11. **shutdown 경계**(S3, 04 §5·14): pending approval 있는 상태에서 `shutdown` → (a) `agent_runtime_shutdown` 호출 **전에** 각 pending approval에 **best-effort cancelled wire 응답**(`{id:rpcId, result:{decision:"cancel"}}`, ref-codex §4.1)이 송신된 뒤 `approval_resolved{cancelled}`로 닫히고 pending RPC가 reject된 뒤, (b) `deps.shutdown` await, (c) 그 다음 unlisten·세션 삭제 순서. wire 송신이 실패해도 내부 `approval_resolved{cancelled}` emit은 그대로 일어남(best-effort). shutdown 후 늦은 exit이 도착해도 `rt.closed` 가드로 pending이 **재차 닫히거나 누락되지 않음**(멱등). `reason="exit"` 경로는 wire 송신 없이 `failed`만 emit(process 사망, 04 §5).
 
 수용 기준: 위 10케이스 + `jsonrpc` 필드 미포함 검증(ref-codex §1.2) + raw 보존 검증(15 §0.2). [11](11-testing-acceptance.md)에 통합.
 

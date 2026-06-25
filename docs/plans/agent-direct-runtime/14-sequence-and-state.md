@@ -213,7 +213,7 @@ sequenceDiagram
 
 ## 4. Tool call + approval
 
-흐름: `tool_call`/`tool_call_updated` upsert → provider가 approval request 전송 → 세션 `requires_action` → 사용자 응답 → `respondApproval` → wire 응답 → tool 진행/완료. approval은 server→client request이며 `requestId`로 pending table을 관리한다(04 §4).
+흐름: `tool_call`/`tool_call_updated` upsert → provider가 approval request 전송 → 세션 `requires_action` → 사용자 응답 → `respondApproval` → wire 응답 → tool 진행/완료. approval은 server→client request이며 pending table은 `(sessionHandle, requestId)`로 관리한다(03 §2.3 정본). JSON-RPC `requestId`는 provider/connection 단위로만 유일하므로 `sessionHandle`과 묶어야 두 runtime이 같은 id를 받아도 오응답하지 않는다.
 
 wire 근거: Codex ref-codex §4.1 (`item/commandExecution/requestApproval`), §8.1 (decision 매핑). ACP ref-acp §6 (`session/request_permission`), §13.4 (매핑).
 
@@ -243,7 +243,7 @@ sequenceDiagram
     end
     Transport-->>Adapter: agent-runtime-message {JsonRpcRequest, id:r}
     Adapter->>Router: AgentEvent{type:"approval_requested", ref:{requestId:r, toolCallId}, request:ApprovalRequest{options}}
-    Router->>Store: pending table[r] = request; status = requires_action (04 §2.1 규칙 3, §4.1)
+    Router->>Store: pending table[(h, r)] = request; status = requires_action (03 §2.3, 04 §2.1 규칙 3, §4.1)
     Store-->>UI: render ApprovalModal (options, i18n label)
 
     User->>UI: 선택 (예: allow_once)
@@ -258,7 +258,7 @@ sequenceDiagram
     Transport->>Provider: approval response (id:r 매칭)
 
     Adapter->>Router: AgentEvent{type:"approval_resolved", ref:{requestId:r}, decision}
-    Router->>Store: pending table에서 r 제거; status = running (04 §4.1 규칙 4)
+    Router->>Store: pending table에서 (h, r) 제거; status = running (04 §4.1 규칙 4)
     Store-->>UI: ApprovalModal 닫기
 
     Provider-->>Transport: tool 진행/완료 — item/commandExecution/outputDelta + item/completed | session/update{tool_call_update status:"completed"}
@@ -291,7 +291,7 @@ sequenceDiagram
     participant Transport as Tauri Process Runtime
     participant Provider as Provider process
 
-    Note over Store: 진행 중 turn, pending table = [r1, r2] (requires_action 또는 running)
+    Note over Store: 진행 중 turn, pending table = [(h, r1), (h, r2)] (requires_action 또는 running)
     User->>UI: Cancel turn
     UI->>Port: cancelTurn(handle, turnId?)
     Port->>Adapter: cancelTurn(handle, turnId)
@@ -300,7 +300,7 @@ sequenceDiagram
         Note over Adapter,Store: 불변식 (04 §4.2): cleanup 순서는 ① closing 원자 표시 → ② approval cancelled wire → ③ provider turn cancel → ④ 늦은 응답 멱등 무시
         Adapter->>Store: 해당 turn의 pending approval을 원자적으로 closing 표시 (이중 응답 방지)
         Note right of Store: closing 표시 후 동일 requestId의 신규 wire 응답은 보내지 않는다 (04 §4.2)
-        loop pending r in table (this turn, closing)
+        loop pending (h, r) in table (this turn, closing)
             alt Codex
                 Adapter->>Transport: agentRuntimeSend(rt, {id:r, result:{decision:"cancel"}})
             else Claude (ACP)
@@ -308,7 +308,7 @@ sequenceDiagram
             end
             Transport->>Provider: cancelled approval response (id:r)
             Adapter->>Router: AgentEvent{type:"approval_resolved", ref:{requestId:r}, decision:{outcome:"cancelled"}}
-            Router->>Store: pending table에서 r 제거 (closing → closed)
+            Router->>Store: pending table에서 (h, r) 제거 (closing → closed)
         end
     end
 
@@ -336,7 +336,7 @@ sequenceDiagram
 ```
 
 > **순서 정본(04 §4.2)**: pending approval cleanup(② approval `cancelled` wire 응답)을 provider turn cancel(③ `turn/interrupt` / `session/cancel`) **전에** 수행한다. ACP는 cancel 받은 즉시 `cancelled` stopReason을 MUST 반환하므로(ref-acp §3.8), client는 먼저 pending permission을 비워 deadlock(agent가 응답을 기다리는 상태)을 피해야 한다. 시작 시 ① pending을 `closing`으로 원자 표시해 사용자 응답 경로(§4)와의 이중 응답을 막는다.
-> **늦은 응답 멱등 무시(04 §4.2)**: ② 이후 도착하는 Codex `serverRequest/resolved`(같은 `requestId`)·동일 requestId의 approval 응답·늦은 `turn_completed`/`stopReason`은 이미 `closing`/`closed` 상태이므로 멱등하게 무시한다(이중 처리·재emit 금지). pending table은 `requestId`(JSON-RPC id) 기준으로 멱등 판정한다(04 §4·§4.2).
+> **늦은 응답 멱등 무시(04 §4.2)**: ② 이후 도착하는 Codex `serverRequest/resolved`(같은 wire `requestId`)·동일 requestId의 approval 응답·늦은 `turn_completed`/`stopReason`은 이미 `closing`/`closed` 상태이므로 멱등하게 무시한다(이중 처리·재emit 금지). pending table은 `(sessionHandle, requestId)` 기준으로 멱등 판정한다(03 §2.3 정본, 04 §4·§4.2) — 늦은 응답이 실어 오는 wire `requestId`는 해당 runtime의 `sessionHandle`과 묶어 조회하므로, 다른 runtime의 동일 id 응답이 잘못 닫지 않는다.
 > ACP tool call status에는 `cancelled`가 없으므로(ref-acp §5), 미완료 tool card의 `cancelled` 상태는 client가 합성한다(15 §5 `ToolCallUpdate.status` 매핑 주의, 04 §3.3). Codex `interrupted` turn status → `turn_completed{status:"cancelled"}`로 매핑(ref-codex §8).
 
 ---
@@ -357,7 +357,7 @@ sequenceDiagram
     participant Transport as Tauri Process Runtime
     participant Provider as Provider process
 
-    Note over Store: pending table = [r1, r2], status = running 또는 requires_action
+    Note over Store: pending table = [(h, r1), (h, r2)], status = running 또는 requires_action
     Provider--xTransport: process 비정상/정상 종료 (exit code/signal)
     Transport->>Transport: bounded queue flush, stderr 마지막 라인 capture (backend §2)
     Transport-->>Adapter: agent-runtime-exit {runtimeId, code?, signal?}
@@ -365,8 +365,8 @@ sequenceDiagram
 
     rect rgb(245, 230, 230)
         Note over Router,Store: 불변식 (04 §5, §4.2 규칙 2): 모든 pending request를 실패로 닫는다
-        loop pending r in table (all turns)
-            Router->>Store: pending table[r] → ApprovalDecision{outcome:"failed"} (client 내부, wire로 안 보냄)
+        loop pending (h, r) in table (all turns)
+            Router->>Store: pending table[(h, r)] → ApprovalDecision{outcome:"failed"} (client 내부, wire로 안 보냄)
             Note right of Store: outcome:"failed"는 client 전용 (15 §5, 04 §4.2 규칙 4)
         end
     end
@@ -400,14 +400,14 @@ sequenceDiagram
     participant Transport as Tauri Process Runtime
     participant Provider as Provider process
 
-    Note over Store: pending table = [r1, r2] 가능, listener 활성, status = idle/running/requires_action
+    Note over Store: pending table = [(h, r1), (h, r2)] 가능, listener 활성, status = idle/running/requires_action
     UI->>Port: shutdown(handle)
     Port->>Adapter: shutdown(handle)
 
     rect rgb(245, 230, 230)
         Note over Adapter,Store: ① shutdown 호출 전 pending 정리 (멱등, 정확히 한 번 — 04 §4.2·§5)
         Adapter->>Store: 모든 pending approval을 cancelled로 닫음 (04 §4.2: closing 원자 표시 → wire cancelled 응답 → table 제거)
-        loop pending approval r (process 아직 살아있음)
+        loop pending approval (h, r) (process 아직 살아있음)
             alt Codex
                 Adapter->>Transport: agentRuntimeSend(rt, {id:r, result:{decision:"cancel"}})
             else Claude (ACP)
@@ -445,7 +445,7 @@ sequenceDiagram
 
 > **순서 정본(04 §5 + 07 §5.2/§5.3)**: ① **pending 정리(approval cancelled close + pending RPC reject)를 listener 해제·세션 삭제보다 먼저** 한다 — listener를 먼저 끊으면 늦게 도착하는 exit이 pending 누락(처리되지 않은 채 사라짐)을 일으킨다(B3). shutdown 시점엔 process가 아직 살아있으므로 approval은 wire로 `cancelled`를 보내 닫는다(04 §4.2; process가 이미 죽은 §6 exit 경로의 `failed` 내부 종료와 대비). ② 그 뒤에 listener를 해제하고 세션을 삭제한다.
 > **backend reap 후 반환(07 §5.2/§5.3)**: backend `agent_runtime_shutdown`은 stdin EOF → grace poll → 필요 시 kill → `child.wait`로 **reap(exit 계상)까지 끝낸 뒤** 반환한다. 최종 `agent-runtime-exit`은 reap 후 emit되며(07 §5.3), teardown은 이 최종 exit이 반영/계상된 후에만 일어난다.
-> **멱등·정확히 한 번(04 §4.2·§5)**: exit/shutdown으로 인한 pending 종료는 멱등하며 정확히 한 번 수행한다. ①에서 이미 닫은 pending에 대해 뒤늦은 exit·늦은 응답·중복 exit이 와도 이미 `closing`/closed/exited 상태이므로 멱등하게 무시한다(이중 종료·재emit·누락 없음). pending 멱등 판정 키는 `requestId`(JSON-RPC id)다.
+> **멱등·정확히 한 번(04 §4.2·§5)**: exit/shutdown으로 인한 pending 종료는 멱등하며 정확히 한 번 수행한다. ①에서 이미 닫은 pending에 대해 뒤늦은 exit·늦은 응답·중복 exit이 와도 이미 `closing`/closed/exited 상태이므로 멱등하게 무시한다(이중 종료·재emit·누락 없음). pending 멱등 판정 키는 `(sessionHandle, requestId)`다(03 §2.3 정본) — wire `requestId`만으로는 두 runtime이 충돌할 수 있으므로 `sessionHandle`과 묶는다.
 
 ---
 
@@ -640,20 +640,20 @@ stateDiagram-v2
 
 ## 11. stateDiagram — Approval 생명주기
 
-정본 타입: 15 §5 (`ApprovalRequest`/`ApprovalOption`/`ApprovalDecision`). 생명주기 규칙: 04 §4. pending table은 `requestId`(JSON-RPC id)로 관리한다(04 §4, §1.1).
+정본 타입: 15 §5 (`ApprovalRequest`/`ApprovalOption`/`ApprovalDecision`). 생명주기 규칙: 04 §4. pending table은 `(sessionHandle, requestId)`로 관리한다(03 §2.3 정본; `requestId`는 provider wire id로 provider/connection 단위로만 유일하므로 `sessionHandle`과 묶는다).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> requested: approval_requested<br/>pending table에 requestId 등록 · 세션 requires_action — 04 §4.1
+    [*] --> requested: approval_requested<br/>pending table에 (sessionHandle, requestId) 등록 · 세션 requires_action — 03 §2.3 · 04 §4.1
     requested --> resolved_selected: 사용자 선택 후 respondApproval<br/>wire 응답 outcome=selected — 04 §4.1 규칙 3
     requested --> resolved_cancelled: turn cancel<br/>wire 응답 cancelled (MUST) — 04 §4.2 규칙 1 · ref-acp §3.8
     requested --> resolved_external: Codex serverRequest/resolved<br/>사용자 응답 불필요 — 04 §4.2 규칙 3 · ref-codex §4.4
     requested --> failed_internal: process_exited<br/>outcome=failed client 전용 wire 안 보냄 — 04 §4.2 규칙 2·4 · §5
 
-    resolved_selected --> [*]: pending table에서 제거 후 세션 running 복귀
-    resolved_cancelled --> [*]: pending table에서 제거
-    resolved_external --> [*]: pending table에서 제거
-    failed_internal --> [*]: pending table에서 제거
+    resolved_selected --> [*]: pending table에서 (sessionHandle, requestId) 제거 후 세션 running 복귀
+    resolved_cancelled --> [*]: pending table에서 (sessionHandle, requestId) 제거
+    resolved_external --> [*]: pending table에서 (sessionHandle, requestId) 제거
+    failed_internal --> [*]: pending table에서 (sessionHandle, requestId) 제거
 
     note right of resolved_cancelled
         cancel 시 wire로 cancelled 응답 전송

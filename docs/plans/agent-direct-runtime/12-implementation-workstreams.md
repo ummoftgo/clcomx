@@ -24,7 +24,7 @@
 | state | `src/lib/features/agent-runtime/state/agent-runtime-store.svelte.ts` | new | 세션 단위 transcript[]/status/pendingApproval (1.3 class 패턴) + composer state | FE §1.3, §8 |
 | controller | `src/lib/features/agent-runtime/controller/agent-event-router.ts` | new | `AgentEvent`→store dispatch + pending request table (03 §Event Router) | FE §1.5, §8 |
 | controller | `src/lib/features/agent-runtime/controller/agent-event-reducer.ts` | new | 순수 함수 prev+event→next (04 §3 규칙) | FE §1.5, §8 |
-| service | `src/lib/features/agent-runtime/service/transport.ts` | new | 15 §8.2 invoke 래퍼 + 15 §8.3 listen 구독만(`pty.ts` 대응; **adapter는 여기 두지 않음**) | FE §4.1, §4.2 |
+| service | `src/lib/features/agent-runtime/service/transport.ts` | new | 15 §8.2 invoke 래퍼 + 15 §8.3 listen 구독 + transport wrapper export **`createAgentTransportController`**(`pty.ts` 대응; **adapter는 여기 두지 않음**; 08 §2.2 host가 이 심볼을 `service/transport.ts`에서 import — controller/service 경계 정합) | FE §4.1, §4.2 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/codex-app-server-adapter.ts` | new | Codex wire↔`AgentEvent`/Port (05) | FE §8 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/codex-wire-mapper.ts` | new | Codex notification/request↔normalized 매핑(05) | FE §8 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/codex-launch.ts` | new | Codex stdio start params 생성(provider/distro/workDir/args/env; **command 미생성 — backend resolve, S1**)(05·07) | FE §8 |
@@ -231,6 +231,16 @@
 - 테스트(11): "기존 PTY session open이 깨지지 않는지"의 모델 측.
 - 계약(15 §): §3 `terminal_output_delta`.
 - ref §: 없음.
+
+### T1.6 — approval audit trail (in-memory + opt-in redacted 영속 로그)
+
+- 대상: `agent-event-reducer.ts`(또는 `agent-runtime-store.svelte.ts` audit 헬퍼) — 모든 approval 결정 경로(T1.2 lifecycle)에 audit 기록을 부착.
+- 선행: T1.2.
+- 산출물: approval 결정이 닫힐 때마다 **in-memory audit entry 1건**을 기록한다(Repudiation 방어, 09 §3.4). 한 entry는 `requestId`/`optionId`/`kind`/`outcome`/결정 시각과 **`decidedBy: "user" | "auto" | "cleanup"`**(사용자 선택·자동 결정·exit/cancel/shutdown cleanup)을 담는다 — 즉 user/auto/cleanup 세 경로 모두 정확히 1건 기록(T1.2 멱등 종료와 정합: pending 1개당 audit 1건, 이중 기록 없음). 추가로 **opt-in redacted 영속 로그**: 설정으로 켤 때만 디스크에 redacted entry를 append하며, **명령 전문·credential·파일 내용은 절대 저장하지 않는다**(09 §3.4 형식 — 결정·시각·requestId·optionId·kind·outcome·scope만). secret scrub 경계는 09 §3.4를 따르고, 저장 위치/보존/포맷은 [13](13-risks-open-questions.md) **OQ-51** 선행 결정에 의존한다(미결 시 in-memory만 v1 기본, 영속 로그는 OQ-51 확정 후).
+- DoD: 11 audit 수용 케이스 통과 — 모든 approval 결정(user/auto/cleanup)이 audit entry 1건을 남기고, audit·영속 로그 어디에도 명령 전문/credential/파일 내용이 포함되지 않음(비밀 비포함 단정). 영속 로그 포맷·저장 위치는 OQ-51 결정을 인용해 구현(미결 시 in-memory만). audit 기록 함수에 한글 doc-comment(17 §B.1).
+- 테스트(11): "approval 결정 audit 기록(모든 결정 1건 + decidedBy)", "audit/영속 로그에 비밀(명령 전문/credential/파일 내용) 비포함"(09 §3.4 scrub과 교차).
+- 계약(15 §): §5 `Approval*`(audit는 결정 메타만 보존, 09 §3.4 형식).
+- ref §: 09 §3.4(audit trail 형식·redaction), 13 OQ-51(저장 위치/보존/포맷 선행 결정).
 
 **Verification gate (Phase 1)**: `npm run test`(reducer/router/state 단위 테스트) + `npm run check` 통과. app launch 금지(UI/transport 미연결). fixture event만으로 모델 정합 검증 완료.
 

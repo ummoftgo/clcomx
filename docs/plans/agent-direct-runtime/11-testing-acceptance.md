@@ -179,6 +179,8 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 | NM-18d | pending 없는 상태에서 shutdown → 늦은 exit | teardown이 멱등, crash·중복 emit 없음(S3 (c) 정확히 한 번 — pending 0건도 동일 규칙) |
 | NM-19 | Codex `serverRequest/resolved{requestId:"7"}` 수신 | "7"만 닫고 사용자 응답 불필요(04 §4.2 규칙 3) |
 | NM-20 | `ApprovalDecision{outcome:"failed"}` 발생 | client 내부 처리만, wire로 전송 안 함(04 §4.2 규칙 4) — outbound 캡처에 없음 assert |
+| NM-20b | **audit entry 1건/결정(D-AUDIT)**: user 결정(`approval_resolved{outcome:"selected"}`), auto 결정(향후 auto-approve 경로), cleanup 결정(cancel/shutdown→`cancelled`, exit→`failed`) 각각 발생 | 각 결정마다 in-memory audit trail에 `ApprovalAuditEntry`가 **정확히 1건** 추가됨(`decidedBy`가 각각 `user`/`auto`/`cleanup`). 누락·중복 없음을 assert. cleanup 다중 pending(NM-18 류)에서도 닫힌 pending 수만큼 entry 1:1(09 §3.4 audit 체크리스트, 12 audit task) |
+| NM-20c | **audit entry에 비밀 비포함(D-AUDIT)**: 명령 전문/credential/파일 내용이 담긴 approval(예 `commandExecution` 명령줄, env 값)을 결정 | audit entry에는 `requestId`/`optionId`/`optionKind`/`outcome`/`decidedAt`/`decidedBy`(+`sessionHandle`/`provider`/`toolCallId?`/`scope?`)만 존재하고, **명령 전문·credential·파일 내용·raw label은 부재**임을 assert(09 §3.4 — raw 명령은 §5 redaction 대상, optionId만 저장·label 금지) |
 
 ### 2.6 raw 보존 (15 §0.2)
 
@@ -383,6 +385,7 @@ PTY와 달리 direct runtime은 backend가 provider별로 command를 resolve하�
 | RS-11 | args에 shell 메타문자/주입 시도(`;`/`|`/`$(`/개행 등) | 거부(executable+argv 직접 실행이라 셸 비경유지만 방어적 metachar 검사 유지, 07 §8.1 규칙 3, `research/codebase-backend.md` §2.2) |
 | RS-12 | env key가 `^[A-Za-z_][A-Za-z0-9_]*$` 위반(예: `1BAD`, `A-B`, `A B`) | `Err(String)` 거부(registry `assertValidEnvKey` 선례, 07 §8.1 규칙 5, `research/codebase-backend.md` §6) |
 | RS-12b | env key가 정규식은 통과하나 provider별 허용 key 집합 밖(미등록 key) | `Err(String)` 거부 — env key allowlist(provider별 허용 집합) 강제(07 §8.1 규칙 5, S1 env key allowlist). 값은 non-secret 전용(C1, 07 §5.1·§8.1·§11) |
+| RS-12c | **websocket reject-before-log(D-WSAUTH)**: `agent_runtime_start{transportKind:"websocket", ..., authToken:"secret-xyz"}` (15 §8.1 websocket variant — v1 미사용) | handler가 **로깅·스냅샷 노출 전에** 즉시 `Err(String)` 거부(13 RD-2, 07 handler websocket 즉시 reject). 거부 경로에서 캡처한 로그·debug snapshot·audit 어디에도 `authToken` 값(`secret-xyz`)이 평문으로 나타나지 않음을 assert — `authToken`이 redaction/scrub 집합에 포함되어 token 로깅 없이 reject됨(09 secret scrub `authToken` 포함, 15 §8.1 "v1 미사용 — 로깅/스냅샷 노출 전 reject"). variant 타입 자체는 future-sketch로 유지 |
 
 ### 5.4 process lifecycle: shutdown timeout → kill (S3 — reap 후 반환 + cleanup 경계)
 
@@ -560,6 +563,8 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 
 - [ ] provider id(threadId/sessionId/requestId)가 저장소와 debug view에서 추적 가능하다(NM-15, 15 §0.1).
 - [ ] approval wire 응답이 **원본 JSON-RPC id 타입을 보존**한다 — numeric id(예 `42`)가 `"42"`로 변질되지 않고, `ApprovalRequest.id`/`ProviderRef.requestId`는 문자열 키, wire 응답 `id`는 원본 타입 유지(CL-21b/21c, R3; 06 §6.1/§6.2 `rpcId`, 05 §6 CodexRouting).
+- [ ] 모든 approval 결정(user/auto/cleanup)에 audit entry가 **정확히 1건** 기록되고, audit entry에는 명령 전문·credential·파일 내용·raw label이 섞이지 않는다(`requestId`/`optionId`/`optionKind`/`outcome`/시각/`decidedBy`만)(NM-20b/20c, 09 §3.4, 12 audit task).
+- [ ] websocket transportKind start가 **token을 로그·snapshot·audit에 남기지 않고 즉시 reject**된다 — `authToken`이 scrub 집합에 포함되어 노출 전 거부된다(RS-12c, 13 RD-2, 09 secret scrub `authToken`, 15 §8.1 websocket variant v1 미사용).
 - [ ] provider session/thread id·resume token은 디스크 저장 시 scrub된다(RS-25, 15 §7.3, `research/codebase-backend.md` §4.2).
 - [ ] direct 세션의 `runtimeKind`/`agentRuntime`가 **저장→복원→기존세션 갱신** 3경로 모두에서 무손실 왕복(scrub 후)하고, 새 settings 섹션 default가 `cloneDefaults`/`normalizeSettings`/`updateSettings` 3함수에 동기화된다(FE-22..FE-25, 12 §0.2 #10·#11, 15 §7.2/§7.3).
 - [ ] raw protocol log가 기본 비활성화이며 redaction 정책이 있다(E2E-10, 13 §raw log, 09 §감사).

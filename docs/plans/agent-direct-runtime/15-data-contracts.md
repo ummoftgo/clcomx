@@ -561,12 +561,17 @@ export type AgentRuntimeStartParams =
       env?: Record<string, string>; // non-secret 전용
     }
   | {
-      transportKind: "websocket"; // Codex websocket, 검증 후 optional(1차 미구현 권고)
+      // Codex websocket, 검증 후 optional(1차 미구현 권고). **future-sketch — 타입만 유지**.
+      // v1 미사용: backend handler가 이 variant를 **로깅/스냅샷 노출 전 reject**(07 §8.1 reject-before-log,
+      //   13 RD-2). `authToken`은 redaction 집합(09 §5.1)에 포함 — 평문 로그/스냅샷/디스크 금지.
+      //   "token 로깅 없이 reject"는 11에서 테스트한다. stdio-only 강제는 타입이 아니라 handler 책임이므로
+      //   variant 타입 자체는 제거하지 않는다(07이 거부 책임 보유, 13 RD-2).
+      transportKind: "websocket";
       provider: "codex";
       distro: string;
       workDir: string;
       url: string;
-      authToken?: string;
+      authToken?: string; // v1 미사용 — redaction 집합(09 §5.1), reject-before-log(07 §8.1)
     };
 
 /** cancel 대상. request=approval 요청, turn=진행 turn, process=전체. */
@@ -689,6 +694,9 @@ pub enum AgentRuntimeStartParams {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         env: Option<std::collections::HashMap<String, String>>, // non-secret 전용
     },
+    // future-sketch — 타입만 유지. v1 미사용: handler가 **로깅/스냅샷 노출 전 reject**(07 §8.1, 13 RD-2).
+    // auth_token은 redaction 집합(09 §5.1) — 평문 로그/스냅샷/디스크 금지. "token 로깅 없이 reject" 테스트는 11.
+    // stdio-only 강제는 handler 책임이므로 variant 타입은 제거하지 않는다.
     #[serde(rename = "websocket")]
     Websocket {
         provider: String, // "codex"
@@ -696,7 +704,7 @@ pub enum AgentRuntimeStartParams {
         work_dir: String,       // → "workDir"
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        auth_token: Option<String>, // → "authToken"
+        auth_token: Option<String>, // → "authToken" — v1 미사용, redaction(09 §5.1)·reject-before-log(07 §8.1)
     },
 }
 

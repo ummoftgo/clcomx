@@ -216,7 +216,8 @@ struct AgentRuntime {
     kill_handle: KillHandle,
     /// stdin writer. agent_runtime_send가 잠가 write(§6.2).
     stdin: Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>>,
-    /// late-attach용 message log (snapshot/delta-since 후속 단계 — §4.5).
+    /// diagnostic-only bounded log (D-REPLAYLOG, §7.2). snapshot/delta-since 기반 late-attach
+    /// replay consumer는 후속 단계(§4.5)이고, v1은 사용자-visible 복구(replay) 보장이 없다.
     message_log: Arc<Mutex<VecDeque<RuntimeMessageRecord>>>,
     /// 단조 증가 message seq(1-based). PTY output_seq와 동형(research §2.3).
     message_seq: Arc<AtomicU64>,
@@ -231,7 +232,8 @@ struct AgentRuntime {
     dropped_messages: Arc<AtomicU64>,
 }
 
-/// 영속 message 한 건(late-attach snapshot용). PtyOutputChunkRecord와 동형.
+/// diagnostic-only bounded log의 message 한 건(D-REPLAYLOG, §7.2). PtyOutputChunkRecord와 동형.
+/// v1은 이 기록으로 사용자-visible 복구를 보장하지 않는다(late-attach replay consumer는 후속, §4.5).
 struct RuntimeMessageRecord {
     seq: u64,
     /// raw JSON-RPC line(개행 제거 후 1메시지). frontend가 파싱.
@@ -268,7 +270,7 @@ fn next_runtime_id(state: &AgentRuntimeState) -> Result<RuntimeId, String> {
 }
 ```
 
-> `message_log`/`message_seq`/snapshot/delta-since는 PTY의 late-attach 신뢰성 메커니즘(research §2.3, §10 권고 3)을 그대로 옮긴 것이다. v1 command 계약(15 §8.2)에는 `agent_runtime_get_snapshot`만 있고 delta-since는 **후속 단계**다(§4.5). v1에서는 `message_log`에 기록만 하고 snapshot에 `pendingRequestIds`/status만 노출하면 된다.
+> `message_log`/`message_seq`/snapshot/delta-since는 PTY의 late-attach 신뢰성 메커니즘(research §2.3, §10 권고 3)을 그대로 옮긴 것이다. **단 v1에서 `message_log`/`message_seq`는 diagnostic-only bounded log다**(D-REPLAYLOG, §7.2): late-attach replay consumer는 **후속 단계**이고 v1은 **사용자-visible 복구(replay) 보장이 없다**([13](13-risks-open-questions.md) §1.8 정합). v1 command 계약(15 §8.2)에는 `agent_runtime_get_snapshot`만 있고 delta-since는 후속 단계다(§4.5). v1에서는 `message_log`에 진단용으로 기록만 하고 snapshot에 `pendingRequestIds`/status만 노출하면 된다.
 
 ---
 
@@ -434,7 +436,7 @@ stderr는 session diagnostic panel에서 opt-in으로만 표시한다(§11, [09]
 
 ### 4.5 message seq / snapshot / delta-since (late-attach, 후속 단계)
 
-PTY의 seq + delta + complete 3요소(research §2.3, §10 권고 3)를 동일 원리로 적용한다. **v1 command 계약(15 §8.2)에는 delta-since가 없다** — v1은 `message_log`에 기록만 하고 `agent_runtime_get_snapshot`은 status·pending만 반환(§6.5). 후속 단계에서 다음을 추가한다(15 §8.3 주석이 "seq는 후속 단계에서 message payload에 추가"라고 명시):
+PTY의 seq + delta + complete 3요소(research §2.3, §10 권고 3)를 동일 원리로 적용한다. **v1 command 계약(15 §8.2)에는 delta-since가 없고, v1 `message_log`/`message_seq`는 diagnostic-only bounded log다**(D-REPLAYLOG, §7.2) — **late-attach replay consumer는 후속 단계이고 v1은 사용자-visible 복구(replay) 보장이 없다**([13](13-risks-open-questions.md) §1.8 정합). v1은 `message_log`에 진단용으로 기록만 하고 `agent_runtime_get_snapshot`은 status·pending만 반환(§6.5)한다. 후속 단계에서 다음을 추가한다(15 §8.3 주석이 "seq는 후속 단계에서 message payload에 추가"라고 명시):
 
 - `agent-runtime-message` payload에 `seq: u64` 추가.
 - `agent_runtime_get_message_delta_since(runtime_id, after_seq) -> { messages, complete }` command 추가. PTY `get_output_delta_since`(terminal/mod.rs:675)의 `complete` 플래그 휴리스틱(trim된 경우 false → full replay) 그대로.
@@ -548,6 +550,9 @@ pub fn start(state: &AgentRuntimeState, app: &AppHandle, params: AgentRuntimeSta
     if is_test_mode() {
         return start_mock(state, app, params);
     }
+    // 1b) D-WSAUTH: transportKind=="websocket"은 로깅·snapshot·spawn 진입 전에 즉시 reject(§8 정본).
+    //     params를 통째로 로깅하지 않는다(authToken 노출 방지). validate_and_extract가 비-stdio variant를
+    //     params 디버그 출력 없이 Err로 거부하므로 websocket은 아래 §5.1 spawn 경로에 진입하지 못한다.
     // 2) allowlist 검증 (§8) — provider별 executable/args 화이트리스트.
     //    env는 non-secret 전용(C1). secret env는 별도 secret 채널로만 들어온다(아래 note).
     let (provider, distro, work_dir, executable, argv, non_secret_env, secret_env) =
@@ -788,6 +793,8 @@ reader thread가 `app.emit("agent-runtime-message", ...)`로 메시지를 올린
 
 **이 메커니즘은 "bounded replay log + telemetry"이지 emit throttle이 아니다(정본 명명).** backend의 `app.emit`은 Tauri IPC 큐로 들어간다. v1 완화책은 emit 자체를 막거나(throttle) 합치거나(coalesce) 떨어뜨리는(drop) 것이 **아니라**, late-attach용 **replay log를 bounded로 경계**짓고 그 경계에서 발생한 trim을 **dropped 카운터(telemetry)** 로 알리는 것뿐이다:
 
+> **D-REPLAYLOG 정본 (v1 replay log는 diagnostic-only bounded log)**: v1의 `message_log`/`message_seq`는 **diagnostic-only bounded log**다 — bounded 메모리 안에서 진단·telemetry 목적으로만 기록하며, **late-attach replay consumer(snapshot/delta-since로 누락 구간을 재구성하는 소비자)는 후속 단계**이고 v1은 **사용자-visible 복구(replay) 보장이 없다**([13](13-risks-open-questions.md) §1.8과 정합). 즉 v1에서 reload·late-attach 시 trim된 구간을 사용자에게 무손실로 복원한다는 계약은 없으며, `message_log`는 디버깅·backpressure telemetry·후속 delta-since 토대로만 존재한다. trim이 일어나도 v1 동작은 정상이다(실시간 emit은 그대로 흐르고, 복구 보장이 없으므로 trim이 사용자-visible 회귀가 아니다).
+
 - `message_log`(VecDeque) cap = `MAX_MESSAGE_LOG_BYTES`(예: 4MB) 또는 `MAX_MESSAGE_COUNT`(예: 10000). 초과 시 oldest pop(trim) → `dropped_messages.fetch_add(1)`. 이 trim은 **replay log 경계 유지(메모리 보호)** 일 뿐 실시간 emit 압력을 줄이지 않는다.
 - **emit 자체는 막지 않는다**(frontend는 실시간 stream을 그대로 받음). trim은 **late-attach용 replay log**에만 적용되고, 이미 emit된 실시간 메시지에는 관여하지 않는다.
 - `agent-runtime-backpressure{droppedMessages}`는 replay log에서 trim된 누적 건수를 알리는 **telemetry 신호**다(주기적 emit). frontend가 이를 보고 throttle/coalesce 정책을 *스스로* 적용할지는 frontend 관심사이며, backend는 신호만 보낸다.
@@ -820,7 +827,7 @@ fn record_and_emit_message(app: &AppHandle, runtime_id: RuntimeId, seq: u64,
 }
 ```
 
-> trim은 **late-attach replay log 신뢰성**에만 영향을 준다(delta-since complete=false → full replay 불가 구간)이며 실시간 emit에는 관여하지 않는다(§7.2 정본 명명: bounded replay log + telemetry). v1에서 delta-since가 없으면(§4.5), trim은 메모리 보호만 하면 되고 backpressure event는 dropped 카운터 telemetry 신호로만 쓴다(emit throttle 아님). `MAX_MESSAGE_LOG_BYTES`/`BACKPRESSURE_NOTIFY_INTERVAL` 상수값과 emit-side cap/coalesce/drop policy(후속) 도입 여부는 [13](13-risks-open-questions.md) "backpressure 임계값" 참조.
+> trim은 **late-attach replay log 신뢰성**에만 영향을 준다(delta-since complete=false → full replay 불가 구간)이며 실시간 emit에는 관여하지 않는다(§7.2 정본 명명: bounded replay log + telemetry). **v1에서 `message_log`는 diagnostic-only bounded log이고 delta-since가 없으므로**(§4.5, D-REPLAYLOG), trim은 메모리 보호만 하면 되고 사용자-visible 복구 보장이 없어 trim이 회귀가 아니다. backpressure event는 dropped 카운터 telemetry 신호로만 쓴다(emit throttle 아님). `MAX_MESSAGE_LOG_BYTES`/`BACKPRESSURE_NOTIFY_INTERVAL` 상수값과 emit-side cap/coalesce/drop policy(후속) 도입 여부는 [13](13-risks-open-questions.md) "backpressure 임계값" 참조.
 
 ### 7.3 emit overflow 명시 에러
 
@@ -837,6 +844,8 @@ research §7·§11이 두 옵션(std::thread vs tokio)을 제시한다. **v1은 
 PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에 executable allowlist가 **없다**(research §6, §10 권고 6). direct runtime은 이를 의도적으로 강화한다: renderer를 untrusted로 간주하고, **renderer/adapter는 실행 파일 command를 아예 넘기지 않으며**, backend가 provider로 **신뢰 절대경로(executable)를 직접 resolve**한 뒤 **args(정확 일치)·env key(allowlist)**를 재검증한다(S1 정본; R4 정본; 15 §8.1 주석, 신뢰 경계 정본은 [09](09-permissions-security.md)). basename만 비교하던 1차 안은 폐지하고, command 자체를 renderer 비제어로 만든다 — 동명 바이너리(`/tmp/codex`, `/tmp/node` 등) 우회를 원천 차단한다.
 
 > **S1 정본 (renderer 비제어 command)**: `AgentRuntimeStartParams::JsonrpcStdio`에서 **`command` 필드는 제거**되었다(15 §8.1). adapter는 `provider`·`distro`·`work_dir`·`args`(검증 대상)·`env`(non-secret)만 넘긴다. backend는 `provider`로 신뢰 절대경로를 resolve한다: `codex` → resolve된 `codex` app-server 절대경로, `claude` → resolve된 `node` 절대경로. resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식은 [13](13-risks-open-questions.md) "command/entry resolve 주체" 결정 필요 항목이다.
+
+> **D-WSAUTH 정본 (`websocket` transport는 로깅·snapshot 노출 전에 reject)**: v1은 `jsonrpc-stdio`만 구현하고 `websocket`은 게이트한다([13](13-risks-open-questions.md) RD-2, v1 stdio-only). `AgentRuntimeStartParams`의 `websocket` variant(15 §8.1)는 `authToken?`을 public 계약에 노출하므로, **`transportKind == "websocket"`로 들어온 start params는 어떤 로깅·snapshot·audit·에러 메시지에도 실리기 전에 handler 진입부에서 즉시 `Err`로 거부**한다. 거부 경로는 (a) `validate_and_extract`가 `JsonrpcStdio`가 아닌 variant를 만나면 params를 디버그 출력하지 않고 `Err("only jsonrpc-stdio transport is supported in v1")`만 반환하고(아래 §8.1 의사코드: `else` 분기에서 params 전체를 `{:?}`로 찍지 않는다), (b) `authToken`을 §11 redaction/scrub 집합에 포함시켜(09 §5.1·§secret) 혹시라도 로그/snapshot 경로에 도달해도 평문 노출을 막는다. 즉 v1은 websocket을 §5 spawn 경로에 **진입시키지 않으며**, reject는 token 로깅 없이 일어난다. variant 타입 자체는 future-sketch로 유지한다(15 §8.1). 결정 필요 항목은 [13](13-risks-open-questions.md) RD-2·OQ-15 참조.
 
 ### 8.1 검증 규칙
 
@@ -902,8 +911,11 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
                HashMap<String,String>, HashMap<String,String>), String>
 {
     // S1: command 필드는 제거되었다(15 §8.1). renderer는 executable을 넘기지 않는다.
+    // D-WSAUTH: 비-stdio variant(websocket)는 여기서 params를 디버그 출력하지 않고 정적 문자열만으로
+    // 거부한다 — `params`를 `{:?}`로 찍으면 websocket `authToken`이 에러/로그에 실릴 수 있으므로 금지.
     let AgentRuntimeStartParams::JsonrpcStdio { provider, distro, work_dir, args, env }
         = params else {
+        // 거부 메시지에 params(authToken 포함)를 포함하지 않는다(reject-before-log, §8 정본).
         return Err("only jsonrpc-stdio transport is supported in v1".into());
     };
     // 1) provider enum
@@ -1058,7 +1070,7 @@ pub(crate) fn test_state_with_runtime(provider: &str) -> (AgentRuntimeState, Run
 
 07 기존 계약:
 - protocol message raw log는 **기본 비활성화**. debug 모드(예: `CLCOMX_AGENT_DEBUG_LOG` env)에서만 **redacted** raw log 저장.
-- redaction 대상: API key, auth token, command env, file contents.
+- redaction 대상: API key, auth token, command env, file contents, **`authToken`(websocket variant 필드, D-WSAUTH)**. `AgentRuntimeStartParams`의 websocket `authToken`(15 §8.1)은 v1에서 §8 정본대로 로깅 전에 reject되지만, 혹시라도 로그/snapshot 경로에 도달할 경우를 대비해 secret scrub/redaction 집합에 포함한다(09 §5.1·§secret과 동기화).
 - stderr는 session diagnostic panel에서 **opt-in** 확인(§4.3).
 
 ```rust
@@ -1105,12 +1117,13 @@ fn redact(s: &str) -> String {
 
 **보안·경계**
 - [ ] provider별 allowlist 검증(§8, S1/R4): executable=**backend가 provider로 resolve한 신뢰 절대경로**(command 파라미터 비수신, basename 비교 폐지), args 정확 일치(Codex `["app-server","--stdio"]`, Claude `[backend가 검증한 adapterEntryPath]` 절대경로), env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + provider 허용 key) + 값 non-secret.
+- [ ] D-WSAUTH: `transportKind:"websocket"` start params를 로깅·snapshot·spawn 진입 전에 reject(params 디버그 출력 없이 정적 에러), `authToken`을 redaction/scrub 집합에 포함(§8·§11, 09 §5.1·RD-2).
 - [ ] WSL absolute path canonicalize(§9).
 - [ ] redaction hook(§11), env 평문 미저장(10 §7.3).
 
 **backpressure / late-attach**
-- [ ] bounded message_log + trim + backpressure event(§7).
-- [ ] (후속) message seq + delta-since command(§4.5).
+- [ ] bounded message_log + trim + backpressure event(§7). v1 `message_log`는 **diagnostic-only bounded log**(사용자-visible 복구 보장 없음, D-REPLAYLOG §7.2).
+- [ ] (후속) message seq + delta-since 기반 late-attach replay consumer(§4.5) — v1 범위 밖.
 
 **test**
 - [ ] `is_test_mode()` mock 경로 + `mock_jsonrpc_script`(§10.1).
@@ -1131,6 +1144,7 @@ fn redact(s: &str) -> String {
 | AC-5 | `shutdown`이 stdin EOF → grace(2s) → kill → **child reap** 순으로 동작, 정상 종료 시 kill 미발생, reap 완료(`exited`) 후 반환·teardown(S3) | tests.rs(mock child) + 수동 확인 |
 | AC-6 | process exit 시 `agent-runtime-exit`가 **정확히 한 번** emit(exit/shutdown 동시 트리거에도 이중 emit 없음, S3), frontend가 pending을 멱등하게 한 번 정리 가능(04 §5) | E2E + tests.rs(compare_exchange exactly-once) |
 | AC-7 | allowlist 검증(S1/R4) 거부: command는 renderer가 넘길 수 없고 backend가 provider로 resolve(executable resolve 실패 시 Err), Claude `args=[/tmp/x.js]`(신뢰 adapterEntryPath 아님) 거부, Codex args≠`["app-server","--stdio"]` 거부, Claude args≠`[검증된 adapterEntryPath]` 거부, env key allowlist 위반·`^[A-Za-z_][A-Za-z0-9_]*$` 위반 거부, shell 메타문자 args/값 거부. backend resolve된 executable·정확 args·허용 env key만 통과 | tests.rs(§8) |
+| AC-7b | `transportKind:"websocket"` start가 로깅·snapshot 노출 없이 reject되고(D-WSAUTH, RD-2), `authToken`이 에러 메시지·로그·snapshot에 평문으로 실리지 않음 | tests.rs(§8): websocket variant + `authToken` 주입 후 `start`가 Err 반환·에러 문자열에 token 부재, redact 단위 테스트(§11) |
 | AC-8 | Windows path·relative path workDir 거부, WSL absolute만 통과 | tests.rs(§9) |
 | AC-9 | `is_test_mode()`에서 실제 WSL 없이 mock JSON-RPC 스트림 emit | E2E mock 시나리오 |
 | AC-10 | API key/token이 stderr 로그·snapshot·persistence에 평문 노출 안 됨 | redact 단위 테스트 + persistence scrub 테스트(10 §7.3) |

@@ -84,7 +84,9 @@ graph TD
   import { createAgentRuntimeState } from "../state/agent-runtime-state.svelte";
   import { createComposerState } from "../state/composer-state.svelte";
   import { createAgentRuntimeController } from "../controller/agent-runtime-controller";
-  import { createAgentTransportController } from "../controller/agent-transport-controller";
+  // transport wrapper 정본 위치 = service/transport.ts(12 §0.1 module map). controller가 아니라
+  // service 레이어이며, host에는 controller-유사 API(send/cancel/subscribe)를 노출한다.
+  import { createAgentTransportController } from "../service/transport";
   import { createApprovalController } from "../controller/approval-controller";
   import { createComposerController } from "../controller/composer-controller";
   import AgentTranscriptSurface from "./AgentTranscriptSurface.svelte";
@@ -103,7 +105,8 @@ graph TD
   // transport: invoke/listen 래퍼 경유만 (research/codebase-frontend.md §4.1)
   const transport = createAgentTransportController({
     getSessionHandle: () => props.sessionId,
-    // send/cancel/subscribe는 service/transport.ts(§9) 래퍼를 deps로 받음
+    // send/cancel/subscribe는 `service/transport.ts`의 `createAgentTransportController` 래퍼(12 §0.1
+    // module map 정본)를 deps로 받음. 이 래퍼는 service 레이어이며 host에 controller-유사 API를 노출한다(§9).
   });
 
   const approval = createApprovalController({

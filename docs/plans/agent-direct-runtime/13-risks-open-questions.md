@@ -43,9 +43,9 @@ Codex app-server는 websocket transport 가능성이 있으나 본 조사에서 
 
 - **영향**: websocket을 1차에 구현하면 미검증 transport에 framing/auth/backpressure 위험이 추가된다. auth token 저장·redaction 정책도 미정(05 §72).
 - **완화**:
-  1. v1은 **stdio 전용**으로 구현한다(§2). `AgentRuntimeStartParams`에 websocket variant 타입은 유지하되 Rust handler는 1차에서 `Err("websocket transport not yet supported")` 반환.
-  2. websocket auth token 저장 위치·redaction은 검증 후 [`09-permissions-security.md`](09-permissions-security.md)에 반영(05 §72). 그 전까지 평문 저장 금지.
-- **검출**: `transportKind:"websocket"`로 들어오는 호출은 handler에서 명시적 거부 + 로그. UI는 stdio만 노출.
+  1. v1은 **stdio 전용**으로 구현한다(§2). `AgentRuntimeStartParams`에 websocket variant 타입은 future-sketch로 유지하되 Rust handler는 1차에서 start params를 **로깅/스냅샷에 노출하기 전 즉시** `Err("websocket transport not yet supported")`로 reject한다(07 handler). variant·`authToken?`가 15 §8.1 public 계약에 존재하므로, reject가 로깅보다 늦으면 `authToken`이 관측면에 새는 누출 표면이 생긴다 — 그래서 reject가 로깅·스냅샷보다 **먼저** 일어나야 한다.
+  2. websocket auth token 저장 위치·redaction은 검증 후 [`09-permissions-security.md`](09-permissions-security.md)에 반영(05 §72). 그 전까지 평문 저장 금지이며, `authToken`은 v1부터 09 secret scrub/redaction 집합에 포함한다(token 필드가 계약에 존재하나 v1 미사용·누출 차단).
+- **검출**: `transportKind:"websocket"`로 들어오는 호출은 handler에서 **로깅 전** 명시적 거부 + (token 미포함) 거부 로그. UI는 stdio만 노출. websocket start가 token 로깅 없이 reject되는지 테스트(11 §)로 회귀 고정.
 
 ### 1.4 WSL / Windows path 처리 (S2)
 
@@ -96,9 +96,9 @@ Claude Agent SDK / ACP integration이 Claude Code나 Anthropic 공식 제품처�
 
 명령 실행이 대량 stdout/stderr를 쏟거나 streaming delta가 폭주하면 transport queue가 포화한다(15 §8.3 `agent-runtime-backpressure`, 05 §66 queue/backpressure).
 
-- **영향**: late-attach용 replay log를 unbounded로 두면 메모리 폭증. bounded로 두면 trim된 구간이 late-attach 재구성에서 빠진다(실시간 emit은 그대로 흐름). UI 렌더가 delta 폭주로 멈출 수 있다.
+- **영향**: late-attach용 replay log를 unbounded로 두면 메모리 폭증. bounded로 두면 trim된 구간이 late-attach 재구성에서 빠진다(실시간 emit은 그대로 흐름). UI 렌더가 delta 폭주로 멈출 수 있다. **단 v1의 replay log/seq는 diagnostic-only bounded log이며**(07 §7.2 정본), late-attach replay consumer(delta-since 재구성)는 후속이라 v1에는 **사용자-visible 복구 보장이 없다** — trim된 구간이 사라져도 v1 기능 손실로 보지 않는다.
 - **완화**:
-  1. v1 완화책은 **"bounded replay log + telemetry"**이며 **emit throttle이 아니다**(07 §7.2 정본 명명). backend는 late-attach용 replay log(`message_log`)만 bounded로 경계 짓고, 그 경계에서 trim된 누적 건수를 `agent-runtime-backpressure{droppedMessages}`(15 §8.3) **telemetry 신호**로 알린다. **emit 자체는 막거나(throttle)·합치거나(coalesce)·떨어뜨리지(drop) 않는다** — frontend는 실시간 stream을 그대로 받는다. UI는 recoverable warning을 표시하고 pending approval은 자동 방치하지 않는다(05 §66). 실제 emit cap/coalesce/buffer drop은 **후속**이다(원하면 신규 OQ-50으로 등록).
+  1. v1 완화책은 **"bounded replay log + telemetry"**이며 **emit throttle이 아니다**(07 §7.2 정본 명명). backend는 late-attach용 replay log(`message_log`)만 bounded로 경계 짓되, 이 log/seq는 **diagnostic-only bounded log**이다 — late-attach replay consumer(delta-since 재구성)는 **후속**이라 v1에는 **사용자-visible 복구 보장이 없다**(07 §7.2). 그 경계에서 trim된 누적 건수를 `agent-runtime-backpressure{droppedMessages}`(15 §8.3) **telemetry 신호**로 알린다. **emit 자체는 막거나(throttle)·합치거나(coalesce)·떨어뜨리지(drop) 않는다** — frontend는 실시간 stream을 그대로 받는다. UI는 recoverable warning을 표시하고 pending approval은 자동 방치하지 않는다(05 §66). 실제 emit cap/coalesce/buffer drop은 **후속**이다(OQ-50).
   2. command output은 transcript content가 아니라 `command_output_delta`(15 §3)로 흐르게 하고, 대용량은 ring buffer/요약으로 캡한다.
   3. late-attach 신뢰성을 위해 message에 단조 증가 seq + snapshot/delta-since를 PTY와 동일 원리로 적용(후속, 15 §8.3 · 04 §3.4 · `research/codebase-backend.md` §2.3·§10 권고 3).
 - **검출**: replay-log trim(backpressure) telemetry 카운터. 대용량 출력 fixture(수 MB stdout) replay 시 실시간 emit 누락 0 또는 replay-log trim에 대한 명시적 backpressure 신호 assert(11 §).
@@ -147,7 +147,7 @@ claude-agent-acp npm 버전, ACP schema 버전, Codex ref 버전이 서로 호�
 | # | 결정 | 값 / 정책 | 근거 |
 |---|---|---|---|
 | RD-1 | runtime gating | direct runtime은 첫 구현에서 **실험 flag 뒤**에 둔다. experimental Codex 기능은 그 안에서 한 단계 더 gate. | 위험 1.2 |
-| RD-2 | transport 우선순위 | Codex·Claude 모두 **stdio 우선**. websocket은 후속(검증 후 optional), 1차 handler는 명시적 거부. | 05 §1, 07 §transport, 위험 1.3 |
+| RD-2 | transport 우선순위 | Codex·Claude 모두 **stdio 우선**. websocket은 후속(검증 후 optional), 1차 handler는 명시적 거부. v1은 `websocket` start를 **로깅/스냅샷 노출 전 reject**하고, `authToken`은 09 redaction 집합에 포함한다 — token 필드가 15 §8.1 계약에 존재하나 v1 미사용·누출 차단(variant 타입 자체는 future-sketch로 유지). | 05 §1, 07 §transport, 09(redaction 집합), 위험 1.3, 15 §8.1 |
 | RD-3 | transcript full cache | 1차 범위에서 **제외**. provider replay(ACP `session/load`, Codex `thread/read`)와 metadata 저장에 집중. | [`10-persistence-migration.md`](10-persistence-migration.md) §40, 15 §7 |
 | RD-4 | raw protocol log | **기본 off**. redacted debug mode만 둔다(비밀·자격 redaction 적용). | 09 §, 위험 1.1 |
 | RD-5 | Claude adapter 의존성 | npm `@agentclientprotocol/claude-agent-acp@**0.51.0**` 고정(commit `23626c9`). | 15 §0(헤더), ref-claude, 위험 1.10 |
@@ -223,6 +223,8 @@ claude-agent-acp npm 버전, ACP schema 버전, Codex ref 버전이 서로 호�
 | OQ-47 | approval inline/modal 분류 신호 매핑 — 어떤 provider 신호를 `severity:"escalation"`(modal)로 올릴지 | 15 §5 `ApprovalRequest.severity`, [`09-permissions-security.md`](09-permissions-security.md) §8.3, [`08-ui-composition.md`](08-ui-composition.md) §4.4, [`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)·[`06-claude-acp-adapter.md`](06-claude-acp-adapter.md) approval 매핑 | **v1 기본값(재정의)**: v1 approval 기본 severity는 `normal`(inline)이되, **[09](09-permissions-security.md) §8.3 고위험 집합은 v1부터 `severity:"escalation"`(modal)**이다. 고위험 집합 = approval/모드 신호가 **Claude `bypassPermissions`, Codex `danger-full-access`/sandbox 우회(`Agent (Full Access)`)** 에 해당하는 경우. 05/06 approval 매핑이 이 신호를 감지하면 `ApprovalRequest.severity`(15 §5)를 escalation으로 부여한다. **"v1 전부 normal"이라고 단정하지 않는다.** OQ-47의 **후속(잔여) 범위 = 추가 escalation 신호(protected path 쓰기 등) 확대**이지, §8.3 고위험 집합을 inline으로 강등하는 것이 아니다. 감지 가능한 wire 신호가 불명확한 부분(어떤 wire 필드가 위 모드 진입을 표시하는지)만 OQ-47 잔여로 남긴다. | **구현 전 확인**: 05/06 approval 매핑에서 §8.3 고위험 모드(bypassPermissions/danger-full-access/sandbox 우회)의 정확한 wire 표현을 확인해 escalation 부여 규칙을 확정하고, 추가 escalation 신호(protected path 등)는 후속으로 확대한다. 08 §4.4 inline/modal 렌더 분기와 합의(§8.3 집합은 modal). |
 | OQ-48 | 멀티 윈도우 registry 윈도우 소유권/수명 모델 — 12 T1.4 module-level registry의 window 바인딩·정리·dispatch 경계 | [`12-implementation-workstreams.md`](12-implementation-workstreams.md) T1.4, 위험 §1.11 | **결정 필요 / T1.4 선행 gate**: 보수적 기본값(§1.11 완화책) = registry 단일 윈도우 소유 + `runtimeId`↔window 바인딩 + window-close 시 소유 엔트리만 정리 + cross-window dispatch 금지(불변식). 미정인 것은 정확한 소유권 전이·윈도우 닫힘 시 잔존 runtime 처리·전역 vs 윈도우별 pending table 구조. | T1.4 구현 전 registry의 window 소유권/수명 모델을 확정하고 12 T1.4 산출물·DoD와 §1.11 완화책을 동기화. window-close 격리·cross-window dispatch 차단 테스트(11 §)를 추가. |
 | OQ-49 | framing 붕괴 latch 노출 범위 — 07 §4.4 latched-failed 플래그를 reader-local `bool`로 둘지, `AgentRuntime` 공유 상태로 노출해 `AgentRuntimeSnapshot.status`(15 §8.1)에 반영할지 | [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §4.2·§4.4 | **결정 필요(v1 기본값)**: v1 기본은 reader-local `bool`(latch 후 라인 drop·추가 framing 에러 suppress, frontend는 1회 emit된 `recoverable:false`로만 인지). 공유 상태 노출은 snapshot 기반 재진입/진단이 필요할 때 후속. | T2.3 구현 시 latch를 reader-local로 두되, snapshot에 framing-failed를 드러낼 필요가 생기면 07 §3 상태에 플래그를 올리고 15 §8.1 snapshot·11 RS에 반영. |
+| OQ-50 | emit-throttle / coalesce / buffer-drop 후속 — v1 diagnostic-only bounded replay log를 넘어 실제 emit 압력 완화(throttle/coalesce/drop policy, emit buffer cap)를 도입할지 | [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §7.2, 위험 §1.8 | **후속(v1 미도입)**: v1은 bounded replay log + telemetry(`droppedMessages`)만이며 emit 자체는 throttle/coalesce/drop하지 않는다(frontend는 실시간 stream 그대로 수신). 대용량 delta 폭주로 UI 렌더 부하가 실측되면 emit cap/coalesce/buffer drop policy를 도입. | 대용량 출력 fixture로 UI 렌더 부하를 실측한 뒤 throttle/coalesce/drop 수치·정책을 정하고 07 §7.2·11 §에 반영. v1은 diagnostic-only bounded log를 유지. |
+| OQ-51 | approval audit trail 저장 위치·보존기간·포맷 — in-memory 외 영속 저장소·retention·레코드 포맷 미확정 | [`09-permissions-security.md`](09-permissions-security.md) §3.4, [`12-implementation-workstreams.md`](12-implementation-workstreams.md) audit task, [`11-testing-acceptance.md`](11-testing-acceptance.md) audit 수용 | **v1 기본값**: in-memory audit(결정·시각·`requestId`·`optionId`·`kind`·`outcome`·`decidedBy{user\|auto\|cleanup}`) + **opt-in redacted 영속 로그**(09 §3.4 형식 — 명령 전문/credential/파일 내용 비저장). 미정 = 영속 저장소 위치·보존기간·레코드 포맷. | audit task 구현 전 영속 저장소(파일 vs OS store)·retention 정책·레코드 포맷을 09 §3.4 형식과 일치하도록 확정하고, 11 audit 수용(모든 결정 1건 기록 + 비밀 비포함)·12 audit task와 동기화. v1은 in-memory + opt-in redacted 영속을 기본으로 유지. |
 
 > 레지스트리 운용: 항목이 해소되면 출처 문서에서 "verified"로 승격하고 본 표에서 제거하거나 "(해소됨)"으로 표기한다(ref-codex §10·ref-acp §14의 해소 표기 컨벤션과 동일). 새 unverified 항목이 생기면 출처 문서에 표시하고 여기 OQ-N으로 추가한다.
 

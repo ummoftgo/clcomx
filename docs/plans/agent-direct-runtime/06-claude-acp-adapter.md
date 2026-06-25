@@ -703,10 +703,14 @@ function mapRequestPermission(rt, msg: JsonRpcMessage /* request */): AgentEvent
 
 ```ts
 // id는 원본 JSON-RPC id 타입(string|number)을 그대로 받는다 — String화 금지(R3, ref-acp §6).
+// outcome은 wire로 보낼 수 있는 `selected`/`cancelled`만 받는다 — `failed`는 도달하지 않는다(아래 가드).
+// `failed`는 process-exit(연결 사망) 경로에서만 발생 → wire 응답 불가 → 이 builder에 미도달(client 내부 emit 전용,
+// 15 §5, 04 §4.2 규칙 4). 내부 실패(`failed`)와 사용자/cleanup 취소(`cancelled`)는 provider audit에서 구분되어야 하므로
+// `failed`를 `cancelled`로 강등해 전송하지 않는다.
 function buildPermissionResponse(id: string | number, decision: { outcome: "selected" | "cancelled"; optionId?: string }): JsonRpcMessage {
   const outcome = decision.outcome === "selected"
     ? { outcome: "selected", optionId: decision.optionId }
-    : { outcome: "cancelled" };                     // ref-acp §6
+    : { outcome: "cancelled" };                     // ref-acp §6 (cancel/shutdown은 process 생존 시 cancelled로 전송)
   return { jsonrpc: "2.0", id, result: { outcome } }; // id = 보존한 원본 rpcId(타입 유지)
 }
 
@@ -714,8 +718,17 @@ async function respondApproval(handle, decision: ApprovalDecision) { // 15 §5
   const rt = byHandle(handle);
   const ap = rt.pendingApprovals.get(decision.requestId);  // decision.requestId = String 키
   if (!ap || ap.closing) return; // 이미 cancel/resolve/closing됨 → 멱등 무시(04 §4.2 규칙 4)
-  // ApprovalDecision.outcome: "failed"는 client 내부 전용 → wire로 selected/cancelled만(15 §5, 04 §4.2 규칙 4)
-  const wire = decision.outcome === "failed" ? { outcome: "cancelled" as const } : { outcome: decision.outcome, optionId: decision.optionId };
+  // 가드: `failed`는 process-exit(연결 사망) 경로에서만 발생하므로 wire 송신이 불가능하고, 그 정리는
+  // exit cleanup(§6.3, 04 §4.4 S3/exit)이 직접 수행한다 — 정상 `respondApproval` 경로(process 생존)로는
+  // `failed`가 들어오지 않는다. 방어적으로 들어오면 wire 송신 없이 내부 emit만 하고 반환한다(`failed`를
+  // `cancelled`로 강등 전송하지 않는다 — 내부 실패와 사용자/cleanup 취소를 provider audit에서 보존, 15 §5, 04 §4.2 규칙 4).
+  if (decision.outcome === "failed") {
+    rt.pendingApprovals.delete(decision.requestId);
+    emit({ type: "approval_resolved", ref: ap.ref, decision }); // wire 미전송 — client 내부 emit 전용
+    return;
+  }
+  // 여기 도달하는 outcome은 wire로 보낼 수 있는 `selected`/`cancelled`뿐이다(위 가드로 `failed` 제외).
+  const wire = { outcome: decision.outcome, optionId: decision.optionId };
   // wire 응답은 보존한 원본 rpcId(타입 유지)로 — ap.request.id(String화 값)가 아니라 ap.rpcId 사용(R3).
   await deps.sendMessage(rt.runtimeId, buildPermissionResponse(ap.rpcId, wire));
   rt.pendingApprovals.delete(decision.requestId);
@@ -732,7 +745,7 @@ async function respondApproval(handle, decision: ApprovalDecision) { // 15 §5
 2. cancel 이후 도착하는 늦은 resolved/stopReason/동일 requestId 응답은 멱등 무시(이미 `closing`/closed). `respondApproval`도 `closing`/부재 시 무시(§6.2).
 3. **shutdown/`process_exited` 시 모든 pending approval/request를 닫음(04 §5, §4.4 S3)**: `shutdown`은 `agentRuntimeShutdown` 호출 **전에** pending approval을 `cancelled`로, pending RPC를 reject로 닫고 그 뒤 unlisten/세션 삭제한다(§4.4 (a)). `process_exited`(exit)도 남은 pending을 닫는다. 두 경로의 pending 종료는 **멱등하며 정확히 한 번**만 수행된다 — `closing`/closed 표시로 이미 닫힌 항목은 재처리하지 않는다(04 §4.2 규칙 4, §4.4 (c)).
 4. ACP에는 Codex `serverRequest/resolved` 같은 외부 resolve 경로가 없다 — pending approval은 사용자 응답·cancel·shutdown·exit으로만 닫힌다.
-5. `failed`는 wire로 보내지 않음(15 §5, 04 §4.2 규칙 4).
+5. `failed`는 wire로 보내지 않음(15 §5, 04 §4.2 규칙 4). `failed`는 process-exit(연결 사망, §6.3 item 3 exit 경로) 정리에서만 발생하므로 `buildPermissionResponse`/송신 호출부에 **도달하지 않는다** — `respondApproval`의 정상 경로(process 생존)는 `selected`/`cancelled`만 wire로 보내고, exit cleanup은 `failed`로 닫되 내부 emit만 한다(§6.2 가드). 내부 실패(`failed`)를 `cancelled`로 강등해 보내면 provider audit에서 사용자/cleanup 취소와 구분되지 않으므로 금지한다(04 §4.2 규칙 4, 15 §5).
 
 > 응답하지 않은 permission request가 process shutdown 뒤에 남지 않도록 `pendingApprovals` 정리가 필수다(ref-claude-agent-acp 본 문서 기존 §Permission, [`13-risks-open-questions.md`](13-risks-open-questions.md) "Approval deadlock"). shutdown은 authoritative cleanup 경계이므로 pending 종료가 unlisten/세션 삭제·backend reap보다 먼저 일어나도록 순서를 지킨다(§4.4 S3, 14 shutdown 시퀀스).
 
