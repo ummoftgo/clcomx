@@ -75,6 +75,9 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
   unlisten?: UnlistenFn;
   /** 세션이 닫히는 중(shutdown/exit). 늦은 정리 멱등화. */
   closed: boolean;
+  /** teardown(shutdown/exit) 진행 표시(closed와 분리). in-flight respondApproval의 send 실패를
+   *  cleanup으로 인식하는 신호(exit 경로도 포함 — closed만으론 exit catch가 안 잡힘). */
+  tearingDown: boolean;
 }
 
 /**
@@ -252,6 +255,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       listeners: new Set(),
       deferred: [],
       closed: false,
+      tearingDown: false,
     };
     sessions.set(handle, rt);
     // pre-registered listener(구독을 먼저 한 controller)를 attach한다(New-F2).
@@ -273,6 +277,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
         return;
       case "exit":
         // process_exited emit + 남은 pending 정리(멱등, §4.4 (c)).
+        rt.tearingDown = true; // in-flight respondApproval이 cleanup으로 인식하도록(exit 경로).
         emit(rt, { type: "process_exited", ref: refFor(rt), code: e.code, signal: e.signal });
         closePending(rt);
         return;
@@ -483,7 +488,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
         buildPermissionResponse(ap.rpcId, { outcome: decision.outcome, optionId: decision.optionId }),
       );
     } catch (err) {
-      if (rt.closed) {
+      if (rt.tearingDown) {
         // teardown(shutdown/exit) 중 send 실패: closePending이 closing(선점)을 건너뛰었으므로
         // cleanup outcome(failed, wire 미전송)으로 닫아 종료 이벤트 누락을 막는다. throw 안 함
         // (teardown 중 실패는 정상 — approve Promise의 unhandled rejection을 막는다).
@@ -542,6 +547,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     const rt = sessions.get(handle);
     if (!rt || rt.closed) return; // 멱등.
     rt.closed = true;
+    rt.tearingDown = true; // in-flight respondApproval send 실패를 cleanup으로 인식(New-F1).
     // 1. pending 종료(process 생존 → wire 송신 가능).
     closePending(rt, true);
     // 2. backend shutdown await(reap 후 반환).

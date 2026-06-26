@@ -84,8 +84,14 @@ interface CodexSessionRuntime {
   /** 구독 전 emit된 이벤트 버퍼(구독 시 flush). lifecycle 이벤트 유실 방지. */
   deferred: AgentEvent[];
   unlistens: UnlistenFn[];
-  /** 멱등 종료 가드(04 §5). */
+  /** 멱등 종료 가드(04 §5) — backend reap/unlisten·세션 삭제 확정 상태. */
   closed: boolean;
+  /**
+   * teardown(shutdown/exit) 진행 표시(closed와 분리). in-flight respondApproval의 send가 stdin close로
+   * 실패할 때 cleanup으로 인식하는 신호다. closed를 재사용하면 handleExit의 `if (rt.closed) return`이
+   * 발동해 shutdown 중 process_exited가 누락된다(분리 필수).
+   */
+  tearingDown: boolean;
 }
 
 /** thread/start·thread/resume·thread/read response의 공통 부분(thread 보유). */
@@ -292,6 +298,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
   /** process exit 처리(§9). 공용 closePending + process_exited emit. */
   function handleExit(rt: CodexSessionRuntime, code?: number, signal?: string): void {
     if (rt.closed) return; // 멱등(이미 닫힘이면 no-op)
+    rt.tearingDown = true; // in-flight respondApproval이 cleanup으로 인식하도록(exit 경로).
     closePending(rt, "exit");
     rt.closed = true;
     emitToListeners(rt, { type: "process_exited", ref: { provider: "codex" }, code, signal });
@@ -316,6 +323,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       deferred: [],
       unlistens: [],
       closed: false,
+      tearingDown: false,
     };
     attachSession(params.sessionHandle, rt);
     await bindListeners(rt);
@@ -352,6 +360,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       deferred: [],
       unlistens: [],
       closed: false,
+      tearingDown: false,
     };
     attachSession(params.sessionHandle, rt);
     await bindListeners(rt);
@@ -473,7 +482,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
         result: { decision: codexDecision },
       } as JsonRpcMessage);
     } catch (err) {
-      if (rt.closed) {
+      if (rt.tearingDown) {
         // teardown(shutdown/exit) 중 send 실패(stdin closed 등): closePending이 responding을
         // 건너뛰었으므로 여기서 cleanup outcome(failed, wire 미전송)으로 닫아 종료 이벤트 누락을 막는다.
         // throw하지 않는다 — teardown 중 실패는 정상이며 approve Promise의 unhandled rejection을 막는다.
@@ -552,8 +561,9 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     const rt = sessions.get(handle);
     if (!rt || rt.closed) return; // 멱등
     // teardown 시작 표시(New-F1): in-flight respondApproval의 send가 stdin close로 실패할 때
-    // 이 플래그로 teardown을 감지해 cleanup outcome으로 닫는다(revert+throw 대신).
-    rt.closed = true;
+    // 이 플래그로 teardown을 감지해 cleanup outcome으로 닫는다(revert+throw 대신). closed와 분리해
+    // shutdown 중 handleExit의 `if (rt.closed) return`이 process_exited를 삼키지 않게 한다.
+    rt.tearingDown = true;
     // (a) shutdown 전에 pending 정리(process 살아 있으므로 cancelled wire 응답 best-effort).
     closePending(rt, "shutdown");
     // (b) graceful: backend가 stdin close→timeout→kill→child reap 후 반환.

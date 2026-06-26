@@ -225,6 +225,76 @@ describe("Claude ACP adapter — permission + cancel (CL-19/CL-22, 04 §4.2)", (
     await h.respondToLast("session/prompt", { stopReason: "cancelled" });
     await p;
   });
+
+  it("New-F1: exit teardown 중 respondApproval send 실패 시 approval_resolved{failed}·throw 없음(exit 경로)", async () => {
+    let rejectSend: () => void = () => {};
+    const outbound: JsonRpcMessage[] = [];
+    let handler: ((e: AgentRuntimeEvent) => void) | undefined;
+    let nextId = 0;
+    const RID: RuntimeId = 1;
+    const isPermResponse = (m: JsonRpcMessage) =>
+      "result" in (m as object) && !!(m as { result?: { outcome?: unknown } }).result?.outcome;
+    const deps: ClaudeAcpAdapterDeps = {
+      startRuntime: vi.fn(async () => RID),
+      sendMessage: vi.fn(async (_rid: RuntimeId, message: JsonRpcMessage) => {
+        // permission 응답({result:{outcome}})을 hang시켰다 reject(stdin closed 모사). 그 외는 통과.
+        if (isPermResponse(message)) {
+          await new Promise<void>((_res, rej) => {
+            rejectSend = () => rej(new Error("stdin closed"));
+          });
+          return;
+        }
+        outbound.push(message);
+      }),
+      cancelRuntime: vi.fn(async () => {}),
+      shutdownRuntime: vi.fn(async () => {}),
+      subscribeRuntime: vi.fn((_rid: RuntimeId, h: (e: AgentRuntimeEvent) => void) => {
+        handler = h;
+        return () => {
+          handler = undefined;
+        };
+      }),
+      resolveLaunch: vi.fn(async () => ({ adapterEntryPath: "/wsl/x/dist/index.js" })),
+      nextRequestId: () => ++nextId,
+      appVersion: "0.9.0",
+      now: () => 0,
+    };
+    const adapter = createClaudeAcpAdapter(deps);
+    const inject = (message: JsonRpcMessage) => handler?.({ type: "message", runtimeId: RID, message });
+    const injectEvent = (e: AgentRuntimeEvent) => handler?.(e);
+    const waitFor = async (method: string) => {
+      for (let i = 0; i < 50; i++) {
+        const req = outbound.find((m) => "method" in m && m.method === method && "id" in m) as { id: string | number } | undefined;
+        if (req) return req;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      throw new Error(`no outbound ${method}`);
+    };
+
+    // lifecycle: startSession → initialize → session/new(요청은 outbound로 흐름).
+    const startP = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/p" });
+    inject({ jsonrpc: "2.0", id: (await waitFor("initialize")).id, result: { protocolVersion: 1, agentCapabilities: {} } });
+    inject({ jsonrpc: "2.0", id: (await waitFor("session/new")).id, result: { sessionId: "sess-1" } });
+    await startP;
+
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+    inject({ jsonrpc: "2.0", id: 42, method: "session/request_permission", params: { sessionId: "sess-1", toolCall: { toolCallId: "tc1", title: "Edit" }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] } });
+
+    // respondApproval 시작(ap.closing=true 선점, send in-flight).
+    const respP = adapter.respondApproval("A", { requestId: "42", outcome: "selected", optionId: "allow" });
+    await Promise.resolve();
+    await Promise.resolve();
+    // exit 도착 → tearingDown=true, closePending이 closing(선점)을 건너뜀.
+    injectEvent({ type: "exit", runtimeId: RID, code: 0 });
+    // stdin closed → permission send reject.
+    rejectSend();
+
+    // throw 없이 resolve + approval_resolved{failed}.
+    await expect(respP).resolves.toBeUndefined();
+    const resolved = events.filter((e) => e.type === "approval_resolved");
+    expect(resolved.some((e) => (e as Extract<AgentEvent, { type: "approval_resolved" }>).decision.outcome === "failed")).toBe(true);
+  });
 });
 
 describe("Claude ACP adapter — unsupported request / framing (CL-24b/CL-25/CL-26)", () => {

@@ -280,7 +280,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
   });
 
   it("New-F1 race: respondApproval in-flight 중 serverRequest/resolved가 와도 이중 wire/emit 없음", async () => {
-    let releaseSend: (() => void) | null = null;
+    let releaseSend: () => void = () => {};
     const sent: JsonRpcMessage[] = [];
     const byEvent = new Map<string, Array<(e: { payload: AgentRuntimeEvent }) => void>>();
     const runtimeId = 1;
@@ -334,7 +334,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     expect(events.filter((e) => e.type === "approval_resolved")).toHaveLength(0);
 
     // send 완료 → respondApproval가 단일 경로로 닫는다.
-    releaseSend?.();
+    releaseSend();
     await p;
     const resolved = events.filter((e) => e.type === "approval_resolved");
     expect(resolved).toHaveLength(1);
@@ -346,7 +346,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
   });
 
   it("New-F1 race: respondApproval in-flight 중 shutdown이 와도 approval wire는 accept 1건만(cancel 중복 없음)", async () => {
-    let releaseSend: (() => void) | null = null;
+    let releaseSend: () => void = () => {};
     const sent: JsonRpcMessage[] = [];
     const byEvent = new Map<string, Array<(e: { payload: AgentRuntimeEvent }) => void>>();
     const runtimeId = 1;
@@ -395,7 +395,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
 
     // in-flight 중 shutdown → closePending이 responding(7)을 건너뛴다(cancel wire 미전송).
     const shutdownP = adapter.shutdown("H");
-    releaseSend?.();
+    releaseSend();
     await p;
     await shutdownP;
 
@@ -405,7 +405,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
   });
 
   it("New-F1: teardown 중 respondApproval send 실패(stdin closed) 시 approval_resolved{failed} emit·throw 없음", async () => {
-    let rejectSend: (() => void) | null = null;
+    let rejectSend: () => void = () => {};
     const byEvent = new Map<string, Array<(e: { payload: AgentRuntimeEvent }) => void>>();
     const runtimeId = 1;
     let idCounter = 0;
@@ -454,7 +454,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     // teardown 시작(rt.closed=true, closePending이 responding 7을 건너뜀).
     const shutdownP = adapter.shutdown("H");
     // stdin closed → approval send reject.
-    rejectSend?.();
+    rejectSend();
 
     // respondApproval은 throw하지 않고 resolve(unhandled rejection 방지).
     await expect(p).resolves.toBeUndefined();
@@ -464,6 +464,55 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     const resolved = events.filter((e) => e.type === "approval_resolved");
     expect(resolved).toHaveLength(1);
     expect((resolved[0] as Extract<AgentEvent, { type: "approval_resolved" }>).decision.outcome).toBe("failed");
+  });
+
+  it("New-F1: shutdown await 중 agent-runtime-exit가 와도 process_exited를 1회 emit(closed 과부하 회귀 방지)", async () => {
+    let releaseShutdown: () => void = () => {};
+    const byEvent = new Map<string, Array<(e: { payload: AgentRuntimeEvent }) => void>>();
+    const runtimeId = 1;
+    let idCounter = 0;
+    const fire = (name: string, payload: AgentRuntimeEvent) => {
+      for (const l of byEvent.get(name) ?? []) l({ payload });
+    };
+    const inject = (message: JsonRpcMessage) => fire("agent-runtime-message", { type: "message", runtimeId, message });
+    const deps: CodexAdapterDeps = {
+      start: async () => runtimeId,
+      send: async (_rid, message) => {
+        const auto = autoResponder(message);
+        if (auto !== undefined && "id" in message && "method" in message) {
+          queueMicrotask(() => inject({ id: (message as { id: number }).id, result: auto }));
+        }
+      },
+      cancel: async () => {},
+      // shutdown await를 hang시켜 그 사이 backend exit를 주입한다.
+      shutdown: async () => {
+        await new Promise<void>((r) => {
+          releaseShutdown = r;
+        });
+      },
+      listenRuntime: async (event, h) => {
+        const arr = byEvent.get(event) ?? [];
+        arr.push(h);
+        byEvent.set(event, arr);
+        return () => {};
+      },
+      appVersion: "test",
+      nextRpcId: () => (idCounter += 1),
+    };
+    const adapter = createCodexAppServerAdapter(deps);
+    const events: AgentEvent[] = [];
+    await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "Ubuntu", workDir: "/work" });
+    adapter.subscribeEvents("H", (e) => events.push(e));
+
+    // shutdown 시작(tearingDown=true, closed는 아직 false) → deps.shutdown await에서 hang.
+    const shutdownP = adapter.shutdown("H");
+    await Promise.resolve();
+    // shutdown await 중 backend exit 도착 → handleExit가 process_exited를 emit해야 한다(억제 금지).
+    fire("agent-runtime-exit", { type: "exit", runtimeId, code: 0 });
+    releaseShutdown();
+    await shutdownP;
+
+    expect(events.filter((e) => e.type === "process_exited")).toHaveLength(1);
   });
 });
 
