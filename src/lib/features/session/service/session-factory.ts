@@ -7,6 +7,7 @@ import type {
   SessionShellRuntimeState,
   TabHistoryEntry,
 } from "../../../types";
+import type { SessionRuntimeKind } from "../../agent-runtime/contracts/metadata";
 
 export interface SessionLaunchRequest {
   agentId: AgentId;
@@ -14,6 +15,11 @@ export interface SessionLaunchRequest {
   workDir: string;
   title: string;
   resumeToken: string | null;
+  /**
+   * 세션 host 종류(15 §7.2). 미지정 시 기존 terminal host(pty)로 동작한다.
+   * direct runtime 지원 launcher capability가 붙기 전까지는 호출부가 명시할 때만 채워진다.
+   */
+  runtimeKind?: SessionRuntimeKind;
 }
 
 export function createSessionLaunchRequest(input: {
@@ -55,6 +61,7 @@ function buildSessionCore(request: SessionLaunchRequest): SessionCore {
     locked: false,
     distro: request.distro,
     workDir: request.workDir,
+    runtimeKind: request.runtimeKind,
   };
 }
 

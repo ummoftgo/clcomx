@@ -3,6 +3,7 @@ import type {
   SessionEditorSnapshot,
   SessionEditorState,
 } from "../../../types";
+import type { SessionRuntimeKind } from "../../agent-runtime/contracts/metadata";
 
 export interface SessionShellAuxState {
   auxPtyId: number;
@@ -25,6 +26,7 @@ export type SessionShellSession = Pick<
   | "editorRootDir"
   | "openEditorTabs"
   | "activeEditorPath"
+  | "runtimeKind"
 >;
 
 export interface SessionHostProps {
@@ -34,6 +36,8 @@ export interface SessionHostProps {
   distro: string;
   workDir: string;
   ptyId: number;
+  /** 세션 host 종류(15 §7.2). direct host 분기·adapter 선택에 사용. 미지정은 pty 취급. */
+  runtimeKind?: SessionRuntimeKind;
   storedAuxPtyId?: number;
   storedAuxVisible?: boolean;
   storedAuxHeightPercent?: number | null;

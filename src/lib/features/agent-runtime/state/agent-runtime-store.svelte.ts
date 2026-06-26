@@ -77,6 +77,8 @@ export interface AgentRuntimeStore {
   getItem(id: string): TranscriptItem | undefined;
   /** 진단/테스트용 transcript 모델 스냅샷(plain). */
   getTranscript(): TranscriptModel;
+  /** evicted-tombstone 구간(이전 기록) 존재 여부 — replay affordance 노출용(T5.6, 08 §7.2). */
+  hasEvictedHistory(): boolean;
   /** audit trail 조회(비밀 비포함, T1.6). */
   getAuditEntries(): ApprovalAuditEntry[];
 
@@ -92,6 +94,8 @@ export interface AgentRuntimeStore {
   closePendingOnShutdown(): CloseResult[];
   /** quiescence grace 경과 후 seal+eviction 트리거(04 §3.7 (e)). */
   flushSealAndEvict(): void;
+  /** auto-follow 토글(08 §7.2 — 스크롤 추종 on/off). */
+  setAutoFollow(value: boolean): void;
   /** 세션 teardown(table/audit 정리). */
   dispose(): void;
 }
@@ -133,6 +137,11 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
 
   getTranscript(): TranscriptModel {
     return this.transcript;
+  }
+
+  hasEvictedHistory(): boolean {
+    // tombstone LRU에 항목이 있으면 evict된 이전 기록 구간이 존재한다(04 §3.7).
+    return this.transcript.tombstones.lru.length > 0;
   }
 
   getAuditEntries(): ApprovalAuditEntry[] {
@@ -326,6 +335,10 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
     next = evictOverflow(next, this.residencyConfig);
     this.transcript = next;
     this.syncReactiveSurface();
+  }
+
+  setAutoFollow(value: boolean): void {
+    this.autoFollow = value;
   }
 
   dispose(): void {

@@ -49,6 +49,28 @@ export const TEST_IDS = {
   internalEditorQuickOpenModal: "internal-editor-quick-open-modal",
   internalEditorQuickOpenInput: "internal-editor-quick-open-input",
   internalEditorQuickOpenList: "internal-editor-quick-open-list",
+  // Direct Agent Runtime (08 §9.4)
+  agentRuntimeShell: "agent-runtime-shell",
+  agentTranscript: "agent-transcript",
+  agentMessageList: "agent-message-list",
+  agentMessageBubble: "agent-message-bubble",
+  agentReasoningToggle: "agent-reasoning-toggle",
+  agentPlanBlock: "agent-plan-block",
+  agentComposer: "agent-composer",
+  agentComposerInput: "agent-composer-input",
+  agentComposerSend: "agent-composer-send",
+  // Stage 2: tool/command/diff 카드 + approval + replay (08 §4·§7, T5.3·T5.4·T5.6)
+  agentToolCallCard: "agent-tool-call-card",
+  agentToolCallToggle: "agent-tool-call-toggle",
+  agentCommandOutputCard: "agent-command-output-card",
+  agentCommandOutput: "agent-command-output",
+  agentFileDiffCard: "agent-file-diff-card",
+  agentApprovalModal: "approval-modal",
+  agentApprovalInlineCard: "approval-inline-card",
+  agentApprovalOption: "approval-option",
+  agentReplayAffordance: "agent-replay-affordance",
+  agentReplayPanel: "agent-replay-panel",
+  agentReplayClose: "agent-replay-close",
 } as const;
 
 export function toTestIdSegment(value: string) {
@@ -101,4 +123,14 @@ export function contextMenuItemTestId(itemId: string) {
 
 export function editorPickerItemTestId(editorId: string) {
   return `editor-picker-item-${toTestIdSegment(editorId)}`;
+}
+
+/** transcript item별 testid(렌더 검증·가상화 디버깅용). */
+export function agentTranscriptItemTestId(itemId: string) {
+  return `agent-transcript-item-${toTestIdSegment(itemId)}`;
+}
+
+/** approval option 버튼별 testid(option id 보존, Stage 2 T5.4). */
+export function agentApprovalOptionTestId(optionId: string) {
+  return `approval-option-${toTestIdSegment(optionId)}`;
 }

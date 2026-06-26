@@ -6,9 +6,17 @@
  */
 
 import type { AgentProvider } from "./normalized";
+import type { SessionHostProps } from "../../session/contracts/session-shell";
 
 /** 세션이 어떤 runtime으로 구동되는지. 기존 PTY는 "pty". */
 export type SessionRuntimeKind = "pty" | "direct-codex" | "direct-claude";
+
+/**
+ * direct runtime host(`AgentTranscriptSurface.svelte`)가 받는 props.
+ * `SessionHostProps`와 **동형**이다(옵션 B 분기에서 Terminal host와 같은 props로 교체 가능, 08 §2.2/§9).
+ * PTY 전제 콜백(onPtyId/onAuxStateChange/onExit/onResumeFallback)은 direct에서 no-op/우회한다(08 §9.2).
+ */
+export type AgentRuntimeHostProps = SessionHostProps;
 
 /** direct runtime 세션 metadata. transcript 전체가 아닌 재개·복원용 메타만 저장. */
 export interface AgentRuntimeMetadata {

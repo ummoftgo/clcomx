@@ -10,6 +10,7 @@ export function createSessionHostProps(props: SessionShellProps): SessionHostPro
     distro: session.distro,
     workDir: session.workDir,
     ptyId: session.ptyId,
+    runtimeKind: session.runtimeKind,
     storedAuxPtyId: session.auxPtyId,
     storedAuxVisible: session.auxVisible,
     storedAuxHeightPercent: session.auxHeightPercent,

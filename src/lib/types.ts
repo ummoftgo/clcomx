@@ -1,5 +1,9 @@
 import type { AgentId } from "./agents";
 import type { ThemePack } from "./themes";
+import type {
+  AgentRuntimeMetadata,
+  SessionRuntimeKind,
+} from "./features/agent-runtime/contracts/metadata";
 
 export type SupportedLocale = "en" | "ko";
 export type LanguagePreference = "system" | SupportedLocale;
@@ -29,6 +33,11 @@ export interface SessionCore {
   locked: boolean;
   distro: string;
   workDir: string;
+  /**
+   * 세션 host 종류(15 §7.2). 미지정/`"pty"`는 기존 terminal host, `"direct-*"`는 direct agent runtime host.
+   * SessionViewMode와는 별개 축이다(viewMode=surface 토글, runtimeKind=host 종류).
+   */
+  runtimeKind?: SessionRuntimeKind;
 }
 
 export interface SessionShellRuntimeState {
@@ -151,6 +160,10 @@ export interface WorkspaceTabSnapshot {
   editorRootDir?: string;
   openEditorTabs?: EditorTabRef[];
   activeEditorPath?: string | null;
+  /** 세션 host 종류(15 §7.2). 부재 시 복원 정규화에서 "pty"로 취급. */
+  runtimeKind?: SessionRuntimeKind;
+  /** direct runtime 재개·복원용 메타(15 §7.2). transcript 전체는 저장하지 않는다. */
+  agentRuntime?: AgentRuntimeMetadata;
 }
 
 export interface WorkspaceWindowSnapshot {
