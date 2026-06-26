@@ -2,9 +2,14 @@ mod app_env;
 mod commands;
 mod features;
 
+use commands::agent_runtime::{
+    agent_runtime_cancel, agent_runtime_get_snapshot, agent_runtime_send, agent_runtime_shutdown,
+    agent_runtime_start,
+};
 use commands::clipboard::{
     clear_image_cache, get_image_cache_stats, open_image_cache_folder, save_clipboard_image,
 };
+use features::agent_runtime::AgentRuntimeState;
 use commands::editors::{
     list_available_editors, list_session_files, open_in_editor, read_session_file,
     resolve_terminal_path, search_session_files, write_session_file,
@@ -60,6 +65,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(PtyState::default())
+        .manage(AgentRuntimeState::default())
         .manage(WslState::default())
         .manage(WorkspaceState::new(initial_workspace))
         .manage(WindowReadyState::default())
@@ -83,6 +89,11 @@ pub fn run() {
             pty_resize,
             pty_kill,
             pty_close_and_capture_resume,
+            agent_runtime_start,
+            agent_runtime_send,
+            agent_runtime_cancel,
+            agent_runtime_shutdown,
+            agent_runtime_get_snapshot,
             load_settings,
             load_tab_history,
             load_workspace,

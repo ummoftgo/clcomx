@@ -1,3 +1,4 @@
+pub mod agent_runtime;
 pub mod clipboard;
 pub mod editors;
 pub mod external;

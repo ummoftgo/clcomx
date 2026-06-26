@@ -98,7 +98,7 @@ pub(super) fn extract_resume_token(output: &str, agent_id: &str) -> Option<Strin
     None
 }
 
-pub(super) fn decode_utf8_stream_chunk(
+pub(crate) fn decode_utf8_stream_chunk(
     pending: &mut Vec<u8>,
     chunk: &[u8],
     flush_incomplete: bool,

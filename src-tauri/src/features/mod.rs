@@ -1,3 +1,4 @@
+pub mod agent_runtime;
 pub mod bootstrap;
 pub mod editors;
 pub mod history;

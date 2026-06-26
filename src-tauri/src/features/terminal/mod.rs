@@ -1,4 +1,4 @@
-mod parsing;
+pub(crate) mod parsing;
 #[cfg(test)]
 mod tests;
 
