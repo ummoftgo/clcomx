@@ -45,3 +45,32 @@
 - **OQ-48 (결정)**: 멀티 윈도우 registry = 단일 윈도우 소유 + `runtimeId`↔window 바인딩 + window-close 시 소유 엔트리만 정리 + cross-window dispatch 금지(§1.11 완화책 채택).
 - **OQ-52/53/54 (보수적 기본값, unverified)**: `HOT_WINDOW_SEALED_TURNS = 50`, `TOMBSTONE_LRU = 200`, `SEAL_QUIESCENCE_GRACE_MS = 250`. late same-turn은 seal grace로 흡수(sealed-retained patch). 정확 수치는 실측 후속.
 - **RD-2/RD-4**: direct runtime은 실험 flag 뒤. raw protocol log 기본 off. websocket start는 로깅/스냅샷 전 reject.
+
+---
+
+## 구현 완료 요약 (Phase 0–7, 2026-06-26)
+
+브랜치 `feat/agent-runtime-impl`, 커밋 `c36b97c`(P0)→`cd4aec8`(P6). 신규 소스 42 + 테스트 28 + backend Rust 7. 울트라코드 Workflow로 페이즈별 병렬/순차 분배.
+
+| Phase | 내용 | 검증 |
+|---|---|---|
+| 0 | 스캐폴드, 타입 정본(15), Codex 생성 타입 vendoring, claude dep 핀, 픽스처, 게이트 결정 | svelte-check 0, cargo check |
+| 1 | reducer(seal/eviction/3-상태), pending table, audit, store, router/registry, legacy-pty | vitest +55 |
+| 2 | Rust wire 타입, resolver/allowlist, process spawn, JSON-RPC framing, command 5종, transport 래퍼 | cargo +112 |
+| 3 | Codex app-server 어댑터(wire→AgentEvent, reconcile, approval, 삼중 키) | CX-1..20 |
+| 4 | Claude ACP 어댑터(JSON-RPC 2.0, chunk/replace, permission rpcId 보존, turn 합성) | CL-1..27 |
+| 5 | 데스크톱식 transcript UI(host 분기, 메시지/카드/approval/composer, 격리 replay) | vitest 732 |
+| 6 | persistence(runtime_kind/agent_runtime, scrub), Claude entry resolve, launcher direct 선택, fallback | vitest 754, cargo 115 |
+
+**최종 게이트(11 §8.6)**: `npm run verify` 통과 — vitest 754 / cargo test 115 / svelte-check 0 errors(1169 files) / vite build OK / cargo check OK. `cargo build` 바이너리 링크 성공.
+
+**환경 제약(Phase 7 잔여)**:
+- E2E(E2E-1..10)·app launch(T7.2): selenium + Windows Tauri 앱 구동 필요 → 현재 WSL 헤드리스 환경에서 실행 불가. test-mode mock(`is_test_mode`/CLCOMX_TEST_MODE)은 backend 연결됨. 빌드 게이트(check/build)는 충족. 실제 GUI smoke는 Windows 환경에서 수행.
+
+**알려진 후속(13 OQ 인용)**:
+- 무거운 item heap byte cap(HOT_WINDOW_BYTES) 미구현 — turn-count cap만(OQ-52).
+- approval 영속 audit 로그 — v1 in-memory만(OQ-51).
+- cross-key 전역 seq 정렬 — per-키 receive-order만(D-SEQ, OQ-17).
+- cold-restore 후 direct 대화 복원 — scrub로 디스크 키 부재, 1차 범위 밖(OQ-16, PTY와 일관).
+- recent history direct provider 배지 — history는 direct id 미저장(10 §5.5).
+- Codex `thread/read includeTurns` 범위·same-turn late notification 실측 — 격리 replay/seal grace는 보수적 기본값(OQ-53/54).
