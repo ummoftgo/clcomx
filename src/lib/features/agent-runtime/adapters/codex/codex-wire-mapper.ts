@@ -550,14 +550,20 @@ export function mapCodexNotification(
 
     case "serverRequest/resolved": {
       // 04 §4.2 규칙3: 해당 requestId의 pending approval을 cancelled로 닫음(사용자 응답 불필요).
-      // C4 단계4: cancelTurn이 이미 닫은 뒤 늦게 도착하면 hasPendingApproval=false → [](멱등).
+      // C4 단계4: cancelTurn이 이미 닫은 뒤 늦게 도착하면 pending 부재 → [](멱등).
       const reqId = String(p.requestId);
-      if (routing.hasPendingApproval(reqId)) {
-        routing.resolveApproval(reqId);
+      // resolveApproval이 돌려준 pending의 (threadId,turnId,itemId)로 ref를 구성한다.
+      // threadId만 쓰면 store가 turnKey를 잘못 계산해 해당 turn의 pendingRequestCount가 0으로
+      // 내려가지 않아 seal 조건 (c)가 영구 실패하고 eviction이 막힌다(long-session 메모리 경계 붕괴).
+      const pending = routing.resolveApproval(reqId);
+      if (pending) {
         return [
           {
             type: "approval_resolved",
-            ref: refOf({ threadId: p.threadId as string }, { requestId: reqId }),
+            ref: refOf(
+              { threadId: pending.threadId, turnId: pending.turnId, itemId: pending.itemId },
+              { requestId: reqId },
+            ),
             decision: { requestId: reqId, outcome: "cancelled" },
           },
         ];

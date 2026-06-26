@@ -362,7 +362,14 @@ describe("approval mapping (CX-11/CX-15/CX-15b/CX-15c)", () => {
     const r = new CodexRouting();
     mapCodexServerRequest("item/commandExecution/requestApproval", 7, { threadId: "th", turnId: "t1", itemId: "c1", startedAtMs: 1 }, r);
     const events = mapCodexNotification("serverRequest/resolved", { threadId: "th", requestId: 7 }, r);
-    expect(events[0]).toMatchObject({ type: "approval_resolved", decision: { requestId: "7", outcome: "cancelled" } });
+    // Finding 4: serverRequest/resolved 페이로드엔 turnId가 없지만, resolved pending의
+    // (threadId,turnId,itemId)로 ref를 복원해야 store가 올바른 turnKey의 pendingRequestCount를
+    // 0으로 내려 seal/eviction이 동작한다(threadId만이면 turn이 영구 미봉인).
+    expect(events[0]).toMatchObject({
+      type: "approval_resolved",
+      ref: { threadId: "th", turnId: "t1", itemId: "c1" },
+      decision: { requestId: "7", outcome: "cancelled" },
+    });
     expect(r.hasPendingApproval("7")).toBe(false);
   });
 

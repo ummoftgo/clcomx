@@ -17,6 +17,10 @@ import AgentTranscriptSurface from "./AgentTranscriptSurface.svelte";
 
 function makeFakePort() {
   let listener: ((e: AgentEvent) => void) | null = null;
+  // 실제 adapter 계약을 모사: 구독 전 emit된 event를 버퍼링했다가 구독 시 flush한다.
+  // controller가 start/resume **후** 구독하므로(Finding 1), 이 버퍼가 없으면 start 중/직후
+  // emit이 유실된다 — 실제 Codex/Claude adapter의 deferred 큐와 동형.
+  const buffer: AgentEvent[] = [];
   const port: AgentRuntimePort = {
     startSession: vi.fn().mockResolvedValue({ ref: { provider: "codex" } }),
     resumeSession: vi.fn().mockResolvedValue({ ref: { provider: "codex" } }),
@@ -25,11 +29,18 @@ function makeFakePort() {
     respondApproval: vi.fn().mockResolvedValue(undefined),
     subscribeEvents: vi.fn((_h, l) => {
       listener = l;
+      for (const e of buffer.splice(0)) l(e);
       return vi.fn();
     }),
     shutdown: vi.fn().mockResolvedValue(undefined),
   };
-  return { port, emit: (e: AgentEvent) => listener?.(e) };
+  return {
+    port,
+    emit: (e: AgentEvent) => {
+      if (listener) listener(e);
+      else buffer.push(e);
+    },
+  };
 }
 
 function baseProps(port: AgentRuntimePort, extra: Record<string, unknown> = {}) {

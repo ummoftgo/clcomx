@@ -110,12 +110,9 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
     // registry 등록(이 window 소유) — backend event 라우팅·정리 경계.
     registerSession(config.sessionHandle, this.deps.store, this.deps.windowLabel ?? "main");
 
-    // subscribeEvents: adapter가 변환한 AgentEvent를 store로 흘린다(router 경유 dispatch).
-    this.unsubscribe = port.subscribeEvents(config.sessionHandle, (event: AgentEvent) => {
-      this.deps.store.dispatch(event);
-    });
-
-    // start vs resume 분기(04 §lifecycle).
+    // start/resume를 **먼저** 호출한다(Finding 1): adapter가 세션을 만들어야 listener 등록 대상이
+    // 생기고, start 중 emit된 lifecycle 이벤트는 adapter deferred 큐에 버퍼링됐다 구독 시 flush된다.
+    // 구독을 먼저 하면 Codex는 세션 미존재로 no-op unlisten, Claude는 throw로 listener가 영구 미등록된다.
     if (config.resume) {
       const params: ResumeSessionParams = {
         sessionHandle: config.sessionHandle,
@@ -138,6 +135,12 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
       };
       await port.startSession(params);
     }
+
+    // subscribeEvents는 start/resume **후** 구독한다(Finding 1): adapter deferred 큐가 구독 전
+    // lifecycle emit(session_started/status 등)을 flush해 유실을 막는다.
+    this.unsubscribe = port.subscribeEvents(config.sessionHandle, (event: AgentEvent) => {
+      this.deps.store.dispatch(event);
+    });
   }
 
   async submit(content: AgentContent[]): Promise<void> {
@@ -147,9 +150,12 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
 
   async approve(decision: ApprovalDecision): Promise<void> {
     if (!this.port || !this.sessionHandle || this.disposed) return;
-    // store에 먼저 멱등 기록(audit + 표면 갱신), 그 다음 wire 전송.
-    this.deps.store.respondApproval(decision, "user");
+    // wire를 **먼저** 보낸다(Finding 2, 04 §4.1): 성공하면 adapter가 approval_resolved를 emit해
+    // store가 닫힌다. wire 실패면 throw로 store를 닫지 않아 pending이 유지되고 provider도 응답을
+    // 못 받은 상태로 일관 — 낙관적 close로 인한 UI(닫힘)/provider(대기) 분기·audit 거짓 기록을 막는다.
     await this.port.respondApproval(this.sessionHandle, decision);
+    // backstop: adapter가 approval_resolved를 emit하지 않는 구현이어도 멱등하게 닫는다(이미 닫혔으면 no-op).
+    this.deps.store.respondApproval(decision, "user");
   }
 
   async cancel(turnId?: string): Promise<void> {
@@ -166,22 +172,24 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
     if (this.disposed) return;
     this.disposed = true;
 
-    // 1. event 구독 해제(늦은 event 차단).
+    // 1. port shutdown을 **먼저** await한다(Finding 3, 04 §5.0): listener를 살려둔 채
+    //    adapter가 pending 종료→backend shutdown/reap을 끝내야 그동안 emit되는
+    //    approval_resolved/process_exited/error가 store에 도달한다(구독을 먼저 끊으면 유실).
+    if (this.port && this.sessionHandle) {
+      try {
+        await this.port.shutdown(this.sessionHandle);
+      } catch {
+        // shutdown 실패해도 teardown은 진행(리소스 누수 방지).
+      }
+    }
+
+    // 2. shutdown 완료 후 controller listener 해제(늦은 event 차단).
     try {
       this.unsubscribe?.();
     } catch {
       // 이미 해제됨 가능 — 무시.
     }
     this.unsubscribe = null;
-
-    // 2. port shutdown(graceful — stdin close→timeout→kill은 backend가).
-    if (this.port && this.sessionHandle) {
-      try {
-        await this.port.shutdown(this.sessionHandle);
-      } catch {
-        // shutdown 실패는 teardown을 막지 않는다.
-      }
-    }
 
     // 3. registry/store 정리.
     if (this.sessionHandle) unregisterSession(this.sessionHandle);

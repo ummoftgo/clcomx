@@ -215,12 +215,15 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
         "user",
       );
       this.recordAudit(r);
+      // ref의 turnId 누락에 의존하지 않고 닫힌 entry의 turnKey로 turn pending을 갱신한다(방어).
+      if (r.closed && r.entry) this.refreshTurnPendingForKey(r.entry.turnKey);
     }
   }
 
   /** turn 메타의 pendingRequestCount를 pending table 현황과 일치시킨다(seal 조건 (c)). */
   private refreshTurnPending(event: AgentEvent): void {
-    if (event.type !== "approval_requested" && event.type !== "approval_resolved") return;
+    // approval_resolved는 applyApprovalEvent에서 닫힌 entry.turnKey로 갱신하므로 여기선 제외.
+    if (event.type !== "approval_requested") return;
     // 영향 turn만 재계산(전체 순회 회피).
     const turnKey = turnKeyOf(event.ref);
     const count = this.pending

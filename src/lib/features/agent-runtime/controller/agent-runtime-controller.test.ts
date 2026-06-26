@@ -118,4 +118,82 @@ describe("agent-runtime-controller", () => {
     expect(port.shutdown).toHaveBeenCalledWith("S4");
     expect(getSessionStore("S4")).toBeUndefined();
   });
+
+  // ── Codex 검토 발견 회귀 방지(lifecycle ordering, 실제 adapter 계약 고정) ──
+
+  it("Finding 1: subscribes only AFTER startSession (contract-faithful adapter rejects pre-start subscribe)", async () => {
+    const order: string[] = [];
+    let sessionStarted = false;
+    const port: AgentRuntimePort = {
+      startSession: vi.fn().mockImplementation(async () => {
+        order.push("start");
+        sessionStarted = true;
+        return { ref: { provider: "codex" } };
+      }),
+      resumeSession: vi.fn().mockResolvedValue({ ref: { provider: "codex" } }),
+      sendPrompt: vi.fn().mockResolvedValue(undefined),
+      cancelTurn: vi.fn().mockResolvedValue(undefined),
+      respondApproval: vi.fn().mockResolvedValue(undefined),
+      // 실제 Claude adapter처럼 세션 미생성 시 throw, Codex처럼 미생성 시 listener 미등록.
+      subscribeEvents: vi.fn((_h, _l) => {
+        if (!sessionStarted) throw new Error("subscribe before session start");
+        order.push("subscribe");
+        return vi.fn();
+      }),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    };
+    const store = createAgentRuntimeStore({ sessionHandle: "S5", provider: "codex" });
+    const controller = createAgentRuntimeController({ createPort: () => port, store });
+
+    await expect(
+      controller.start({ sessionHandle: "S5", runtimeKind: "direct-codex", distro: "Ubuntu", workDir: "/w" }),
+    ).resolves.toBeUndefined();
+    // start가 subscribe보다 먼저(구독-후-시작이면 throw로 깨짐).
+    expect(order).toEqual(["start", "subscribe"]);
+  });
+
+  it("Finding 2: keeps the pending approval open when the wire send fails (no optimistic close)", async () => {
+    const { port } = makeFakePort();
+    (port.respondApproval as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("send failed"));
+    const store = createAgentRuntimeStore({ sessionHandle: "S6", provider: "codex" });
+    const controller = createAgentRuntimeController({ createPort: () => port, store });
+    await controller.start({ sessionHandle: "S6", runtimeKind: "direct-codex", distro: "Ubuntu", workDir: "/w" });
+
+    store.dispatch({
+      type: "approval_requested",
+      ref: { provider: "codex", threadId: "t", turnId: "u", requestId: "9" },
+      request: { id: "9", title: "x", options: [{ id: "o", label: "ok", kind: "allow_once" }] },
+    });
+    expect(store.pendingApprovals.length).toBe(1);
+
+    // wire 실패 → approve가 reject되고 pending은 유지(UI 닫힘/provider 대기 분기 방지).
+    await expect(
+      controller.approve({ requestId: "9", outcome: "selected", optionId: "o" }),
+    ).rejects.toThrow("send failed");
+    expect(store.pendingApprovals.length).toBe(1);
+  });
+
+  it("Finding 3: shuts down BEFORE unsubscribing so shutdown-time cleanup events still reach the store", async () => {
+    const order: string[] = [];
+    const unsubscribe = vi.fn(() => {
+      order.push("unsubscribe");
+    });
+    const port: AgentRuntimePort = {
+      startSession: vi.fn().mockResolvedValue({ ref: { provider: "codex" } }),
+      resumeSession: vi.fn().mockResolvedValue({ ref: { provider: "codex" } }),
+      sendPrompt: vi.fn().mockResolvedValue(undefined),
+      cancelTurn: vi.fn().mockResolvedValue(undefined),
+      respondApproval: vi.fn().mockResolvedValue(undefined),
+      subscribeEvents: vi.fn(() => unsubscribe),
+      shutdown: vi.fn().mockImplementation(async () => {
+        order.push("shutdown");
+      }),
+    };
+    const store = createAgentRuntimeStore({ sessionHandle: "S7", provider: "codex" });
+    const controller = createAgentRuntimeController({ createPort: () => port, store });
+    await controller.start({ sessionHandle: "S7", runtimeKind: "direct-codex", distro: "Ubuntu", workDir: "/w" });
+
+    await controller.dispose();
+    expect(order).toEqual(["shutdown", "unsubscribe"]);
+  });
 });

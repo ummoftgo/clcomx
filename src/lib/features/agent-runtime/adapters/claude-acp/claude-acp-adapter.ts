@@ -69,6 +69,8 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
   configOptions?: unknown[];
   /** event listener(subscribeEvents). */
   listeners: Set<(e: AgentEvent) => void>;
+  /** 구독 전 emit된 lifecycle 이벤트 버퍼(구독 시 flush). Codex deferred와 동형(Finding 1). */
+  deferred: AgentEvent[];
   /** transport 구독 해제. */
   unlisten?: UnlistenFn;
   /** 세션이 닫히는 중(shutdown/exit). 늦은 정리 멱등화. */
@@ -89,8 +91,12 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     return rt;
   }
 
-  /** 런타임의 모든 listener에 event emit. */
+  /** 런타임의 모든 listener에 event emit. 구독자가 없으면 deferred에 버퍼링(구독 시 flush). */
   function emit(rt: ClaudeAcpSessionRuntime, event: AgentEvent): void {
+    if (rt.listeners.size === 0) {
+      rt.deferred.push(event);
+      return;
+    }
     for (const l of rt.listeners) l(event);
   }
 
@@ -242,6 +248,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       loadingReplay: false,
       unknownCounter: 0,
       listeners: new Set(),
+      deferred: [],
       closed: false,
     };
     sessions.set(handle, rt);
@@ -473,6 +480,12 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
   function subscribeEvents(handle: AgentSessionHandle, listener: (event: AgentEvent) => void): UnlistenFn {
     const rt = byHandle(handle);
     rt.listeners.add(listener);
+    // 구독 전 emit된 lifecycle 이벤트(session_started/status 등)를 flush(Finding 1, controller가 start 후 구독).
+    if (rt.deferred.length > 0) {
+      const q = rt.deferred;
+      rt.deferred = [];
+      for (const e of q) listener(e);
+    }
     return () => {
       rt.listeners.delete(listener);
     };
