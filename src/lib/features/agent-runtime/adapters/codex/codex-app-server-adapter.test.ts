@@ -225,6 +225,59 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     h.inject({ id: 11, method: "item/permissions/requestApproval", params: { threadId: "th_1", turnId: "t1", itemId: "p1", startedAtMs: 1, cwd: "/work", reason: null, permissions: {} } });
     expect(h.sent[0]).toEqual({ id: 11, result: { permissions: {}, scope: "turn" } });
   });
+
+  it("New-F1: wire send 실패 시 pending 유지(재시도 가능), 재시도 성공 시 닫힘 + approval_resolved(turnId 보존)", async () => {
+    let failApprovalSend = false;
+    const byEvent = new Map<string, Array<(e: { payload: AgentRuntimeEvent }) => void>>();
+    const runtimeId = 1;
+    let idCounter = 0;
+    const fire = (name: string, payload: AgentRuntimeEvent) => {
+      for (const l of byEvent.get(name) ?? []) l({ payload });
+    };
+    const inject = (message: JsonRpcMessage) => fire("agent-runtime-message", { type: "message", runtimeId, message });
+    const deps: CodexAdapterDeps = {
+      start: async () => runtimeId,
+      send: async (_rid, message) => {
+        // approval 응답({id:7,result})만 실패 토글로 막는다. startup 요청/알림은 통과.
+        if (failApprovalSend && "result" in (message as object) && (message as { id?: unknown }).id === 7) {
+          throw new Error("send failed");
+        }
+        const auto = autoResponder(message);
+        if (auto !== undefined && "id" in message && "method" in message) {
+          queueMicrotask(() => inject({ id: (message as { id: number }).id, result: auto }));
+        }
+      },
+      cancel: async () => {},
+      shutdown: async () => {},
+      listenRuntime: async (event, h) => {
+        const arr = byEvent.get(event) ?? [];
+        arr.push(h);
+        byEvent.set(event, arr);
+        return () => {};
+      },
+      appVersion: "test",
+      nextRpcId: () => (idCounter += 1),
+    };
+    const adapter = createCodexAppServerAdapter(deps);
+    const events: AgentEvent[] = [];
+    await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "Ubuntu", workDir: "/work" });
+    adapter.subscribeEvents("H", (e) => events.push(e));
+    inject({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "th_1", turnId: "t1", itemId: "c1", startedAtMs: 1, command: "ls" } });
+
+    // wire 실패 → reject + pending 유지(approval_resolved 미emit).
+    failApprovalSend = true;
+    await expect(
+      adapter.respondApproval("H", { requestId: "7", outcome: "selected", optionId: "allow_once" }),
+    ).rejects.toThrow("send failed");
+    expect(events.some((e) => e.type === "approval_resolved")).toBe(false);
+
+    // 재시도 → 성공, pending 닫힘 + approval_resolved(turnId/itemId 보존, store seal 정합).
+    failApprovalSend = false;
+    await adapter.respondApproval("H", { requestId: "7", outcome: "selected", optionId: "allow_once" });
+    const resolved = events.find((e) => e.type === "approval_resolved") as Extract<AgentEvent, { type: "approval_resolved" }>;
+    expect(resolved).toBeTruthy();
+    expect(resolved.ref).toMatchObject({ threadId: "th_1", turnId: "t1", itemId: "c1" });
+  });
 });
 
 describe("cancel cleanup (CX approval cancel)", () => {

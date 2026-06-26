@@ -99,6 +99,18 @@ interface ThreadResponse {
  */
 export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntimePort {
   const sessions = new Map<AgentSessionHandle, CodexSessionRuntime>();
+  // 세션 생성 전(subscribe-before-start) 등록된 listener를 보관했다 attachSession 시 attach한다(New-F2).
+  const pendingListeners = new Map<AgentSessionHandle, Set<(e: AgentEvent) => void>>();
+
+  /** sessions에 등록하며 pre-registered listener(구독을 먼저 한 controller)를 attach한다. */
+  function attachSession(handle: AgentSessionHandle, rt: CodexSessionRuntime): void {
+    sessions.set(handle, rt);
+    const pre = pendingListeners.get(handle);
+    if (pre) {
+      for (const l of pre) rt.listeners.add(l);
+      pendingListeners.delete(handle);
+    }
+  }
 
   /**
    * 세션 listener들에게 AgentEvent를 emit한다. 구독자가 없으면 버퍼링했다가
@@ -304,7 +316,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       unlistens: [],
       closed: false,
     };
-    sessions.set(params.sessionHandle, rt);
+    attachSession(params.sessionHandle, rt);
     await bindListeners(rt);
     // process 떴지만 initialize 전(04 §2.1).
     emitToListeners(rt, { type: "session_status_changed", ref: { provider: "codex" }, status: "starting" });
@@ -340,7 +352,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       unlistens: [],
       closed: false,
     };
-    sessions.set(params.sessionHandle, rt);
+    attachSession(params.sessionHandle, rt);
     await bindListeners(rt);
     emitToListeners(rt, { type: "session_status_changed", ref: { provider: "codex" }, status: "starting" });
 
@@ -440,7 +452,8 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
   ): Promise<void> {
     const rt = sessions.get(handle);
     if (!rt) return;
-    const pending = rt.routing.resolveApproval(decision.requestId);
+    // peek만 한다(삭제는 wire 성공 후, New-F1). wire 실패 시 pending을 유지해야 재시도·shutdown cancel이 가능하다.
+    const pending = rt.routing.getPendingApproval(decision.requestId);
     if (!pending) return; // 이미 닫힘 → no-op
     if (decision.outcome === "failed") return; // 04 §4.2 규칙4: wire 미전송
 
@@ -451,14 +464,22 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       // "selected": optionId가 곧 option kind(commandApprovalOptions의 id=kind).
       codexDecision = OPTION_KIND_TO_DECISION[decision.optionId ?? "reject_once"] ?? "decline";
     }
-    // 원본 JSON-RPC id 타입 복원(§6). jsonrpc 필드 없음(ref-codex §4.1).
+    // 원본 JSON-RPC id 타입 복원(§6). jsonrpc 필드 없음(ref-codex §4.1). 실패 시 throw로 pending 유지.
     await deps.send(rt.runtimeId, {
       id: pending.rpcId,
       result: { decision: codexDecision },
     } as JsonRpcMessage);
+    // wire 성공 후에만 삭제 + emit(turnId/itemId 보존 → store seal 정합).
+    rt.routing.resolveApproval(decision.requestId);
     emitToListeners(rt, {
       type: "approval_resolved",
-      ref: { provider: "codex", threadId: pending.threadId, requestId: decision.requestId },
+      ref: {
+        provider: "codex",
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+        itemId: pending.itemId,
+        requestId: decision.requestId,
+      },
       decision,
     });
   }
@@ -470,8 +491,19 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
   ): UnlistenFn {
     const rt = sessions.get(handle);
     if (!rt) {
-      // 세션 미존재 시 no-op unlisten.
-      return () => {};
+      // 세션 미생성(subscribe-before-start) — pending listener로 보관했다 attachSession 시 attach(New-F2).
+      // 이로써 start/replay 중 emit되는 event가 곧장 store로 흘러 unbounded 버퍼링을 피한다.
+      let pre = pendingListeners.get(handle);
+      if (!pre) {
+        pre = new Set();
+        pendingListeners.set(handle, pre);
+      }
+      pre.add(listener);
+      return () => {
+        pendingListeners.get(handle)?.delete(listener);
+        // 이미 attach됐을 수 있으니 세션 listener에서도 제거.
+        sessions.get(handle)?.listeners.delete(listener);
+      };
     }
     rt.listeners.add(listener);
     // deferred 큐가 있으면 flush(starting/session_started 등 구독 전 emit분).

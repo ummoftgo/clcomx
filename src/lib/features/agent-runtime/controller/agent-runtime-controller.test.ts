@@ -121,23 +121,26 @@ describe("agent-runtime-controller", () => {
 
   // ── Codex 검토 발견 회귀 방지(lifecycle ordering, 실제 adapter 계약 고정) ──
 
-  it("Finding 1: subscribes only AFTER startSession (contract-faithful adapter rejects pre-start subscribe)", async () => {
+  it("Finding 1 + New-F2: subscribes BEFORE start (pre-registration) so start-time events stream live", async () => {
     const order: string[] = [];
-    let sessionStarted = false;
+    let liveListener: ((e: AgentEvent) => void) | null = null;
     const port: AgentRuntimePort = {
       startSession: vi.fn().mockImplementation(async () => {
         order.push("start");
-        sessionStarted = true;
+        // start 중 emit되는 lifecycle/replay event는 이미 pre-registered된 listener로 곧장 흘러야 한다
+        // (deferred 버퍼에 unbounded로 쌓이지 않고 store seal/eviction으로 즉시 bounded).
+        liveListener?.({ type: "session_started", ref: { provider: "codex", threadId: "t" }, cwd: "/w" });
+        liveListener?.({ type: "agent_message_delta", ref: { provider: "codex", itemId: "m1" }, delta: "live" });
         return { ref: { provider: "codex" } };
       }),
       resumeSession: vi.fn().mockResolvedValue({ ref: { provider: "codex" } }),
       sendPrompt: vi.fn().mockResolvedValue(undefined),
       cancelTurn: vi.fn().mockResolvedValue(undefined),
       respondApproval: vi.fn().mockResolvedValue(undefined),
-      // 실제 Claude adapter처럼 세션 미생성 시 throw, Codex처럼 미생성 시 listener 미등록.
-      subscribeEvents: vi.fn((_h, _l) => {
-        if (!sessionStarted) throw new Error("subscribe before session start");
+      // 실제 adapter처럼 세션 미생성 상태의 구독을 pre-register(throw·no-op 아님).
+      subscribeEvents: vi.fn((_h, l) => {
         order.push("subscribe");
+        liveListener = l;
         return vi.fn();
       }),
       shutdown: vi.fn().mockResolvedValue(undefined),
@@ -145,11 +148,10 @@ describe("agent-runtime-controller", () => {
     const store = createAgentRuntimeStore({ sessionHandle: "S5", provider: "codex" });
     const controller = createAgentRuntimeController({ createPort: () => port, store });
 
-    await expect(
-      controller.start({ sessionHandle: "S5", runtimeKind: "direct-codex", distro: "Ubuntu", workDir: "/w" }),
-    ).resolves.toBeUndefined();
-    // start가 subscribe보다 먼저(구독-후-시작이면 throw로 깨짐).
-    expect(order).toEqual(["start", "subscribe"]);
+    await controller.start({ sessionHandle: "S5", runtimeKind: "direct-codex", distro: "Ubuntu", workDir: "/w" });
+    // 구독이 start보다 먼저(pre-registration). start 중 emit된 event가 유실 없이 store에 반영.
+    expect(order).toEqual(["subscribe", "start"]);
+    expect(store.visibleItemIds.length).toBe(1);
   });
 
   it("Finding 2: keeps the pending approval open when the wire send fails (no optimistic close)", async () => {

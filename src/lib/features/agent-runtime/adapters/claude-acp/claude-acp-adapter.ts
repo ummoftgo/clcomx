@@ -83,6 +83,8 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
 export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntimePort {
   /** sessionHandle → 런타임 상태. */
   const sessions = new Map<AgentSessionHandle, ClaudeAcpSessionRuntime>();
+  // 세션 생성 전(subscribe-before-start) 등록된 listener를 보관했다 createRuntime 시 attach한다(New-F2).
+  const pendingListeners = new Map<AgentSessionHandle, Set<(e: AgentEvent) => void>>();
 
   /** handle로 런타임 조회(없으면 throw). */
   function byHandle(handle: AgentSessionHandle): ClaudeAcpSessionRuntime {
@@ -252,6 +254,12 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       closed: false,
     };
     sessions.set(handle, rt);
+    // pre-registered listener(구독을 먼저 한 controller)를 attach한다(New-F2).
+    const pre = pendingListeners.get(handle);
+    if (pre) {
+      for (const l of pre) rt.listeners.add(l);
+      pendingListeners.delete(handle);
+    }
     // transport 구독: message/stderr/exit/error/backpressure.
     rt.unlisten = deps.subscribeRuntime(runtimeId, (e: AgentRuntimeEvent) => onRuntimeEvent(rt, e));
     return rt;
@@ -478,9 +486,23 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
 
   /** subscribeEvents: listener 등록 → AgentEvent 수신. 반환된 fn으로 해제. */
   function subscribeEvents(handle: AgentSessionHandle, listener: (event: AgentEvent) => void): UnlistenFn {
-    const rt = byHandle(handle);
+    const rt = sessions.get(handle);
+    if (!rt) {
+      // 세션 미생성(subscribe-before-start) — pending listener로 보관했다 createRuntime 시 attach(New-F2).
+      // start/replay 중 emit되는 event가 곧장 store로 흘러 unbounded 버퍼링을 피한다.
+      let pre = pendingListeners.get(handle);
+      if (!pre) {
+        pre = new Set();
+        pendingListeners.set(handle, pre);
+      }
+      pre.add(listener);
+      return () => {
+        pendingListeners.get(handle)?.delete(listener);
+        sessions.get(handle)?.listeners.delete(listener);
+      };
+    }
     rt.listeners.add(listener);
-    // 구독 전 emit된 lifecycle 이벤트(session_started/status 등)를 flush(Finding 1, controller가 start 후 구독).
+    // 구독 전 emit된 lifecycle 이벤트(session_started/status 등)를 flush(deferred fallback).
     if (rt.deferred.length > 0) {
       const q = rt.deferred;
       rt.deferred = [];

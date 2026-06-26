@@ -110,9 +110,14 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
     // registry 등록(이 window 소유) — backend event 라우팅·정리 경계.
     registerSession(config.sessionHandle, this.deps.store, this.deps.windowLabel ?? "main");
 
-    // start/resume를 **먼저** 호출한다(Finding 1): adapter가 세션을 만들어야 listener 등록 대상이
-    // 생기고, start 중 emit된 lifecycle 이벤트는 adapter deferred 큐에 버퍼링됐다 구독 시 flush된다.
-    // 구독을 먼저 하면 Codex는 세션 미존재로 no-op unlisten, Claude는 throw로 listener가 영구 미등록된다.
+    // subscribeEvents를 start/resume **전에** 호출한다(Finding 1 + New-F2): adapter는 세션 미생성
+    // 상태의 구독을 pending listener로 보관했다 runtime 생성 시 attach한다. 이로써 start 중 lifecycle
+    // 이벤트 유실이 없고, replay event도 unbounded 버퍼 없이 곧장 store(seal/eviction bounded)로 흐른다.
+    this.unsubscribe = port.subscribeEvents(config.sessionHandle, (event: AgentEvent) => {
+      this.deps.store.dispatch(event);
+    });
+
+    // start/resume 분기(04 §lifecycle).
     if (config.resume) {
       const params: ResumeSessionParams = {
         sessionHandle: config.sessionHandle,
@@ -135,12 +140,6 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
       };
       await port.startSession(params);
     }
-
-    // subscribeEvents는 start/resume **후** 구독한다(Finding 1): adapter deferred 큐가 구독 전
-    // lifecycle emit(session_started/status 등)을 flush해 유실을 막는다.
-    this.unsubscribe = port.subscribeEvents(config.sessionHandle, (event: AgentEvent) => {
-      this.deps.store.dispatch(event);
-    });
   }
 
   async submit(content: AgentContent[]): Promise<void> {
@@ -150,12 +149,10 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
 
   async approve(decision: ApprovalDecision): Promise<void> {
     if (!this.port || !this.sessionHandle || this.disposed) return;
-    // wire를 **먼저** 보낸다(Finding 2, 04 §4.1): 성공하면 adapter가 approval_resolved를 emit해
-    // store가 닫힌다. wire 실패면 throw로 store를 닫지 않아 pending이 유지되고 provider도 응답을
-    // 못 받은 상태로 일관 — 낙관적 close로 인한 UI(닫힘)/provider(대기) 분기·audit 거짓 기록을 막는다.
+    // wire 전송만 한다(Finding 2 + New-F1): 성공 시 adapter가 wire 응답 후 approval_resolved를
+    // emit해 store가 닫힌다(single source). wire 실패면 throw로 store·adapter 모두 pending을 유지해
+    // 재시도가 가능하다 — 낙관적 close나 backstop의 no-op close로 인한 UI/provider 분기를 원천 제거.
     await this.port.respondApproval(this.sessionHandle, decision);
-    // backstop: adapter가 approval_resolved를 emit하지 않는 구현이어도 멱등하게 닫는다(이미 닫혔으면 no-op).
-    this.deps.store.respondApproval(decision, "user");
   }
 
   async cancel(turnId?: string): Promise<void> {

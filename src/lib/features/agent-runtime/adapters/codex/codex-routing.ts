@@ -163,6 +163,11 @@ export class CodexRouting {
     return p !== undefined && p.state === "pending";
   }
 
+  /** pending을 삭제하지 않고 조회만 한다(wire 성공 전 peek용). 없으면 undefined. */
+  getPendingApproval(requestId: string): PendingApproval | undefined {
+    return this.pendingApprovals.get(requestId);
+  }
+
   /** pending을 제거(closing/closed → 완전 제거)하고 항목을 돌려준다. 없으면 undefined. */
   resolveApproval(requestId: string): PendingApproval | undefined {
     const p = this.pendingApprovals.get(requestId);
