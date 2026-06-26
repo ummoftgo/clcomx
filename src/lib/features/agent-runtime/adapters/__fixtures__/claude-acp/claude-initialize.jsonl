@@ -1,0 +1,2 @@
+{"direction":"out","message":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}}
+{"direction":"in","message":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}}

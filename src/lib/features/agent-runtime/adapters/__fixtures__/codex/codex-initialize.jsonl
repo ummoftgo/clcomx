@@ -1,0 +1,3 @@
+{"direction":"out","message":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"clcomx","version":"0.0.0"}}}}
+{"direction":"in","message":{"id":1,"result":{"userAgent":"codex","capabilities":{}}}}
+{"direction":"out","message":{"method":"initialized"}}
