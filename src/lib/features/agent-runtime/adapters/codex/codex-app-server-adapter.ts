@@ -264,7 +264,8 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
    */
   function closePending(rt: CodexSessionRuntime, reason: "exit" | "shutdown"): void {
     const outcome: ApprovalDecision["outcome"] = reason === "shutdown" ? "cancelled" : "failed";
-    for (const reqId of rt.routing.allPendingApprovalIds()) {
+    // "responding"(respondApproval in-flight)은 제외 — 그 경로가 단일 wire로 닫게 둔다(이중 wire 방지, New-F1).
+    for (const reqId of rt.routing.pendingApprovalIdsForCleanup()) {
       const pending = rt.routing.resolveApproval(reqId);
       if (reason === "shutdown" && pending) {
         // best-effort cancelled wire 응답(§7.3와 동일: 원본 id 타입 복원, jsonrpc 없음).

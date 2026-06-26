@@ -223,4 +223,19 @@ export class CodexRouting {
   allPendingApprovalIds(): string[] {
     return [...this.pendingApprovals.keys()];
   }
+
+  /**
+   * exit/shutdown cleanup 대상 requestId(New-F1 race): "responding"(respondApproval이 wire 전송 중)
+   * 인 항목은 **제외**한다 — 그 경로가 단일 wire 응답을 완료하도록 두어 이중 wire(accept+cancel)를 막는다.
+   * 나머지(pending/closing)는 closing으로 선점해 반환한다(CAS, 멱등).
+   */
+  pendingApprovalIdsForCleanup(): string[] {
+    const out: string[] = [];
+    for (const p of this.pendingApprovals.values()) {
+      if (p.state === "responding") continue;
+      p.state = "closing";
+      out.push(p.requestId);
+    }
+    return out;
+  }
 }

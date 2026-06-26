@@ -344,6 +344,65 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     expect(approvalWires).toHaveLength(1);
     expect(approvalWires[0]).toMatchObject({ id: 7, result: { decision: "accept" } });
   });
+
+  it("New-F1 race: respondApproval in-flight 중 shutdown이 와도 approval wire는 accept 1건만(cancel 중복 없음)", async () => {
+    let releaseSend: (() => void) | null = null;
+    const sent: JsonRpcMessage[] = [];
+    const byEvent = new Map<string, Array<(e: { payload: AgentRuntimeEvent }) => void>>();
+    const runtimeId = 1;
+    let idCounter = 0;
+    const fire = (name: string, payload: AgentRuntimeEvent) => {
+      for (const l of byEvent.get(name) ?? []) l({ payload });
+    };
+    const inject = (message: JsonRpcMessage) => fire("agent-runtime-message", { type: "message", runtimeId, message });
+    const isApprovalWire = (m: JsonRpcMessage) =>
+      "result" in (m as object) && (m as { id?: unknown }).id === 7;
+    const deps: CodexAdapterDeps = {
+      start: async () => runtimeId,
+      send: async (_rid, message) => {
+        sent.push(message);
+        if (isApprovalWire(message)) {
+          await new Promise<void>((r) => {
+            releaseSend = r;
+          });
+          return;
+        }
+        const auto = autoResponder(message);
+        if (auto !== undefined && "id" in message && "method" in message) {
+          queueMicrotask(() => inject({ id: (message as { id: number }).id, result: auto }));
+        }
+      },
+      cancel: async () => {},
+      shutdown: async () => {},
+      listenRuntime: async (event, h) => {
+        const arr = byEvent.get(event) ?? [];
+        arr.push(h);
+        byEvent.set(event, arr);
+        return () => {};
+      },
+      appVersion: "test",
+      nextRpcId: () => (idCounter += 1),
+    };
+    const adapter = createCodexAppServerAdapter(deps);
+    await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "Ubuntu", workDir: "/work" });
+    adapter.subscribeEvents("H", () => {});
+    inject({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "th_1", turnId: "t1", itemId: "c1", startedAtMs: 1, command: "ls" } });
+
+    // respondApproval 시작(claimForResponse → send in-flight).
+    const p = adapter.respondApproval("H", { requestId: "7", outcome: "selected", optionId: "allow_once" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // in-flight 중 shutdown → closePending이 responding(7)을 건너뛴다(cancel wire 미전송).
+    const shutdownP = adapter.shutdown("H");
+    releaseSend?.();
+    await p;
+    await shutdownP;
+
+    const approvalWires = sent.filter(isApprovalWire);
+    expect(approvalWires).toHaveLength(1);
+    expect(approvalWires[0]).toMatchObject({ id: 7, result: { decision: "accept" } });
+  });
 });
 
 describe("cancel cleanup (CX approval cancel)", () => {
