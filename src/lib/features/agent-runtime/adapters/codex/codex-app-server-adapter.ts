@@ -473,7 +473,27 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
         result: { decision: codexDecision },
       } as JsonRpcMessage);
     } catch (err) {
-      // wire 실패 → 선점 복구(pending) 후 throw — 재시도·cleanup 재대상화 가능.
+      if (rt.closed) {
+        // teardown(shutdown/exit) 중 send 실패(stdin closed 등): closePending이 responding을
+        // 건너뛰었으므로 여기서 cleanup outcome(failed, wire 미전송)으로 닫아 종료 이벤트 누락을 막는다.
+        // throw하지 않는다 — teardown 중 실패는 정상이며 approve Promise의 unhandled rejection을 막는다.
+        const cleaned = rt.routing.resolveApproval(decision.requestId);
+        if (cleaned) {
+          emitToListeners(rt, {
+            type: "approval_resolved",
+            ref: {
+              provider: "codex",
+              threadId: cleaned.threadId,
+              turnId: cleaned.turnId,
+              itemId: cleaned.itemId,
+              requestId: decision.requestId,
+            },
+            decision: { requestId: decision.requestId, outcome: "failed" },
+          });
+        }
+        return;
+      }
+      // 일반 wire 실패 → 선점 복구(pending) 후 throw — 재시도·cleanup 재대상화 가능.
       rt.routing.revertResponse(decision.requestId);
       throw err;
     }
@@ -531,6 +551,9 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
   async function shutdown(handle: AgentSessionHandle): Promise<void> {
     const rt = sessions.get(handle);
     if (!rt || rt.closed) return; // 멱등
+    // teardown 시작 표시(New-F1): in-flight respondApproval의 send가 stdin close로 실패할 때
+    // 이 플래그로 teardown을 감지해 cleanup outcome으로 닫는다(revert+throw 대신).
+    rt.closed = true;
     // (a) shutdown 전에 pending 정리(process 살아 있으므로 cancelled wire 응답 best-effort).
     closePending(rt, "shutdown");
     // (b) graceful: backend가 stdin close→timeout→kill→child reap 후 반환.

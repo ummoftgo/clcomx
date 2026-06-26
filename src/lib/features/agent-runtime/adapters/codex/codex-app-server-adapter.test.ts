@@ -403,6 +403,68 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     expect(approvalWires).toHaveLength(1);
     expect(approvalWires[0]).toMatchObject({ id: 7, result: { decision: "accept" } });
   });
+
+  it("New-F1: teardown 중 respondApproval send 실패(stdin closed) 시 approval_resolved{failed} emit·throw 없음", async () => {
+    let rejectSend: (() => void) | null = null;
+    const byEvent = new Map<string, Array<(e: { payload: AgentRuntimeEvent }) => void>>();
+    const runtimeId = 1;
+    let idCounter = 0;
+    const fire = (name: string, payload: AgentRuntimeEvent) => {
+      for (const l of byEvent.get(name) ?? []) l({ payload });
+    };
+    const inject = (message: JsonRpcMessage) => fire("agent-runtime-message", { type: "message", runtimeId, message });
+    const isApprovalWire = (m: JsonRpcMessage) =>
+      "result" in (m as object) && (m as { id?: unknown }).id === 7;
+    const deps: CodexAdapterDeps = {
+      start: async () => runtimeId,
+      send: async (_rid, message) => {
+        if (isApprovalWire(message)) {
+          // approval 응답 send를 teardown까지 hang시켰다가 reject(stdin closed 모사).
+          await new Promise<void>((_resolve, reject) => {
+            rejectSend = () => reject(new Error("stdin closed"));
+          });
+          return;
+        }
+        const auto = autoResponder(message);
+        if (auto !== undefined && "id" in message && "method" in message) {
+          queueMicrotask(() => inject({ id: (message as { id: number }).id, result: auto }));
+        }
+      },
+      cancel: async () => {},
+      shutdown: async () => {},
+      listenRuntime: async (event, h) => {
+        const arr = byEvent.get(event) ?? [];
+        arr.push(h);
+        byEvent.set(event, arr);
+        return () => {};
+      },
+      appVersion: "test",
+      nextRpcId: () => (idCounter += 1),
+    };
+    const adapter = createCodexAppServerAdapter(deps);
+    const events: AgentEvent[] = [];
+    await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "Ubuntu", workDir: "/work" });
+    adapter.subscribeEvents("H", (e) => events.push(e));
+    inject({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "th_1", turnId: "t1", itemId: "c1", startedAtMs: 1, command: "ls" } });
+
+    const p = adapter.respondApproval("H", { requestId: "7", outcome: "selected", optionId: "allow_once" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // teardown 시작(rt.closed=true, closePending이 responding 7을 건너뜀).
+    const shutdownP = adapter.shutdown("H");
+    // stdin closed → approval send reject.
+    rejectSend?.();
+
+    // respondApproval은 throw하지 않고 resolve(unhandled rejection 방지).
+    await expect(p).resolves.toBeUndefined();
+    await shutdownP;
+
+    // 종료 이벤트 누락 없음: approval_resolved{failed} 1건 emit.
+    const resolved = events.filter((e) => e.type === "approval_resolved");
+    expect(resolved).toHaveLength(1);
+    expect((resolved[0] as Extract<AgentEvent, { type: "approval_resolved" }>).decision.outcome).toBe("failed");
+  });
 });
 
 describe("cancel cleanup (CX approval cancel)", () => {

@@ -483,6 +483,15 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
         buildPermissionResponse(ap.rpcId, { outcome: decision.outcome, optionId: decision.optionId }),
       );
     } catch (err) {
+      if (rt.closed) {
+        // teardown(shutdown/exit) 중 send 실패: closePending이 closing(선점)을 건너뛰었으므로
+        // cleanup outcome(failed, wire 미전송)으로 닫아 종료 이벤트 누락을 막는다. throw 안 함
+        // (teardown 중 실패는 정상 — approve Promise의 unhandled rejection을 막는다).
+        if (rt.pendingApprovals.delete(decision.requestId)) {
+          emit(rt, { type: "approval_resolved", ref: ap.ref, decision: { requestId: decision.requestId, outcome: "failed" } });
+        }
+        return;
+      }
       ap.closing = false;
       throw err;
     }
