@@ -172,12 +172,33 @@ provider마다 같은 단어가 다른 것을 가리킨다. 아래는 **CLCOMX �
 
 ---
 
-## 9. 교차 참조
+## 9. transcript 메모리 잔류 어휘 (2-tier 메모리 관리)
+
+긴 세션에서 frontend in-memory transcript 모델이 unbounded로 증가하는 문제를 막기 위한 어휘다. **DOM 가상화(OQ-17)와는 별개**다 — surface가 살아 있어도 heap을 줄인다. 명명은 protocol lifecycle과 구분해 **turn residency / memory residency**로 부른다("item lifecycle"이 아니다). transcript view-model 타입(`TranscriptItem`/`AgentRuntimeViewState`/`TranscriptModel`)의 정본은 [08](08-ui-composition.md) §5다(15 아님).
+
+| 용어 | 1–2줄 정의 | 정본 |
+|---|---|---|
+| **sealed turn** | seal 조건(종료 신호 + open item 0 + pending approval/request 0 + turn-level 슬롯 반영 + 짧은 quiescence grace)을 모두 충족해 봉인된 turn. eviction 윈도우의 기준 단위. | [04](04-normalized-agent-model.md) §3.7 |
+| **TranscriptTurnResidency** | turn body가 메모리에 어떤 형태로 남아 있는지를 나타내는 3-상태 enum(`unsealed` / `sealed-retained` / `evicted-tombstone`). protocol lifecycle이 아니라 메모리 잔류 상태다. | [08](08-ui-composition.md) §5, [04](04-normalized-agent-model.md) §3.7 |
+| **sealed-retained** | seal됐지만 body는 아직 유지하는 상태. 늦게 도착한 same-turn event는 unseal→patch→reseal(+telemetry)로 흡수한다. | [08](08-ui-composition.md) §5, [04](04-normalized-agent-model.md) §3.7 |
+| **evicted-tombstone** | cap 초과로 body를 폐기한 상태. 늦은 event는 **apply 금지**하고 `droppedLateEventCount`만 올린다. tombstone 자체는 작은 LRU/TTL로 bounded. | [08](08-ui-composition.md) §5, [04](04-normalized-agent-model.md) §3.7 |
+| **shallow 반응형 표면** | 반응형(`$state`)은 `visibleItemIds`/`itemVersions`/`status`/`pending`만 두고, item body는 plain `Map`(`itemsById`)에 둔다. streaming은 body 갱신 + `itemVersion` bump으로 처리해 반응성 오버헤드를 세션 길이와 무관하게 bounded로 만든다. | [08](08-ui-composition.md) §5, [13](13-risks-open-questions.md) §1.12 |
+| **id-index (itemsById)** | item body를 id로 보관하는 비반응형 plain `Map`. `TranscriptModel`의 본문 저장소이며, 반응형 표면(`visibleItemIds`/`itemVersions`)과 분리된다. | [08](08-ui-composition.md) §5, [12](12-implementation-workstreams.md) (T1.4) |
+| **격리 scrollback replay** | tombstone 구간으로 스크롤백 후 "이전 기록 불러오기" 시, read-only 격리 scratch 세션(`session/load`·`thread/read`)으로만 과거를 조회하는 history inspection. live store에 미병합, 디스크 캐시 아님(복원·영속 아님). `canLoad`가 아니면 "사용 불가" notice. | [10](10-persistence-migration.md) §4.7, [08](08-ui-composition.md) §5 |
+
+> 핵심: **shallow 반응형 표면**은 반응성을 bounded로, **sealed-turn 윈도우 eviction**(최근 N개 sealed turn + 모든 unsealed/active turn + streaming, cap 초과 시 oldest sealed body evict)은 heap을 bounded로 만든다. window/cap 수치 실측은 [13](13-risks-open-questions.md) OQ-52(image cap은 OQ-12 연동), seal grace 관련 same-turn 보조 notification 도착 실측은 OQ-53, 격리 replay 범위(Codex `thread/read` `includeTurns`가 gap-only인지 전체 snapshot인지)는 OQ-54. 신규 위험은 [13](13-risks-open-questions.md) §1.12 Long-session transcript memory (S2). cold/tombstone은 runtime-only이며 영속화하지 않는다([10](10-persistence-migration.md) §4.7, §4.2 cold restore와 구분).
+
+---
+
+## 10. 교차 참조
 
 | 대상 | 문서 |
 |---|---|
 | 모든 타입 정의(정본) | [15-data-contracts.md](15-data-contracts.md) |
 | 상태 머신·upsert/reconcile·approval 생명주기 규칙(정본) | [04-normalized-agent-model.md](04-normalized-agent-model.md) |
+| transcript view-model 타입·turn residency(정본) | [08-ui-composition.md](08-ui-composition.md) §5 |
+| seal 불변식·3-상태 잔류·late-event 규칙(정본) | [04-normalized-agent-model.md](04-normalized-agent-model.md) §3.7 |
+| 격리 scrollback replay(read-only history inspection) | [10-persistence-migration.md](10-persistence-migration.md) §4.7 |
 | Codex wire 사실 | [ref-codex-app-server-protocol.md](ref-codex-app-server-protocol.md) |
 | ACP wire 사실 | [ref-acp-protocol.md](ref-acp-protocol.md) |
 | Claude ACP 구현체 | [ref-claude-agent-acp.md](ref-claude-agent-acp.md) |

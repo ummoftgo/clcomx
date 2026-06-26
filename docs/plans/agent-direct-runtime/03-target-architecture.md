@@ -33,12 +33,12 @@ flowchart TB
   end
 
   subgraph Store["Session Store (state, 세션 단위 격리)"]
-    RtState["agent-runtime-state.svelte.ts<br/>transcript[], status, pendingApprovals[] (파생)"]
+    RtState["agent-runtime-state.svelte.ts<br/>TranscriptModel(shallow 반응형 id-index), status, pendingApprovals[] (파생)"]
     Composer["composer-state.svelte.ts"]
   end
 
   subgraph Router["Event Router (controller, 순수 TS)"]
-    Reducer["transcript-reducer.ts<br/>(prev, AgentEvent) → next"]
+    Reducer["transcript-reducer.ts<br/>applyEvent(prev: TranscriptModel, AgentEvent) → next"]
     PendingTbl["pending request table<br/>((sessionHandle, requestId) → approval)"]
   end
 
@@ -102,7 +102,7 @@ flowchart TB
 ### 2.1 UI Layer (view)
 
 - **responsibility**: 렌더링만. transcript 항목·tool card·approval dialog·composer를 그리고, 사용자 입력을 controller 콜백으로 위임한다. 로직을 두지 않는다 (`research/codebase-frontend.md` §1.2 view 규약).
-- **in**: Store(`agent-runtime-state`)의 reactive 값(`transcript[]`, `status`, `pendingApprovals[]`/`escalationApproval`), host props `SessionHostProps`(`sessionId`/`visible`/`agentId`/`distro`/`workDir` 등, `research/codebase-frontend.md` §2.4).
+- **in**: Store(`agent-runtime-state`)의 reactive 값(`TranscriptModel`의 shallow 반응형 표면 — `visibleItemIds`/`itemVersions`/`status`/`pending`; item body는 `itemsById`에서 id로 조회, [`08`](08-ui-composition.md) §5), host props `SessionHostProps`(`sessionId`/`visible`/`agentId`/`distro`/`workDir` 등, `research/codebase-frontend.md` §2.4). 가상화는 `visibleItemIds`를 소싱한다(item 가상화 OQ-17과 별개로 store 표면 자체가 세션 길이와 무관하게 bounded).
 - **out**: 사용자 의도(prompt submit, approval 선택, cancel)를 controller 콜백으로.
 - **owns**: 소유 상태 없음. DOM ref와 `$derived` 표시 값만. 비활성 탭에서도 unmount하지 않고 `visible` prop으로 CSS 토글한다 (`research/codebase-frontend.md` §3.3 무재mount 계약).
 - **핵심 컴포넌트**: host `AgentRuntimeShell.svelte`(= `Terminal.svelte` 대응), `AgentTranscriptSurface.svelte`, `tool-cards/*.svelte`, `ApprovalModal.svelte`(+ `ApprovalInlineCard.svelte`), `AgentComposer.svelte`. 컴포넌트명 정본은 [`08`](08-ui-composition.md) §10.
@@ -112,8 +112,8 @@ flowchart TB
 - **responsibility**: 한 세션의 transcript·세션 상태를 **권위 있게 보관**한다(approval 권위는 Event Router의 pending table — `owns` 주의 참조). UI는 이 store만 읽는다. transcript item 상태(message/tool card/command output/diff/approval/error)와 provider 원본 id(`ProviderRef`)를 보존한다.
 - **in**: Event Router가 적용하는 mutation(reducer 결과).
 - **out**: reactive 값(view가 구독).
-- **owns(소유 상태)** (정본 view-model은 [`08`](08-ui-composition.md) §5 `AgentRuntimeViewState` — 아래는 그 요약):
-  - `transcript: TranscriptItem[]` — message/tool/command/diff/error 항목. 각 항목은 [`15`](15-data-contracts.md) §1 `ProviderRef`를 보존.
+- **owns(소유 상태)** (정본 view-model은 [`08`](08-ui-composition.md) §5 `AgentRuntimeViewState`/`TranscriptModel` — 아래는 그 요약. transcript view-model 타입은 08 §5가 정본이며 03/15에서 재정의하지 않는다):
+  - `transcript: TranscriptModel` — message/tool/command/diff/error 항목을 담는 **shallow 반응형 id-index**다(단순 배열이 아니다, [`08`](08-ui-composition.md) §5). 반응형(`$state`) 표면은 `visibleItemIds`/`itemVersions`/`status`/`pending`만이고, item body는 plain `Map` `itemsById`에 두며, streaming은 body 갱신 + 해당 `itemVersions` bump으로 처리한다 → 반응성 오버헤드가 세션 길이와 무관하게 bounded. turn 단위 residency는 `turnsById`(`TranscriptTurnResidency`, [`08`](08-ui-composition.md) §5)에, evict된 turn은 `tombstones`(작은 LRU + `droppedLateEventCount`)에 둔다. seal/eviction 규칙·3-상태·late-event 규칙은 [`04`](04-normalized-agent-model.md) §3.7가 정본이다(03에서 재정의 금지). 각 항목은 [`15`](15-data-contracts.md) §1 `ProviderRef`를 보존. heap을 세션 길이와 무관하게 bounded로 유지하는 메모리 관리 위험·수치는 [`13`](13-risks-open-questions.md) §1.12·OQ-52.
   - `status: AgentSessionStatus` — [`15`](15-data-contracts.md) §2. 전이 규칙은 [`04`](04-normalized-agent-model.md) §2.
   - `pendingApprovals: ApprovalRequest[]` / `escalationApproval: ApprovalRequest | null` — [`15`](15-data-contracts.md) §5 `ApprovalRequest`. inline(복수) vs modal(단수) **표시용 파생**(아래 주의). 생명주기는 [`04`](04-normalized-agent-model.md) §4.
   - `capabilities` / `providerLabel` — composer feature gating·provider indicator용([`08`](08-ui-composition.md) §6.4·§6.5). adapter가 `initialize`에서 채움.
@@ -133,7 +133,7 @@ flowchart TB
   - 순서 보존·sequence 부여는 [`04`](04-normalized-agent-model.md) §3.4.
   - approval 정상/cancel/process-exit 정리는 [`04`](04-normalized-agent-model.md) §4·§5.
   - 식별자 라우팅 키는 [`04`](04-normalized-agent-model.md) §1, [`15`](15-data-contracts.md) §1.1.
-- **구현 형태**: `transcript-reducer.ts`는 `(prev: TranscriptItem[], event: AgentEvent) => TranscriptItem[]` 순수 함수로, `vi.fn` 없이 fixture 단위 테스트가 가능하다 (`research/codebase-frontend.md` §8 service/reducer). controller(`agent-runtime-controller.ts`)는 DI deps(`subscribe`/`send`/`cancel`)만 호출하고 직접 `invoke`/`listen`을 부르지 않는다 (`research/codebase-frontend.md` §1.5).
+- **구현 형태**: `transcript-reducer.ts`는 `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel` 순수 함수로, `vi.fn` 없이 fixture 단위 테스트가 가능하다 (`research/codebase-frontend.md` §8 service/reducer). reducer는 단순 배열을 누적하지 않고 [`08`](08-ui-composition.md) §5 `TranscriptModel`(shallow 반응형 표면 + `itemsById`/`turnsById`/`tombstones`)을 갱신하며, seal/eviction·3-상태 turn residency·late-event 처리는 [`04`](04-normalized-agent-model.md) §3.7 규칙을 구현한다(03에서 재정의 금지). controller(`agent-runtime-controller.ts`)는 DI deps(`subscribe`/`send`/`cancel`)만 호출하고 직접 `invoke`/`listen`을 부르지 않는다 (`research/codebase-frontend.md` §1.5).
 
 ### 2.4 Agent Runtime Port (contracts)
 
@@ -204,7 +204,7 @@ src/lib/features/agent-runtime/
 │   ├── transcript.ts            # TranscriptItem 유니온(view 표현용; AgentContent 기반)
 │   └── composer.ts              # ComposerState/Action 타입
 ├── state/
-│   ├── agent-runtime-state.svelte.ts  # createAgentRuntimeState(): transcript[], status, pendingApproval, agentRuntime
+│   ├── agent-runtime-state.svelte.ts  # createAgentRuntimeState(): TranscriptModel(08 §5), status, pendingApproval, agentRuntime
 │   └── composer-state.svelte.ts       # createComposerState()
 ├── controller/
 │   ├── agent-runtime-controller.ts    # createAgentRuntimeController(deps): Event Router 본체
@@ -281,7 +281,7 @@ UI(launcher) → Session Store(세션 shell 생성) → Runtime Port `startSessi
 
 ### 4.2 프롬프트
 
-UI composer → Router → Runtime Port `sendPrompt` → Adapter가 provider prompt request(`JsonRpcMessage`)로 변환 → backend stdin framing → provider stream → backend `agent-runtime-message`(raw) → Adapter가 wire→AgentEvent 변환(message/delta/tool/approval/completion) → Router가 upsert/append/reconcile 규칙으로 store에 적용([`04`](04-normalized-agent-model.md) §3) → UI는 store 변화만 렌더링. ACP는 turn id가 wire에 없으므로 Adapter가 prompt 단위로 합성한다([`04`](04-normalized-agent-model.md) §1 turn id 합성). 상세: [`14`](14-sequence-and-state.md) §"프롬프트".
+UI composer → Router → Runtime Port `sendPrompt` → Adapter가 provider prompt request(`JsonRpcMessage`)로 변환 → backend stdin framing → provider stream → backend `agent-runtime-message`(raw) → Adapter가 wire→AgentEvent 변환(message/delta/tool/approval/completion) → Router가 `applyEvent(prev: TranscriptModel, event)`로 upsert/append/reconcile 규칙을 적용([`04`](04-normalized-agent-model.md) §3) → UI는 store 변화만 렌더링. streaming delta는 `itemsById` body 갱신 + 해당 `itemVersions` bump으로 흐르고 `visibleItemIds`는 보이는 구간만 반응형으로 유지한다([`08`](08-ui-composition.md) §5); turn 종료 신호 도착 시 seal·윈도우 초과 시 oldest sealed turn body evict는 [`04`](04-normalized-agent-model.md) §3.7 규칙을 따른다. ACP는 turn id가 wire에 없으므로 Adapter가 prompt 단위로 합성한다([`04`](04-normalized-agent-model.md) §1 turn id 합성). 상세: [`14`](14-sequence-and-state.md) §"프롬프트".
 
 ### 4.3 취소
 

@@ -171,6 +171,8 @@ export type AgentEvent =
 > **reasoning/thinking (정본, 해소됨)**: ACP `agent_thought_chunk`(reasoning)와 Codex `reasoning` item은 전용 event variant를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel: "thought"`로 흘린다(미지정 시 `"response"`). thought 채널은 response와 **별도 스트림**으로 messageId/contentIndex별 누적하며, completed reasoning item이 thought 채널의 권위(reconcile)다. 누적 규칙·권위 규칙은 04 §3.2.2/§3.2.5 + §3 "이벤트", provider 매핑은 Codex ref-codex §6.3·05 §5.2, ACP ref-acp §13.2·06 §5. UI는 thought 채널을 접이식 'thinking' 블록(기본 collapsed)으로 렌더한다(08).
 >
 > **audio gap (unverified, 결정 필요)**: ACP `audio` content에 대응하는 AgentContent variant가 없다 (ref-acp §13.2, §14). v1은 audio를 미지원으로 두고 `raw` 보존만 한다.
+>
+> **transcript 메모리 관리 (신규 타입 없음 — 정책 위치 명시)**: 긴 세션에서 frontend in-memory transcript가 unbounded로 증가하는 문제의 해법(shallow 반응형 표면 + sealed-turn 윈도우 eviction + 3-상태 turn residency)은 **view-model/reducer 내부 정책**이며 **wire 계약을 바꾸지 않는다**. `AgentEvent`(§3)·Agent Runtime Port(§6)·Tauri command/event 계약(§8)은 **변경 없음**이다. seal/eviction은 reducer가 들고 다니는 view-model 상태일 뿐 adapter가 내보내는 event 형태에 영향을 주지 않는다. 따라서 본 문서(15)는 이와 관련해 **신규 타입을 정의하지 않는다**. `TranscriptModel`·`TranscriptTurnResidency`(view-model 타입) 정본은 [`08-ui-composition.md`](08-ui-composition.md) §5, seal 불변식·3-상태·late-event 규칙 정본은 [`04-normalized-agent-model.md`](04-normalized-agent-model.md) §3.7, 위험·윈도우/cap 수치는 [`13-risks-open-questions.md`](13-risks-open-questions.md) §1.12(S2)/OQ-52에 있다.
 
 ---
 

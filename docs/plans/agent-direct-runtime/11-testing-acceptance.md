@@ -210,6 +210,27 @@ export function replayFixture(adapter: AdapterUnderTest, jsonlPath: string): Age
 | NM-29 | **(후속 — event-level seq 도입 후)** adapter가 단조 증가 seq를 부여한 event들이 재정렬되어 도착 | store가 seq로 안정 정렬·dedup. **v1 미도입**(seq가 15 AgentEvent에 추가된 뒤에만 활성, D-SEQ M-1) — v1에서는 NM-29a로 대체(04 §3.4) |
 | NM-30 | legacy `terminal_output_delta` | transcript 모델로 끌어올리지 않고 terminal surface에만 라우팅(04 §3.5) |
 
+### 2.9 transcript 메모리 residency: seal / eviction / late-event (04 §3.7, 08 §5, 13 §1.12)
+
+긴 세션에서 frontend in-memory transcript 모델(`TranscriptModel`, **08 §5 정본**)이 unbounded로 자라는 문제(13 §1.12 Long-session transcript memory (S2))를 reducer/store 수준에서 잠근다. 정본 인용: **3-상태 turn residency·seal 조건·seal 불변식·late-event 규칙 = 04 §3.7**, **view-model 타입(`TranscriptModel`/`TranscriptTurnResidency`/`TranscriptItem`/`AgentRuntimeViewState`) = 08 §5**(15 아님 — 15는 신규 타입 없이 "AgentEvent 불변, seal/eviction은 08 view-model/04 reducer 내부 정책" note만). reducer 시그니처는 `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel`(08 §5)이다.
+
+> **명명 주의**: 여기서 검증하는 것은 **turn residency / memory residency**(protocol lifecycle과 구분)이며, DOM 가상화(OQ-17, §2.8 주석 / 08 §3)와는 **별개 경계**다 — 반응형 표면(`visibleItemIds`/`itemVersions`)이 살아 있어도 sealed turn body(`itemsById`) eviction으로 heap이 감소한다. residency enum `TranscriptTurnResidency = "unsealed" | "sealed-retained" | "evicted-tombstone"`은 **08 §5 정의**다.
+
+> **fixture 경계(정본)**: 아래 NM-31~NM-35의 입력은 **reducer/store event fixture**(NDJSON `{direction,message}` 시퀀스 또는 `AgentEvent[]`)이지 **adapter fixture가 아니다** — `applyEvent`를 직접 구동해 `TranscriptModel`을 검증한다(§1 adapter replay와 별개 레벨). 특히 **late same-turn event**(종료 신호 후 같은 turn에 도착하는 보조 notification) 검증은 reducer/store event fixture로 합성해 분기 규칙(unseal vs drop)을 고정하고, **실제 wire에서 그런 late event가 도착하는지 여부는 OQ-53**으로 분리한다(구현 직전 wire 실측 전까지 fixture 기반).
+
+| # | 입력 | 기대 |
+|---|---|---|
+| NM-31 | 긴 세션을 합성: `HOT_WINDOW`(최근 N개 sealed turn cap, OQ-52)를 **초과**하도록 turn을 연속 seal시키는 event 시퀀스 | window = 최근 N개 sealed turn + 모든 unsealed/active turn(인터리빙 포함) + streaming turn. cap 초과 시 **oldest sealed turn body가 evict**되어 `turnsById[oldest].residency==="evicted-tombstone"`이 되고, `itemsById` 크기가 cap(window body + tombstone 메타) 내로 유지됨 — **heap bounded**를 assert. 세션 길이를 더 늘려도 `itemsById.size`가 일정 상한 아래 유지(04 §3.7, 08 §5, 13 §1.12; window/cap 수치는 OQ-52) |
+| NM-31b | NM-31 상태에서 반응형 표면 크기 측정: `visibleItemIds`/`itemVersions`/`status`/`pending`만 반응형(`$state`), `itemsById`는 plain `Map` | 반응형 표면 크기가 **세션 길이와 무관하게 bounded**(visible window 크기에 비례)임을 assert — streaming은 body 갱신 + `itemVersions[itemId]` bump으로 표현되고, plain Map body 증가가 반응성 오버헤드를 키우지 않음(shallow 반응형 표면; 08 §5, 13 §1.12). DOM 가상화(OQ-17)와 별개로 store 레벨에서 성립 |
+| NM-32 | unsealed turn에 seal 조건 충족 event: 종료 신호(Codex `turn/completed`·ACP `stopReason`) + open item 0 + pending approval/request 0 + turn-level 슬롯(usage/plan/diff) 반영 + 짧은 quiescence grace 경과 | 해당 turn `residency: "unsealed" → "sealed-retained"` 전이(body 유지). seal **불변식**(open item 0·pending 0·slot 반영)을 모두 만족할 때만 전이됨을 assert — 하나라도 미충족이면 unsealed 유지(04 §3.7 seal 조건/불변식). grace 미경과 시 아직 unsealed(OQ-53 same-turn 보조 notification 대비) |
+| NM-32b | seal 조건 중 **pending approval 1건 잔존** 상태에서 종료 신호 도착 | seal **안 됨** — pending 0 불변식 위반이므로 `unsealed` 유지. pending resolve 후 grace 경과해야 `sealed-retained` 전이(04 §3.7 seal 불변식: pending 0 필수) |
+| NM-33 | `sealed-retained` turn에 **늦은 event**(same-turn 보조 notification 합성) 도착 | **unseal → patch → reseal**: residency가 `sealed-retained → unsealed`로 잠시 되돌아가 event를 apply(body에 반영됨)한 뒤 다시 seal 조건 재충족 시 `sealed-retained`로 reseal. late patch가 **transcript body에 반영**되고 reseal telemetry(unseal/reseal 카운터)가 1 증가함을 assert(04 §3.7 late-event 규칙: sealed-retained는 unseal-patch-reseal) |
+| NM-34 | `evicted-tombstone` turn에 **늦은 event** 도착 | event **apply 안 됨**(body 미복원·tombstone 유지) + `droppedLateEventCount` 1 증가. transcript body가 복원되지 않고(`itemsById`에 해당 turn item 없음) residency가 `evicted-tombstone`에 머무름을 assert — tombstone은 작은 LRU/TTL로 bounded(04 §3.7 late-event 규칙: evicted-tombstone은 apply 금지 + drop 카운트; 08 §5 `tombstones = LRU<turnId> + droppedLateEventCount`) |
+| NM-34b | tombstone 다수 생성으로 tombstone LRU/TTL cap 초과 | oldest tombstone이 LRU/TTL로 제거되어 `tombstones` 집합도 **bounded** 유지(droppedLateEventCount 누계는 보존). tombstone 메타 자체가 unbounded로 자라지 않음을 assert(04 §3.7, 08 §5 tombstone LRU/TTL; cap 수치 OQ-52) |
+| NM-35 | seal/eviction을 거친 모델에서 `AgentEvent` 자체는 불변임을 확인 | reducer가 받는/저장하는 `AgentEvent`(15 §3)는 seal/eviction과 무관하게 그대로이고, residency·seal·eviction은 **08 view-model/04 reducer 내부 정책**임을 assert — 15에 신규 타입이 추가되지 않음(15 note 일치, 08 §5, 04 §3.7) |
+
+> NM-31의 window/cap 수치(`HOT_WINDOW`, `itemsById` cap, tombstone LRU/TTL 크기, image cap은 OQ-12 연동)는 **실측 전 고정값을 assert하지 않는다** → [13](13-risks-open-questions.md) OQ-52. NM-33은 same-turn 보조 notification이 실제 wire에서 종료 신호 뒤에 도착하는지(→ seal grace 필요 여부)에 의존하므로 입력은 합성 fixture로 두고 실제 wire 발생은 OQ-53으로 분리한다(구현 직전 실측). 격리 replay-reload(tombstone 구간)의 범위는 Codex `thread/read` `includeTurns`가 gap-only인지 전체 snapshot인지에 따라 달라진다 → OQ-54(§6.8 FE-26~FE-28 연계).
+
 ---
 
 ## 3. Codex adapter tests (ref-codex 인용)
@@ -504,6 +525,18 @@ PTY와 달리 direct runtime은 backend가 provider별로 command를 resolve하�
 
 > FE-25는 settings 3함수가 default 정의를 한 곳에서 공유하는지(또는 세 함수가 동일 default를 산출하는지)를 cloneDefaults 결과·normalizeSettings(빈 입력)·updateSettings(미지정 섹션) 산출을 교차 비교하는 단위 테스트로 구현한다(`research/codebase-frontend.md` §7.3 — 새 섹션 추가 시 3함수 동기화 MUST).
 
+### 6.8 transcript 메모리 scrollback: read-only 렌더 / 격리 replay-reload (04 §3.7, 08 §5, 13 §1.12, 10 §4.7)
+
+대상: `AgentTranscriptSurface`/`MessageList`의 scrollback 렌더와 tombstone 구간 "이전 기록 불러오기" 동작. §2.9가 reducer/store 레벨 residency를 검증하는 데 비해, 여기서는 **view 레벨**에서 sealed-retained body가 read-only로 렌더되는지, evicted-tombstone 구간이 **격리 replay-reload**(live store 미병합)로 조회되는지를 본다. 격리 replay = read-only history inspection이며 복원/영속 캐시가 아니다(10 §4.7 runtime scrollback replay — 디스크 X, full cache 아님, live 미병합; §4.2 cold restore와 구분).
+
+| # | 입력 | 기대 |
+|---|---|---|
+| FE-26 | `sealed-retained` turn 구간으로 스크롤백(body 유지된 oldest 직전 turn) | 해당 turn item들이 **read-only로 정상 렌더**됨(`itemsById` body 존재). 편집/재실행 UI 없이 표시만 되고, late event 도착 시 §2.9 NM-33 경로로 unseal-patch-reseal됨(view는 `itemVersions` bump으로 재렌더)(08 §5, 04 §3.7) |
+| FE-27 | `evicted-tombstone` 구간으로 스크롤백 → "이전 기록 불러오기" 액션, `canLoad===true` | read-only **격리 scratch replay 세션**(`session/load`·`thread/read`)으로 해당 구간을 조회해 별도 inspection 뷰에 표시. **live store에 미병합**(`itemsById`/`visibleItemIds`가 그대로, running turn과 충돌 없음)이고 scratch 세션은 조회 후 폐기됨을 assert. 디스크 영속·full cache 아님(10 §4.7, 08 §5, T5.6 DoD: live 미병합/scratch 폐기/running 충돌 없음) |
+| FE-28 | `evicted-tombstone` 구간 "이전 기록 불러오기", `canLoad===false`(resume/replay 미지원 provider·세션) | 격리 replay 미시도 — "사용 불가" notice만 표시(replay 호출 없음). tombstone body가 복원되지 않고 live store도 불변임을 assert(10 §4.7 canLoad 분기, 08 §5) |
+
+> FE-27의 격리 replay 범위(tombstone 한 구간만인지, 전체 thread snapshot인지)는 Codex `thread/read` `includeTurns`가 gap-only인지 전체 snapshot인지에 따라 달라진다 → [13](13-risks-open-questions.md) OQ-54. 테스트는 "**live 미병합 + scratch 폐기 + running 충돌 없음**" 계약(T5.6 DoD)만 고정 assert하고, 조회 범위·페이로드 형태는 OQ-54 확정 전까지 mock으로 주입한다. FE-27/28은 Phase 5(T5.6) 산출이며 Phase 1(reducer/eviction, §2.9)과 분리된다.
+
 ---
 
 ## 7. E2E scenarios (14 시퀀스 대응)
@@ -538,6 +571,7 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 - [ ] shutdown cleanup ordering(S3): adapter shutdown이 **unlisten/세션 삭제 전에** 모든 pending approval/RPC를 정확히 한 번 닫고, 늦은 exit이 멱등 처리되어 이중 종료·누락이 없다(NM-18b/18c/18d, 04 §4.2·§5; backend reap 경계는 RS-13/14/15b/15c).
 - [ ] interleaved turn 분리(CX-16/17, ref-codex §7.1)와 ACP chunk/replace 구분(CL-12..CL-16, ref-acp §4·§5)이 검증된다.
 - [ ] 미지원 server→client **request**(id 있는 요청)는 Codex·Claude 양쪽에서 JSON-RPC error(`-32601`)/decline 응답을 보내고 **무응답으로 끝나지 않는다**(CX-15b, CL-24b, R5; 04 §5 edge 규칙). 미지원 **notification**(id 없음)은 raw 보존+counter만, 응답 없음(CX-15c, CL-27).
+- [ ] 긴 세션 transcript 메모리가 **bounded**다(13 §1.12 S2): `HOT_WINDOW` 초과 시 oldest sealed turn body가 evict되어 `itemsById`가 cap(window+tombstone) 내로 유지되고, 반응형 표면(`visibleItemIds`/`itemVersions`)은 세션 길이와 무관하게 bounded다(NM-31/31b, 04 §3.7, 08 §5). seal 전이(NM-32/32b)·late-event 분기(`sealed-retained`→unseal-patch-reseal NM-33, `evicted-tombstone`→apply 금지+`droppedLateEventCount` NM-34)가 검증된다. 입력은 **reducer/store event fixture**이고 실제 same-turn late wire 발생은 OQ-53, window/cap 수치는 OQ-52다.
 
 ### 8.2 transport / process
 
@@ -558,6 +592,7 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 - [ ] 새 UI text는 전부 locale key로 관리되고 en/ko 키 트리가 1:1 동일하다(FE-12/13).
 - [ ] composer·terminal embed·approval modal·assistant dock 간 focus/shortcut 회귀가 없다(FE-14..FE-17).
 - [ ] 탭 전환이 direct runtime host를 재mount하지 않는다(FE-21, E2E-9).
+- [ ] sealed-retained turn 구간이 read-only로 정상 렌더되고(FE-26), evicted-tombstone 구간의 "이전 기록 불러오기"가 `canLoad`면 **격리 replay-reload**(live 미병합·scratch 폐기·running 충돌 없음)로, 아니면 "사용 불가" notice로 동작한다(FE-27/28, 10 §4.7, 08 §5, 12 T5.6 DoD). 복원/영속 캐시가 아니라 read-only history inspection이다.
 
 ### 8.5 보안 / 추적성
 
@@ -589,6 +624,9 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 7. **fixture 캡처 신뢰도**: 실제 wire 캡처 전까지 ref 예시 기반 fixture는 ordering `unverified`(ref-codex §9·§10). 실제 캡처로 교체 필요.
 8. **command/entry resolve 주체**(S1, RS-8..RS-10c): backend가 `provider`로 신뢰 절대경로를 resolve하는 주체·캐시 무효화·`adapterEntryPath` 탐색 방식 미확정. 테스트는 계약(renderer 비제어 + provider resolve)과 args/env 거부만 고정 assert하고 resolve 구현은 mock 주입(→ [13](13-risks-open-questions.md) "command/entry resolve 주체").
 9. **serde 버전 확인**(S2, RS-21..RS-24): `#[serde(rename_all_fields="camelCase")]`는 serde ≥ 1.0.181 필요. 구현 전 `src-tauri/Cargo.toml` serde 버전 확인, 미만이면 필드별 `#[serde(rename="...")]`로 대체. round-trip 테스트는 어느 방식이든 camelCase 필드 일치만 검증(→ [13](13-risks-open-questions.md) "serde 버전 확인").
+10. **transcript 메모리 window/cap 수치**(NM-31/31b/34b, OQ-52): `HOT_WINDOW`(sealed turn 윈도우)·`itemsById` cap·tombstone LRU/TTL 크기를 실측 전 고정 assert 금지. image 등 무거운 item cap은 OQ-12 연동(13 §1.8 ring/요약). 테스트는 "bounded 유지" 불변식만 고정하고 임계값은 OQ-52 확정 후 박는다(04 §3.7, 08 §5, 13 §1.12).
+11. **same-turn 보조 notification 도착 여부**(NM-33, OQ-53): 종료 신호(Codex `turn/completed`·ACP `stopReason`) 후 같은 turn에 보조 notification이 실제 wire에서 도착하는지 → seal grace 필요 여부. NM-33 입력은 **reducer/store event fixture**(합성)로 두고 실제 wire 발생은 구현 직전 실측(13 OQ-53, 04 §3.7).
+12. **격리 replay 범위**(FE-27, OQ-54): Codex `thread/read` `includeTurns`가 gap-only인지 전체 thread snapshot인지에 따라 tombstone 격리 replay 조회 범위가 달라진다. 테스트는 "live 미병합 + scratch 폐기 + running 충돌 없음"(T5.6 DoD)만 고정하고 조회 범위는 OQ-54 확정 전까지 mock 주입(10 §4.7, 13 OQ-54).
 
 ---
 
@@ -597,7 +635,7 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 | 대상 | 문서 | 절 |
 |---|---|---|
 | 테스트가 검증하는 타입 정본 | [`15-data-contracts.md`](15-data-contracts.md) | §1–§8 |
-| 테스트가 검증하는 규칙·불변식 정본 | [`04-normalized-agent-model.md`](04-normalized-agent-model.md) | §2·§3·§4·§5 |
+| 테스트가 검증하는 규칙·불변식 정본 | [`04-normalized-agent-model.md`](04-normalized-agent-model.md) | §2·§3(§3.7 seal/eviction/late-event)·§4·§5 |
 | Codex wire 사실·매핑 | [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) | §1·§4·§5·§6·§7·§8·§9 |
 | ACP wire 사실·매핑 | [`ref-acp-protocol.md`](ref-acp-protocol.md) | §1·§3·§4·§5·§6·§13 |
 | Claude ACP 구현체 사실 | [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md) | §1·§2·§3·§5 |
@@ -606,4 +644,5 @@ E2E는 selenium + `CLCOMX_TEST_MODE` mock 경로(§5.6 RS-18)로 실제 WSL/CLI 
 | 위험·결정 필요·기본값 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | 전체 |
 | 시퀀스/상태 다이어그램(E2E 대응) | [`14-sequence-and-state.md`](14-sequence-and-state.md) | 전체 |
 | permission·redaction·감사 | [`09-permissions-security.md`](09-permissions-security.md) | 전체 |
-| UI 구성·legacy fallback | [`08-ui-composition.md`](08-ui-composition.md) | 전체 |
+| UI 구성·legacy fallback·transcript view-model 정본 | [`08-ui-composition.md`](08-ui-composition.md) | 전체(§5 `TranscriptModel`/`TranscriptTurnResidency` 정본) |
+| persistence·runtime scrollback replay | [`10-persistence-migration.md`](10-persistence-migration.md) | §4.7(read-only history inspection; §4.2 cold restore와 구분) |

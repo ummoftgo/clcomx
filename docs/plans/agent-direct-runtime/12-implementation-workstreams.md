@@ -176,16 +176,17 @@
 
 - 대상: `src/lib/features/agent-runtime/controller/agent-event-reducer.ts`.
 - 선행: T0.2.
-- 산출물: `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel` 순수 함수. 04 §3의 upsert/append/replace 규칙 구현:
-  - message/tool call **id 기준 upsert** (04 §3.1).
+- 산출물: `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel` 순수 함수. **`TranscriptModel`은 08 §5 정본**(단독 `TranscriptItem[]` 가정 제거): shallow 반응형 표면(`visibleItemIds`/`itemVersions`) + plain body Map(`itemsById`) + `turnsById`(turn별 `residency: TranscriptTurnResidency`·`itemIds`) + `tombstones`(LRU<turnId> + `droppedLateEventCount`). reducer는 이 구조를 입출력하며 turn residency를 함께 전이시킨다(04 §3.7). 04 §3의 upsert/append/replace 규칙 구현:
+  - message/tool call **id 기준 upsert** (04 §3.1) — body는 `itemsById`에 갱신하고 해당 itemVersion bump(08 §5).
   - `mode:"replace"` 전체 교체, `mode:"append"` 누적 (04 §3.1).
   - Codex delta→completed reconcile: message는 completed `text` 권위, plan/reasoning은 completed 권위(delta는 점진 렌더만) (04 §3.2).
   - ACP chunk(append) vs `tool_call_update.content`(전체 교체) 구분 (04 §3.3).
   - **순서 보존: per-(라우팅 키) receive-order** (단일 stdio 스트림이라 같은 키 내 순서 보존) + reconcile 멱등·notice dedup (04 §3.4·§3.6). **cross-key event-level seq 정렬/dedup은 v1 미도입(후속)** — v1 `AgentEvent`에 seq 필드 없음(15 §8.3, 11 NM-29 후속).
-- DoD: 함수가 부수효과 없음(룬 미사용). 아래 테스트 통과. `applyEvent` 등 함수에 JSDoc(한글) + reconcile 분기에 한 줄 주석(17 §B.1·§B.2; 예시는 17 §B.1).
-- 테스트(11): "message replace/append 순서", "tool call upsert", "provider raw id 보존". co-located `agent-event-reducer.test.ts`, `vi.fn` 불필요(순수).
-- 계약(15 §): §3 `AgentEvent`, §4 `AgentContent`, §5 하위 타입.
-- ref §: 매핑 전제는 ref-codex §7, ref-acp §4·§5(규칙은 04에서 인용).
+  - **seal/eviction/3-상태 turn residency** (04 §3.7 정본): turn은 `unsealed`(모든 event apply) / `sealed-retained`(body 유지, 늦은 event→unseal→patch→reseal+telemetry) / `evicted-tombstone`(body 없음, 늦은 event **apply 금지** + `droppedLateEventCount` 증가) 3-상태로 전이한다. seal 조건 = 종료신호(Codex turn/completed·ACP stopReason) + open item 0 + pending approval/request 0 + turn-level 슬롯(usage/plan/diff) 반영 + 짧은 quiescence grace(04 §3.7 불변식). sealed-turn 윈도우(최근 N개 sealed turn + 모든 unsealed/active turn(인터리빙 포함) + streaming) cap 초과 시 oldest sealed turn body를 evict하고 tombstone으로 강등(heap bounded). tombstone은 작은 LRU/TTL로 bounded. 이 정책은 protocol lifecycle이 아니라 **memory residency**이며 DOM 가상화(OQ-17)와 별개다.
+- DoD: 함수가 부수효과 없음(룬 미사용). 아래 테스트 통과. `TranscriptModel` 입출력 시그니처가 08 §5와 일치하고(단독 배열 아님), seal/eviction/3-상태 전이가 04 §3.7과 일치함을 검증. **늦은 event 분기 검증**: `sealed-retained`는 unseal→patch→reseal(telemetry 기록), `evicted-tombstone`은 apply 금지 + `droppedLateEventCount`만 증가. cap 초과 시 oldest sealed turn body evict + tombstone 강등 검증. `applyEvent` 등 함수에 JSDoc(한글) + reconcile·seal·eviction 분기에 한 줄 주석(17 §B.1·§B.2; 예시는 17 §B.1).
+- 테스트(11): "message replace/append 순서", "tool call upsert", "provider raw id 보존", late same-turn event seal/unseal/reseal, tombstone late-event drop(`droppedLateEventCount`), sealed-turn 윈도우 cap eviction. co-located `agent-event-reducer.test.ts`, `vi.fn` 불필요(순수). late same-turn fixture는 **reducer/store event fixture**(adapter fixture 아님)이며 실제 wire 도착 여부는 OQ-53.
+- 계약(15 §): §3 `AgentEvent`, §4 `AgentContent`, §5 하위 타입. transcript view-model(`TranscriptModel`/`TranscriptItem`/`TranscriptTurnResidency`)은 **08 §5 정본**(15 신규 타입 없음 — 15는 "AgentEvent 불변, seal/eviction은 08 view-model/04 reducer 내부 정책" note만).
+- ref §: 매핑 전제는 ref-codex §7, ref-acp §4·§5(규칙은 04에서 인용). seal/eviction/3-상태 = 04 §3.7. 윈도우/cap 수치 = 13 OQ-52, seal grace wire 실측 = 13 OQ-53, 신규 위험 = 13 §1.12(S2). 무거운 item(diff/이미지/출력) bounded 표현 = 13 §1.8(image cap은 OQ-12 연동).
 
 ### T1.2 — pending approval / status 전이 로직
 
@@ -206,21 +207,21 @@
 
 - 대상: `src/lib/features/agent-runtime/state/agent-runtime-store.svelte.ts`(세션 단위 state + composer state 포함).
 - 선행: T1.1, T1.2.
-- 산출물: FE §1.3 class 패턴. interface(plain) + impl class(`$state`). reactive 멤버: `transcript`, `status`, `pendingApproval`, `error`, composer 입력/첨부/전송중. non-reactive: 누적 버퍼·seq counter는 `$state` 없이.
-- DoD: `createAgentRuntimeStore()` 팩토리 반환. reducer를 호출해 상태 갱신. `svelte-check` 통과.
-- 테스트(11): state는 controller 테스트에서 실제 인스턴스로 사용(FE §1.6).
-- 계약(15 §): §2, §3, §5.
-- ref §: 없음.
+- 산출물: FE §1.3 class 패턴. interface(plain) + impl class(`$state`). **shallow 반응형 표면(08 §5 정본)**: 반응형(`$state`) 멤버는 `visibleItemIds`(string[])·`itemVersions`(Record<itemId, number>)·`status`·`pendingApproval`·`error`·composer 입력/첨부/전송중**만**으로 한정한다. item body는 **plain Map(`itemsById`)** 으로 보유하고(반응형 아님), `turnsById`/`tombstones`도 plain 구조다. streaming은 body Map 갱신 + 해당 itemVersion bump로 표현하므로 반응성 오버헤드가 **세션 길이와 무관하게 bounded**(unbounded 반응형 store 회피). non-reactive: 누적 버퍼·seq counter는 `$state` 없이.
+- DoD: `createAgentRuntimeStore()` 팩토리 반환. reducer를 호출해 상태 갱신. **반응형 표면이 `visibleItemIds`/`itemVersions`/`status`/`pending`로 한정되고 body가 plain Map임을 확인**(transcript 전체 배열을 반응형으로 노출하지 않음). `svelte-check` 통과.
+- 테스트(11): state는 controller 테스트에서 실제 인스턴스로 사용(FE §1.6). 반응형 표면이 item body 증가에 비례해 커지지 않음(shallow surface 정합).
+- 계약(15 §): §2, §3, §5. transcript view-model 형태는 08 §5 정본.
+- ref §: 08 §5(shallow 반응형 표면 + body Map), 13 §1.12(S2).
 
-### T1.4 — event router + 윈도우 전역 registry
+### T1.4 — event router + id-index/eviction + 윈도우 전역 registry
 
 - 대상: `src/lib/features/agent-runtime/controller/agent-event-router.ts` + `state/agent-runtime-store.svelte.ts`의 module-level registry.
 - 선행: T1.3.
-- 산출물: router는 `AgentEvent`를 `ref`(provider/sessionId/threadId/turnId/messageId/itemId/toolCallId/requestId) 기준으로 올바른 세션 state로 dispatch(03 §Event Router). module-level registry는 handle→runtimeId/port 매핑과 pending request table(FE §1.4 module store). **approval pending request table key = `(sessionHandle, requestId)`**(03 §2.8). JSON-RPC id(`requestId`)는 runtime/connection(=adapter 연결) 단위에서만 유일하므로 **전역 단독 `requestId`를 key로 쓰는 것을 금지**한다 — 두 runtime이 같은 id를 받아도 서로의 approval로 오라우팅·오응답하지 않아야 한다(불변식). **윈도우 소유권/수명 모델은 13 OQ-48/위험 §1.11의 선행 gate**: registry 단일 윈도우 소유 + `runtimeId`↔window 바인딩 + window-close 시 소유 엔트리만 정리 + cross-window dispatch 금지(불변식). 구현 전 OQ-48 확정.
-- DoD: 라우팅 키 표(15 §1.1)대로 Codex 삼중 키·ACP `(sessionId,messageId)`/`(sessionId,toolCallId)` 분기 동작. **pending request table이 `(sessionHandle, requestId)` 복합 키로 인덱싱**되고, 서로 다른 두 runtime이 동일 `requestId`를 받아도 각자의 pending에만 매칭(오응답 없음)됨을 검증(11 충돌 회귀 테스트). co-located 테스트 통과. window-close 격리·cross-window dispatch 차단(OQ-48/§1.11) 동작.
-- 테스트(11): "interleaved turn stream이 turn id별로 분리되는지"의 store 측(adapter는 Phase 3). **"두 runtime이 같은 JSON-RPC id를 받아도 오응답하지 않음"(`(sessionHandle, requestId)` 키 충돌 회귀)**. window-close 시 소유 엔트리만 정리되는지(OQ-48).
-- 계약(15 §): §1.1 라우팅 키(approval 라우팅 키 = `(sessionHandle, requestId)`).
-- ref §: 03 §2.8(pending request table key), ref-codex §7.1(삼중 키), 13 OQ-48·위험 §1.11(멀티 윈도우 registry 소유권/수명).
+- 산출물: router는 `AgentEvent`를 `ref`(provider/sessionId/threadId/turnId/messageId/itemId/toolCallId/requestId) 기준으로 올바른 세션 state로 dispatch(03 §Event Router). **id-index 라우팅(08 §5)**: dispatch된 event를 세션 state 내부에서 `itemsById`(item body)·`turnsById`(turn별 itemIds/residency)로 라우팅하고, **sealed-turn 윈도우 eviction**(최근 N개 sealed turn + 모든 unsealed/active turn + streaming을 윈도우로 유지, cap 초과 시 oldest sealed turn body evict→tombstone 강등)과 **tombstone LRU/TTL**(`droppedLateEventCount` 동반)을 적용한다(seal 조건·3-상태·late-event 규칙 정본은 04 §3.7, reducer가 수행하며 router/state는 그 결과를 윈도우 정책으로 관리). module-level registry는 handle→runtimeId/port 매핑과 pending request table(FE §1.4 module store). **approval pending request table key = `(sessionHandle, requestId)`**(03 §2.8). JSON-RPC id(`requestId`)는 runtime/connection(=adapter 연결) 단위에서만 유일하므로 **전역 단독 `requestId`를 key로 쓰는 것을 금지**한다 — 두 runtime이 같은 id를 받아도 서로의 approval로 오라우팅·오응답하지 않아야 한다(불변식). **윈도우 소유권/수명 모델은 13 OQ-48/위험 §1.11의 선행 gate**: registry 단일 윈도우 소유 + `runtimeId`↔window 바인딩 + window-close 시 소유 엔트리만 정리 + cross-window dispatch 금지(불변식). 구현 전 OQ-48 확정.
+- DoD: 라우팅 키 표(15 §1.1)대로 Codex 삼중 키·ACP `(sessionId,messageId)`/`(sessionId,toolCallId)` 분기 동작. **`itemsById`/`turnsById` 라우팅 + sealed-turn 윈도우 eviction + tombstone LRU 동작 검증**: cap 초과 시 oldest sealed turn body evict + tombstone 강등, tombstone 구간 늦은 event는 apply 금지 + `droppedLateEventCount` 증가, 윈도우는 세션 길이와 무관하게 bounded(heap bounded). **pending request table이 `(sessionHandle, requestId)` 복합 키로 인덱싱**되고, 서로 다른 두 runtime이 동일 `requestId`를 받아도 각자의 pending에만 매칭(오응답 없음)됨을 검증(11 충돌 회귀 테스트). co-located 테스트 통과. window-close 격리·cross-window dispatch 차단(OQ-48/§1.11) 동작.
+- 테스트(11): "interleaved turn stream이 turn id별로 분리되는지"의 store 측(adapter는 Phase 3). sealed-turn 윈도우 cap eviction·tombstone LRU·tombstone late-event drop. **"두 runtime이 같은 JSON-RPC id를 받아도 오응답하지 않음"(`(sessionHandle, requestId)` 키 충돌 회귀)**. window-close 시 소유 엔트리만 정리되는지(OQ-48).
+- 계약(15 §): §1.1 라우팅 키(approval 라우팅 키 = `(sessionHandle, requestId)`). transcript view-model(`itemsById`/`turnsById`/`tombstones`) 형태는 08 §5 정본.
+- ref §: 03 §2.8(pending request table key), ref-codex §7.1(삼중 키), 08 §5(id-index 라우팅·tombstones), 04 §3.7(seal/eviction/3-상태), 13 OQ-48·위험 §1.11(멀티 윈도우 registry 소유권/수명), 13 OQ-52(윈도우/cap 수치)·§1.12(S2).
 
 ### T1.5 — legacy PTY 래핑 어댑터
 
@@ -467,6 +468,16 @@
 - 계약(15 §): 없음.
 - ref §: 없음.
 
+### T5.6 — 격리 scrollback replay 뷰 (read-only history inspection)
+
+- 대상: `view/AgentTranscriptSurface.svelte`(+ tombstone 구간 placeholder/notice) + `state/agent-runtime-store.svelte.ts`(격리 scratch replay 세션 진입/폐기) + `service/transport.ts`(read-only `session/load`·`thread/read` 호출 경유).
+- 선행: T5.2, **T2.x transport**(Codex `thread/read`/`session/load`·Claude `session/load` 경유 = T2.5/T2.6 + 해당 adapter Port), T6.x persistence 미요구(런타임 전용 — disk/cache 아님).
+- 산출물: `evicted-tombstone`으로 강등된 turn 구간을 스크롤백하면 "이전 기록 불러오기" affordance를 표시한다. 사용자가 요청하면 `canLoad`(provider resume/read 가능)인 경우에 한해 **read-only 격리 scratch replay 세션**을 연다 — provider의 `session/load`·`thread/read`(replay)로 해당 구간을 조회하되, 결과를 live store(`itemsById`/`turnsById`)에 **병합하지 않고** 별도 scratch transcript model에만 채워 read-only로 렌더한다(10 §4.7 runtime scrollback replay; §4.2 cold restore와 구분 — 디스크 X, full cache 아님, live 미병합). `canLoad`가 아니면(resume token 부재·provider 미지원) "사용 불가" notice를 표시한다. scratch 세션은 닫을 때 폐기(영속/캐시 안 함). = 복원/영속 캐시가 아니라 **read-only history inspection**이다. `thread/read includeTurns` 조회 범위(gap-only vs 전체 snapshot)는 OQ-54 확정에 의존.
+- DoD: **live store 미병합**(scratch replay가 running live 세션의 transcript/status/pending을 변경하지 않음), **scratch store는 닫을 때 폐기**(다음 진입 시 재조회), **running 세션과 충돌 없음**(동시에 진행 중인 turn/streaming·approval에 간섭 없음, registry/window 소유권 불변식 유지), `canLoad` 아니면 "사용 불가" notice. read-only 보장(scratch에서 `sendPrompt`/`respondApproval` 등 mutating 동작 비노출). `svelte-check` 통과.
+- 테스트(11): "tombstone 구간 격리 replay 뷰 진입/폐기", "replay가 live store에 병합되지 않음", "running 세션과 충돌 없음", "`canLoad` 아닐 때 사용 불가 notice".
+- 계약(15 §): §6 Port(`resumeSession`/read 경로 — read-only 조회용), §7.1 `AgentRuntimeMetadata`(resume 가능성 판단). transcript view-model(scratch `TranscriptModel`) 형태는 08 §5 정본.
+- ref §: 10 §4.7(runtime scrollback replay; §4.2 cold restore와 구분), 08 §5(scratch transcript model), 13 OQ-54(`thread/read includeTurns` 조회 범위)·§1.12(S2).
+
 **Verification gate (Phase 5)**: `npm run test`(view+controller) + `npm run check` 통과. legacy terminal surface가 옵션 B 분기로 그대로 동작함을 단위 수준에서 확인. **app launch는 아직 보류**(persistence 미완 — Phase 6 후 1회).
 
 ---
@@ -561,6 +572,10 @@ graph TD
 
 > T2.0은 Phase 2 진입 결정 게이트로, T0.0 후 OQ-36/37/38/39를 확정해 T2.2/T2.3/T2.4를 unblock한다(T2.1 Rust 타입 미러는 결정과 무관하게 T0.1 후 선행 가능하나, serde 직렬화 방식은 OQ-37=T2.0 결정을 반영). 그래프에서는 Phase 2 진입 경로에 T2.0을 명시한다.
 
+> **T5.6(격리 scrollback replay 뷰)은 Phase 5 내부 task**다(P5 → P6 경로에 신규 노드 추가 없음). 선행은 T5.2 + transport(T2.x: provider `session/load`/`thread/read` 경유)이며 격리 scratch replay라 live store/running 세션과 비충돌이므로 critical path 길이를 바꾸지 않는다(트랙 E').
+>
+> **2-tier transcript 메모리 관리(13 §1.12 S2)의 frontend 전용 경계**: 이 설계는 **reducer/store/view(P1·P5)에만** 반영된다 — T1.1(reducer→`TranscriptModel` 시그니처 + 3-state eviction, 04 §3.7), T1.3(state class shallow 반응형 표면, 08 §5), T1.4(id-index 라우팅 + sealed-turn 윈도우 eviction + tombstone LRU), 신규 T5.6(격리 replay 뷰). **05/06 adapter는 미수정**: seal은 reducer-side 정책이고 wire→`AgentEvent` 매핑은 불변이다(Phase 3/4 무변경). backend(07)·persistence(10 metadata-only + replay-first)도 무변경 — cold/tombstone 구간은 runtime-only이며 디스크에 영속하지 않는다(10 §4.7 runtime scrollback replay, §4.2 cold restore와 구분). 윈도우/cap 수치는 13 OQ-52, wire 실측은 OQ-53/54.
+
 ### 병렬 트랙
 
 | 트랙 | Phase/Task | 병렬 조건 |
@@ -571,6 +586,7 @@ graph TD
 | C (codex) | P3 | P1·P2 완료 후. P4와 병렬 |
 | D (claude) | P4 | P1·P2 완료 후. P3와 병렬 |
 | E (view) | T5.2–T5.4 일부 | fixture store(P1) 기준으로 adapter 완성 전 선행 착수 가능(FE §8) |
+| E' (replay view) | T5.6 | Phase 5 내. T5.2 + transport(T2.x: `session/load`/`thread/read` 경유) 후. 격리 scratch replay라 live store/running 세션과 비충돌이므로 T5.3–T5.5와 파일 비충돌 시 병렬 착수 가능. 조회 범위는 OQ-54 |
 | F (persistence) | P6 | runtime metadata type(15 §7) 확정 후 |
 
 ### Critical Path

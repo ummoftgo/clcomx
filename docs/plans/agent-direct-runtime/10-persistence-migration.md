@@ -159,6 +159,28 @@ direct runtime spawn/initialize 실패(바이너리 없음, 버전 불일치, al
 - direct → PTY fallback 시 `runtimeKind`는 PTY 세션 생성 시점에 `"pty"`로 다시 설정된다(새 세션이므로). 기존 direct metadata는 폐기하거나 표시용으로만 남긴다(결정: 폐기 권장, 혼선 방지).
 - legacy PTY resume token은 direct 전환과 무관하게 기존 `resume_token` 필드/scrub 정책을 그대로 유지한다(§5).
 
+### 4.7 runtime scrollback replay (read-only history inspection)
+
+긴 세션에서 transcript memory residency가 oldest sealed turn의 body를 evict하면([`04`](04-normalized-agent-model.md) §3.7 seal/eviction 규칙, [`08`](08-ui-composition.md) §5 `TranscriptTurnResidency`), 해당 turn은 `evicted-tombstone`(body 없음) 상태로 남는다. 사용자가 그 tombstone 구간을 스크롤백에서 **명시적으로 열 때만**(자동 아님) 동작하는 read-only 조회 경로를 정의한다. 이는 §4.2 cold restore와 **다른 축**이다 — 복원이 아니라 *지나간 기록의 일시 조회*다.
+
+**동작**:
+
+- tombstone 구간에 "이전 기록 불러오기" affordance를 노출한다([`08`](08-ui-composition.md) §7.2). 사용자가 누르면:
+  - `canLoad == true`이면 provider replay(ACP `session/load`, Codex `thread/read(includeTurns)`)를 **별도 scratch 세션**으로 1회 돌려 해당 구간을 조회하고, **live store에 병합하지 않는다**. 조회 결과는 격리된 read-only 뷰로만 보여주고(현재 streaming 중인 live transcript와 충돌·간섭 없음), 뷰를 닫으면 scratch 세션을 폐기한다([`12`](12-implementation-workstreams.md) T5.6).
+  - `canLoad == false`이면 replay 자체가 불가하므로 "이전 기록을 불러올 수 없습니다" 류 locale notice를 표시하고 끝낸다(scratch 세션 미생성).
+
+**명확한 경계 (혼동 주의)**: 이 경로는
+
+1. **복원(restore)이 아니다** — live 세션 상태를 되살리지 않는다(§4.2 cold restore와 구분: "`canLoad`면 항상 replay" 복원 규칙은 앱 재시작 시 자동 적용이고, 여기 scrollback inspection은 사용자가 tombstone을 눌러야만 1회 조회한다).
+2. **full transcript cache가 아니다** — 전체 transcript를 메모리/디스크에 상주시키는 캐시를 도입하지 않는다(불변식 §1 #4·§2.1 "metadata만 저장, transcript 복원은 replay 우선" 정책 불변).
+3. **디스크에 저장하지 않는다** — cold/tombstone body는 runtime-only(미영속)이며, scratch replay 결과도 영속화하지 않는다. metadata-only + replay-first(§1 불변식 4·§2.1) 정책은 그대로 유지된다.
+
+즉 본 절은 **read-only history inspection** 전용이며, §4.2/§4.3의 복원·late-attach 경로와 저장 모델을 일절 바꾸지 않는다.
+
+**미확정**: Codex `thread/read`의 `includeTurns`가 gap-only(요청 구간만) 응답인지 전체 thread snapshot인지에 따라 격리 replay가 조회해야 할 범위가 달라진다 → [`13`](13-risks-open-questions.md) OQ-54(구현 직전 wire 실측). seal/eviction·late-event·tombstone 불변식의 정본은 [`04`](04-normalized-agent-model.md) §3.7, view-model(`TranscriptTurnResidency`/`TranscriptModel`)의 정본은 [`08`](08-ui-composition.md) §5, 격리 replay 뷰 구현은 [`12`](12-implementation-workstreams.md) T5.6이다.
+
+> 시퀀스 다이어그램은 신규로 추가하지 않는다([`14`](14-sequence-and-state.md)). 본 경로는 live AgentEvent 흐름이 아니라 사용자가 명시적으로 여는 read-only inspection(별도 scratch 세션, live 미병합)이므로 14의 live 시퀀스에 편입되지 않는다.
+
 ---
 
 ## 5. Migration 규칙 (기존 → 신규)
@@ -246,6 +268,10 @@ scrub 비대상(평문 저장 OK): `runtimeKind`, `provider`, `lastTurnId`, `pro
 | process lifecycle·shutdown·late-attach seq | [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) | 전체 |
 | ACP session/load·session/resume·capability 위치 | [`ref-acp-protocol.md`](ref-acp-protocol.md) | §3.4, §3.5, §13 |
 | Codex thread/resume·thread/read | [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) | §"thread/resume", §"thread/read" |
+| seal/eviction·late-event·tombstone 불변식(§4.7 근거) | [`04-normalized-agent-model.md`](04-normalized-agent-model.md) | §3.7 |
+| transcript view-model 정본(`TranscriptTurnResidency`/`TranscriptModel`)·scrollback affordance | [`08-ui-composition.md`](08-ui-composition.md) | §5, §7.2 |
+| 격리 read-only replay 뷰 구현(§4.7) | [`12-implementation-workstreams.md`](12-implementation-workstreams.md) | T5.6 |
+| `thread/read(includeTurns)` gap-only vs snapshot 실측 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | OQ-54 |
 | 영속화 코드 현실(scrub·default·merge) | [`research/codebase-backend.md`](research/codebase-backend.md) | §4, §10 |
 | frontend 타입·workspace.ts·통합 체크리스트 | [`research/codebase-frontend.md`](research/codebase-frontend.md) | §4.3, §8, §10 |
 | 보안·redaction·debug 정책 | [`09-permissions-security.md`](09-permissions-security.md) | 전체 |

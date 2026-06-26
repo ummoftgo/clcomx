@@ -169,6 +169,38 @@ Legacy PTY output은 전체 agent transcript가 아니라 `terminal_output_delta
 
 > **다운스트림 인용**: notice 생성·dedup 규칙은 08 §3(이벤트→TranscriptItem 라우팅)·§3.1(stop reason/refusal notice)이 인용·준수하는 정본이다. `TranscriptItem.notice` 타입은 08 §5(UI view-model, 15 §3 content 재export)가 정의하며, 본 문서는 생성 규칙만 둔다.
 
+### 3.7 transcript 메모리 residency·seal 규칙
+
+긴 세션에서 frontend in-memory transcript 모델이 unbounded로 증가하는 문제(DOM 가상화는 DOM만 bounded로 만들 뿐 반응형 store는 미bounded 유지)를 reducer 차원에서 막는 규칙이다. reducer는 `TranscriptModel`([`08`](08-ui-composition.md) §5 정의 — `itemsById` plain Map + shallow 반응형 표면)에 apply하며(시그니처 `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel`), seal/eviction은 **메모리 residency 정책**이지 protocol item lifecycle이 아니다 — 둘을 명시적으로 **구분**한다(명명: "turn residency / memory residency"이며, 본 문서 §3.1~§3.2의 upsert/append/replace·reconcile 같은 protocol item 생명주기와 별개다). 타입(`TranscriptTurnResidency`, `TranscriptModel`)은 08 §5가 정본이며 이 절은 그 타입을 **인용**하고 재정의하지 않는다. 이 절은 seal 불변식·seal 조건·3-상태 residency·late-event 규칙의 **규칙 정본**이고 08(view-model)·12(태스크)·11(fixture)이 인용한다.
+
+#### seal 조건 (정본)
+
+turn이 아래 (a)~(e)를 **모두** 만족하면 `unsealed` → `sealed-retained`로 전이한다.
+
+- **(a) 종료신호**: Codex `turn/completed`(status 무관 — `completed`/`failed`/`cancelled`) 또는 ACP `stopReason` 수신. (turn 종료 합성은 §2.1 규칙 5·"turn id 합성 규칙(ACP)".)
+- **(b) open item 0**: 해당 turn에 아직 streaming 중이거나 `item/completed` 미수신인 open item이 없다(§3.2 reconcile 완료).
+- **(c) pending approval/request 0**: 그 turn에 매인 pending approval·server request가 pending table에 남아 있지 않다(§4 pending table key `(sessionHandle, requestId)`).
+- **(d) turn-level 슬롯 반영**: turn-level `tokenUsage`/`plan`/`diff` 슬롯이 반영(누락 없이 최종값 수신)됐다.
+- **(e) 짧은 quiescence grace**: 해당 turn 라우팅 키(§3.4: Codex `(threadId, turnId)`, ACP 합성 `turnId`)로 더 이상 event가 도착하지 않는 짧은 정적 구간을 둔다. 이 grace는 turn/completed 후 도착할 수 있는 늦은 same-turn 보조 notification(아래 3-상태 규칙)을 흡수하기 위한 것이다.
+
+#### 3-상태 turn residency (`TranscriptTurnResidency` — 08 §5 타입 인용)
+
+`TranscriptTurnResidency = "unsealed" | "sealed-retained" | "evicted-tombstone"`(타입 정본 08 §5). 각 상태의 **late-event 규칙**이 이 절의 핵심 불변식이다.
+
+1. **`unsealed`**: 윈도우 안의 진행/최근 turn. **모든 event를 정상 apply**한다(§3.1~§3.6 그대로). seal 조건 전이 전까지 이 상태다.
+2. **`sealed-retained`**: body는 `itemsById`에 유지하되 seal 조건을 만족해 봉인된 turn. **늦은 event 수신 시 `unseal → patch → reseal`** 한다(해당 turn을 일시적으로 `unsealed`로 되돌려 §3.1~§3.6대로 patch한 뒤 다시 seal). 이때 telemetry를 1건 기록한다. 이 보조 갱신 가능성은 §3.4의 "per-키 receive-order만 권위이고 cross-key 전역 seq가 없다"에서 비롯한다 — turn/completed 후에도 같은 키로 늦은 보조 notification이 도착할 수 있다.
+3. **`evicted-tombstone`**: cap 초과로 body를 폐기한(`itemsById`에서 제거) turn. **늦은 event를 apply하지 않는다(금지)** — full cache가 없어 evict된 body를 재구성할 수 없으므로, 부분 patch는 silent corruption을 낳는다. 늦은 event는 drop하고 `droppedLateEventCount` telemetry만 증가시킨다. tombstone 자체는 작은 LRU/TTL로 bounded하게 유지한다(turn 메타데이터만 보관, body 없음).
+
+#### eviction 윈도우 (정본)
+
+residency 윈도우 = **최근 N개 `sealed-retained` turn + 모든 `unsealed`/active turn(§3.4 라우팅 키로 인터리빙된 동시 turn 포함) + 현재 streaming**은 항상 body를 유지한다. cap(윈도우 크기·heap 한도) 초과 시 가장 오래된 `sealed-retained` turn body를 evict해 `evicted-tombstone`으로 전이시킨다. 이로써 heap이 세션 길이와 무관하게 bounded된다. 무거운 item(diff/이미지/출력)은 bounded 표현+지연 로드를 별도로 적용한다([`13`](13-risks-open-questions.md) §1.8 ring/요약, image는 OQ-12 연동). 구체 cap·N·grace 수치는 실측으로 정한다([`13`](13-risks-open-questions.md) OQ-52; image cap은 OQ-12 연동).
+
+#### late same-turn 보조 notification (wire 실측 미결)
+
+turn/completed(또는 stopReason) 이후 같은 turn으로 도착하는 보조 notification(usage 보정·plan 갱신 등)의 실제 wire 발생 여부는 구현 직전 실측으로 확인한다([`13`](13-risks-open-questions.md) OQ-53). seal 조건 (e)의 quiescence grace가 이 늦은 도착을 흡수하며, grace 종료 후 도착분은 `sealed-retained`이면 unseal→patch→reseal(위 규칙 2), `evicted-tombstone`이면 drop+`droppedLateEventCount`(위 규칙 3)로 처리한다.
+
+> **다운스트림 인용**: 이 절(seal 조건·3-상태 residency·late-event 규칙·eviction 윈도우)은 [`08`](08-ui-composition.md) §5(`TranscriptModel`/`TranscriptTurnResidency` view-model 정본)·[`12`](12-implementation-workstreams.md)(T1.1 reducer→`TranscriptModel` 시그니처+3-state eviction, T5.6 격리 replay 뷰)·[`11`](11-testing-acceptance.md)(late same-turn reducer/store event fixture)가 인용·준수하는 **규칙 정본**이다. 신규 위험은 [`13`](13-risks-open-questions.md) §1.12 Long-session transcript memory (S2)에, 격리 scrollback replay(read-only, live 미병합)는 [`10`](10-persistence-migration.md) §4.7에 둔다.
+
 ---
 
 ## 4. pending approval 생명주기
@@ -274,6 +306,7 @@ provider server→client 메시지 중 **`id`가 있는 REQUEST**(응답을 기�
 | ACP wire → normalized 매핑·chunk/replace 근거 | [`ref-acp-protocol.md`](ref-acp-protocol.md) §4, §5, §6, §13 |
 | unknown/미지원 server request·notification 응답(silent-drop 금지) | §5.1, [`13-risks-open-questions.md`](13-risks-open-questions.md) RD-10, [`ref-acp-protocol.md`](ref-acp-protocol.md) §11, [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §1.2, §4 |
 | exit/shutdown pending cleanup(정확히 한 번 멱등 종료·authoritative 경계) | §5.0, [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §5.2, §5.3 |
+| transcript 메모리 residency·seal 규칙(정본) | §3.7, [`08-ui-composition.md`](08-ui-composition.md) §5, [`13-risks-open-questions.md`](13-risks-open-questions.md) §1.12, OQ-52, OQ-53, [`10-persistence-migration.md`](10-persistence-migration.md) §4.7 |
 | hexagonal 구조·Store/Router 역할 | [`03-target-architecture.md`](03-target-architecture.md) |
 | process lifecycle·cancel·framing | [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) |
 | persistence·resume/load 정책 | [`10-persistence-migration.md`](10-persistence-migration.md) |

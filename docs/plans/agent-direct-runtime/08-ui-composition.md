@@ -59,7 +59,7 @@ graph TD
 |---|---|---|---|
 | `AgentRuntimeShell.svelte` | `features/agent-runtime/view/` | host. `SessionHostProps` 받아 controller/state 조립. transport 구독 lifecycle 소유 | `Terminal.svelte` 대응 (§9) |
 | `AgentTranscriptSurface.svelte` | `view/` | transcript 레이아웃(scrollable region + sticky composer slot), auto-follow, `visible`/`viewMode` 토글 | `TerminalRuntimeSurface.svelte` 대응 |
-| `MessageList.svelte` | `view/` | transcript item 배열을 순서대로 렌더. 가상화(visible만 mount) | ux-reference §1.1, §7.1 |
+| `MessageList.svelte` | `view/` | `visibleItemIds`+`itemsById`(§5)에서 item을 순서대로 렌더. 가상화(visible만 mount), tombstone 구간은 격리 replay affordance(§7.2) | ux-reference §1.1, §7.1 |
 | `MessageBubble.svelte` | `view/` | user/agent/reasoning 텍스트 message 1건 렌더(streaming caret 포함) | §3, §6 |
 | `PlanBlock.svelte` | `view/` | plan entry 목록(replace-only) | §3, ux-reference §4 |
 | `ToolCallCard.svelte` | `view/tool-cards/` | tool call 1건. kind별 collapsed summary + expand | §3, §4 |
@@ -139,7 +139,7 @@ graph TD
   <AgentTranscriptSurface
     visible={props.visible}
     viewMode={surfaceMode}
-    items={runtimeState.transcript}
+    transcript={runtimeState.transcript}
     status={runtimeState.status}
     onFollowToggle={runtime.setAutoFollow}
     onResolveApproval={approval.respond}
@@ -196,6 +196,8 @@ graph TD
 | `terminal_output_delta` | transcript 아님 — 보조/legacy terminal surface 전용(04 §3.5) | `TerminalRuntimeSurface`(§7.4) |
 
 > **content delta 시 가상화 주의**: `agent_message_delta`/`command_output_delta`는 고빈도다. `MessageList` 가상화는 "현재 streaming 중인 마지막 item"을 항상 mount 상태로 유지해야 한다(끝부분이 unmount되면 caret/append가 깜빡인다). 권장: streaming 중인 item id를 `runtimeState.streamingItemId`로 보유하고 가상화 윈도우에 강제 포함.
+>
+> **shallow 반응형과의 정합**: streaming delta는 `TranscriptModel.itemsById`(plain Map, 비반응형)의 body를 직접 갱신하고 `itemVersions[itemId]`만 bump해 해당 item 렌더를 트리거한다(§5). 반응형 표면이 `visibleItemIds`/`itemVersions`로 한정돼 있어, delta가 고빈도여도 반응성 비용은 세션 길이가 아니라 "현재 보이는/스트리밍 item 수"에 비례한다. streaming 중 turn은 항상 `unsealed`(또는 sealed-retained의 late-event unseal)이라 eviction 대상이 아니다(04 §3.7).
 
 ### 3.1 stop reason / refusal notice
 
@@ -285,9 +287,45 @@ export type TranscriptItem =
   | { type: "file_change"; id: string; change: FileChangeSummary }
   | { type: "notice"; id: string; level: "info" | "warning" | "error"; messageKey: string; raw?: unknown };
 
+/**
+ * turn 단위 메모리 거주 상태(=memory residency). protocol lifecycle(15 §3 event)와 **별개** 축으로,
+ * 긴 세션에서 frontend in-memory transcript가 unbounded로 커지는 문제(위험 §1.12, 13)를 막기 위한
+ * heap 경계 정책이다. 3-상태 정의·전이·late-event 규칙의 정본은 04 §3.7이다.
+ * - `unsealed`: turn이 아직 종료 신호를 못 받았거나 quiescence grace 중. 모든 event를 그대로 apply.
+ * - `sealed-retained`: seal 완료, body는 메모리에 유지. 늦게 도착한 same-turn event는 unseal→patch→reseal
+ *   (telemetry 기록, 04 §3.7).
+ * - `evicted-tombstone`: body가 evict됨(작은 tombstone만 보존). 늦은 event는 **apply 금지**하고
+ *   `droppedLateEventCount`만 증가. 스크롤백 조회는 격리 replay 뷰(§7.2, 10 §4.7, T5.6)로만.
+ */
+export type TranscriptTurnResidency =
+  | "unsealed"
+  | "sealed-retained"
+  | "evicted-tombstone";
+
+/**
+ * transcript의 **shallow 반응형 id-index 모델**(본 문서 §5 정본). 긴 세션에서도 반응성 오버헤드와 heap을
+ * 세션 길이와 무관하게 bounded로 유지한다(위험 §1.12, 13).
+ *
+ * **shallow 반응형 표면**: 룬 `$state`로 두는 것은 `visibleItemIds`/`itemVersions`(+ `AgentRuntimeViewState`의
+ * `status`/`pendingApprovals`/`escalationApproval`)만이다. item body(`itemsById`)는 **plain Map(비반응형)**이며,
+ * streaming은 body를 직접 갱신하고 `itemVersions[itemId]`를 bump해 렌더만 트리거한다. 따라서 반응성 비용은
+ * 세션 길이가 아니라 "현재 보이는/스트리밍 중인 item 수"에 비례한다.
+ *
+ * **sealed-turn 윈도우 eviction**: hot window = 최근 N개 **sealed** turn + 모든 unsealed/active turn(인터리빙
+ * 포함) + 현재 streaming. cap(`HOT_WINDOW_*`) 초과 시 가장 오래된 sealed turn body를 evict하고 그 turn을
+ * `evicted-tombstone`으로 전이시킨다(04 §3.7). reducer 시그니처 = `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel`.
+ */
+export interface TranscriptModel {
+  visibleItemIds: string[];                    // 반응형($state) — 순서·표시 대상(가상화 소싱, §7.2)
+  itemVersions: Record<string, number>;        // 반응형($state) — itemId별 렌더 트리거 버전(streaming 시 bump)
+  itemsById: Map<string, TranscriptItem>;      // 비반응형 plain Map — item body(heap 경계 대상)
+  turnsById: Map<string, { residency: TranscriptTurnResidency; itemIds: string[] }>; // turn별 residency + 소속 item
+  tombstones: { lru: string[]; droppedLateEventCount: number }; // evicted turn의 작은 LRU + 늦은 event 폐기 카운터
+}
+
 /** AgentRuntimeShell 세션 인스턴스 상태(룬 class, research/codebase-frontend.md §1.3). */
 export interface AgentRuntimeViewState {
-  transcript: TranscriptItem[];
+  transcript: TranscriptModel;                 // §5 shallow 반응형 id-index(구 TranscriptItem[] 대체)
   status: AgentSessionStatus;                  // 15 §2
   streamingItemId: string | null;              // 가상화 강제 포함 대상(§3)
   pendingApprovals: ApprovalRequest[];         // severity!=="escalation" 파생(inline, 15 §5, §4.4)
@@ -305,11 +343,23 @@ export interface ComposerCapabilities {
   embeddedContext: boolean; // mention/resource 첨부
   audio: boolean;        // v1 미지원(15 §4 주의) → 항상 false
 }
+
+/**
+ * sealed-turn 윈도우 / tombstone 경계 config. **수치는 미정**이며 window/cap 실측은 13 OQ-52에서 확정한다
+ * (image cap은 OQ-12와 연동). 무거운 item(diff/이미지/긴 출력)의 bounded 표현은 13 §1.8(ring/요약)·OQ-12를 따른다.
+ */
+export interface TranscriptResidencyConfig {
+  HOT_WINDOW_TURNS: number;  // hot window에 body를 유지할 최근 sealed turn 수(미정 — 13 OQ-52)
+  HOT_WINDOW_BYTES: number;  // hot window body heap 상한(미정 — 13 OQ-52)
+  TOMBSTONE_LRU: number;     // evicted-tombstone LRU 슬롯 수(미정 — 13 OQ-52)
+}
 ```
+
+> **메모리 경계 요약(위험 §1.12, 13)**: 위 모델은 두 축으로 unbounded 증가를 막는다. (1) **반응성 경계** — `$state`는 `visibleItemIds`/`itemVersions`(+ status/pending)만이라 반응성 비용이 세션 길이와 무관하다. item body는 plain Map이라 streaming은 body 갱신 + `itemVersions` bump로만 렌더를 트리거한다. (2) **heap 경계** — sealed-turn 윈도우 eviction으로 오래된 sealed turn body를 `evicted-tombstone`으로 비운다(3-상태·seal 조건·late-event 규칙 정본 = 04 §3.7). 이 경계는 DOM 가상화(§7.2, OQ-17)와 **별개**다: surface가 살아 있어도(=DOM/store 유지) tombstone eviction으로 heap은 줄어든다. cold/tombstone 상태는 **runtime-only**이며 디스크에 영속하지 않는다(10 §4.7).
 
 > **approval 파생 관계(이중 소유 아님)**: `pendingApprovals`/`escalationApproval`은 별도 권위 store가 아니라, Event Router가 소유하는 pending request table(`(sessionHandle, requestId) → ApprovalRequest`, [`03`](03-target-architecture.md) §2.3 — `requestId` 단독은 runtime 간 충돌)을 15 §5 `ApprovalRequest.severity`로 분류해 노출하는 **표시용 파생 값**이다. 권위는 pending table 한 곳이며 store 형상·소유 관계 정본은 [`03`](03-target-architecture.md) §2.2(owns 주의)다. `severity==="escalation"`만 `escalationApproval`(modal), 그 외는 `pendingApprovals`(inline). v1 기본은 `normal`이되 [09](09-permissions-security.md) §8.3 고위험 집합(`bypassPermissions`/`danger-full-access`/sandbox 우회)은 v1부터 `escalation`으로 분류되어 escalation 분기가 작동한다([`13`](13-risks-open-questions.md) OQ-47).
 
-> `transcript-reducer.ts`(service, research/codebase-frontend.md §8)는 **순수 함수** `apply(state, event: AgentEvent): void`(또는 immutable 변형)로 04의 upsert/append/replace 규칙을 구현한다. controller는 이 reducer를 호출만 한다. reducer는 vitest 단위 테스트 대상(§9.4).
+> `transcript-reducer.ts`(service, research/codebase-frontend.md §8)는 **순수 함수** `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel`로 04의 upsert/append/replace 규칙 + seal/eviction/late-event 규칙(04 §3.7)을 구현한다. shallow 반응형 표면을 깨지 않도록, body는 `itemsById`(plain Map)에 두고 `visibleItemIds`/`itemVersions`만 반응형으로 갱신한다(§5). controller는 이 reducer를 호출만 한다. reducer는 vitest 단위 테스트 대상이며, late same-turn event(unseal→patch→reseal)·eviction(→tombstone, droppedLateEventCount)은 **reducer/store event fixture**로 검증한다(실제 wire 도착 여부는 13 OQ-53; §9.4).
 
 ---
 
@@ -381,11 +431,20 @@ ux-reference §7.1(Claude fullscreen) 패턴을 채택한다:
 - 사용자가 위로 스크롤하면 auto-follow 일시 정지("Scrolling up pauses auto-follow"). 맨 아래 도달 또는 명시적 행동(`Ctrl+End` 등)으로 재개.
 - **approval dialog는 auto-scroll 설정과 무관하게 항상 view로 스크롤**(ux-reference §7.1, §9, §4.4).
 
-### 7.2 가상화
+### 7.2 가상화 (소싱 + 격리 replay 뷰)
 
-긴 transcript 성능을 위해 **보이는 item만 mount**(ux-reference §1.1, §7.1). `MessageList`가 윈도잉을 담당하되 §3 주의대로 `streamingItemId` item은 강제 포함. 권장 라이브러리/방식은 `결정 필요`(직접 구현 vs 라이브러리, [13](13-risks-open-questions.md)).
+긴 transcript 성능을 위해 **보이는 item만 mount**(ux-reference §1.1, §7.1). `MessageList`는 `TranscriptModel.visibleItemIds`(순서·표시 대상)로 윈도잉하고 각 id의 body를 `TranscriptModel.itemsById`(plain Map, §5)에서 소싱한다(전체 배열 순회 없음). §3 주의대로 `streamingItemId` item은 윈도우에 강제 포함. 권장 라이브러리/방식은 `결정 필요`(직접 구현 vs 라이브러리, [13](13-risks-open-questions.md)).
 
-> **가상화(item 레벨) vs surface unmount 금지(surface 레벨)는 별개 경계다**(OQ-17 해소). item 가상화는 `MessageList` 내부에서 **보이지 않는 transcript item DOM만** mount/unmount하는 것이고, [10](10-persistence-migration.md) §4.3의 "process 생존 중 unmount 금지"는 **transcript surface(host = `AgentRuntimeShell`/`AgentTranscriptSurface`) 전체**에 적용되는 별개 규칙이다. host는 `visible=false`(탭 비활성)에도 `.hidden` CSS로만 숨기고 unmount하지 않으며(§2.2), late-attach store(transcript·status·pending 등 `AgentRuntimeViewState` §5)는 **surface 내부 메모리에 그대로 유지**된다. 즉 가상화로 끝부분 item이 unmount돼도 store와 surface는 살아 있으므로 seq 재구성 없이 안전하다. 이 경계 확인은 [13](13-risks-open-questions.md) OQ-17의 "08 가상화 경로가 surface를 unmount하지 않음" 게이트를 충족한다.
+> **두 경계가 별개임(① DOM 가상화 vs ② residency eviction vs ③ surface unmount 금지)**. ① **DOM 가상화(item 레벨)**는 `MessageList`가 **보이지 않는 transcript item DOM만** mount/unmount하는 것으로, store(`itemsById`) body는 그대로 둔다. ② **residency eviction(heap 레벨)**은 sealed-turn 윈도우 초과 시 `itemsById`에서 oldest sealed turn body를 비워 heap을 줄이는 것이다(`evicted-tombstone`, 04 §3.7). 즉 surface가 **살아 있어도(DOM/store 유지) heap은 감소**한다 — OQ-17이 다루는 "surface unmount"와는 직교한다. ③ [10](10-persistence-migration.md) §4.3의 "process 생존 중 unmount 금지"는 **transcript surface(host = `AgentRuntimeShell`/`AgentTranscriptSurface`) 전체**에 적용되는 규칙이다. host는 `visible=false`(탭 비활성)에도 `.hidden` CSS로만 숨기고 unmount하지 않으며(§2.2), late-attach store(`AgentRuntimeViewState` §5)는 **surface 내부 메모리에 유지**된다. 가상화로 끝부분 item이 unmount돼도 store와 surface는 살아 있으므로 seq 재구성 없이 안전하다. 이 경계 확인은 [13](13-risks-open-questions.md) OQ-17의 "08 가상화 경로가 surface를 unmount하지 않음" 게이트를 충족한다.
+
+**residency별 스크롤백 렌더**:
+
+- `unsealed`/`sealed-retained` 구간: body가 `itemsById`에 살아 있으므로 위로 스크롤하면 Map에서 **read-only로 저렴하게 렌더**한다(추가 I/O 없음). `sealed-retained`로 늦은 same-turn event가 오면 unseal→patch→reseal로 반영한다(04 §3.7).
+- `evicted-tombstone` 구간: body가 없으므로 일반 렌더 불가. 해당 위치에 **"이전 기록 불러오기" affordance**(tombstone placeholder)를 표시한다.
+  - `canLoad`면 → **격리 read-only replay 뷰**(10 §4.7, T5.6)로 라우팅한다. 별도 scratch replay 세션(`session/load`·`thread/read`)으로 해당 구간만 조회해 read-only 인스펙션으로 보여주며, **live store에 병합하지 않는다**(복원/영속 캐시가 아님, running turn과 충돌 없음). 뷰를 닫으면 scratch는 폐기한다.
+  - `canLoad`가 아니면 → "사용 불가" notice를 표시한다(영속되지 않은 runtime-only 구간).
+  - 격리 replay 범위(`thread/read` `includeTurns`가 gap-only인지 전체 snapshot인지)는 13 OQ-54에서 확정한다.
+- 무거운 item(diff/이미지/긴 출력)은 sealed-retained 구간에서도 bounded 표현(13 §1.8 ring/요약)으로 두고 지연 로드한다(image cap은 OQ-12 연동).
 
 ### 7.3 CommandOutputCard / 긴 출력
 
@@ -484,7 +543,7 @@ direct runtime은 ptyId가 없다. `onPtyId`/`onAuxStateChange`/`onExit`/`onResu
 
 ### 9.4 테스트
 
-- `transcript-reducer.ts`(순수 함수): `AgentEvent` 시퀀스 → transcript 스냅샷을 vitest로 검증(04 규칙 케이스: append/replace/upsert/reconcile/approval cleanup). research/codebase-frontend.md §1.6.
+- `transcript-reducer.ts`(순수 함수): `AgentEvent` 시퀀스 → `TranscriptModel` 스냅샷을 vitest로 검증(04 규칙 케이스: append/replace/upsert/reconcile/approval cleanup). seal/eviction/late-event(04 §3.7)는 **reducer/store event fixture**로 검증한다 — sealed-retained에 늦은 same-turn event 도착 시 unseal→patch→reseal, evicted-tombstone 구간 late event는 apply 금지 + `droppedLateEventCount` 증가(실제 wire 도착 여부는 13 OQ-53). research/codebase-frontend.md §1.6.
 - controller: `vi.fn()` deps로 단위 테스트(transport send/cancel/subscribe 모킹).
 - view: `@testing-library/svelte`. testid는 `src/lib/testids.ts` `TEST_IDS`에 추가(`agentTranscript`, `agentComposerInput`, `approvalModal`, `approvalInlineCard`, `agentToolCard`, `agentPlanBlock`)(research/codebase-frontend.md §1.6, §10 #9). approval 컴포넌트/testid 정본은 `ApprovalModal.svelte`/`approvalModal`, `ApprovalInlineCard.svelte`/`approvalInlineCard`이며 11·12와 통일한다. 수용 기준은 [11](11-testing-acceptance.md).
 
@@ -521,8 +580,8 @@ direct runtime은 ptyId가 없다. `onPtyId`/`onAuxStateChange`/`onExit`/`onResu
 | # | 항목 | 근거 |
 |---|---|---|
 | 1 | `features/agent-runtime/` 모듈 트리 생성(§2.1) | research/codebase-frontend.md §8 |
-| 2 | `transcript.ts` view-model(§5) — 15 타입 import, 재정의 금지 | 15 §1–§5 |
-| 3 | `transcript-reducer.ts` 순수 함수로 04 규칙 구현 | 04 §3, §4, §5 |
+| 2 | `transcript.ts` view-model(§5) — 15 타입 import 재정의 금지 + `TranscriptModel`/`TranscriptTurnResidency` shallow 반응형 id-index 정의 | 15 §1–§5, 04 §3.7 |
+| 3 | `transcript-reducer.ts` 순수 함수 `applyEvent(prev, event): TranscriptModel`로 04 규칙 + seal/eviction/late-event 구현 | 04 §3, §3.7, §4, §5 |
 | 4 | `AgentRuntimeShell.svelte` host 조립(§2.2), `visible`/lifecycle 계약 | research/codebase-frontend.md §3.3, §9 |
 | 5 | `SessionShell.svelte` 옵션 B 분기 + contract 확장(§9.1) | research/codebase-frontend.md §9, §10 |
 | 6 | AgentEvent→렌더 매핑 표(§3) 컴포넌트로 구현 | 15 §3, 04 |
@@ -530,7 +589,8 @@ direct runtime은 ptyId가 없다. `onPtyId`/`onAuxStateChange`/`onExit`/`onResu
 | 8 | approval inline/modal(§4.4), options 원본 보존, label만 i18n | 04 §4, 09, ux-reference §8 |
 | 9 | composer(§6): multiline/image/mention/send-stop/indicator/capability gating | ux-reference §9, §10 |
 | 9a | `channel:"thought"` 접이식 thinking 블록 렌더(§6.2, 기본 collapsed, response와 시각 구분) | 15 §3 channel, 04 §3.2.2 |
-| 10 | auto-follow + 가상화 + streamingItemId 강제 포함(§3, §7) | ux-reference §7 |
+| 10 | auto-follow + 가상화(`visibleItemIds`+`itemsById` 소싱) + streamingItemId 강제 포함(§3, §7.2) | ux-reference §7 |
+| 10a | sealed-turn 윈도우 eviction + tombstone 격리 replay 뷰(§7.2; live 미병합, scratch 폐기), 무거운 item bounded 표현 | 04 §3.7, 10 §4.7, 13 §1.8/§1.12, OQ-52/54/12 |
 | 11 | xterm 새 역할(§7.4): legacy/embed/aux/diagnostic | 04 §3.5 |
 | 12 | i18n `agentRuntime.*` en/ko 동시 추가(§8), 브랜딩 준수 | research/codebase-frontend.md §6, 09 |
 | 13 | testid 추가 + reducer/controller/view 테스트(§9.4) | research/codebase-frontend.md §1.6 |
@@ -544,6 +604,9 @@ direct runtime은 ptyId가 없다. `onPtyId`/`onAuxStateChange`/`onExit`/`onResu
 |---|---|---|
 | 모든 공통 타입(정본) | [`15-data-contracts.md`](15-data-contracts.md) | §1–§6 |
 | 상태 머신·upsert/append/replace·approval 생명주기·순서 보존 | [`04-normalized-agent-model.md`](04-normalized-agent-model.md) | §2, §3, §4, §5 |
+| seal 불변식·seal 조건·3-상태 residency·late-event 규칙(정본) | [`04-normalized-agent-model.md`](04-normalized-agent-model.md) | §3.7 |
+| runtime scrollback replay(read-only history inspection; live 미병합) | [`10-persistence-migration.md`](10-persistence-migration.md) | §4.7 |
+| Long-session transcript memory(S2)·window/cap 실측·격리 replay 범위 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | §1.12, OQ-52/53/54 |
 | UX 패턴 근거 | [`research/ux-reference.md`](research/ux-reference.md) | §1–§11 |
 | frontend feature 레이어·host 분기·룬 store·연결점 | [`research/codebase-frontend.md`](research/codebase-frontend.md) | §1, §2, §3, §8, §9, §10, §11 |
 | 권한·승인·브랜딩 제약 | [`09-permissions-security.md`](09-permissions-security.md) | 전체 |
