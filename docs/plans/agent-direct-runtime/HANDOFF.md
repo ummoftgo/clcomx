@@ -21,7 +21,7 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
 9. [11-testing-acceptance.md](11-testing-acceptance.md) / [12-implementation-workstreams.md](12-implementation-workstreams.md) — 테스트·수용 기준 / 작업 분해
 10. [13-risks-open-questions.md](13-risks-open-questions.md) / [14-sequence-and-state.md](14-sequence-and-state.md) — 위험·기본값 / 시퀀스·상태 다이어그램
 
-보조: [16-glossary.md](16-glossary.md)(용어집, 3축 구분 포함), [research/](research/)(코드 현실 근거), [01-source-map.md](01-source-map.md)(버전 핀), [adr-001-direct-agent-runtime.md](adr-001-direct-agent-runtime.md)(결정 기록).
+보조: [16-glossary.md](16-glossary.md)(용어집, 3축 구분 포함), [research/](research/)(코드 현실 근거), [01-source-map.md](01-source-map.md)(버전 핀), [adr-001-direct-agent-runtime.md](adr-001-direct-agent-runtime.md)·[adr-002-transcript-memory.md](adr-002-transcript-memory.md)(결정 기록).
 
 ## 각 문서의 역할 (한 줄)
 
@@ -46,6 +46,7 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
 | 16-glossary | 용어집·Codex/ACP/CLCOMX 대응표·3축 구분 |
 | **17-coding-conventions** | **코딩 규약 정본** — 도메인 단위 파일 분리·2000줄 임계, 한글 doc-comment(JSDoc/rustdoc) |
 | adr-001 | 아키텍처 결정 기록 |
+| adr-002 | 긴 세션 transcript 메모리 모델 결정 기록(shallow 반응형 + sealed-turn eviction) |
 | ref-* | **wire 정본** — Codex/ACP/Claude 프로토콜 사실 |
 | research/* | 코드 현실 **스냅샷**(backend/frontend, 해당 ref 시점; 충돌 시 실제 코드 우선) + 외부 UX 참고(ux-reference) |
 

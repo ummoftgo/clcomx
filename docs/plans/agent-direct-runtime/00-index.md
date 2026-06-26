@@ -79,6 +79,7 @@ CLCOMX의 현재 에이전트 화면은 `claude`와 `codex`를 터미널 프로�
 
 - **[14-sequence-and-state.md](14-sequence-and-state.md)**: 시퀀스/상태 다이어그램(세션 시작·prompt turn·approval·cancel·process exit·resume의 mermaid 시각화).
 - **[adr-001-direct-agent-runtime.md](adr-001-direct-agent-runtime.md)**: direct runtime 도입 아키텍처 결정 기록(맥락·결정·대안·결과).
+- **[adr-002-transcript-memory.md](adr-002-transcript-memory.md)**: 긴 세션 transcript 메모리 모델 결정 기록(shallow 반응형 + sealed-turn eviction + 3-상태 residency; 04 §3.7·08 §5·13 §1.12).
 - **[16-glossary.md](16-glossary.md)**: 용어집(provider 식별자, normalized 개념, protocol 용어, CLCOMX 내부 용어 정의).
 - **[17-coding-conventions.md](17-coding-conventions.md)** — **코딩 규약 정본**: 도메인 단위 파일/디렉토리 분리·2000줄 임계, 한글 보고서체 주석, 클래스/함수 doc-comment(JSDoc/rustdoc). 모든 신규 코드·문서 코드 예시가 따른다(타입은 15, 규칙은 04, 파일 위치는 12 §0이 정본; 17은 재정의하지 않고 인용).
 

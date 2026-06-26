@@ -313,7 +313,10 @@ export type TranscriptTurnResidency =
  *
  * **sealed-turn 윈도우 eviction**: hot window = 최근 N개 **sealed** turn + 모든 unsealed/active turn(인터리빙
  * 포함) + 현재 streaming. cap(`HOT_WINDOW_*`) 초과 시 가장 오래된 sealed turn body를 evict하고 그 turn을
- * `evicted-tombstone`으로 전이시킨다(04 §3.7). reducer 시그니처 = `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel`.
+ * `evicted-tombstone`으로 전이시킨다(04 §3.7). **evict 시 메타 인덱스도 함께 pruning**: 해당 turn의
+ * `itemVersions` 항목을 제거하고 `turnsById`는 {unsealed/sealed-retained + tombstone LRU}만 유지한다 —
+ * 그래야 반응형 표면(`itemVersions`)·`turnsById`도 body와 함께 bounded된다(세션 길이에 비례해 자라지 않음).
+ * reducer 시그니처 = `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel`.
  */
 export interface TranscriptModel {
   visibleItemIds: string[];                    // 반응형($state) — 순서·표시 대상(가상화 소싱, §7.2)

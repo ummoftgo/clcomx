@@ -180,7 +180,7 @@ turn이 아래 (a)~(e)를 **모두** 만족하면 `unsealed` → `sealed-retaine
 - **(a) 종료신호**: Codex `turn/completed`(status 무관 — `completed`/`failed`/`cancelled`) 또는 ACP `stopReason` 수신. (turn 종료 합성은 §2.1 규칙 5·"turn id 합성 규칙(ACP)".)
 - **(b) open item 0**: 해당 turn에 아직 streaming 중이거나 `item/completed` 미수신인 open item이 없다(§3.2 reconcile 완료).
 - **(c) pending approval/request 0**: 그 turn에 매인 pending approval·server request가 pending table에 남아 있지 않다(§4 pending table key `(sessionHandle, requestId)`).
-- **(d) turn-level 슬롯 반영**: turn-level `tokenUsage`/`plan`/`diff` 슬롯이 반영(누락 없이 최종값 수신)됐다.
+- **(d) turn-level 슬롯 settle**: turn-level `tokenUsage`/`plan`/`diff` 슬롯이 각각 **settle**됐다 — 즉 (최종값 수신) **또는** (해당 turn에 해당 없음/provider 미지원) **또는** (grace 후 미도착으로 부재 확정) 중 하나로 확정됐다. 세 슬롯이 항상 도착해야 하는 것은 아니다(plan/diff/usage 없는 turn도 정상).
 - **(e) 짧은 quiescence grace**: 해당 turn 라우팅 키(§3.4: Codex `(threadId, turnId)`, ACP 합성 `turnId`)로 더 이상 event가 도착하지 않는 짧은 정적 구간을 둔다. 이 grace는 turn/completed 후 도착할 수 있는 늦은 same-turn 보조 notification(아래 3-상태 규칙)을 흡수하기 위한 것이다.
 
 #### 3-상태 turn residency (`TranscriptTurnResidency` — 08 §5 타입 인용)
@@ -193,7 +193,7 @@ turn이 아래 (a)~(e)를 **모두** 만족하면 `unsealed` → `sealed-retaine
 
 #### eviction 윈도우 (정본)
 
-residency 윈도우 = **최근 N개 `sealed-retained` turn + 모든 `unsealed`/active turn(§3.4 라우팅 키로 인터리빙된 동시 turn 포함) + 현재 streaming**은 항상 body를 유지한다. cap(윈도우 크기·heap 한도) 초과 시 가장 오래된 `sealed-retained` turn body를 evict해 `evicted-tombstone`으로 전이시킨다. 이로써 heap이 세션 길이와 무관하게 bounded된다. 무거운 item(diff/이미지/출력)은 bounded 표현+지연 로드를 별도로 적용한다([`13`](13-risks-open-questions.md) §1.8 ring/요약, image는 OQ-12 연동). 구체 cap·N·grace 수치는 실측으로 정한다([`13`](13-risks-open-questions.md) OQ-52; image cap은 OQ-12 연동).
+residency 윈도우 = **최근 N개 `sealed-retained` turn + 모든 `unsealed`/active turn(§3.4 라우팅 키로 인터리빙된 동시 turn 포함) + 현재 streaming**은 항상 body를 유지한다. cap(윈도우 크기·heap 한도) 초과 시 가장 오래된 `sealed-retained` turn body를 evict해 `evicted-tombstone`으로 전이시킨다. **eviction은 body(`itemsById`)만 비우는 게 아니라 메타 인덱스도 함께 pruning한다**: evict된 turn의 `itemVersions` 항목을 제거하고, `turnsById`는 {`unsealed`/`sealed-retained` turn + tombstone LRU 범위}만 유지한다(그 밖의 turn 엔트리는 삭제). 그렇지 않으면 `itemVersions`(반응형)·`turnsById`가 evict된 turn마다 남아 세션 길이에 비례해 자란다. 이로써 body·반응형 표면·메타 인덱스가 **모두** 세션 길이와 무관하게 bounded된다. 무거운 item(diff/이미지/출력)은 bounded 표현+지연 로드를 별도로 적용한다([`13`](13-risks-open-questions.md) §1.8 ring/요약, image는 OQ-12 연동). 구체 cap·N·grace 수치는 실측으로 정한다([`13`](13-risks-open-questions.md) OQ-52; image cap은 OQ-12 연동).
 
 #### late same-turn 보조 notification (wire 실측 미결)
 
