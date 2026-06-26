@@ -441,9 +441,9 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
    */
   async function cancelTurn(handle: AgentSessionHandle, turnId?: string): Promise<void> {
     const rt = byHandle(handle);
-    // 1. closing 표시(원자적).
+    // 1. closing 표시(원자적). 이미 closing(respondApproval이 선점)인 항목은 제외 — 그 경로가 닫게 둔다(이중 wire 방지).
     const closing = [...rt.pendingApprovals.entries()].filter(
-      ([, ap]) => !turnId || ap.ref.turnId === turnId,
+      ([, ap]) => (!turnId || ap.ref.turnId === turnId) && !ap.closing,
     );
     for (const [, ap] of closing) ap.closing = true;
     // 2. cancelled 응답을 wire로 먼저(ref-acp §3.8 MUST) + emit + 제거.
@@ -473,15 +473,25 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       emit(rt, { type: "approval_resolved", ref: ap.ref, decision });
       return;
     }
-    // selected/cancelled만 wire로(위 가드로 failed 제외).
-    await deps.sendMessage(
-      rt.runtimeId,
-      buildPermissionResponse(ap.rpcId, { outcome: decision.outcome, optionId: decision.optionId }),
-    );
-    rt.pendingApprovals.delete(decision.requestId);
-    // status → running(04 §4.1).
-    emit(rt, { type: "approval_resolved", ref: ap.ref, decision });
-    emit(rt, { type: "session_status_changed", ref: ap.ref, status: "running" });
+    // wire 전 원자적 선점(New-F1 race): send await 동안 cancelTurn/closePending이 같은 pending을
+    // 닫지 못하게 closing으로 표시한다. 실패 시 되돌려 재시도·cleanup 재대상화를 허용한다.
+    ap.closing = true;
+    try {
+      // selected/cancelled만 wire로(위 가드로 failed 제외).
+      await deps.sendMessage(
+        rt.runtimeId,
+        buildPermissionResponse(ap.rpcId, { outcome: decision.outcome, optionId: decision.optionId }),
+      );
+    } catch (err) {
+      ap.closing = false;
+      throw err;
+    }
+    // 내가 선점한 항목만 닫는다(teardown으로 이미 지워졌으면 delete=false → 중복 emit 회피).
+    if (rt.pendingApprovals.delete(decision.requestId)) {
+      // status → running(04 §4.1).
+      emit(rt, { type: "approval_resolved", ref: ap.ref, decision });
+      emit(rt, { type: "session_status_changed", ref: ap.ref, status: "running" });
+    }
   }
 
   /** subscribeEvents: listener 등록 → AgentEvent 수신. 반환된 fn으로 해제. */

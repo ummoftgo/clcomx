@@ -552,6 +552,9 @@ export function mapCodexNotification(
       // 04 §4.2 규칙3: 해당 requestId의 pending approval을 cancelled로 닫음(사용자 응답 불필요).
       // C4 단계4: cancelTurn이 이미 닫은 뒤 늦게 도착하면 pending 부재 → [](멱등).
       const reqId = String(p.requestId);
+      // state 가드(New-F1 race): "pending"일 때만 닫는다. "responding"(사용자 respondApproval in-flight)/
+      // closing/closed/부재면 skip → 그 경로가 닫게 두어 이중 wire 응답·emit을 막는다(멱등).
+      if (!routing.hasPendingApproval(reqId)) return [];
       // resolveApproval이 돌려준 pending의 (threadId,turnId,itemId)로 ref를 구성한다.
       // threadId만 쓰면 store가 turnKey를 잘못 계산해 해당 turn의 pendingRequestCount가 0으로
       // 내려가지 않아 seal 조건 (c)가 영구 실패하고 eviction이 막힌다(long-session 메모리 경계 붕괴).

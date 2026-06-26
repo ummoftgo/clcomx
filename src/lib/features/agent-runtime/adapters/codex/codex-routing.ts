@@ -10,7 +10,7 @@
 import type { TokenUsage } from "../../contracts/normalized";
 
 /** approval pending 항목의 생명주기 상태(이중 응답/멱등 가드용, 04 §4.2). */
-type PendingApprovalState = "pending" | "closing" | "closed";
+type PendingApprovalState = "pending" | "responding" | "closing" | "closed";
 
 /**
  * pending approval 1건. requestId(정규화 string) 외에 **원본 JSON-RPC id 타입**과
@@ -166,6 +166,25 @@ export class CodexRouting {
   /** pending을 삭제하지 않고 조회만 한다(wire 성공 전 peek용). 없으면 undefined. */
   getPendingApproval(requestId: string): PendingApproval | undefined {
     return this.pendingApprovals.get(requestId);
+  }
+
+  /**
+   * 사용자 응답 전송을 위해 pending을 원자적으로 선점한다(compare-and-set, New-F1 race).
+   * state==="pending"일 때만 "responding"으로 전이하고 항목을 돌려준다. 이미 responding/closing/closed/부재면
+   * undefined(다른 경로가 선점·종료 중 → respondApproval no-op). 선점 후 cancelTurn(markTurnApprovalsClosing)·
+   * serverRequest/resolved(hasPendingApproval)는 "pending"만 보므로 이 항목을 건너뛴다 → 이중 wire 응답 방지.
+   */
+  claimForResponse(requestId: string): PendingApproval | undefined {
+    const p = this.pendingApprovals.get(requestId);
+    if (p === undefined || p.state !== "pending") return undefined;
+    p.state = "responding";
+    return p;
+  }
+
+  /** wire 전송 실패 시 선점을 되돌린다(responding→pending) — 재시도·cleanup 재대상화. */
+  revertResponse(requestId: string): void {
+    const p = this.pendingApprovals.get(requestId);
+    if (p !== undefined && p.state === "responding") p.state = "pending";
   }
 
   /** pending을 제거(closing/closed → 완전 제거)하고 항목을 돌려준다. 없으면 undefined. */

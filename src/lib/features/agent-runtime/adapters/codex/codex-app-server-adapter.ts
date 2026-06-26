@@ -452,10 +452,11 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
   ): Promise<void> {
     const rt = sessions.get(handle);
     if (!rt) return;
-    // peek만 한다(삭제는 wire 성공 후, New-F1). wire 실패 시 pending을 유지해야 재시도·shutdown cancel이 가능하다.
-    const pending = rt.routing.getPendingApproval(decision.requestId);
-    if (!pending) return; // 이미 닫힘 → no-op
     if (decision.outcome === "failed") return; // 04 §4.2 규칙4: wire 미전송
+    // pending을 원자적으로 선점한다(New-F1 race): send await 동안 cancelTurn/serverRequest-resolved가
+    // 같은 pending을 닫지 못하게 "responding"으로 표시. 이미 닫힘/응답중/cleanup 중이면 no-op(멱등).
+    const pending = rt.routing.claimForResponse(decision.requestId);
+    if (!pending) return;
 
     let codexDecision: string;
     if (decision.outcome === "cancelled") {
@@ -464,24 +465,32 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       // "selected": optionId가 곧 option kind(commandApprovalOptions의 id=kind).
       codexDecision = OPTION_KIND_TO_DECISION[decision.optionId ?? "reject_once"] ?? "decline";
     }
-    // 원본 JSON-RPC id 타입 복원(§6). jsonrpc 필드 없음(ref-codex §4.1). 실패 시 throw로 pending 유지.
-    await deps.send(rt.runtimeId, {
-      id: pending.rpcId,
-      result: { decision: codexDecision },
-    } as JsonRpcMessage);
-    // wire 성공 후에만 삭제 + emit(turnId/itemId 보존 → store seal 정합).
-    rt.routing.resolveApproval(decision.requestId);
-    emitToListeners(rt, {
-      type: "approval_resolved",
-      ref: {
-        provider: "codex",
-        threadId: pending.threadId,
-        turnId: pending.turnId,
-        itemId: pending.itemId,
-        requestId: decision.requestId,
-      },
-      decision,
-    });
+    // 원본 JSON-RPC id 타입 복원(§6). jsonrpc 필드 없음(ref-codex §4.1).
+    try {
+      await deps.send(rt.runtimeId, {
+        id: pending.rpcId,
+        result: { decision: codexDecision },
+      } as JsonRpcMessage);
+    } catch (err) {
+      // wire 실패 → 선점 복구(pending) 후 throw — 재시도·cleanup 재대상화 가능.
+      rt.routing.revertResponse(decision.requestId);
+      throw err;
+    }
+    // 내가 선점한 항목만 삭제(closePending이 teardown으로 먼저 지웠으면 undefined → 이중 emit 방지).
+    const removed = rt.routing.resolveApproval(decision.requestId);
+    if (removed) {
+      emitToListeners(rt, {
+        type: "approval_resolved",
+        ref: {
+          provider: "codex",
+          threadId: removed.threadId,
+          turnId: removed.turnId,
+          itemId: removed.itemId,
+          requestId: decision.requestId,
+        },
+        decision,
+      });
+    }
   }
 
   /** 세션 이벤트 구독(§3.2). 반환 UnlistenFn으로 해제. */
