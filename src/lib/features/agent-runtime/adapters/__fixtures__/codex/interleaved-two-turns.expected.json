@@ -1,0 +1,104 @@
+[
+  {
+    "type": "agent_message",
+    "ref": {
+      "provider": "codex",
+      "threadId": "A",
+      "turnId": "t1",
+      "itemId": "iA",
+      "raw": {
+        "type": "agentMessage",
+        "id": "iA",
+        "text": "",
+        "phase": null,
+        "memoryCitation": null
+      }
+    },
+    "content": [],
+    "mode": "replace"
+  },
+  {
+    "type": "agent_message",
+    "ref": {
+      "provider": "codex",
+      "threadId": "B",
+      "turnId": "t2",
+      "itemId": "iB",
+      "raw": {
+        "type": "agentMessage",
+        "id": "iB",
+        "text": "",
+        "phase": null,
+        "memoryCitation": null
+      }
+    },
+    "content": [],
+    "mode": "replace"
+  },
+  {
+    "type": "agent_message_delta",
+    "ref": {
+      "provider": "codex",
+      "threadId": "A",
+      "turnId": "t1",
+      "itemId": "iA"
+    },
+    "delta": "alpha"
+  },
+  {
+    "type": "agent_message_delta",
+    "ref": {
+      "provider": "codex",
+      "threadId": "B",
+      "turnId": "t2",
+      "itemId": "iB"
+    },
+    "delta": "beta"
+  },
+  {
+    "type": "agent_message",
+    "ref": {
+      "provider": "codex",
+      "threadId": "A",
+      "turnId": "t1",
+      "itemId": "iA",
+      "raw": {
+        "type": "agentMessage",
+        "id": "iA",
+        "text": "alpha",
+        "phase": null,
+        "memoryCitation": null
+      }
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "alpha"
+      }
+    ],
+    "mode": "replace"
+  },
+  {
+    "type": "agent_message",
+    "ref": {
+      "provider": "codex",
+      "threadId": "B",
+      "turnId": "t2",
+      "itemId": "iB",
+      "raw": {
+        "type": "agentMessage",
+        "id": "iB",
+        "text": "beta",
+        "phase": null,
+        "memoryCitation": null
+      }
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "beta"
+      }
+    ],
+    "mode": "replace"
+  }
+]

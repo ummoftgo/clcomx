@@ -1,0 +1,4 @@
+{"direction":"in","message":{"method":"item/started","params":{"threadId":"th_1","turnId":"t1","item":{"type":"agentMessage","id":"i1","text":"","phase":null,"memoryCitation":null}}}}
+{"direction":"in","message":{"method":"item/agentMessage/delta","params":{"threadId":"th_1","turnId":"t1","itemId":"i1","delta":"Look"}}}
+{"direction":"in","message":{"method":"item/agentMessage/delta","params":{"threadId":"th_1","turnId":"t1","itemId":"i1","delta":"s good"}}}
+{"direction":"in","message":{"method":"item/completed","params":{"threadId":"th_1","turnId":"t1","item":{"type":"agentMessage","id":"i1","text":"Looks good","phase":null,"memoryCitation":null}}}}

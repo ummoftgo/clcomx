@@ -1,0 +1,5 @@
+{"direction":"out","message":{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"sess-1","prompt":[{"type":"text","text":"hi"}]}}}
+{"direction":"in","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hel"},"messageId":"m1"}}}}
+{"direction":"in","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"lo"},"messageId":"m1"}}}}
+{"direction":"in","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"usage_update","used":1200,"size":200000}}}}
+{"direction":"in","message":{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}}

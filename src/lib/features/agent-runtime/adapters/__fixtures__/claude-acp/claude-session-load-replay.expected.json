@@ -1,0 +1,5 @@
+[
+  { "type": "user_message", "ref": { "provider": "claude", "sessionId": "sess-1", "messageId": "u1" }, "content": [ { "type": "text", "text": "past prompt" } ], "mode": "append" },
+  { "type": "agent_message_delta", "ref": { "provider": "claude", "sessionId": "sess-1", "messageId": "m1" }, "delta": "past reply" },
+  { "type": "session_loaded", "ref": { "provider": "claude", "sessionId": "sess-1" } }
+]

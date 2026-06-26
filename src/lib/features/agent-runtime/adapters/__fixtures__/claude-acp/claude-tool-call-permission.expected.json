@@ -1,0 +1,6 @@
+[
+  { "type": "tool_call_updated", "ref": { "provider": "claude", "sessionId": "sess-1", "toolCallId": "tc1" }, "update": { "id": "tc1", "title": "Edit file", "kind": "edit", "status": "pending" } },
+  { "type": "session_status_changed", "ref": { "provider": "claude", "sessionId": "sess-1", "requestId": "42", "toolCallId": "tc1" }, "status": "requires_action" },
+  { "type": "approval_requested", "ref": { "provider": "claude", "sessionId": "sess-1", "requestId": "42", "toolCallId": "tc1" }, "request": { "id": "42", "title": "Edit file", "toolCallId": "tc1", "options": [ { "id": "allow", "label": "Allow", "kind": "allow_once" }, { "id": "always", "label": "Always allow", "kind": "allow_always" }, { "id": "reject", "label": "Reject", "kind": "reject_once" } ], "severity": "normal" } },
+  { "type": "tool_call_updated", "ref": { "provider": "claude", "sessionId": "sess-1", "toolCallId": "tc1" }, "update": { "id": "tc1", "kind": "other", "status": "completed", "content": [ { "type": "diff", "path": "a.ts", "patch": "--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,1 @@\n-x\n+y" } ] } }
+]

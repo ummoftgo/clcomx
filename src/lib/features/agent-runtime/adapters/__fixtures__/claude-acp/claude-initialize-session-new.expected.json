@@ -1,0 +1,4 @@
+[
+  { "type": "session_started", "ref": { "provider": "claude", "sessionId": "sess-1" }, "cwd": "/home/u/proj" },
+  { "type": "session_status_changed", "ref": { "provider": "claude", "sessionId": "sess-1" }, "status": "ready" }
+]

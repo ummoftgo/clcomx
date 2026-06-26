@@ -1,0 +1,10 @@
+{"direction":"out","message":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"clcomx","version":"0.0.0"},"capabilities":null}}}
+{"direction":"in","message":{"id":1,"result":{"userAgent":"codex 0.142.0","codexHome":"/home/u/.codex","platformFamily":"unix","platformOs":"linux"}}}
+{"direction":"out","message":{"method":"initialized"}}
+{"direction":"in","message":{"method":"thread/started","params":{"thread":{"id":"th_1","sessionId":"sess_1","cwd":"/work"}}}}
+{"direction":"in","message":{"method":"turn/started","params":{"threadId":"th_1","turn":{"id":"t1"}}}}
+{"direction":"in","message":{"method":"item/started","params":{"threadId":"th_1","turnId":"t1","item":{"type":"agentMessage","id":"i1","text":"","phase":null,"memoryCitation":null}}}}
+{"direction":"in","message":{"method":"item/agentMessage/delta","params":{"threadId":"th_1","turnId":"t1","itemId":"i1","delta":"Looks"}}}
+{"direction":"in","message":{"method":"item/agentMessage/delta","params":{"threadId":"th_1","turnId":"t1","itemId":"i1","delta":" good"}}}
+{"direction":"in","message":{"method":"item/completed","params":{"threadId":"th_1","turnId":"t1","item":{"type":"agentMessage","id":"i1","text":"Looks good","phase":null,"memoryCitation":null}}}}
+{"direction":"in","message":{"method":"turn/completed","params":{"threadId":"th_1","turn":{"id":"t1","status":"completed"}}}}

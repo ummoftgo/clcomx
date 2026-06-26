@@ -1,0 +1,63 @@
+[
+  {
+    "type": "agent_message",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "i1",
+      "raw": {
+        "type": "agentMessage",
+        "id": "i1",
+        "text": "",
+        "phase": null,
+        "memoryCitation": null
+      }
+    },
+    "content": [],
+    "mode": "replace"
+  },
+  {
+    "type": "agent_message_delta",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "i1"
+    },
+    "delta": "Look"
+  },
+  {
+    "type": "agent_message_delta",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "i1"
+    },
+    "delta": "s good"
+  },
+  {
+    "type": "agent_message",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "i1",
+      "raw": {
+        "type": "agentMessage",
+        "id": "i1",
+        "text": "Looks good",
+        "phase": null,
+        "memoryCitation": null
+      }
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "Looks good"
+      }
+    ],
+    "mode": "replace"
+  }
+]

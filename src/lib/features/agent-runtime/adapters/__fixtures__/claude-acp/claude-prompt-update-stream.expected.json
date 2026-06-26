@@ -1,0 +1,6 @@
+[
+  { "type": "agent_message_delta", "ref": { "provider": "claude", "sessionId": "sess-1", "messageId": "m1" }, "delta": "Hel" },
+  { "type": "agent_message_delta", "ref": { "provider": "claude", "sessionId": "sess-1", "messageId": "m1" }, "delta": "lo" },
+  { "type": "turn_completed", "ref": { "provider": "claude", "sessionId": "sess-1" }, "status": "completed", "usage": { "contextUsed": 1200, "contextSize": 200000 } },
+  { "type": "session_status_changed", "ref": { "provider": "claude", "sessionId": "sess-1" }, "status": "idle" }
+]

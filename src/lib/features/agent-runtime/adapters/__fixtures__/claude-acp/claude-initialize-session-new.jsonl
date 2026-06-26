@@ -1,0 +1,4 @@
+{"direction":"out","message":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"clcomx","version":"0.9.0"}}}}
+{"direction":"in","message":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":{}},"promptCapabilities":{"image":true,"embeddedContext":true}},"agentInfo":{"name":"claude-agent-acp","version":"0.51.0"}}}}
+{"direction":"out","message":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/u/proj","mcpServers":[],"additionalDirectories":[]}}}
+{"direction":"in","message":{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}}

@@ -1,0 +1,143 @@
+[
+  {
+    "type": "tool_call_updated",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "c1",
+      "raw": {
+        "type": "commandExecution",
+        "id": "c1",
+        "command": "ls -la",
+        "cwd": "/work",
+        "processId": null,
+        "source": "agent",
+        "status": "inProgress",
+        "commandActions": [],
+        "aggregatedOutput": null,
+        "exitCode": null,
+        "durationMs": null
+      }
+    },
+    "update": {
+      "id": "c1",
+      "title": "ls -la",
+      "kind": "execute",
+      "status": "in_progress",
+      "rawInput": {
+        "command": "ls -la",
+        "cwd": "/work",
+        "commandActions": []
+      },
+      "rawOutput": {
+        "exitCode": null,
+        "durationMs": null
+      }
+    }
+  },
+  {
+    "type": "approval_requested",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "c1",
+      "toolCallId": "c1",
+      "requestId": "7",
+      "raw": {
+        "threadId": "th_1",
+        "turnId": "t1",
+        "itemId": "c1",
+        "startedAtMs": 1000,
+        "command": "ls -la",
+        "cwd": "/work",
+        "commandActions": []
+      }
+    },
+    "request": {
+      "id": "7",
+      "title": "agentRuntime.approval.command",
+      "body": "ls -la",
+      "toolCallId": "c1",
+      "severity": "normal",
+      "options": [
+        {
+          "id": "allow_once",
+          "label": "agentRuntime.approval.allowOnce",
+          "kind": "allow_once"
+        },
+        {
+          "id": "allow_always",
+          "label": "agentRuntime.approval.allowAlways",
+          "kind": "allow_always"
+        },
+        {
+          "id": "reject_once",
+          "label": "agentRuntime.approval.rejectOnce",
+          "kind": "reject_once"
+        },
+        {
+          "id": "cancel",
+          "label": "agentRuntime.approval.cancel",
+          "kind": "cancel"
+        }
+      ]
+    }
+  },
+  {
+    "type": "command_output_delta",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "c1"
+    },
+    "stream": "stdout",
+    "delta": "total 0\n"
+  },
+  {
+    "type": "tool_call_updated",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "c1",
+      "raw": {
+        "type": "commandExecution",
+        "id": "c1",
+        "command": "ls -la",
+        "cwd": "/work",
+        "processId": null,
+        "source": "agent",
+        "status": "completed",
+        "commandActions": [],
+        "aggregatedOutput": "total 0\n",
+        "exitCode": 0,
+        "durationMs": 12
+      }
+    },
+    "update": {
+      "id": "c1",
+      "title": "ls -la",
+      "kind": "execute",
+      "status": "completed",
+      "content": [
+        {
+          "type": "terminal",
+          "command": "ls -la",
+          "output": "total 0\n"
+        }
+      ],
+      "rawInput": {
+        "command": "ls -la",
+        "cwd": "/work",
+        "commandActions": []
+      },
+      "rawOutput": {
+        "exitCode": 0,
+        "durationMs": 12
+      }
+    }
+  }
+]

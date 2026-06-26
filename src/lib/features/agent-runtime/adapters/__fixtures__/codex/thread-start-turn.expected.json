@@ -1,0 +1,94 @@
+[
+  {
+    "type": "session_started",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "raw": {
+        "id": "th_1",
+        "sessionId": "sess_1",
+        "cwd": "/work"
+      }
+    },
+    "cwd": "/work"
+  },
+  {
+    "type": "session_status_changed",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1"
+    },
+    "status": "running"
+  },
+  {
+    "type": "agent_message",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "i1",
+      "raw": {
+        "type": "agentMessage",
+        "id": "i1",
+        "text": "",
+        "phase": null,
+        "memoryCitation": null
+      }
+    },
+    "content": [],
+    "mode": "replace"
+  },
+  {
+    "type": "agent_message_delta",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "i1"
+    },
+    "delta": "Looks"
+  },
+  {
+    "type": "agent_message_delta",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "i1"
+    },
+    "delta": " good"
+  },
+  {
+    "type": "agent_message",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1",
+      "itemId": "i1",
+      "raw": {
+        "type": "agentMessage",
+        "id": "i1",
+        "text": "Looks good",
+        "phase": null,
+        "memoryCitation": null
+      }
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "Looks good"
+      }
+    ],
+    "mode": "replace"
+  },
+  {
+    "type": "turn_completed",
+    "ref": {
+      "provider": "codex",
+      "threadId": "th_1",
+      "turnId": "t1"
+    },
+    "status": "completed"
+  }
+]
