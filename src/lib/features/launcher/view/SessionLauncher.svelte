@@ -52,7 +52,8 @@
     listWslDirectories,
     removeHistoryEntry: removeTabHistoryEntry,
     onOpenHistory: (entry) => onOpenHistory(entry),
-    onConfirm: (agentId, distro, workDir) => onConfirm(agentId, distro, workDir),
+    onConfirm: (agentId, distro, workDir, runtimeKind) =>
+      onConfirm(agentId, distro, workDir, runtimeKind),
     formatNoDistrosError: () => t("launcher.error.noDistros"),
     formatLoadDistrosError: (error) => `${t("launcher.error.loadDistros")}: ${error}`,
     formatLoadDirectoriesError: (error) => `${t("launcher.error.loadDirectories")}: ${error}`,
@@ -283,6 +284,24 @@
                 >
                   {launcher.selectedDistro}
                 </button>
+                {#if launcherController.selectedAgentSupportsDirect()}
+                  <!-- direct runtime 선택(10 §5): 지원 agent에서만 노출. 켜면 runtimeKind=direct-*. -->
+                  <label
+                    class="picker-badge direct-toggle"
+                    class:active={launcher.useDirectRuntime}
+                    data-testid={TEST_IDS.launcherDirectRuntimeToggle}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={launcher.useDirectRuntime}
+                      onchange={(e) =>
+                        launcherController.setUseDirectRuntime(
+                          (e.currentTarget as HTMLInputElement).checked,
+                        )}
+                    />
+                    <span>{t("launcher.directRuntime.toggle")}</span>
+                  </label>
+                {/if}
               </div>
             </div>
 
@@ -1341,6 +1360,21 @@
 
   .distro-trigger {
     font-family: inherit;
+  }
+
+  .direct-toggle {
+    cursor: pointer;
+    gap: var(--ui-space-2);
+  }
+
+  .direct-toggle input {
+    margin: 0;
+    cursor: pointer;
+  }
+
+  .direct-toggle.active {
+    border-color: color-mix(in srgb, var(--ui-accent) 56%, var(--tab-border));
+    background: color-mix(in srgb, var(--ui-accent-soft) 70%, var(--tab-active-bg));
   }
 
   .picker-list-frame {

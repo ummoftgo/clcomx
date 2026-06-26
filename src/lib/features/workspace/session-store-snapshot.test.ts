@@ -133,4 +133,65 @@ describe("session-store-snapshot", () => {
       dirtyPaths: ["/home/user/project/src/App.ts"],
     });
   });
+
+  it("normalizes a session without runtimeKind to pty on restore", () => {
+    const session = createRuntimeSession({
+      sessionId: "session-1",
+      agentId: "claude",
+      distro: "Ubuntu",
+      workDir: "/home/user/project",
+      title: "Project",
+      pinned: false,
+      locked: false,
+    });
+
+    expect(session.runtimeKind).toBe("pty");
+    expect(session.agentRuntime).toBeUndefined();
+  });
+
+  it("round-trips direct runtime metadata through snapshot and restore", () => {
+    const session = createRuntimeSession({
+      sessionId: "session-direct",
+      agentId: "codex",
+      distro: "Ubuntu",
+      workDir: "/home/user/project",
+      title: "Direct",
+      pinned: false,
+      locked: false,
+      runtimeKind: "direct-codex",
+      agentRuntime: {
+        sessionRuntimeKind: "direct-codex",
+        provider: "codex",
+        lastTurnId: "turn-3",
+        canLoad: true,
+        canResume: true,
+      },
+    });
+
+    expect(session.runtimeKind).toBe("direct-codex");
+
+    const windowSnapshot = createWorkspaceWindowSnapshot({
+      sessions: [session],
+      activeSessionId: "session-direct",
+      currentWindowLabel: "main",
+      currentWindowName: "main",
+    });
+
+    const tab = windowSnapshot.tabs[0];
+    expect(tab.runtimeKind).toBe("direct-codex");
+    expect(tab.agentRuntime).toMatchObject({
+      sessionRuntimeKind: "direct-codex",
+      provider: "codex",
+      lastTurnId: "turn-3",
+      canLoad: true,
+      canResume: true,
+    });
+
+    const restored = createRuntimeSession(tab);
+    expect(restored.runtimeKind).toBe("direct-codex");
+    expect(restored.agentRuntime).toMatchObject({
+      sessionRuntimeKind: "direct-codex",
+      provider: "codex",
+    });
+  });
 });

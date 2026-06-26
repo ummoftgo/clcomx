@@ -1,5 +1,5 @@
 import { invoke } from "./tauri/core";
-import type { WorkspaceSnapshot } from "./types";
+import type { WorkspaceSnapshot, WorkspaceTabSnapshot } from "./types";
 
 export interface PtyResumeCaptureResult {
   resumeToken: string | null;
@@ -22,8 +22,29 @@ export function sanitizeWorkspaceSnapshotForSave(
         ...tab,
         ptyId: null,
         resumeToken: null,
+        // 보조 방어선(10 §6, §3.2): direct runtime 메타의 비밀 3필드 마스킹. 최종 scrub은 backend가 보장.
+        agentRuntime: maskAgentRuntimeSecrets(tab.agentRuntime),
       })),
     })),
+  };
+}
+
+/**
+ * direct runtime 메타의 비밀 3필드(providerSessionId/providerThreadId/providerResumeToken)를
+ * undefined로 마스킹한다(보조 방어선, 10 §6). runtimeKind/provider/버전 필드는 비밀이 아니므로 유지.
+ * 입력이 없으면 그대로 undefined를 돌려준다(기존 PTY 세션 무영향).
+ */
+function maskAgentRuntimeSecrets(
+  agentRuntime: WorkspaceTabSnapshot["agentRuntime"],
+): WorkspaceTabSnapshot["agentRuntime"] {
+  if (!agentRuntime) {
+    return agentRuntime;
+  }
+  return {
+    ...agentRuntime,
+    providerSessionId: undefined,
+    providerThreadId: undefined,
+    providerResumeToken: undefined,
   };
 }
 

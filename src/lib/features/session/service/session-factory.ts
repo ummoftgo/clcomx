@@ -28,6 +28,8 @@ export function createSessionLaunchRequest(input: {
   workDir: string;
   title?: string | null;
   resumeToken?: string | null;
+  /** direct runtime 선택 시 host 종류(10 §5). 미지정 시 기존 PTY 경로. */
+  runtimeKind?: SessionRuntimeKind;
 }): SessionLaunchRequest {
   const workDir = input.workDir;
   return {
@@ -36,6 +38,7 @@ export function createSessionLaunchRequest(input: {
     workDir,
     title: input.title ?? (workDir.split("/").pop() || workDir),
     resumeToken: input.resumeToken ?? null,
+    runtimeKind: input.runtimeKind,
   };
 }
 

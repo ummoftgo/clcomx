@@ -33,6 +33,9 @@ function createWorkspaceTabSnapshot(session: SessionPersistedState): WorkspaceTa
       column: entry.column ?? null,
     })),
     activeEditorPath: session.activeEditorPath,
+    // direct runtime 식별 필드(10 §3.2). 미지정이면 복원 정규화에서 "pty"로 취급되므로 그대로 전달.
+    runtimeKind: session.runtimeKind,
+    agentRuntime: session.agentRuntime,
   };
 }
 

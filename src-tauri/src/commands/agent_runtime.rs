@@ -7,7 +7,8 @@ pub use crate::features::agent_runtime::types::{
     AgentRuntimeCancelTarget, AgentRuntimeSnapshot, AgentRuntimeStartParams, JsonRpcMessage,
     RuntimeId,
 };
-use crate::features::agent_runtime::{self, AgentRuntimeState};
+use crate::app_env::is_test_mode;
+use crate::features::agent_runtime::{self, resolver, AgentRuntimeState};
 use tauri::AppHandle;
 
 /// 새 direct runtime 시작. backend가 provider로 신뢰 절대경로를 resolve해 process를 띄운다.
@@ -57,4 +58,26 @@ pub fn agent_runtime_get_snapshot(
     runtime_id: RuntimeId,
 ) -> Result<AgentRuntimeSnapshot, String> {
     agent_runtime::get_snapshot(state.inner(), runtime_id)
+}
+
+/// Claude adapter entry(`claude-agent-acp` `dist/index.js`) 신뢰 절대경로 resolve(통합 갭 G1, 15 §8.1).
+///
+/// frontend Claude adapter의 `resolveLaunch`가 `adapterEntryPath`를 얻는 경로다. backend가 신뢰
+/// 절대경로를 resolve하고(S1 경계), 실제 spawn 시 allowlist가 args[0]를 다시 검증한다(start 재검증).
+/// test-mode(is_test_mode)에서는 실제 WSL 호출 없이 mock 절대경로를 돌려준다.
+#[tauri::command]
+pub fn agent_runtime_resolve_adapter_entry(
+    provider: String,
+    distro: String,
+) -> Result<String, String> {
+    // test-mode: 실제 WSL probe 없이 결정적 mock 절대경로 반환(start와 동일한 분기 정책, §10).
+    if is_test_mode() {
+        if provider != "claude" {
+            return Err(format!(
+                "adapter entry resolve is claude-only, got provider '{provider}'"
+            ));
+        }
+        return Ok("/mock/claude-agent-acp/dist/index.js".to_string());
+    }
+    resolver::resolve_trusted_adapter_entry(&provider, &distro)
 }

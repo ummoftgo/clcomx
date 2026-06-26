@@ -33,6 +33,7 @@ import type {
 } from "../contracts/runtime-port";
 import {
   agentRuntimeStart,
+  agentRuntimeResolveAdapterEntry,
 } from "./transport";
 
 /** 단조 증가 JSON-RPC id 발급기(세션 간 공유 카운터). */
@@ -84,16 +85,16 @@ function makeListenRuntime() {
 }
 
 /**
- * Claude resolveLaunch 기본 구현. backend가 node 절대경로·adapterEntryPath를 resolve하는 command가
- * 아직 연결되지 않았으므로(후속 backend phase), 연결 전에는 명시적으로 실패시켜 잘못된 launch를 막는다.
+ * Claude resolveLaunch 기본 구현(통합 갭 G1 해소). backend `agent_runtime_resolve_adapter_entry`
+ * command로 신뢰 절대경로(`claude-agent-acp` `dist/index.js`)를 resolve해 ResolvedLaunch.adapterEntryPath에
+ * 채운다. S1 경계 유지: 절대경로 resolve는 backend가 하고, 실제 start 시 allowlist가 args[0]를 재검증한다.
+ * node command(executable)는 backend가 provider로 resolve하므로 여기서 돌려주지 않는다(non-secret env만 전달).
  */
 function defaultClaudeResolveLaunch(
-  _p: StartSessionParams | ResumeSessionParams,
+  p: StartSessionParams | ResumeSessionParams,
 ): Promise<ResolvedLaunch> {
-  return Promise.reject(
-    new Error(
-      "claude-acp resolveLaunch is not wired yet (backend entry resolve pending)",
-    ),
+  return agentRuntimeResolveAdapterEntry("claude", p.distro).then(
+    (adapterEntryPath) => ({ adapterEntryPath }),
   );
 }
 

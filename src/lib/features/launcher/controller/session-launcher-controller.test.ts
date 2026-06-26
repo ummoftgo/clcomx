@@ -190,7 +190,8 @@ describe("session-launcher-controller", () => {
 
     runtime.controller.confirmDirectory();
 
-    expect(runtime.deps.onConfirm).toHaveBeenCalledWith("codex", "Ubuntu", "/typed/path");
+    // direct 토글 off → runtimeKind는 undefined(PTY 기본 경로).
+    expect(runtime.deps.onConfirm).toHaveBeenCalledWith("codex", "Ubuntu", "/typed/path", undefined);
     expect(runtime.state.step).toBe("home");
     expect(runtime.state.pathInput).toBe("/home");
   });
@@ -288,5 +289,86 @@ describe("session-launcher-controller", () => {
 
     expect(runtime.state.selectedAgentId).toBe("codex");
     expect(runtime.state.agentPickerOpen).toBe(false);
+  });
+
+  describe("direct runtime selection (G2)", () => {
+    it("defaults the direct toggle off and confirms with no runtimeKind", () => {
+      const runtime = createRuntime();
+      runtime.state.step = "browser";
+      runtime.state.selectedAgentId = "codex";
+      runtime.state.selectedDistro = "Ubuntu";
+      runtime.state.pathInput = "/work";
+
+      expect(runtime.state.useDirectRuntime).toBe(false);
+      runtime.controller.confirmDirectory();
+
+      expect(runtime.deps.onConfirm).toHaveBeenCalledWith("codex", "Ubuntu", "/work", undefined);
+    });
+
+    it("confirms with direct-codex when the direct toggle is on for codex", () => {
+      const runtime = createRuntime();
+      runtime.state.step = "browser";
+      runtime.state.selectedAgentId = "codex";
+      runtime.state.selectedDistro = "Ubuntu";
+      runtime.state.pathInput = "/work";
+
+      runtime.controller.setUseDirectRuntime(true);
+      expect(runtime.state.useDirectRuntime).toBe(true);
+      runtime.controller.confirmDirectory();
+
+      expect(runtime.deps.onConfirm).toHaveBeenCalledWith("codex", "Ubuntu", "/work", "direct-codex");
+    });
+
+    it("confirms with direct-claude when the direct toggle is on for claude", () => {
+      const runtime = createRuntime();
+      runtime.state.step = "browser";
+      runtime.state.selectedAgentId = "claude";
+      runtime.state.selectedDistro = "Ubuntu";
+      runtime.state.pathInput = "/work";
+
+      runtime.controller.setUseDirectRuntime(true);
+      runtime.controller.confirmDirectory();
+
+      expect(runtime.deps.onConfirm).toHaveBeenCalledWith("claude", "Ubuntu", "/work", "direct-claude");
+    });
+
+    it("reports direct support per selected agent", () => {
+      const runtime = createRuntime();
+      runtime.state.selectedAgentId = "codex";
+      expect(runtime.controller.selectedAgentSupportsDirect()).toBe(true);
+
+      runtime.controller.selectAgent("some-custom-agent" satisfies AgentId);
+      expect(runtime.controller.selectedAgentSupportsDirect()).toBe(false);
+    });
+
+    it("ignores the direct toggle for agents without direct support", () => {
+      const runtime = createRuntime();
+      runtime.state.selectedAgentId = "some-custom-agent";
+
+      runtime.controller.setUseDirectRuntime(true);
+      expect(runtime.state.useDirectRuntime).toBe(false);
+
+      runtime.state.step = "browser";
+      runtime.state.selectedDistro = "Ubuntu";
+      runtime.state.pathInput = "/work";
+      runtime.controller.confirmDirectory();
+      // direct 미지원 agent는 토글 무시 → PTY 경로(runtimeKind undefined).
+      expect(runtime.deps.onConfirm).toHaveBeenCalledWith(
+        "some-custom-agent",
+        "Ubuntu",
+        "/work",
+        undefined,
+      );
+    });
+
+    it("clears the direct toggle when switching to a non-direct agent", () => {
+      const runtime = createRuntime();
+      runtime.state.selectedAgentId = "codex";
+      runtime.controller.setUseDirectRuntime(true);
+      expect(runtime.state.useDirectRuntime).toBe(true);
+
+      runtime.controller.selectAgent("some-custom-agent" satisfies AgentId);
+      expect(runtime.state.useDirectRuntime).toBe(false);
+    });
   });
 });

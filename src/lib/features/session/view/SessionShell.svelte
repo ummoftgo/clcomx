@@ -20,7 +20,10 @@
 </script>
 
 {#if useDirectRuntime}
-  <AgentTranscriptSurface {...hostProps} />
+  <AgentTranscriptSurface
+    {...hostProps}
+    onFallbackToPty={(context) => props.onSessionFallbackToPty?.(context)}
+  />
 {:else}
   <Terminal {...hostProps} />
 {/if}

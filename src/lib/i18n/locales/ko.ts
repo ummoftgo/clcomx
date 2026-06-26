@@ -73,6 +73,10 @@ const ko = {
       title: "에이전트 선택",
       selectHint: "이 에이전트로 새 세션을 시작합니다",
     },
+    directRuntime: {
+      toggle: "다이렉트 런타임",
+      hint: "터미널 대신 구조화된 런타임으로 이 에이전트를 실행합니다.",
+    },
     recent: {
       eyebrow: "최근",
       title: "최근 항목",
@@ -490,6 +494,11 @@ const ko = {
       unsupportedContent: "(지원되지 않는 내용)",
       legacyNotice: "이 에이전트는 직접 런타임을 지원하지 않아 레거시 터미널을 사용합니다.",
       diagnosticHint: "진단을 위해 전체 로그를 여세요.",
+      title: "다이렉트 런타임을 시작하지 못했습니다",
+      description: "다이렉트 런타임으로 에이전트를 시작할 수 없습니다. 계속 진행할 방법을 선택하세요.",
+      openPty: "터미널로 대신 열기",
+      retry: "다이렉트 런타임 다시 시도",
+      cancel: "취소",
     },
   },
 } as const;

@@ -1,6 +1,7 @@
 import type { AgentId } from "../../../agents";
 import type { PtyResumeCaptureResult } from "../../../workspace";
 import type { Session, TabHistoryEntry } from "../../../types";
+import type { SessionRuntimeKind } from "../../agent-runtime/contracts/metadata";
 import type { SessionShellAuxState } from "../contracts/session-shell";
 import {
   applySessionAuxState,
@@ -91,6 +92,7 @@ export function createSessionLifecycleController(
     workDir: string,
     title = workDir.split("/").pop() || workDir,
     resumeToken: string | null = null,
+    runtimeKind?: SessionRuntimeKind,
   ) => {
     launchSession(createLaunchDependencies(deps), {
       agentId,
@@ -98,6 +100,7 @@ export function createSessionLifecycleController(
       workDir,
       title,
       resumeToken,
+      runtimeKind,
     });
   };
 

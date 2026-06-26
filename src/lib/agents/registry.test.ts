@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getAgentDefinition } from "./registry";
+import {
+  agentSupportsDirectRuntime,
+  getAgentDefinition,
+  resolveRuntimeKind,
+} from "./registry";
 
 describe("agent registry", () => {
   it("builds Claude start and resume commands with shared extra args", () => {
@@ -35,5 +39,30 @@ describe("agent registry", () => {
 
     expect(agent.buildStartCommand()).toBe("'codex'");
     expect(agent.buildResumeCommand("session-123")).toBe("'codex' 'resume' 'session-123'");
+  });
+});
+
+describe("agent direct runtime capability", () => {
+  it("marks codex and claude as direct-runtime capable with provider", () => {
+    expect(getAgentDefinition("codex").directRuntime).toEqual({ provider: "codex" });
+    expect(getAgentDefinition("claude").directRuntime).toEqual({ provider: "claude" });
+    expect(agentSupportsDirectRuntime("codex")).toBe(true);
+    expect(agentSupportsDirectRuntime("claude")).toBe(true);
+  });
+
+  it("treats unknown/PTY-only agents as direct-unsupported (default pty)", () => {
+    // 미등록 agent는 default factory가 directRuntime 미설정으로 반환한다.
+    expect(getAgentDefinition("some-custom-agent").directRuntime).toBeUndefined();
+    expect(agentSupportsDirectRuntime("some-custom-agent")).toBe(false);
+  });
+
+  it("resolves runtimeKind from agent + direct toggle", () => {
+    expect(resolveRuntimeKind("codex", true)).toBe("direct-codex");
+    expect(resolveRuntimeKind("claude", true)).toBe("direct-claude");
+    // 토글 off면 항상 pty(자동 승격 없음, 10 §5).
+    expect(resolveRuntimeKind("codex", false)).toBe("pty");
+    expect(resolveRuntimeKind("claude", false)).toBe("pty");
+    // direct 미지원 agent는 토글이 켜져도 pty로 폴백.
+    expect(resolveRuntimeKind("some-custom-agent", true)).toBe("pty");
   });
 });

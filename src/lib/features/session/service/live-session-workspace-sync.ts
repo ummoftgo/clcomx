@@ -21,6 +21,9 @@ function createSessionCore(tab: WorkspaceTabSnapshot): SessionCore {
     locked: tab.locked ?? false,
     distro: tab.distro,
     workDir: tab.workDir,
+    // direct runtime 식별 필드 hydrate(10 §3.2). 미지정(기존 세션)이면 "pty"로 normalize.
+    runtimeKind: tab.runtimeKind ?? "pty",
+    agentRuntime: tab.agentRuntime,
   };
 }
 
@@ -92,6 +95,8 @@ export function applyWorkspaceWindowSnapshot(params: {
       existing.resumeToken = tab.resumeToken ?? null;
       existing.distro = tab.distro;
       existing.workDir = tab.workDir;
+      existing.runtimeKind = tab.runtimeKind ?? "pty";
+      existing.agentRuntime = tab.agentRuntime;
       existing.auxVisible = tab.auxVisible ?? false;
       existing.auxHeightPercent = tab.auxHeightPercent ?? null;
       existing.viewMode = tab.viewMode ?? "terminal";

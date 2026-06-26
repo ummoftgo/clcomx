@@ -26,6 +26,8 @@ fn workspace_state_with_session(
         editor_root_dir: work_dir.to_string(),
         open_editor_tabs: Vec::new(),
         active_editor_path: None,
+        runtime_kind: "pty".into(),
+        agent_runtime: None,
     };
 
     let window = crate::commands::workspace::WindowSnapshot {

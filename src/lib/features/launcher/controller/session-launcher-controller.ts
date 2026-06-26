@@ -1,5 +1,7 @@
 import type { AgentId } from "../../../agents";
+import { agentSupportsDirectRuntime, resolveRuntimeKind } from "../../../agents";
 import type { TabHistoryEntry } from "../../../types";
+import type { SessionRuntimeKind } from "../../agent-runtime/contracts/metadata";
 import type { WslEntry } from "../../../wsl";
 
 export type SessionLauncherStep = "home" | "browser";
@@ -9,6 +11,8 @@ export interface SessionLauncherState {
   distros: string[];
   selectedDistro: string;
   selectedAgentId: AgentId;
+  /** direct runtime 토글(선택 agent가 direct 지원 시에만 의미). 기본 off(PTY). */
+  useDirectRuntime: boolean;
   currentPath: string;
   selectedPath: string;
   directories: WslEntry[];
@@ -34,7 +38,12 @@ export interface SessionLauncherControllerDependencies {
   listWslDirectories: (distro: string, path: string) => Promise<WslEntry[]>;
   removeHistoryEntry: (entry: TabHistoryEntry) => Promise<void>;
   onOpenHistory: (entry: TabHistoryEntry) => void;
-  onConfirm: (agentId: AgentId, distro: string, workDir: string) => void;
+  onConfirm: (
+    agentId: AgentId,
+    distro: string,
+    workDir: string,
+    runtimeKind?: SessionRuntimeKind,
+  ) => void;
   formatNoDistrosError: () => string;
   formatLoadDistrosError: (error: unknown) => string;
   formatLoadDirectoriesError: (error: unknown) => string;
@@ -47,6 +56,7 @@ export function createSessionLauncherState(defaultAgentId: AgentId): SessionLaun
     distros: [],
     selectedDistro: "",
     selectedAgentId: defaultAgentId || "claude",
+    useDirectRuntime: false,
     currentPath: "/home",
     selectedPath: "/home",
     directories: [],
@@ -84,6 +94,20 @@ export function createSessionLauncherController(
         ? preferredAgentId
         : "claude";
     }
+    // 선택 agent가 direct 미지원이면 토글을 강제로 끈다(노출/선택 일관성).
+    if (state.useDirectRuntime && !agentSupportsDirectRuntime(state.selectedAgentId)) {
+      state.useDirectRuntime = false;
+    }
+  }
+
+  /** 선택 agent가 direct runtime을 지원하는지(토글 노출 게이트). */
+  function selectedAgentSupportsDirect() {
+    return agentSupportsDirectRuntime(state.selectedAgentId);
+  }
+
+  /** direct runtime 토글 설정(미지원 agent면 무시). */
+  function setUseDirectRuntime(value: boolean) {
+    state.useDirectRuntime = value && agentSupportsDirectRuntime(state.selectedAgentId);
   }
 
   async function ensureDistrosLoaded() {
@@ -113,6 +137,7 @@ export function createSessionLauncherController(
     state.step = "home";
     state.selectedDistro = "";
     state.selectedAgentId = deps.getDefaultAgentId() || "claude";
+    state.useDirectRuntime = false;
     state.currentPath = "/home";
     state.selectedPath = "/home";
     state.pathInput = "/home";
@@ -222,6 +247,10 @@ export function createSessionLauncherController(
   function selectAgent(agentId: AgentId) {
     state.selectedAgentId = agentId;
     state.agentPickerOpen = false;
+    // agent 변경으로 direct 미지원이 되면 토글을 끈다(상태 일관성).
+    if (state.useDirectRuntime && !agentSupportsDirectRuntime(agentId)) {
+      state.useDirectRuntime = false;
+    }
   }
 
   function openDistroPicker() {
@@ -263,12 +292,21 @@ export function createSessionLauncherController(
   }
 
   function confirmDirectory() {
-    deps.onConfirm(state.selectedAgentId, state.selectedDistro, getLaunchPath(state));
+    // direct 토글이 켜져 있고 agent가 지원하면 "direct-*", 아니면 undefined(PTY 기본 경로, 10 §5).
+    const runtimeKind = resolveRuntimeKind(state.selectedAgentId, state.useDirectRuntime);
+    deps.onConfirm(
+      state.selectedAgentId,
+      state.selectedDistro,
+      getLaunchPath(state),
+      runtimeKind === "pty" ? undefined : runtimeKind,
+    );
     resetToHome();
   }
 
   return {
     syncSelectedAgentId,
+    selectedAgentSupportsDirect,
+    setUseDirectRuntime,
     ensureDistrosLoaded,
     resetToHome,
     selectDistro,

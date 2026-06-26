@@ -38,6 +38,11 @@ export interface SessionCore {
    * SessionViewMode와는 별개 축이다(viewMode=surface 토글, runtimeKind=host 종류).
    */
   runtimeKind?: SessionRuntimeKind;
+  /**
+   * direct runtime 재개·복원용 메타(15 §7.2). transcript 전체는 저장하지 않는다.
+   * 비밀 필드(providerSessionId/providerThreadId/providerResumeToken)는 저장 직전 scrub(10 §6).
+   */
+  agentRuntime?: AgentRuntimeMetadata;
 }
 
 export interface SessionShellRuntimeState {

@@ -18,3 +18,6 @@ pub(crate) use self::store::{
     normalize_window_snapshot, normalize_workspace_snapshot, write_workspace,
 };
 pub use self::types::{EditorTabRef, WindowSnapshot, WorkspaceSnapshot, WorkspaceTabSnapshot};
+// 15 §7.3 미러 타입 — direct runtime 메타. 현재는 store 테스트와 후속 단계에서 사용.
+#[allow(unused_imports)]
+pub use self::types::AgentRuntimeMetadataRecord;

@@ -26,8 +26,14 @@
   import MessageList from "./MessageList.svelte";
   import AgentComposer from "./AgentComposer.svelte";
   import ApprovalModal from "./ApprovalModal.svelte";
+  import RuntimeFallbackPanel from "./RuntimeFallbackPanel.svelte";
   import ReplayPanel from "./ReplayPanel.svelte";
   import { createDefaultReplayLoader, type ReplayLoader } from "../service/runtime-replay";
+  import {
+    createRuntimeFallbackController,
+    type RuntimeFallbackContext,
+    type RuntimeFallbackController,
+  } from "../controller/runtime-fallback-controller";
   import type { ApprovalDecision } from "../contracts/normalized";
 
   interface Props extends AgentRuntimeHostProps {
@@ -37,6 +43,11 @@
     appVersion?: string;
     /** 테스트용 replay loader 팩토리 주입(미지정 시 기본 read-only loader, OQ-54 전 최소 구현). */
     createReplayLoader?: () => ReplayLoader;
+    /**
+     * direct runtime spawn/initialize 실패 시 legacy PTY 새 세션으로 전환하는 콜백(10 §4.6).
+     * 미지정이면 fallback 패널의 "터미널로 열기" 선택지가 no-op(graceful 에러만 표시).
+     */
+    onFallbackToPty?: (context: RuntimeFallbackContext) => void | Promise<void>;
   }
 
   let props: Props = $props();
@@ -56,44 +67,96 @@
   });
 
   // svelte-ignore state_referenced_locally
-  const controller: AgentRuntimeController = createAgentRuntimeController({
-    createPort:
-      props.createPort ??
-      createDefaultPortFactory({ appVersion: props.appVersion ?? "0.0.0" }),
-    store,
+  const createPort =
+    props.createPort ??
+    createDefaultPortFactory({ appVersion: props.appVersion ?? "0.0.0" });
+
+  // controller는 retry 시 새 인스턴스로 교체되므로 가변으로 보유한다(start 가드가 재시작을 막기 때문).
+  let controller: AgentRuntimeController | null = null;
+
+  /** direct runtime 세션 시작. 실패하면 fallback 패널을 띄운다(10 §4.6 — 자동 폴백 금지). */
+  async function startRuntime(): Promise<void> {
+    const next = createAgentRuntimeController({ createPort, store });
+    controller = next;
+    try {
+      await next.start({
+        sessionHandle: props.sessionId,
+        runtimeKind,
+        distro: props.distro,
+        workDir: props.workDir,
+      });
+    } catch (error) {
+      // spawn/initialize 거부 — 자동 폴백하지 않고 선택지를 표시한다.
+      fallback.markFailed(error);
+    }
+  }
+
+  // fallback 컨트롤러: start 실패 시 "터미널로 열기 / 재시도 / 취소" 선택지를 노출(10 §4.6).
+  // svelte-ignore state_referenced_locally
+  const fallback: RuntimeFallbackController = createRuntimeFallbackController({
+    context: {
+      sessionId: props.sessionId,
+      agentId: props.agentId,
+      distro: props.distro,
+      workDir: props.workDir,
+    },
+    onFallbackToPty: (context) => props.onFallbackToPty?.(context),
+    onRetry: () => startRuntime(),
   });
+
+  // fallback 패널의 reactive 표면(컨트롤러 state는 plain — view에서 룬으로 미러).
+  let fallbackVisible = $state(false);
+  let fallbackMessage = $state<string | null>(null);
+  /** 컨트롤러 plain state를 reactive 미러에 반영한다(markFailed/선택 후 호출). */
+  function syncFallback(): void {
+    fallbackVisible = fallback.state.visible;
+    fallbackMessage = fallback.state.message;
+  }
 
   // grace 경과 후 seal/eviction을 주기적으로 트리거(reducer는 동기라 외부가 grace를 친다, 04 §3.7).
   let sealTimer: ReturnType<typeof setInterval> | null = null;
 
   onMount(() => {
-    void controller.start({
-      sessionHandle: props.sessionId,
-      runtimeKind,
-      distro: props.distro,
-      workDir: props.workDir,
-    });
+    void startRuntime().finally(syncFallback);
     sealTimer = setInterval(() => store.flushSealAndEvict(), 1000);
   });
 
   onDestroy(() => {
     if (sealTimer !== null) clearInterval(sealTimer);
-    void controller.dispose();
+    void controller?.dispose();
   });
+
+  /** "터미널로 열기" — legacy PTY 새 세션으로 전환(10 §4.6). */
+  function onFallbackPty(): void {
+    void Promise.resolve(fallback.chooseLegacyPty()).finally(syncFallback);
+  }
+
+  /** "재시도" — 같은 direct runtime을 다시 기동. */
+  function onFallbackRetry(): void {
+    // 기존 실패 controller는 정리하고 새로 시작한다.
+    void controller?.dispose();
+    void Promise.resolve(fallback.chooseRetry()).finally(syncFallback);
+  }
+
+  /** "취소" — 빈 탭 유지(패널만 닫음). */
+  function onFallbackDismiss(): void {
+    fallback.dismiss();
+    syncFallback();
+  }
 
   /** composer 전송 → controller.submit. */
   function onSend(content: import("../contracts/normalized").AgentContent[]): void {
-    void controller.submit(content);
+    void controller?.submit(content);
   }
 
   /** stop → 진행 turn 취소. */
   function onStop(): void {
-    void controller.cancel();
+    void controller?.cancel();
   }
 
   /** approval 응답(inline/modal 공통) → controller.approve(store 멱등 기록 + wire 전송). */
   function onRespondApproval(decision: ApprovalDecision): void {
-    void controller.approve(decision);
+    void controller?.approve(decision);
   }
 
   // evicted-tombstone 구간 존재 여부 — replay affordance 노출 게이트(08 §7.2).
@@ -163,6 +226,17 @@
 <!-- escalation 승인은 blocking modal(severity:"escalation"만, 08 §4.4·09 §8.3). -->
 {#if store.escalationApproval}
   <ApprovalModal request={store.escalationApproval} onRespond={onRespondApproval} />
+{/if}
+
+<!-- direct runtime spawn/initialize 실패 시 fallback 선택지(10 §4.6 — 자동 폴백 금지). -->
+{#if fallbackVisible}
+  <RuntimeFallbackPanel
+    message={fallbackMessage}
+    canRetry={fallback.canRetry}
+    onOpenPty={onFallbackPty}
+    onRetry={onFallbackRetry}
+    onCancel={onFallbackDismiss}
+  />
 {/if}
 
 <style>

@@ -1,5 +1,6 @@
 use super::types::{
-    default_view_mode, default_workspace_agent_id, EditorTabRef, WindowSnapshot, WorkspaceSnapshot,
+    default_runtime_kind, default_view_mode, default_workspace_agent_id, EditorTabRef,
+    WindowSnapshot, WorkspaceSnapshot,
 };
 use crate::app_env::{ensure_parent_dir, state_path};
 use std::fs;
@@ -70,6 +71,9 @@ pub(crate) fn normalize_window_snapshot(window: &mut WindowSnapshot) {
         }
         tab.agent_id = normalize_workspace_agent_id(&tab.agent_id);
         tab.resume_token = normalize_resume_token(tab.resume_token.clone());
+        if tab.runtime_kind.trim().is_empty() {
+            tab.runtime_kind = default_runtime_kind();
+        }
         if tab.view_mode.trim().to_ascii_lowercase() != "editor" {
             tab.view_mode = default_view_mode();
         } else {
@@ -125,11 +129,33 @@ fn default_workspace_snapshot() -> WorkspaceSnapshot {
     workspace
 }
 
+/// direct runtime 메타의 비밀 3필드(`provider_session_id`/`provider_thread_id`/`provider_resume_token`)를
+/// 제거한다(10 §6, 15 §7.3 보안 경계). 하나라도 비웠으면 `true`를 돌려준다.
+fn scrub_agent_runtime_secrets(tab: &mut crate::features::workspace::WorkspaceTabSnapshot) -> bool {
+    let mut changed = false;
+    if let Some(meta) = tab.agent_runtime.as_mut() {
+        if meta.provider_session_id.take().is_some() {
+            changed = true;
+        }
+        if meta.provider_thread_id.take().is_some() {
+            changed = true;
+        }
+        if meta.provider_resume_token.take().is_some() {
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn scrub_workspace_resume_tokens(workspace: &mut WorkspaceSnapshot) -> bool {
     let mut changed = false;
     for window in &mut workspace.windows {
         for tab in &mut window.tabs {
             if tab.resume_token.take().is_some() {
+                changed = true;
+            }
+            // read 경로: legacy 파일에 우연히 남은 direct 비밀도 한 번 더 제거(10 §6).
+            if scrub_agent_runtime_secrets(tab) {
                 changed = true;
             }
         }
@@ -142,6 +168,8 @@ fn sanitize_workspace_for_persist(workspace: &WorkspaceSnapshot) -> WorkspaceSna
     for window in &mut persisted.windows {
         for tab in &mut window.tabs {
             tab.pty_id = None;
+            // 디스크 저장 직전 최종 scrub: direct runtime 메타의 비밀 3필드 제거(정본 경계, 15 §7.3).
+            scrub_agent_runtime_secrets(tab);
         }
     }
     scrub_workspace_resume_tokens(&mut persisted);
@@ -193,7 +221,7 @@ mod tests {
     use super::{load_workspace_or_default, sanitize_workspace_for_persist};
     use crate::app_env::test_support::set_state_dir_env;
     use crate::features::workspace::{
-        WindowSnapshot, WorkspaceSnapshot, WorkspaceTabSnapshot,
+        AgentRuntimeMetadataRecord, WindowSnapshot, WorkspaceSnapshot, WorkspaceTabSnapshot,
     };
     use std::fs;
 
@@ -215,6 +243,44 @@ mod tests {
             editor_root_dir: "/workspace".into(),
             open_editor_tabs: Vec::new(),
             active_editor_path: None,
+            runtime_kind: "pty".into(),
+            agent_runtime: None,
+        }
+    }
+
+    /// direct runtime 메타(비밀 3필드 포함)를 채운 탭. scrub 검증용.
+    fn tab_with_direct_runtime() -> WorkspaceTabSnapshot {
+        WorkspaceTabSnapshot {
+            session_id: "session-direct".into(),
+            agent_id: "codex".into(),
+            distro: "Ubuntu".into(),
+            work_dir: "/workspace".into(),
+            title: "Direct".into(),
+            pinned: false,
+            locked: false,
+            resume_token: None,
+            pty_id: None,
+            aux_pty_id: None,
+            aux_visible: false,
+            aux_height_percent: None,
+            view_mode: "terminal".into(),
+            editor_root_dir: "/workspace".into(),
+            open_editor_tabs: Vec::new(),
+            active_editor_path: None,
+            runtime_kind: "direct-codex".into(),
+            agent_runtime: Some(AgentRuntimeMetadataRecord {
+                session_runtime_kind: "direct-codex".into(),
+                provider: "codex".into(),
+                provider_session_id: Some("sess-secret".into()),
+                provider_thread_id: Some("thread-secret".into()),
+                provider_resume_token: Some("resume-token-secret".into()),
+                last_turn_id: Some("turn-9".into()),
+                protocol_version: Some("1".into()),
+                adapter_version: Some("0.1.0".into()),
+                provider_version: Some("0.142.0".into()),
+                can_resume: Some(true),
+                can_load: Some(true),
+            }),
         }
     }
 
@@ -290,5 +356,135 @@ mod tests {
         let _ = fs::remove_dir_all(&state_dir);
         assert_eq!(workspace.windows[0].tabs[0].resume_token, None);
         assert!(!persisted.contains("legacy-resume-secret"));
+    }
+
+    #[test]
+    fn legacy_workspace_without_runtime_fields_defaults_to_pty() {
+        // runtime_kind/agent_runtime 필드가 없는 기존 workspace.json은 forward/backward 호환:
+        // runtime_kind == "pty", agent_runtime == None으로 deserialize되어야 한다(10 §3.3, §5).
+        let state_dir = std::env::temp_dir().join(format!(
+            "clcomx-workspace-legacy-runtime-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&state_dir);
+        fs::create_dir_all(&state_dir).unwrap();
+        let _guard = set_state_dir_env(&state_dir);
+        fs::write(
+            state_dir.join("workspace.json"),
+            r#"{
+  "windows": [
+    {
+      "label": "main",
+      "name": "main",
+      "role": "main",
+      "tabs": [
+        {
+          "sessionId": "session-1",
+          "agentId": "claude",
+          "distro": "Ubuntu",
+          "workDir": "/workspace",
+          "title": "Workspace",
+          "pinned": false,
+          "locked": false
+        }
+      ],
+      "activeSessionId": "session-1",
+      "x": 0,
+      "y": 0,
+      "width": 1024,
+      "height": 720,
+      "maximized": false
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let workspace = load_workspace_or_default();
+        let _ = fs::remove_dir_all(&state_dir);
+
+        let tab = &workspace.windows[0].tabs[0];
+        assert_eq!(tab.runtime_kind, "pty");
+        assert!(tab.agent_runtime.is_none());
+    }
+
+    #[test]
+    fn sanitize_workspace_for_persist_strips_agent_runtime_secrets() {
+        let workspace = WorkspaceSnapshot {
+            windows: vec![WindowSnapshot {
+                label: "main".into(),
+                name: "main".into(),
+                role: "main".into(),
+                tabs: vec![tab_with_direct_runtime()],
+                active_session_id: Some("session-direct".into()),
+                x: 0,
+                y: 0,
+                width: 1024,
+                height: 720,
+                maximized: false,
+            }],
+        };
+
+        let persisted = sanitize_workspace_for_persist(&workspace);
+        let meta = persisted.windows[0].tabs[0]
+            .agent_runtime
+            .as_ref()
+            .expect("agent_runtime retained for non-secret fields");
+
+        // 비밀 3필드는 제거.
+        assert_eq!(meta.provider_session_id, None);
+        assert_eq!(meta.provider_thread_id, None);
+        assert_eq!(meta.provider_resume_token, None);
+        // 비-비밀 필드는 보존.
+        assert_eq!(meta.session_runtime_kind, "direct-codex");
+        assert_eq!(meta.provider, "codex");
+        assert_eq!(meta.last_turn_id.as_deref(), Some("turn-9"));
+        assert_eq!(meta.can_load, Some(true));
+
+        // 디스크로 나가는 JSON에도 비밀 문자열이 부재해야 한다(scrub 정본 경계).
+        let json = serde_json::to_string(&sanitize_workspace_for_persist(&workspace)).unwrap();
+        assert!(!json.contains("sess-secret"));
+        assert!(!json.contains("thread-secret"));
+        assert!(!json.contains("resume-token-secret"));
+        assert!(!json.contains("providerSessionId"));
+        assert!(!json.contains("providerThreadId"));
+        assert!(!json.contains("providerResumeToken"));
+    }
+
+    #[test]
+    fn write_workspace_omits_agent_runtime_secrets_on_disk() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "clcomx-workspace-direct-scrub-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&state_dir);
+        fs::create_dir_all(&state_dir).unwrap();
+        let _guard = set_state_dir_env(&state_dir);
+
+        let workspace = WorkspaceSnapshot {
+            windows: vec![WindowSnapshot {
+                label: "main".into(),
+                name: "main".into(),
+                role: "main".into(),
+                tabs: vec![tab_with_direct_runtime()],
+                active_session_id: Some("session-direct".into()),
+                x: 0,
+                y: 0,
+                width: 1024,
+                height: 720,
+                maximized: false,
+            }],
+        };
+
+        super::write_workspace(&workspace).unwrap();
+        let persisted = fs::read_to_string(state_dir.join("workspace.json")).unwrap();
+        let _ = fs::remove_dir_all(&state_dir);
+
+        assert!(!persisted.contains("sess-secret"));
+        assert!(!persisted.contains("thread-secret"));
+        assert!(!persisted.contains("resume-token-secret"));
+        // 비-비밀 메타는 디스크에 남는다.
+        assert!(persisted.contains("direct-codex"));
+        assert!(persisted.contains("turn-9"));
     }
 }

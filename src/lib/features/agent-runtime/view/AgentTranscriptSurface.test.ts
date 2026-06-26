@@ -5,7 +5,7 @@
  * 세션 핸들 단위로 등록되므로 테스트마다 reset한다.
  */
 
-import { render, waitFor } from "@testing-library/svelte";
+import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "../../../i18n";
 import { TEST_IDS } from "../../../testids";
@@ -102,5 +102,54 @@ describe("AgentTranscriptSurface", () => {
       expect(queryByTestId(TEST_IDS.agentTranscript)).toBeTruthy();
     });
     expect(queryByTestId(TEST_IDS.agentReplayPanel)).toBeNull();
+  });
+
+  it("shows the fallback panel when direct runtime start fails (no auto fallback)", async () => {
+    const failingPort: AgentRuntimePort = {
+      startSession: vi.fn().mockRejectedValue(new Error("spawn ENOENT codex")),
+      resumeSession: vi.fn().mockResolvedValue({ ref: { provider: "codex" } }),
+      sendPrompt: vi.fn().mockResolvedValue(undefined),
+      cancelTurn: vi.fn().mockResolvedValue(undefined),
+      respondApproval: vi.fn().mockResolvedValue(undefined),
+      subscribeEvents: vi.fn(() => vi.fn()),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    };
+    const onFallbackToPty = vi.fn();
+    const { findByTestId } = render(AgentTranscriptSurface, {
+      props: baseProps(failingPort, { onFallbackToPty }),
+    });
+
+    const panel = await findByTestId(TEST_IDS.agentRuntimeFallback);
+    expect(panel.getAttribute("aria-modal")).toBe("true");
+    // 자동 폴백 금지 — 패널만 표시되고 PTY 전환은 아직 호출되지 않는다.
+    expect(onFallbackToPty).not.toHaveBeenCalled();
+  });
+
+  it("invokes the PTY fallback callback with session context when chosen", async () => {
+    const failingPort: AgentRuntimePort = {
+      startSession: vi.fn().mockRejectedValue(new Error("initialize timeout")),
+      resumeSession: vi.fn().mockResolvedValue({ ref: { provider: "codex" } }),
+      sendPrompt: vi.fn().mockResolvedValue(undefined),
+      cancelTurn: vi.fn().mockResolvedValue(undefined),
+      respondApproval: vi.fn().mockResolvedValue(undefined),
+      subscribeEvents: vi.fn(() => vi.fn()),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    };
+    const onFallbackToPty = vi.fn();
+    const { findByTestId } = render(AgentTranscriptSurface, {
+      props: baseProps(failingPort, { onFallbackToPty }),
+    });
+
+    const ptyButton = await findByTestId(TEST_IDS.agentRuntimeFallbackPty);
+    await fireEvent.click(ptyButton);
+
+    await waitFor(() => {
+      expect(onFallbackToPty).toHaveBeenCalledWith({
+        sessionId: "S1",
+        agentId: "codex",
+        distro: "Ubuntu",
+        workDir: "/w",
+      });
+    });
   });
 });

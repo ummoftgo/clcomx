@@ -1,5 +1,6 @@
 import type { AgentId } from "../../../agents";
 import type { Session, TabHistoryEntry } from "../../../types";
+import type { SessionRuntimeKind } from "../../agent-runtime/contracts/metadata";
 import {
   buildSession,
   createSessionLaunchRequest,
@@ -21,6 +22,8 @@ export function launchSession(
     workDir: string;
     title?: string | null;
     resumeToken?: string | null;
+    /** direct runtime 선택 시 host 종류(10 §5). 미지정 시 PTY. */
+    runtimeKind?: SessionRuntimeKind;
   },
 ) {
   const request = createSessionLaunchRequest(input);

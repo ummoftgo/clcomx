@@ -15,6 +15,7 @@
     onSessionAuxStateChange,
     onSessionExit,
     onSessionResumeFallback,
+    onSessionFallbackToPty,
   }: SessionViewportProps = $props();
 </script>
 
@@ -46,6 +47,7 @@
           onSessionAuxStateChange={onSessionAuxStateChange}
           onSessionExit={onSessionExit}
           onSessionResumeFallback={onSessionResumeFallback}
+          onSessionFallbackToPty={onSessionFallbackToPty}
         />
       {/each}
     {:else}

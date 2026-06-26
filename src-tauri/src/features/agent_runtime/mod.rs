@@ -9,7 +9,7 @@
 
 mod allowlist;
 mod process;
-mod resolver;
+pub(crate) mod resolver;
 mod transport;
 pub mod types;
 

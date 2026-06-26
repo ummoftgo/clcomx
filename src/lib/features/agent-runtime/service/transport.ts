@@ -141,6 +141,18 @@ export async function agentRuntimeGetSnapshot(
   return await invoke<AgentRuntimeSnapshot>("agent_runtime_get_snapshot", { runtimeId });
 }
 
+/**
+ * Claude adapter entry(`claude-agent-acp` `dist/index.js`) 신뢰 절대경로 resolve(통합 갭 G1, 15 §8.1).
+ * backend가 신뢰 절대경로를 resolve한다(S1 경계). Claude resolveLaunch가 adapterEntryPath를 얻는 경로다.
+ * start 시 allowlist가 args[0]를 재검증하므로 여기서 받은 값은 launch 구성 입력일 뿐이다.
+ */
+export async function agentRuntimeResolveAdapterEntry(
+  provider: "claude",
+  distro: string,
+): Promise<string> {
+  return await invoke<string>("agent_runtime_resolve_adapter_entry", { provider, distro });
+}
+
 // ───────────────────────── event 구독 ─────────────────────────
 
 /** runtime별 event 핸들러 묶음. 미지정 핸들러는 무시된다. */

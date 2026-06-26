@@ -73,6 +73,10 @@ const en = {
       title: "Choose agent",
       selectHint: "Start the new session with this agent",
     },
+    directRuntime: {
+      toggle: "Direct runtime",
+      hint: "Run this agent over the structured runtime instead of a terminal.",
+    },
     recent: {
       eyebrow: "Recent",
       title: "Recent",
@@ -490,6 +494,11 @@ const en = {
       unsupportedContent: "(unsupported content)",
       legacyNotice: "This agent does not support the direct runtime; using the legacy terminal.",
       diagnosticHint: "Open the full log for diagnostics.",
+      title: "The direct runtime failed to start",
+      description: "The agent could not be started over the direct runtime. Choose how to continue.",
+      openPty: "Open in terminal instead",
+      retry: "Retry direct runtime",
+      cancel: "Cancel",
     },
   },
 } as const;

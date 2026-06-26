@@ -50,6 +50,15 @@ export interface SessionHostProps {
   onResumeFallback?: () => void | Promise<void>;
 }
 
+/** direct runtime 실패 후 legacy PTY 새 세션 전환 요청(10 §4.6). */
+export interface SessionFallbackToPtyRequest {
+  /** 실패한 direct 세션(닫기 대상). */
+  sessionId: string;
+  agentId: string;
+  distro: string;
+  workDir: string;
+}
+
 export interface SessionShellProps {
   session: SessionShellSession;
   visible: boolean;
@@ -64,4 +73,6 @@ export interface SessionShellProps {
   ) => void | Promise<void>;
   onSessionExit?: (ptyId: number) => void | Promise<void>;
   onSessionResumeFallback?: (sessionId: string) => void | Promise<void>;
+  /** direct runtime spawn/initialize 실패 시 legacy PTY 새 세션으로 전환(10 §4.6). */
+  onSessionFallbackToPty?: (request: SessionFallbackToPtyRequest) => void | Promise<void>;
 }

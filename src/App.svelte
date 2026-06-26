@@ -93,6 +93,7 @@
   import { killPty } from "./lib/pty";
   import type { TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
+  import type { SessionRuntimeKind } from "./lib/features/agent-runtime/contracts/metadata";
   import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
   import { createTabCloseOrchestrationController } from "./lib/features/session/controller/tab-close-orchestration-controller";
   import { createTabRenameOrchestrationController } from "./lib/features/session/controller/tab-rename-orchestration-controller";
@@ -436,8 +437,9 @@
     workDir: string,
     title = workDir.split("/").pop() || workDir,
     resumeToken: string | null = null,
+    runtimeKind?: SessionRuntimeKind,
   ) {
-    sessionLifecycle.createSession(agentId, distro, workDir, title, resumeToken);
+    sessionLifecycle.createSession(agentId, distro, workDir, title, resumeToken, runtimeKind);
   }
 
   function openHistoryEntry(entry: TabHistoryEntry) {
@@ -475,6 +477,25 @@
 
   async function handleCloseTab(sessionId: string) {
     await sessionLifecycle.handleCloseTab(sessionId);
+  }
+
+  /**
+   * direct runtime spawn/initialize 실패 후 legacy PTY 새 세션으로 전환한다(10 §4.6).
+   * 실패한 direct 세션 탭을 닫고(재개 키 없음 — 캡처 불필요) 같은 agent/distro/workDir로 PTY 세션을 만든다.
+   * runtimeKind를 넘기지 않으므로 새 세션은 기본 PTY 경로다(10 §5: direct→PTY는 새 세션이므로 runtimeKind="pty").
+   */
+  async function handleFallbackToPty(request: {
+    sessionId: string;
+    agentId: string;
+    distro: string;
+    workDir: string;
+  }) {
+    try {
+      await closeSession(request.sessionId);
+    } catch (error) {
+      reportSessionLifecycleError("Failed to close failed direct runtime session", error);
+    }
+    createSession(request.agentId, request.distro, request.workDir);
   }
 
   const tabCloseOrchestration = createTabCloseOrchestrationController({
@@ -805,6 +826,7 @@
         )}
       onSessionExit={handleExit}
       onSessionResumeFallback={handleResumeFallback}
+      onSessionFallbackToPty={handleFallbackToPty}
     />
   </div>
 

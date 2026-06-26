@@ -19,6 +19,7 @@ export const TEST_IDS = {
   launcherPathInput: "launcher-path-input",
   launcherOpenSelection: "launcher-open-selection",
   launcherOpenHere: "launcher-open-here",
+  launcherDirectRuntimeToggle: "launcher-direct-runtime-toggle",
   settingsModal: "settings-modal",
   settingsNav: "settings-nav",
   settingsBody: "settings-body",
@@ -69,6 +70,10 @@ export const TEST_IDS = {
   agentApprovalInlineCard: "approval-inline-card",
   agentApprovalOption: "approval-option",
   agentReplayAffordance: "agent-replay-affordance",
+  agentRuntimeFallback: "agent-runtime-fallback",
+  agentRuntimeFallbackPty: "agent-runtime-fallback-pty",
+  agentRuntimeFallbackRetry: "agent-runtime-fallback-retry",
+  agentRuntimeFallbackCancel: "agent-runtime-fallback-cancel",
   agentReplayPanel: "agent-replay-panel",
   agentReplayClose: "agent-replay-close",
 } as const;
