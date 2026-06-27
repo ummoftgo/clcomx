@@ -417,6 +417,16 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     // turnId 합성: prompt 송신 직전 turnSeq 증가 + activeTurnId 할당(04 §turn id 합성, <sessionId>:t<n>).
     rt.turnSeq += 1;
     rt.activeTurnId = `${rt.providerSessionId}:t${rt.turnSeq}`;
+    // 로컬 optimistic user_message echo: ACP는 라이브 prompt를 wire echo하지 않으므로(user_message_chunk는
+    // session/load replay 때만) 클라이언트가 직접 transcript에 사용자 메시지를 넣는다. Codex는 wire
+    // userMessage item으로 echo되므로 이 로컬 echo를 더하지 않는다(이중 렌더 방지). content는 wire 변환본이
+    // 아니라 원본 input.content.
+    emit(rt, {
+      type: "user_message",
+      ref: { ...refFor(rt), messageId: `${rt.activeTurnId}:u` },
+      content: input.content,
+      mode: "replace",
+    });
     emit(rt, { type: "session_status_changed", ref: refFor(rt), status: "running" });
 
     let result: { stopReason?: unknown };

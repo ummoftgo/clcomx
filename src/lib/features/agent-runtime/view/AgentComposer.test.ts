@@ -56,4 +56,52 @@ describe("AgentComposer", () => {
     const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
     expect(input.disabled).toBe(true);
   });
+
+  it("opens the slash command palette and filters by query", async () => {
+    const { getByTestId, queryByTestId, getAllByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableCommands: [{ name: "compact", description: "Compact" }, { name: "resume" }],
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: "/" } });
+    expect(queryByTestId(TEST_IDS.agentComposerCommandPalette)).toBeTruthy();
+
+    await fireEvent.input(input, { target: { value: "/co" } });
+    const opts = getAllByTestId(TEST_IDS.agentComposerCommandOption);
+    expect(opts).toHaveLength(1);
+    expect(opts[0].textContent).toContain("/compact");
+  });
+
+  it("accepts a command with Enter without sending, inserting the command text", async () => {
+    const onSend = vi.fn();
+    const { getByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        availableCommands: [{ name: "resume" }],
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: "/re" } });
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input.value).toBe("/resume ");
+  });
+
+  it("always offers a local /resume command when no provider commands exist", async () => {
+    const { getByTestId, getAllByTestId } = render(AgentComposer, {
+      props: { status: "ready", providerLabel: "codex", onSend: vi.fn(), onStop: vi.fn() },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: "/" } });
+    const opts = getAllByTestId(TEST_IDS.agentComposerCommandOption);
+    expect(opts.some((o) => o.textContent?.includes("/resume"))).toBe(true);
+  });
 });

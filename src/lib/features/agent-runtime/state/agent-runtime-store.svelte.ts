@@ -11,6 +11,7 @@
  */
 
 import type {
+  AgentCommand,
   AgentEvent,
   AgentProvider,
   AgentSessionStatus,
@@ -72,6 +73,8 @@ export interface AgentRuntimeStore {
   readonly providerLabel: string;
   readonly capabilities: ComposerCapabilities;
   readonly autoFollow: boolean;
+  /** provider가 알린 슬래시 커맨드 목록(composer 팔레트 소스). 최신 목록으로 전체 교체. */
+  readonly availableCommands: AgentCommand[];
 
   /** transcript body(plain Map) 직접 조회 — 비반응형, 렌더는 itemVersions로 트리거(08 §5). */
   getItem(id: string): TranscriptItem | undefined;
@@ -117,6 +120,7 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
   contextUsage = $state<{ used: number; size: number } | null>(null);
   capabilities = $state<ComposerCapabilities>({ image: false, embeddedContext: false, audio: false });
   autoFollow = $state(true);
+  availableCommands = $state<AgentCommand[]>([]);
 
   // plain(비반응형) — body·turn·tombstone은 TranscriptModel에 둔다(heap 경계 대상).
   private transcript: TranscriptModel = createEmptyTranscriptModel();
@@ -187,6 +191,9 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
 
     // usage 보강.
     if (event.type === "turn_completed" && event.usage) this.usage = event.usage;
+
+    // 슬래시 커맨드 목록 갱신(composer 팔레트 소스, 최신 목록 전체 교체).
+    if (event.type === "available_commands_updated") this.availableCommands = event.commands;
 
     // exit 시 pending 전부 failed 종료(04 §5.0 규칙 3) — store 자체에서 처리.
     if (event.type === "process_exited") {

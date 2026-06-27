@@ -9,6 +9,7 @@
   --ui-font-family: Pretendard, Segoe UI, system-ui;
   --ui-font-fallback: Malgun Gothic, Apple SD Gothic Neo, sans-serif;
   --ui-font-stack: var(--ui-font-family), var(--ui-font-fallback), system-ui, -apple-system, sans-serif;
+  --ui-font-mono-stack: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ui-font-size-xs: 11px;
   --ui-font-size-sm: 12px;
   --ui-font-size-base: 14px;

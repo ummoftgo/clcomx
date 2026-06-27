@@ -44,12 +44,12 @@
 
 <style>
   .plan-block {
-    border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.25));
     border-radius: 0.5rem;
     padding: 0.6rem 0.75rem;
   }
   .plan-title {
-    font-size: 0.72rem;
+    font-size: var(--ui-font-size-xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     opacity: 0.6;
@@ -67,20 +67,20 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    font-size: 0.85rem;
+    font-size: var(--ui-font-size-sm);
   }
   .plan-status {
     width: 0.6rem;
     height: 0.6rem;
     border-radius: 50%;
     flex: 0 0 auto;
-    background: var(--color-border, rgba(127, 127, 127, 0.4));
+    background: var(--ui-border-subtle, rgba(127, 127, 127, 0.4));
   }
   .status-in_progress .plan-status {
-    background: var(--color-accent, #4a90d9);
+    background: var(--ui-accent, #4a90d9);
   }
   .status-completed .plan-status {
-    background: var(--color-success, #3fb950);
+    background: var(--ui-success, #3fb950);
   }
   .plan-content {
     flex: 1 1 auto;
@@ -90,7 +90,7 @@
     text-decoration: line-through;
   }
   .plan-status-label {
-    font-size: 0.7rem;
+    font-size: var(--ui-font-size-xs);
     opacity: 0.55;
     flex: 0 0 auto;
   }

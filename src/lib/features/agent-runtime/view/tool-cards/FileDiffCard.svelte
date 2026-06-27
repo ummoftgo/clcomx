@@ -76,20 +76,20 @@
 
 <style>
   .file-diff-card {
-    border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.25));
     border-radius: 0.45rem;
     overflow: hidden;
-    font-size: 0.82rem;
+    font-size: var(--ui-font-size-sm);
   }
   .diff-header {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.4rem 0.6rem;
-    background: var(--color-surface, rgba(127, 127, 127, 0.06));
+    background: var(--ui-bg-surface, rgba(127, 127, 127, 0.06));
   }
   .diff-op {
-    font-size: 0.68rem;
+    font-size: var(--ui-font-size-xs);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     opacity: 0.7;
@@ -99,34 +99,34 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: var(--font-mono, monospace);
+    font-family: var(--ui-font-mono-stack, monospace);
   }
   .diff-stat {
     display: flex;
     gap: 0.4rem;
     flex: 0 0 auto;
-    font-family: var(--font-mono, monospace);
-    font-size: 0.72rem;
+    font-family: var(--ui-font-mono-stack, monospace);
+    font-size: var(--ui-font-size-xs);
   }
   .diff-stat .added {
-    color: var(--color-success, #3fb950);
+    color: var(--ui-success, #3fb950);
   }
   .diff-stat .removed {
-    color: var(--color-error, #f85149);
+    color: var(--ui-danger, #f85149);
   }
   .diff-rename {
     padding: 0.3rem 0.6rem;
-    font-size: 0.72rem;
+    font-size: var(--ui-font-size-xs);
     opacity: 0.65;
   }
   .diff-body {
     margin: 0;
     padding: 0.5rem 0.6rem;
     overflow-x: auto;
-    font-family: var(--font-mono, monospace);
-    font-size: 0.76rem;
+    font-family: var(--ui-font-mono-stack, monospace);
+    font-size: var(--ui-font-size-sm);
     line-height: 1.4;
-    background: var(--color-bg, transparent);
+    background: var(--ui-bg-app, transparent);
   }
   .diff-line {
     display: block;
@@ -134,11 +134,11 @@
   }
   .diff-line.add {
     background: rgba(63, 185, 80, 0.12);
-    color: var(--color-success, #3fb950);
+    color: var(--ui-success, #3fb950);
   }
   .diff-line.del {
     background: rgba(248, 81, 73, 0.12);
-    color: var(--color-error, #f85149);
+    color: var(--ui-danger, #f85149);
   }
   .diff-line.meta {
     opacity: 0.55;
@@ -146,6 +146,6 @@
   .diff-empty {
     padding: 0.5rem 0.6rem;
     opacity: 0.5;
-    font-size: 0.76rem;
+    font-size: var(--ui-font-size-sm);
   }
 </style>

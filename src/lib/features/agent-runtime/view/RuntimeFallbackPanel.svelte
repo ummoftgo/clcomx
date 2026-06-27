@@ -102,26 +102,26 @@
     gap: 0.5rem;
     padding: 1rem 1.1rem;
     border-radius: 0.6rem;
-    border: 1px solid var(--color-error, #f85149);
-    background: var(--color-bg-raised, var(--color-bg, #1c1c1c));
+    border: 1px solid var(--ui-danger, #f85149);
+    background: var(--ui-bg-elevated, var(--ui-bg-app, #1c1c1c));
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
   }
   .fallback-title {
-    font-size: 1rem;
+    font-size: var(--ui-font-size-base);
     font-weight: 600;
   }
   .fallback-body {
-    font-size: 0.85rem;
+    font-size: var(--ui-font-size-sm);
     opacity: 0.85;
   }
   .fallback-reason {
-    font-size: 0.78rem;
+    font-size: var(--ui-font-size-sm);
     opacity: 0.7;
     white-space: pre-wrap;
     word-break: break-word;
     padding: 0.4rem 0.5rem;
     border-radius: 0.4rem;
-    background: var(--color-bg, rgba(127, 127, 127, 0.08));
+    background: var(--ui-bg-app, rgba(127, 127, 127, 0.08));
   }
   .fallback-actions {
     display: flex;
@@ -132,14 +132,14 @@
   .fallback-action {
     padding: 0.4rem 0.85rem;
     border-radius: 0.4rem;
-    border: 1px solid var(--color-border, rgba(127, 127, 127, 0.3));
-    background: var(--color-bg, transparent);
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.3));
+    background: var(--ui-bg-app, transparent);
     color: inherit;
     font: inherit;
-    font-size: 0.82rem;
+    font-size: var(--ui-font-size-sm);
     cursor: pointer;
   }
   .fallback-action.primary {
-    border-color: var(--color-accent, #58a6ff);
+    border-color: var(--ui-accent, #58a6ff);
   }
 </style>

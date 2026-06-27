@@ -112,8 +112,20 @@ export type AgentEvent =
   | { type: "turn_completed"; ref: ProviderRef; usage?: TokenUsage; status: "completed" | "failed" | "cancelled" }
   /** provider process 종료. */
   | { type: "process_exited"; ref: ProviderRef; code?: number; signal?: string }
+  /** 사용 가능한 슬래시 커맨드 목록 갱신(ACP available_commands_update). 최신 목록 전체 교체. */
+  | { type: "available_commands_updated"; ref: ProviderRef; commands: AgentCommand[] }
   /** 에러. recoverable=재시도 가능 여부(Codex willRetry / ACP error 분류). */
   | { type: "error"; ref: ProviderRef; message: string; recoverable: boolean };
+
+/** 슬래시 커맨드 1건(composer 팔레트 소스). provider가 알린 server-side 커맨드. */
+export interface AgentCommand {
+  /** 커맨드 이름(선두 `/` 없이). 예: "resume", "compact". */
+  name: string;
+  /** 짧은 설명(팔레트 보조 텍스트). */
+  description?: string;
+  /** 입력 힌트(예: 인자 형식). UnstructuredCommandInput.hint에서 추출. */
+  inputHint?: string;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Normalized model — Content block

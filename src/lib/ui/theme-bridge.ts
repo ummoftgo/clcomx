@@ -171,6 +171,12 @@ export function getUiPreferenceTokenStyle(settings: Settings) {
       "-apple-system",
       "sans-serif",
     ),
+    // 코드/명령출력용 mono 스택은 터미널 폰트 설정을 따른다(agent-runtime transcript의 mono 토큰 소비처).
+    [UI_CSS_VARS.fontMonoStack]: buildFontStack(
+      serializeFontFamilyList(settings.terminal.fontFamily, "\"JetBrains Mono\", ui-monospace"),
+      serializeFontFamilyList(settings.terminal.fontFamilyFallback, "monospace"),
+      "monospace",
+    ),
     [UI_CSS_VARS.fontSizeXs]: scaled(11, scale),
     [UI_CSS_VARS.fontSizeSm]: scaled(12, scale),
     [UI_CSS_VARS.fontSizeBase]: scaled(14, scale),

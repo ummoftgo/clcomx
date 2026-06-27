@@ -163,4 +163,62 @@ describe("AgentTranscriptSurface", () => {
       });
     });
   });
+
+  // JSDOM은 layout이 없어 scroll 메트릭을 직접 모킹한다.
+  function mockScrollMetrics(el: HTMLElement, scrollHeight: number, clientHeight: number) {
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: scrollHeight });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: clientHeight });
+  }
+
+  it("auto-scrolls the transcript to the bottom on new content (auto-follow on by default)", async () => {
+    const { port, emit } = makeFakePort();
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    const region = await findByTestId(TEST_IDS.agentTranscript);
+    mockScrollMetrics(region, 1000, 200);
+    region.scrollTop = 0;
+
+    emit({
+      type: "agent_message_delta",
+      ref: { provider: "codex", threadId: "t", turnId: "u", itemId: "m1" },
+      delta: "hello",
+    });
+
+    await waitFor(() => {
+      expect(region.scrollTop).toBe(1000);
+    });
+  });
+
+  it("stops auto-following when the user scrolls up, then resumes at the bottom", async () => {
+    const { port, emit } = makeFakePort();
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    const region = await findByTestId(TEST_IDS.agentTranscript);
+    mockScrollMetrics(region, 1000, 200);
+
+    // 사용자가 위로 스크롤(바닥 아님) → auto-follow 정지.
+    region.scrollTop = 0;
+    await fireEvent.scroll(region);
+
+    // 새 content가 와도 바닥으로 끌어내리지 않는다.
+    region.scrollTop = 0;
+    emit({
+      type: "agent_message_delta",
+      ref: { provider: "codex", threadId: "t", turnId: "u", itemId: "m1" },
+      delta: "more",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(region.scrollTop).toBe(0);
+
+    // 바닥으로 복귀하면(scrollHeight-clientHeight=800) 추종 재개.
+    region.scrollTop = 800;
+    await fireEvent.scroll(region);
+    region.scrollTop = 0;
+    emit({
+      type: "agent_message_delta",
+      ref: { provider: "codex", threadId: "t", turnId: "u", itemId: "m2" },
+      delta: "again",
+    });
+    await waitFor(() => {
+      expect(region.scrollTop).toBe(1000);
+    });
+  });
 });

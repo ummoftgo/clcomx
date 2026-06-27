@@ -87,25 +87,25 @@
     word-break: break-word;
   }
   .role-user {
-    background: var(--color-surface-raised, rgba(127, 127, 127, 0.12));
+    background: var(--ui-bg-elevated, rgba(127, 127, 127, 0.12));
     align-self: flex-end;
   }
   .role-agent {
-    background: var(--color-surface, rgba(127, 127, 127, 0.06));
+    background: var(--ui-bg-surface, rgba(127, 127, 127, 0.06));
   }
   .role-reasoning {
     background: transparent;
-    border: 1px dashed var(--color-border, rgba(127, 127, 127, 0.3));
+    border: 1px dashed var(--ui-border-subtle, rgba(127, 127, 127, 0.3));
     opacity: 0.85;
   }
   .message-role {
-    font-size: 0.7rem;
+    font-size: var(--ui-font-size-xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     opacity: 0.6;
   }
   .message-body {
-    font-size: 0.9rem;
+    font-size: var(--ui-font-size-base);
     line-height: 1.5;
   }
   .reasoning-body {
@@ -121,7 +121,7 @@
     padding: 0;
     cursor: pointer;
     color: inherit;
-    font-size: 0.78rem;
+    font-size: var(--ui-font-size-sm);
     text-align: left;
   }
   .reasoning-action {

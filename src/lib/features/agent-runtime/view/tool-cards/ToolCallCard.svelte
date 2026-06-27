@@ -147,10 +147,10 @@
 
 <style>
   .tool-call-card {
-    border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.25));
     border-radius: 0.45rem;
     overflow: hidden;
-    background: var(--color-surface, rgba(127, 127, 127, 0.04));
+    background: var(--ui-bg-surface, rgba(127, 127, 127, 0.04));
   }
   .tool-header {
     display: flex;
@@ -162,7 +162,7 @@
     border: none;
     color: inherit;
     font: inherit;
-    font-size: 0.82rem;
+    font-size: var(--ui-font-size-sm);
     text-align: left;
     cursor: default;
   }
@@ -171,38 +171,38 @@
   }
   .tool-kind {
     flex: 0 0 auto;
-    font-size: 0.68rem;
+    font-size: var(--ui-font-size-xs);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     opacity: 0.7;
     padding: 0.05rem 0.35rem;
     border-radius: 0.3rem;
-    background: var(--color-surface-raised, rgba(127, 127, 127, 0.12));
+    background: var(--ui-bg-elevated, rgba(127, 127, 127, 0.12));
   }
   .tool-summary {
     flex: 1 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: var(--font-mono, monospace);
+    font-family: var(--ui-font-mono-stack, monospace);
   }
   .tool-status {
     flex: 0 0 auto;
-    font-size: 0.7rem;
+    font-size: var(--ui-font-size-xs);
     opacity: 0.7;
   }
   /* pending과 in_progress를 시각적으로 반드시 구분(08 §4.1). */
   .tool-status.status-pending {
-    color: var(--color-warning, #d29922);
+    color: var(--ui-warning, #d29922);
   }
   .tool-status.status-in_progress {
-    color: var(--color-accent, #4a90d9);
+    color: var(--ui-accent, #4a90d9);
   }
   .tool-status.status-failed {
-    color: var(--color-error, #f85149);
+    color: var(--ui-danger, #f85149);
   }
   .tool-status.status-completed {
-    color: var(--color-success, #3fb950);
+    color: var(--ui-success, #3fb950);
   }
   .tool-toggle {
     flex: 0 0 auto;
@@ -213,18 +213,18 @@
     flex-direction: column;
     gap: 0.4rem;
     padding: 0.5rem 0.6rem;
-    border-top: 1px solid var(--color-border, rgba(127, 127, 127, 0.2));
+    border-top: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.2));
   }
   .tool-content {
     margin: 0;
-    font-family: var(--font-mono, monospace);
-    font-size: 0.76rem;
+    font-family: var(--ui-font-mono-stack, monospace);
+    font-size: var(--ui-font-size-sm);
     line-height: 1.4;
     white-space: pre-wrap;
     word-break: break-word;
   }
   .tool-approval {
-    border-top: 1px solid var(--color-border, rgba(127, 127, 127, 0.2));
+    border-top: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.2));
     padding: 0.5rem 0.6rem;
   }
 </style>

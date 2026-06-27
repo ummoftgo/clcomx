@@ -423,6 +423,8 @@ const en = {
       stop: "Stop",
       restoring: "Restoring session…",
       disabled: "Input unavailable",
+      commandPalette: "Commands",
+      commandResume: "Resume a previous session",
     },
     errors: {
       generic: "An error occurred.",

@@ -60,6 +60,8 @@ export const TEST_IDS = {
   agentComposer: "agent-composer",
   agentComposerInput: "agent-composer-input",
   agentComposerSend: "agent-composer-send",
+  agentComposerCommandPalette: "agent-composer-command-palette",
+  agentComposerCommandOption: "agent-composer-command-option",
   // Stage 2: tool/command/diff 카드 + approval + replay (08 §4·§7, T5.3·T5.4·T5.6)
   agentToolCallCard: "agent-tool-call-card",
   agentToolCallToggle: "agent-tool-call-toggle",

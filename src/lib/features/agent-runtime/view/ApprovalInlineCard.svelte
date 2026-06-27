@@ -83,7 +83,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-    font-size: 0.82rem;
+    font-size: var(--ui-font-size-sm);
   }
   .approval-title {
     font-weight: 600;
@@ -104,11 +104,11 @@
     gap: 0.1rem;
     padding: 0.3rem 0.7rem;
     border-radius: 0.4rem;
-    border: 1px solid var(--color-border, rgba(127, 127, 127, 0.3));
-    background: var(--color-bg, transparent);
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.3));
+    background: var(--ui-bg-app, transparent);
     color: inherit;
     font: inherit;
-    font-size: 0.8rem;
+    font-size: var(--ui-font-size-sm);
     cursor: pointer;
   }
   .approval-option:disabled {
@@ -117,18 +117,18 @@
   }
   .approval-option.kind-allow_once,
   .approval-option.kind-allow_always {
-    border-color: var(--color-success, #3fb950);
+    border-color: var(--ui-success, #3fb950);
   }
   .approval-option.kind-reject_once,
   .approval-option.kind-reject_always {
-    border-color: var(--color-error, #f85149);
+    border-color: var(--ui-danger, #f85149);
   }
   .option-hint {
-    font-size: 0.66rem;
+    font-size: var(--ui-font-size-xs);
     opacity: 0.6;
   }
   .approval-processing {
-    font-size: 0.74rem;
+    font-size: var(--ui-font-size-sm);
     opacity: 0.6;
   }
 </style>

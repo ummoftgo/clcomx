@@ -96,6 +96,22 @@ describe("Claude ACP adapter — lifecycle (CL-4/CL-7/CL-8)", () => {
 
     const promptPromise = adapter.sendPrompt("A", { content: [{ type: "text", text: "hi" }] });
     await Promise.resolve();
+    // ACP는 라이브 prompt를 wire echo하지 않으므로 로컬 optimistic user_message echo를 넣는다(정확히 1건, running 이전).
+    const userEchoes = events.filter((e) => e.type === "user_message");
+    expect(userEchoes).toHaveLength(1);
+    const userEcho = userEchoes[0];
+    expect(userEcho).toMatchObject({
+      type: "user_message",
+      content: [{ type: "text", text: "hi" }],
+      mode: "replace",
+    });
+    expect(userEcho.ref.turnId).toBe("sess-1:t1");
+    expect(userEcho.ref.messageId).toBe("sess-1:t1:u");
+    // echo는 running 전이보다 먼저.
+    const echoIdx = events.findIndex((e) => e.type === "user_message");
+    const runningIdx = events.findIndex((e) => e.type === "session_status_changed" && e.status === "running");
+    expect(echoIdx).toBeGreaterThanOrEqual(0);
+    expect(echoIdx).toBeLessThan(runningIdx);
     // running 전이.
     expect(events.some((e) => e.type === "session_status_changed" && e.status === "running")).toBe(true);
     // turn id 합성: sess-1:t1.
@@ -111,6 +127,39 @@ describe("Claude ACP adapter — lifecycle (CL-4/CL-7/CL-8)", () => {
     await promptPromise;
     expect(events.some((e) => e.type === "turn_completed" && e.status === "completed")).toBe(true);
     expect(events.some((e) => e.type === "session_status_changed" && e.status === "idle")).toBe(true);
+  });
+
+  it("maps available_commands_update → available_commands_updated (name 필수, input.hint 추출, 미지 무시)", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "sess-1",
+        update: {
+          sessionUpdate: "available_commands_update",
+          availableCommands: [
+            { name: "compact", description: "Compact context", input: { hint: "<turns>" } },
+            { name: "plan" },
+            { description: "no name — ignored" },
+            { name: "" },
+          ],
+        },
+      },
+    });
+
+    const evt = events.find((e) => e.type === "available_commands_updated");
+    expect(evt).toBeTruthy();
+    if (evt?.type !== "available_commands_updated") throw new Error("unreachable");
+    expect(evt.commands).toEqual([
+      { name: "compact", description: "Compact context", inputHint: "<turns>" },
+      { name: "plan", description: undefined, inputHint: undefined },
+    ]);
   });
 
   it("CL-9: stopReason=cancelled → turn_completed{cancelled}", async () => {

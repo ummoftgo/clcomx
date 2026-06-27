@@ -132,9 +132,9 @@
   .replay-panel {
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--color-border, rgba(127, 127, 127, 0.3));
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.3));
     border-radius: 0.5rem;
-    background: var(--color-surface, rgba(127, 127, 127, 0.05));
+    background: var(--ui-bg-surface, rgba(127, 127, 127, 0.05));
     max-height: 60vh;
     overflow: hidden;
   }
@@ -143,27 +143,27 @@
     align-items: center;
     justify-content: space-between;
     padding: 0.5rem 0.7rem;
-    border-bottom: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+    border-bottom: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.25));
   }
   .replay-title {
-    font-size: 0.82rem;
+    font-size: var(--ui-font-size-sm);
     font-weight: 600;
   }
   .replay-close {
     font: inherit;
-    font-size: 0.78rem;
+    font-size: var(--ui-font-size-sm);
     padding: 0.25rem 0.7rem;
     border-radius: 0.35rem;
-    border: 1px solid var(--color-border, rgba(127, 127, 127, 0.3));
-    background: var(--color-bg, transparent);
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.3));
+    background: var(--ui-bg-app, transparent);
     color: inherit;
     cursor: pointer;
   }
   .replay-notice {
     padding: 0.35rem 0.7rem;
-    font-size: 0.72rem;
+    font-size: var(--ui-font-size-xs);
     opacity: 0.6;
-    border-bottom: 1px solid var(--color-border, rgba(127, 127, 127, 0.15));
+    border-bottom: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.15));
   }
   .replay-body {
     display: flex;
@@ -174,14 +174,14 @@
   }
   .replay-status {
     opacity: 0.55;
-    font-size: 0.82rem;
+    font-size: var(--ui-font-size-sm);
     text-align: center;
     padding: 1.5rem 0;
   }
   .transcript-notice {
-    font-size: 0.82rem;
+    font-size: var(--ui-font-size-sm);
     padding: 0.4rem 0.6rem;
     border-radius: 0.4rem;
-    background: var(--color-surface, rgba(127, 127, 127, 0.06));
+    background: var(--ui-bg-surface, rgba(127, 127, 127, 0.06));
   }
 </style>

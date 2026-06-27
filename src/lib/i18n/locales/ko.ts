@@ -423,6 +423,8 @@ const ko = {
       stop: "중지",
       restoring: "세션 복원 중…",
       disabled: "입력 불가",
+      commandPalette: "커맨드",
+      commandResume: "이전 세션 이어가기",
     },
     errors: {
       generic: "오류가 발생했습니다.",

@@ -105,10 +105,13 @@
               {fileChange}
             >
               {#snippet approval()}
-                <ApprovalInlineCard
-                  request={pendingApproval}
-                  onRespond={onRespondApproval}
-                />
+                <!-- data-approval-anchor: surface의 approval scrollIntoView 타겟(08 §4.4·§7.1). -->
+                <div data-approval-anchor="true">
+                  <ApprovalInlineCard
+                    request={pendingApproval}
+                    onRespond={onRespondApproval}
+                  />
+                </div>
               {/snippet}
             </ToolCallCard>
           {:else}
@@ -145,20 +148,20 @@
   }
   .transcript-empty {
     opacity: 0.5;
-    font-size: 0.85rem;
+    font-size: var(--ui-font-size-sm);
     text-align: center;
     padding: 2rem 0;
   }
   .transcript-notice {
-    font-size: 0.82rem;
+    font-size: var(--ui-font-size-sm);
     padding: 0.4rem 0.6rem;
     border-radius: 0.4rem;
-    background: var(--color-surface, rgba(127, 127, 127, 0.06));
+    background: var(--ui-bg-surface, rgba(127, 127, 127, 0.06));
   }
   .level-error {
-    color: var(--color-error, #f85149);
+    color: var(--ui-danger, #f85149);
   }
   .level-warning {
-    color: var(--color-warning, #d29922);
+    color: var(--ui-warning, #d29922);
   }
 </style>

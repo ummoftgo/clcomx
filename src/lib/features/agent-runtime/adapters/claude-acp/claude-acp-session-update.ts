@@ -7,7 +7,7 @@
  * 미지원 variant(notification, id 없음)는 raw 보존 + counter로 가시화 후 무시(응답 불필요).
  */
 
-import type { AgentEvent, AgentPlanEntry, ProviderRef, ToolCallUpdate, TokenUsage } from "../../contracts/normalized";
+import type { AgentCommand, AgentEvent, AgentPlanEntry, ProviderRef, ToolCallUpdate, TokenUsage } from "../../contracts/normalized";
 import type {
   AcpContentChunk,
   AcpPlan,
@@ -61,9 +61,11 @@ export function mapSessionUpdate(rt: SessionUpdateRuntime, update: AcpSessionUpd
       return [];
     case "config_option_update":
     case "session_info_update":
-    case "available_commands_update":
       // 전용 event 없음(ref-acp §13.2) → 1차는 상태 보관만(어댑터 메인이 처리). 여기선 no-op.
       return [];
+    case "available_commands_update":
+      // 슬래시 커맨드 목록 → composer 팔레트 소스(available_commands_updated event).
+      return [mapAvailableCommands(rt, update)];
     case "plan_update":
     case "plan_removed":
       // 어댑터 미관측(ref-claude-agent-acp §2) → 방어적 무시 + counter.
@@ -173,6 +175,36 @@ function mapPlan(rt: SessionUpdateRuntime, plan: AcpPlan): AgentEvent {
     raw: plan._meta,
   };
   return { type: "plan_updated", ref, entries };
+}
+
+/**
+ * available_commands_update → available_commands_updated(§composer 팔레트).
+ * 각 항목에서 name(필수)·description·input.hint(UnstructuredCommandInput)만 방어적으로 추출하고,
+ * name 없는/미지 항목은 무시한다(ref-acp §13.2 느슨한 wire).
+ */
+function mapAvailableCommands(
+  rt: SessionUpdateRuntime,
+  update: { availableCommands?: unknown[] },
+): AgentEvent {
+  const commands: AgentCommand[] = [];
+  for (const raw of update.availableCommands ?? []) {
+    if (!raw || typeof raw !== "object") continue;
+    const rec = raw as Record<string, unknown>;
+    if (typeof rec.name !== "string" || rec.name.length === 0) continue;
+    const description = typeof rec.description === "string" ? rec.description : undefined;
+    const input = rec.input;
+    const inputHint =
+      input && typeof input === "object" && typeof (input as Record<string, unknown>).hint === "string"
+        ? ((input as Record<string, unknown>).hint as string)
+        : undefined;
+    commands.push({ name: rec.name, description, inputHint });
+  }
+  const ref: ProviderRef = {
+    provider: "claude",
+    sessionId: rt.providerSessionId,
+    turnId: rt.activeTurnId,
+  };
+  return { type: "available_commands_updated", ref, commands };
 }
 
 /**

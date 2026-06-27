@@ -72,18 +72,18 @@
 
 <style>
   .command-output-card {
-    border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.25));
     border-radius: 0.45rem;
     overflow: hidden;
-    font-size: 0.8rem;
+    font-size: var(--ui-font-size-sm);
   }
   .cmd-header {
     display: flex;
     align-items: center;
     gap: 0.45rem;
     padding: 0.4rem 0.6rem;
-    background: var(--color-surface, rgba(127, 127, 127, 0.06));
-    font-family: var(--font-mono, monospace);
+    background: var(--ui-bg-surface, rgba(127, 127, 127, 0.06));
+    font-family: var(--ui-font-mono-stack, monospace);
   }
   .cmd-prompt {
     opacity: 0.5;
@@ -96,7 +96,7 @@
   }
   .cmd-cwd {
     flex: 0 0 auto;
-    font-size: 0.7rem;
+    font-size: var(--ui-font-size-xs);
     opacity: 0.55;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -108,22 +108,22 @@
     overflow: auto;
     resize: vertical;
     padding: 0.4rem 0.6rem;
-    background: var(--color-bg, transparent);
+    background: var(--ui-bg-app, transparent);
   }
   .cmd-output.stderr {
-    border-top: 1px solid var(--color-border, rgba(127, 127, 127, 0.2));
+    border-top: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.2));
   }
   .cmd-pre {
     margin: 0;
-    font-family: var(--font-mono, monospace);
-    font-size: 0.76rem;
+    font-family: var(--ui-font-mono-stack, monospace);
+    font-size: var(--ui-font-size-sm);
     line-height: 1.4;
     white-space: pre-wrap;
     word-break: break-word;
   }
   .cmd-empty {
     opacity: 0.45;
-    font-size: 0.76rem;
+    font-size: var(--ui-font-size-sm);
   }
   .cmd-stderr-toggle {
     display: block;
@@ -132,10 +132,10 @@
     padding: 0.3rem 0.6rem;
     background: none;
     border: none;
-    border-top: 1px solid var(--color-border, rgba(127, 127, 127, 0.2));
-    color: var(--color-warning, #d29922);
+    border-top: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.2));
+    color: var(--ui-warning, #d29922);
     font: inherit;
-    font-size: 0.74rem;
+    font-size: var(--ui-font-size-sm);
     cursor: pointer;
   }
 </style>

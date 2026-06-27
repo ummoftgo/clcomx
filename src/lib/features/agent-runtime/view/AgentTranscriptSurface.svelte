@@ -10,7 +10,7 @@
   PTY 전제 콜백(onPtyId/onAuxStateChange/onExit/onResumeFallback)은 direct에서 호출하지 않는다(no-op, 08 §9.2).
 -->
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import { t } from "../../../i18n";
   import { TEST_IDS } from "../../../testids";
   import type { AgentRuntimeHostProps } from "../contracts/metadata";
@@ -184,6 +184,47 @@
     replayOpen = false;
     replayLoader = null;
   }
+
+  // ── 자동 아래 스크롤(auto-follow, 08 §7.1). store.autoFollow 상태만으로는 실제 스크롤이 일어나지
+  //    않으므로 view가 scroll 컨테이너를 직접 제어한다.
+  let scrollEl = $state<HTMLDivElement | null>(null);
+  const NEAR_BOTTOM_PX = 32;
+  const atBottom = (): boolean =>
+    !scrollEl ||
+    scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= NEAR_BOTTOM_PX;
+
+  /** 사용자가 위로 스크롤하면 추종 정지, 바닥 복귀 시 재개. */
+  function onTranscriptScroll(): void {
+    if (!scrollEl) return;
+    const wantFollow = atBottom();
+    if (wantFollow !== store.autoFollow) store.setAutoFollow(wantFollow);
+  }
+
+  // 새 content(transcript 변경) 도착 시 autoFollow면 바닥으로. 고빈도 delta는 tick()로 1회 합친다.
+  let scrollScheduled = false;
+  $effect(() => {
+    // 반응 트리거: 보이는 item 수 + item version(streaming delta 감지). 둘 다 store가 갱신마다 재할당.
+    void store.visibleItemIds.length;
+    void store.itemVersions;
+    if (!store.autoFollow) return;
+    if (scrollScheduled) return;
+    scrollScheduled = true;
+    void tick().then(() => {
+      scrollScheduled = false;
+      if (scrollEl && store.autoFollow) scrollEl.scrollTop = scrollEl.scrollHeight;
+    });
+  });
+
+  // pending approval 발생 시 항상 view로(08 §4.4·§7.1).
+  $effect(() => {
+    const has = store.pendingApprovals.length > 0 || !!store.escalationApproval;
+    if (!has) return;
+    void tick().then(() => {
+      scrollEl
+        ?.querySelector<HTMLElement>("[data-approval-anchor]")
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  });
 </script>
 
 <div
@@ -191,7 +232,12 @@
   class:hidden={!props.visible}
   data-testid={TEST_IDS.agentRuntimeShell}
 >
-  <div class="transcript-region" data-testid={TEST_IDS.agentTranscript}>
+  <div
+    class="transcript-region"
+    data-testid={TEST_IDS.agentTranscript}
+    bind:this={scrollEl}
+    onscroll={onTranscriptScroll}
+  >
     {#if store.status === "starting"}
       <div class="surface-status">{$t("agentRuntime.status.starting")}</div>
     {/if}
@@ -218,6 +264,7 @@
   <AgentComposer
     status={store.status}
     providerLabel={store.providerLabel}
+    availableCommands={store.availableCommands}
     {onSend}
     {onStop}
   />
@@ -245,6 +292,10 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    /* host baseline: UI 글꼴/크기 토큰을 명시 상속(테마·uiScale·uiFont 자동 반영, 08 §설정). */
+    font-family: var(--ui-font-stack);
+    font-size: var(--ui-font-size-base);
+    color: var(--ui-text-primary);
   }
   /* 비활성 탭: unmount하지 않고 off-screen으로 숨긴다(구독·store 유지). */
   .agent-runtime-shell.hidden {
@@ -261,7 +312,7 @@
     overflow-y: auto;
   }
   .surface-status {
-    font-size: 0.78rem;
+    font-size: var(--ui-font-size-sm);
     opacity: 0.6;
     padding: 0.5rem 0.75rem;
   }
@@ -271,11 +322,11 @@
     margin: 0.5rem 0.75rem;
     padding: 0.4rem 0.6rem;
     font: inherit;
-    font-size: 0.78rem;
+    font-size: var(--ui-font-size-sm);
     text-align: center;
-    border: 1px dashed var(--color-border, rgba(127, 127, 127, 0.4));
+    border: 1px dashed var(--ui-border-subtle, rgba(127, 127, 127, 0.4));
     border-radius: 0.4rem;
-    background: var(--color-surface, rgba(127, 127, 127, 0.04));
+    background: var(--ui-bg-surface, rgba(127, 127, 127, 0.04));
     color: inherit;
     cursor: pointer;
     opacity: 0.8;

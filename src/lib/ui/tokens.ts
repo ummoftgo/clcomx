@@ -52,6 +52,7 @@ export const UI_CSS_VARS = {
   fontFamily: "--ui-font-family",
   fontFallback: "--ui-font-fallback",
   fontStack: "--ui-font-stack",
+  fontMonoStack: "--ui-font-mono-stack",
   fontSizeXs: "--ui-font-size-xs",
   fontSizeSm: "--ui-font-size-sm",
   fontSizeBase: "--ui-font-size-base",
