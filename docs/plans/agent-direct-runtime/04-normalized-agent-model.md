@@ -97,6 +97,19 @@ event apply는 **순서 보존이 핵심**이다. 같은 session 안에서 messa
 - `mode: "append"`는 기존 content 뒤에 chunk를 붙인다.
 - 새 id면 새 transcript 항목을 만들고, 기존 id면 갱신한다.
 
+#### 3.1.1 라이브 user prompt echo (provider별 분기 — 정본)
+
+라이브 `sendPrompt`(15 §6 Port) 시 어댑터는 사용자 prompt를 **로컬 optimistic `user_message` AgentEvent**(타입 정본 15 §3)로 emit한다 — turn을 `running`으로 올리기 **전에**, content는 사용자가 보낸 원본 `AgentContent[]`(15 §4) 그대로다. 이는 사용자 입력이 turn 시작 즉시 transcript에 보이게 하는 optimistic echo다.
+
+핵심은 **provider가 user 메시지를 wire로 echo하는지** 여부에 따라 로컬 echo를 **분기**한다는 것이다(이중 렌더 방지):
+
+- **ACP (claude)는 로컬 echo를 한다.** ACP는 라이브 prompt turn 동안 user 메시지를 wire로 echo하지 않으므로(라이브 turn echo 없음 — ref-acp §4/§13), 어댑터가 직접 optimistic `user_message`를 emit하지 않으면 사용자 입력이 transcript에 나타나지 않는다. 따라서 ACP `sendPrompt`는 로컬 echo를 emit한다(06 §3.6 배선).
+- **Codex는 로컬 echo를 금지한다.** Codex는 `item/started`(`userMessage` item)로 user 메시지를 wire echo하므로(05), 어댑터가 추가로 로컬 echo를 emit하면 같은 메시지가 **이중 렌더**된다. 따라서 Codex `sendPrompt`는 로컬 echo를 emit하지 않고 wire의 `userMessage` item만 정상 `agent`/message upsert(§3.1·§3.2)로 흘린다(provider 비대칭).
+
+- **로컬 echo의 messageId 합성 키**: 로컬 echo `user_message`의 합성 key는 **`<sessionId>:t<n>:u`**다(turn id 합성 규칙 §"turn id 합성 규칙(ACP)"의 `<sessionId>:t<n>` turnId에 `:u` user 접미사). 이 합성 id는 wire로 나가지 않는 내부 값이며, 같은 turn에 사용자 prompt가 1건이라는 가정에 기댄다(다건/비텍스트 echo 정확도·합성 id 충돌은 [13](13-risks-open-questions.md) OQ-57).
+
+> **다운스트림 인용**: 이 규칙(로컬 echo는 ACP에서만, Codex는 wire echo, 합성 key `<sessionId>:t<n>:u`)은 Claude ACP adapter `06 §3.6`(sendPrompt가 optimistic `user_message` emit)·Codex adapter `05`(로컬 echo 금지, wire `userMessage` item만)·UI 매핑 `08`(user_message → transcript user 항목, 매핑표 비고)·검증 매트릭스 `14`(Claude 시퀀스의 user_message step)가 인용·준수하는 **규칙 정본**이다.
+
 ### 3.2 Codex delta → completed item reconcile
 
 Codex는 streaming delta와 최종 completed item을 모두 보낸다. reconcile 키는 `itemId`다 (ref-codex §7). 아래 하위 절 번호(§3.2.1~§3.2.5)는 다운스트림 문서가 인용하는 안정적 앵커다.
@@ -200,6 +213,10 @@ residency 윈도우 = **최근 N개 `sealed-retained` turn + 모든 `unsealed`/a
 turn/completed(또는 stopReason) 이후 같은 turn으로 도착하는 보조 notification(usage 보정·plan 갱신 등)의 실제 wire 발생 여부는 구현 직전 실측으로 확인한다([`13`](13-risks-open-questions.md) OQ-53). seal 조건 (e)의 quiescence grace가 이 늦은 도착을 흡수하며, grace 종료 후 도착분은 `sealed-retained`이면 unseal→patch→reseal(위 규칙 2), `evicted-tombstone`이면 drop+`droppedLateEventCount`(위 규칙 3)로 처리한다.
 
 > **다운스트림 인용**: 이 절(seal 조건·3-상태 residency·late-event 규칙·eviction 윈도우)은 [`08`](08-ui-composition.md) §5(`TranscriptModel`/`TranscriptTurnResidency` view-model 정본)·[`12`](12-implementation-workstreams.md)(T1.1 reducer→`TranscriptModel` 시그니처+3-state eviction, T5.6 격리 replay 뷰)·[`11`](11-testing-acceptance.md)(late same-turn reducer/store event fixture)가 인용·준수하는 **규칙 정본**이다. 신규 위험은 [`13`](13-risks-open-questions.md) §1.12 Long-session transcript memory (S2)에, 격리 scrollback replay(read-only, live 미병합)는 [`10`](10-persistence-migration.md) §4.7에 둔다.
+
+### 3.8 available_commands_updated (provider 명령 목록)
+
+`available_commands_updated`(15 §3, `commands: AgentCommand[]`)는 transcript 모델이 아니라 **세션 단위 provider 명령 목록 슬롯**을 갱신한다(08 `AgentRuntimeViewState.availableCommands`, §5). reduce 규칙: 같은 session(`ref.sessionId`) 기준으로 **전체 교체**(append 아님 — provider가 매번 현재 명령 set 전체를 보낸다, ACP `available_commands_update`). 세션 `starting`/load 시작/`exited` 전이 시 stale 목록을 **clear**한다(§2.1). composer(08 §6.6)는 이 슬롯만 읽고 adapter 상태를 직접 보지 않는다(우회 금지). Codex는 provider-backed 명령 소스가 없어 이 event를 emit하지 않으며(05), 그 경우 목록은 비고 composer는 client-side 정적 항목(`/resume` 등)만 노출한다.
 
 ---
 

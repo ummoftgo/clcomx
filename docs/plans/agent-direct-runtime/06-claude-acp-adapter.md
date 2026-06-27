@@ -189,8 +189,8 @@ sequenceDiagram
     Note over AD: §3.3 (terminal auth는 ACP authenticate 아님)
   end
   UI->>AD: sendPrompt(content)
+  Note over AD: turnId 합성(04) → optimistic user_message echo(#3, §3.6) → status→running
   AD->>RT: agentRuntimeSend(session/prompt {sessionId, prompt})
-  Note over AD: status→running, turnId 합성(04)
   loop turn
     CL-->>AD: session/update (variants §5)
     CL-->>AD: session/request_permission (§6)
@@ -373,6 +373,17 @@ sendPrompt(sessionHandle, input: SendPromptInput):           // 15 §6
   // turnId 합성: prompt 송신 직전 turnSeq 증가 + activeTurnId 할당(04 §turn id 합성, <sessionId>:t<n>)
   rt.turnSeq += 1
   rt.activeTurnId = `${rt.providerSessionId}:t${rt.turnSeq}`
+  // 로컬 optimistic user_message echo(#3, 04 §3.1·13 OQ-57): turnId 합성 직후·running emit 전에 emit한다.
+  // ACP는 라이브 turn의 user prompt를 wire로 echo하지 않으므로(ref-acp §3.7) 어댑터가 입력을 즉시 transcript에
+  // optimistic으로 반영한다. content는 wire 변환본(acpPrompt)이 아니라 **원본 AgentContent[]**(input.content)를 싣고,
+  // messageId는 `<sessionId>:t<n>:u`로 합성한다(turnSeq와 동기 → 동일 turn 내 user 메시지 1건, 충돌 방지·13 OQ-57).
+  // Codex는 item userMessage를 wire로 echo하므로 이 optimistic echo를 **하지 않는다**(provider 비대칭, 04 §3.1·#3).
+  emit({
+    type: "user_message",
+    ref: { provider:"claude", sessionId: rt.providerSessionId, messageId: `${rt.providerSessionId}:t${rt.turnSeq}:u`, turnId: rt.activeTurnId },
+    content: input.content,                                  // 원본 AgentContent[](wire 변환본 아님)
+    mode: "replace",
+  })
   emit({ type:"session_status_changed", ref: refFor(rt), status:"running" })  // 04 §2.1 규칙 2
   // session/prompt는 rpcRequest 경유(§3.1a). 응답 result.stopReason로 turn 종료 처리.
   result = await rpcRequest(rt.runtimeId, "session/prompt", { sessionId: rt.providerSessionId, prompt: acpPrompt })
@@ -557,11 +568,11 @@ async function cancelTurn(handle, turnId?) {
 |---|---|---|---|
 | `agent_message_chunk` | `ContentChunk` | `agent_message_delta{delta}`(text면) 또는 `agent_message{mode:"append"}` | messageId 기준 append. messageId 바뀌면 새 메시지(§5.2) |
 | `agent_thought_chunk` | `ContentChunk` | `agent_message_delta{channel:"thought"}`(text면) 또는 `agent_message{channel:"thought", mode:"append"}`(15 §3) | messageId 기준 thought 스트림 append(§5.3) |
-| `user_message_chunk` | `ContentChunk` | `user_message{mode:"append"}` | replay 경로(§3.5). messageId 기준 append |
+| `user_message_chunk` | `ContentChunk` | `user_message{mode:"append"}` | **replay 전용 경로**(§3.5, `loadingReplay`). 라이브 turn의 user echo는 wire가 아니라 `sendPrompt` optimistic emit(#3, §3.6)이 담당 — 이중 렌더 방지 |
 | `tool_call` | `ToolCall` | `tool_call_updated{update}`(신규 upsert) | toolCallId 기준 신규 생성(§5.4) |
 | `tool_call_update` | `ToolCallUpdate` | `tool_call_updated{update}`(부분 갱신) | toolCallId 기준 upsert. content/locations는 **replace**(§5.4) |
 | `plan` | `Plan` | `plan_updated{entries}` | 전체 교체(§5.5) |
-| `available_commands_update` | `AvailableCommandsUpdate` | (전용 event 없음, ref-acp §13.2) → command palette 상태 갱신(§5.6) | 전체 교체 |
+| `available_commands_update` | `AvailableCommandsUpdate{availableCommands}` | `available_commands_updated{ref, commands: AgentCommand[]}`(신규 event, #2·15) → command palette(§5.6) | 전체 교체 |
 | `current_mode_update` | `CurrentModeUpdate{currentModeId}` | (전용 event 없음) → mode 상태 갱신(§8) | 현재 mode 갱신 |
 | `config_option_update` | `ConfigOptionUpdate{configOptions}` | (전용 event 없음) → config 상태 갱신(§8) | 전체 set 교체 |
 | `session_info_update` | `SessionInfoUpdate{title?,updatedAt?}` | (전용 event 없음) → 세션 title 갱신 | null=clear |
@@ -651,7 +662,25 @@ function mapPlan(rt, plan): AgentEvent {
 
 ### 5.6 available_commands_update
 
-slash command 목록(ref-acp §10 `AvailableCommand{name,description,input?}`). CLCOMX 모델에 전용 event 없음(ref-acp §13.2) → composer command palette 상태로 보관(§8/§7 composer). **로컬 처리 slash command** `/context`·`/heapdump`·`/extra-usage`(ref-claude-agent-acp §2 `LOCAL_ONLY_COMMANDS`)는 별도 취급(모델 호출 없이 어댑터가 로컬 처리). `AvailableCommandInput`은 현재 `unstructured`(hint string)만 정의 — 알 수 없는 variant는 방어적 fallback(ref-acp §10).
+slash command 목록(ref-acp §10 `AvailableCommand{name,description,input?}`). **#2 정본**: provider-backed slash 소스를 composer command palette로 surface하기 위해 전용 event **`available_commands_updated{ ref; commands: AgentCommand[] }`**(15 정본)를 emit한다 — 더 이상 "상태만 보관/드롭"하지 않는다. 신규 타입 **`AgentCommand{ name: string; description?: string; inputHint?: string }`**(15)로 매핑한다. composer의 `/` 명령 팔레트(provider availableCommands + 로컬 `/resume`)·`@` mention 정책은 [`08-ui-composition.md`](08-ui-composition.md) §6.6 소관이며, 본 어댑터는 wire→event 변환만 책임진다.
+
+```ts
+function mapAvailableCommands(rt, update): AgentEvent {
+  // update.availableCommands: AvailableCommand[] (ref-acp §10)
+  const commands: AgentCommand[] = update.availableCommands.map((c) => ({  // 15 신규 타입
+    name: c.name,
+    description: c.description,
+    // AvailableCommandInput은 anyOf — 현재 UnstructuredCommandInput(hint string)만 정의.
+    // unstructured면 hint를 inputHint로 추출, 그 외/미지 variant는 방어적으로 무시(inputHint 생략, ref-acp §10 §566-569).
+    inputHint: c.input && c.input.hint != null ? c.input.hint : undefined,
+  }));
+  return { type: "available_commands_updated", ref: refFor(rt), commands };  // #2, 15
+}
+```
+
+- **전체 교체**: 매 update는 현재 가용 command 전체 set이다(증분 아님, ref-acp §10). store는 이 commands로 palette 상태를 교체한다.
+- `AvailableCommandInput`은 anyOf로 확장 가능하다 — 현재 `UnstructuredCommandInput`(`{hint: string}`)만 정의돼 있으므로 **`hint`만 `inputHint`로 추출**하고, 알 수 없는 variant는 `inputHint` 없이 방어적으로 무시한다(ref-acp §10 §566-569, 04 §5 unknown-variant 방어).
+- **로컬 처리 slash command** `/context`·`/heapdump`·`/extra-usage`(ref-claude-agent-acp §2 `LOCAL_ONLY_COMMANDS`)는 별도 취급(모델 호출 없이 어댑터가 로컬 처리). composer의 로컬 `/resume`(→ `port.resumeSession`, §3.5)·`@` mention(embeddedContext capability 게이트, §7.1)·`$`(v1 보류) 정책은 08 §6.6/13 OQ-56 소관.
 
 ---
 
@@ -905,6 +934,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 ### 11.1 단위 테스트 (순수 매핑)
 
 - `mapSessionUpdate`: 8개 핵심 variant 각각 fixture → 기대 `AgentEvent[]` 검증. messageId 그룹핑(바뀌면 새 메시지, §5.2), tool_call_update content **replace**(§5.4), plan 전체 교체(§5.5).
+- `mapSessionUpdate`(`available_commands_update`): `available_commands_updated{commands: AgentCommand[]}` emit 검증(#2, §5.6). `UnstructuredCommandInput.hint`만 `AgentCommand.inputHint`로 추출되고, 미지 `AvailableCommandInput` variant는 `inputHint` 없이 방어적 무시되는지(ref-acp §10 §566-569). 전체 set 교체.
 - `mapRequestPermission`/`buildPermissionResponse`: option kind 1:1, selected/cancelled wire shape(§6, ref-acp §6). **rpcId 타입 보존**: numeric id(예: `42`)로 온 request_permission에 대해 wire 응답 `id`가 `42`(number)로 유지되는지(String `"42"` 금지, R3). `ApprovalRequest.id`/`ProviderRef.requestId`는 `"42"`(문자열 키)인지. **`ApprovalRequest.severity` 분류**: 기본값이 `"normal"`(inline)이고, 09 §8.3 고위험 신호(`bypassPermissions` 진입/해당 모드 approval, `ExitPlanMode`의 `bypassPermissions` 옵션 노출 승인)에서는 `classifySeverity`가 `"escalation"`(modal)을 돌려주는지(§6.1, OQ-47, 08 §4.4 modal 분기 정합).
 - `mapContentBlock`/`toAcpPromptContent`: image base64↔uri, diff patch 생성, path absolute 정규화(§7).
 - `buildInitializeRequest`/`parseInitializeResponse`: protocolVersion=1 검증, capability 위치 비대칭(loadSession top-level vs resume in sessionCapabilities, §3.2).
@@ -914,6 +944,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 ### 11.2 통합 테스트 (어댑터 + 모킹 transport)
 
 - lifecycle: startSession → initialize → session/new → sendPrompt → session/update 스트림 → stopReason → turn_completed. status 전이(starting→ready→running→idle) 검증(04 §2). **turn id 합성(C1, §3.6)**: `sendPrompt` 직전 `turnSeq` 증가·`activeTurnId=<sessionId>:t<n>` 할당, turn 동안 모든 `ref.turnId`가 동일, stopReason 수신 후 `activeTurnId` clear됨을 검증. idle 중 늦게 도착한 update의 `ref.turnId`가 `undefined`인지.
+- **optimistic user_message echo(#3, §3.6, 13 OQ-57)**: `sendPrompt`가 running emit **전에** `user_message{messageId:"<sessionId>:t<n>:u", mode:"replace"}`를 emit하고, content가 wire 변환본(acpPrompt)이 아니라 **원본 `input.content`**인지. messageId가 turnSeq와 동기(동일 turn 1건)이고 turn별로 유일해 충돌하지 않는지. 라이브 turn에서 `user_message_chunk`가 wire로 오지 않아 이중 렌더가 없는지(§5.2 비고).
 - replay: session/load 시 응답 전 update가 transcript 재구성 경로(`loadingReplay=true`)로 처리되고, **load response resolve 시점에 `loadingReplay=false`로 꺼지며 `session_loaded`가 emit**되는지(M2, §3.5). resume은 `loadingReplay`를 켜지 않는지.
 - rpcRequest 응답 매칭(H2/H3, §3.1a): `initialize`/`session/new`/`session/prompt`가 `pendingRequests`로 await/resolve되고, error response(`{id,error}`)면 reject되어 `status→failed`로 전이하는지(§3.2 규칙 1, §9). 응답 id 원본 타입 보존(R3).
 - cancel cleanup: cancelTurn 시 pending approval이 모두 cancelled wire 응답 + `approval_resolved` emit(§4.3, 04 §4.2). **deadlock 회귀 방지 핵심**.

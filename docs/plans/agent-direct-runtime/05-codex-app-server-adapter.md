@@ -184,6 +184,8 @@ sendPrompt(sessionHandle, input: SendPromptInput):       // 15 §6
 
 > **H3 — turn/start error 응답 처리**: `rpcRequest`는 result/error를 다른 채널로 분기하므로(§3.1 `resolveRpc`) `turn/start`가 `JSONRPCError`로 응답하면 `resp.turn.id` 접근 전에 reject되어 위 `catch`로 빠진다. 어댑터는 `setActiveTurn`/running 전이를 **응답 성공 이후에만** 수행하므로 활성 turn 상태가 오염되지 않으며, 실패를 `error` event로 노출하고 세션 status를 `ready`로 복원해 deadlock 없이 다음 입력을 받는다(04 §5). running 전이가 이미 일어난 변형(turn/started notification이 error보다 먼저 도착)에서는 §5.2 `turn/completed`/`error` notification이 status를 정리한다.
 
+> **#3 — Codex sendPrompt는 로컬 user_message echo를 추가하지 않는다 (provider 비대칭)**: ACP 어댑터(06 §3.6)는 라이브 prompt를 wire echo하지 않으므로 `sendPrompt`가 **로컬 optimistic `user_message` AgentEvent**(합성 messageId `<sessionId>:t<n>:u`, content=원본 `AgentContent[]`, running 전)를 emit해 입력을 즉시 transcript에 노출한다(04 §3.1, 06 §3.6). **Codex는 이 로컬 echo를 추가하지 않는다** — Codex는 `userMessage` thread item을 `item/started`·`item/completed`로 **wire echo**하고 `codex-wire-mapper`가 이를 `user_message`로 매핑하므로(§5.3 `mapItemStarted`/`mapItemCompleted`의 `userMessage` case, 이미 구현), 여기에 로컬 echo를 더하면 합성 messageId(local) ↔ wire itemId(`item.id`) 불일치로 **동일 입력이 이중 렌더**된다. 따라서 user_message echo는 **ACP만 로컬**, Codex는 wire 권위라는 provider 비대칭이며(04 §3.1, OQ-57), 위 `sendPrompt` 의사코드는 `turn/start` 송신만 하고 `user_message` emit을 의도적으로 두지 않는다. 합성 messageId 충돌·비텍스트 echo 정확도 잔여는 [13](13-risks-open-questions.md) OQ-57.
+
 `turn/start` params는 **안정 필드만** 채운다(ref-codex §6.5): `threadId`, `input`. `model`/`effort`/`sandboxPolicy`/`approvalPolicy` 등 override는 settings 연동 시 추가하되 experimental 필드(`environments`/`permissions`/`collaborationMode` 등)는 넣지 않는다(ref-codex §6.5 주석, §1.4). approval 정책 키는 `approvalPolicy`(타입 `AskForApproval`, kebab-case: `untrusted`/`on-failure`/`on-request`/`never`)이며, sandbox 키는 `sandboxPolicy`(타입 `SandboxPolicy`)임에 주의(ref-codex §6.5 주석). v1 기본값/노출 여부는 [09](09-permissions-security.md)와 [13](13-risks-open-questions.md)에서 확정(결정 필요).
 
 ### 2.5 resume / load (`resumeSession`)
@@ -508,6 +510,9 @@ mapItemStarted(item, threadId, turnId):
   ref = refOf({threadId, turnId, itemId: item.id})
   switch item.type:                                        // ref-codex §6.3
     case "userMessage":
+       // #3 provider 비대칭: 이 wire echo가 user_message의 **유일한** 권위 소스다(§2.4 주석).
+       //   sendPrompt는 로컬 echo를 추가하지 않으므로(ACP만 로컬, 04 §3.1·06 §3.6·OQ-57)
+       //   여기서 emit한 user_message가 이중 렌더 없이 그대로 transcript에 반영된다.
        return [{ type:"user_message", ref,
                  content: item.content.map(mapUserInput), mode:"replace" }] // §5.3a
     case "agentMessage":
@@ -735,6 +740,15 @@ mapTokenUsage(tu):                         // ThreadTokenUsage (ref-codex §6.7)
 ```
 
 > **late usage fallback (M4)**: 위 결합은 `thread/tokenUsage/updated`가 `turn/completed` **이전**에 도착함을 전제한다(takeTokenUsage가 보관분을 꺼내 `turn_completed.usage`로 동승). 그러나 두 notification의 ordering은 ref-codex §10에서 unverified다(`turn/completed`가 먼저 올 수 있음). `turn/completed` 시점에 `takeTokenUsage`가 비어 있으면 `usage`는 `undefined`로 emit하고, 뒤늦게 도착한 `thread/tokenUsage/updated`는 §5.1처럼 보관만 하지 말고 **usage-only 보강 update를 emit**해 해당 turn의 usage를 갱신한다(transcript reducer가 turnId로 `turn_completed`에 병합). 즉 `thread/tokenUsage/updated` 처리에서 "이미 닫힌 turn(`clearActiveTurn` 후)이면 보관 대신 `turn_completed{usage}` 보강 emit"으로 분기한다. ordering이 wire 실측으로 "tokenUsage가 항상 선행"으로 확정되면 이 보강 분기는 제거 가능하다([13](13-risks-open-questions.md) verify-at-impl, ref-codex §10 ordering unverified).
+
+### 5.7 슬래시 명령 — Codex는 provider-backed 소스가 없다 (#2)
+
+ACP 어댑터(06 §5)는 `available_commands_update`를 받아 신규 `available_commands_updated { ref; commands: AgentCommand[] }` AgentEvent(15 §3, 신규 타입 `AgentCommand { name; description?; inputHint? }`)를 emit하고, composer(08 §6.6)의 `/` 명령 팔레트가 그 provider availableCommands를 소비한다. **Codex app-server v2 thread 모델에는 이 ACP `availableCommands`에 등가인 provider-backed slash 명령 소스가 없다**(ref-codex §5·§6: thread/turn/item notification 카탈로그에 명령 목록 갱신 notification이 부재). 따라서:
+
+- **Codex 어댑터는 `available_commands_updated` AgentEvent를 emit하지 않는다.** mapper(§5.1)에 대응 notification case를 두지 않으며(부재 notification이라 §5.2 default로도 도달하지 않음), composer의 Codex 세션 `/` 팔레트는 **client-side 정적 항목만**(예: 로컬 `/resume` → `port.resumeSession`, 02 결정원장 #2) 표시한다.
+- **provider-backed 명령 목록은 v1 미지원이다.** Codex의 `skills/list`(있더라도)는 `@` skill **mention** 소스이지 `/` slash 명령 소스가 아니므로 slash 팔레트로 끌어오지 않는다(소스 혼동 금지). `@` file/resource mention과 `$` 보류는 06/08·OQ-56 정본을 따른다.
+
+> **provider 비대칭(slash 소스)**: ACP는 provider-backed availableCommands(동적) + 로컬 `/resume`, Codex는 **로컬 정적만**(provider-backed 동적 명령 없음). 이 비대칭과 `$` 의미·소스, Codex slash 소스의 후속 발굴(향후 app-server가 명령 목록 notification을 추가할 경우)은 [13](13-risks-open-questions.md) OQ-56에 등록.
 
 ---
 
@@ -1101,6 +1115,7 @@ mapper/routing은 순수 함수/plain class라 vitest로 단독 테스트([`rese
 | Codex wire(method/notification/payload/enum/매핑표/reconcile) | [ref-codex-app-server-protocol.md](ref-codex-app-server-protocol.md) | §1, §2, §4, §5, §6, §7, §8, §9, §10 |
 | normalized 타입 정본(AgentEvent/ProviderRef/ToolCallUpdate/Approval*/JsonRpcMessage/AgentRuntimeStartParams) | [15-data-contracts.md](15-data-contracts.md) | §1–§8 |
 | 상태머신·reconcile·approval 생명주기·라우팅 규칙 | [04-normalized-agent-model.md](04-normalized-agent-model.md) | §1–§5 |
+| Claude ACP 어댑터(provider 비대칭 대조: user_message 로컬 echo·availableCommands slash 소스) | [06-claude-acp-adapter.md](06-claude-acp-adapter.md) | §3.6, §5 |
 | Tauri command/event·framing·process lifecycle·WSL 경계 | [07-tauri-process-runtime.md](07-tauri-process-runtime.md) | 전체 |
 | feature 레이어·transport 래퍼·host 분기·테스트 컨벤션 | [research/codebase-frontend.md](research/codebase-frontend.md) | §1, §4, §8 |
 | backend 상태 모델·등록·allowlist·scrub | [research/codebase-backend.md](research/codebase-backend.md) | §1, §2, §6, §10 |
