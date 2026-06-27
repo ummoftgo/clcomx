@@ -98,6 +98,7 @@
   import { createTabCloseOrchestrationController } from "./lib/features/session/controller/tab-close-orchestration-controller";
   import { createTabRenameOrchestrationController } from "./lib/features/session/controller/tab-rename-orchestration-controller";
   import { loadSessionShellComponent } from "./lib/features/session/service/session-shell-loader";
+  import { bindLauncherSessionConfirm } from "./lib/features/session/service/launcher-session-confirm";
   import { createTabOrganizationController } from "./lib/features/session-tabs/controller/tab-organization-controller";
   import { dispatchTerminalFocusRequest } from "./lib/features/terminal/controller/terminal-focus-bridge";
   import { installCanonicalScreenAuthority } from "./lib/terminal/canonical-screen-authority";
@@ -441,6 +442,10 @@
   ) {
     sessionLifecycle.createSession(agentId, distro, workDir, title, resumeToken, runtimeKind);
   }
+
+  // 런처 onConfirm 계약(agentId, distro, workDir, runtimeKind?)을 createSession(6-인자)에 위치 맞춰
+  // 연결한다. 직접 바인딩하면 runtimeKind가 title 슬롯으로 새어 direct 세션이 pty로 떨어진다.
+  const createSessionFromLauncher = bindLauncherSessionConfirm(createSession);
 
   function openHistoryEntry(entry: TabHistoryEntry) {
     sessionLifecycle.openHistoryEntry(entry);
@@ -812,7 +817,7 @@
       {SessionShellComponent}
       SessionLauncherComponent={SessionLauncher}
       onOpenHistory={openHistoryEntry}
-      onConfirmSession={createSession}
+      onConfirmSession={createSessionFromLauncher}
       onSessionEditorStateChange={(sessionId, state) => {
         setSessionEditorState(sessionId, state);
       }}
@@ -834,7 +839,7 @@
     visible={showSessionLauncher}
     historyEntries={historyEntries}
     onOpenHistory={openHistoryEntry}
-    onConfirm={createSession}
+    onConfirm={createSessionFromLauncher}
     onCancel={appOverlayVisibility.hideSessionLauncher}
   />
 
