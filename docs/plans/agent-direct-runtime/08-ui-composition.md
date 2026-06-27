@@ -23,6 +23,25 @@
 4. **streaming-first layout**: sticky-bottom composer + 그 위 scrollable·가상화 transcript(ux-reference §1.1). auto-follow는 사용자가 위로 스크롤하면 멈추고, approval dialog는 auto-scroll 설정과 무관하게 항상 view로 끌어온다(ux-reference §7).
 5. **타입 권위 단일화**: 본 문서가 props/state로 다루는 모든 도메인 값은 15의 타입을 import한다. UI 전용 view-model 타입만 본 문서가 정의한다(§5).
 
+### 1.6 설정 소비 (Settings consumption) (정본)
+
+> **공백 보완**: 설계가 transcript surface의 설정(테마/글꼴/크기) 소비 경로를 명세하지 않아 구현에서 드러났다. 앱은 이미 `applyRuntimeStyleLayer`(src/lib/ui/theme-bridge.ts·style-layers.ts, App.svelte)로 `:root`에 정본 `--ui-*` 토큰을 주입한다(테마 색 = `getThemeTokenStyle`, UI 글꼴/크기/스케일 = `getUiPreferenceTokenStyle`). transcript surface는 이 토큰만 소비한다.
+
+transcript surface(host = `AgentRuntimeShell`/`AgentTranscriptSurface` 이하 모든 view)는 **settings store를 직접 import하지 않는다.** 색/테마·UI 글꼴/크기/스케일은 전부 정본 `--ui-*` CSS 토큰만 소비한다(터미널 분리 — 기존 `Terminal.svelte`가 `settings.terminal.*`를 xterm에 적용하는 것과 별개 경로).
+
+| 소비 대상 | 정본 토큰 | 구동 설정 | 비고 |
+|---|---|---|---|
+| 색 / 테마 | `--ui-*`(색 토큰군) | settings theme | `getThemeTokenStyle`(theme-bridge) |
+| UI 글꼴 스택 | `--ui-font-stack` | settings UI 글꼴 | `getUiPreferenceTokenStyle` |
+| UI 글꼴 크기 | `--ui-font-size-*`(xs/sm/base/md/lg) | settings UI 크기 | 스케일 단계만 사용(절대 rem 금지) |
+| UI 스케일 | `--ui-scale` | settings UI 스케일 | |
+| 코드/명령출력 mono | `--ui-font-mono-stack`(신규, 15) | `settings.terminal.fontFamily`/`fontFamilyFallback` | `Terminal.svelte`의 `terminalFontFamily` 로직 재사용(15 신규 토큰 `UI_CSS_VARS.fontMonoStack`) |
+
+규칙:
+- **하드코딩 rem 금지**, 미정의 `--color-*`/`--font-mono` 금지. 타이포는 절대 px/rem이 아니라 `--ui-font-size-*` 스케일 단계(xs/sm/base/md/lg)로만 표기한다(§5 view-model·§10.2 카드 밀도에 고정).
+- 코드/명령 출력의 mono 글꼴은 신규 토큰 `--ui-font-mono-stack`(= `UI_CSS_VARS.fontMonoStack`, 15 정본)을 쓴다. 이 토큰은 `settings.terminal.fontFamily`/`fontFamilyFallback`로 구동되며 `Terminal.svelte`의 `terminalFontFamily` 합성 로직을 재사용한다(mono 글꼴 재사용 vs 전용 설정 = v1은 재사용, [13](13-risks-open-questions.md) OQ-55).
+- **agent-runtime 전용 신규 Settings 섹션을 신설하지 않는다.** 기존 `TerminalSettings`/`InterfaceSettings`를 재사용한다(OQ-55).
+
 ---
 
 ## 2. 컴포넌트 트리 (정보구조)
@@ -180,7 +199,7 @@ graph TD
 | `session_started` | 세션 메타 초기화, `status=ready` 동기화 | (transcript 헤더/상태 영역) |
 | `session_loaded` | replay 시작 표시, 이후 event 순서 누적(04 §3.4) | "복원 중" 상태 + `MessageList` |
 | `session_status_changed` | `runtimeState.status` 갱신(04 §2) | composer indicator(§6.5), 탭 badge(§8) |
-| `user_message` | `mode=replace`/`append` upsert by `ref`(04 §3.1) | `MessageBubble`(role=user) |
+| `user_message` | `mode=replace`/`append` upsert by `ref`(04 §3.1) | `MessageBubble`(role=user) — **provider 소스 비대칭**(아래 비고) |
 | `agent_message` | upsert by `itemId`/`messageId`. Codex completed가 권위(04 §3.2.1). `channel:"thought"`(15 §3)는 reasoning 권위 reconcile(04 §3.2.2) | `MessageBubble`(role=agent) / `channel:"thought"`이면 thinking 블록(§6.2) |
 | `agent_message_delta` | 대상 message에 `delta` **append**(04 §3.1, §3.2.1). `channel:"thought"` delta는 thought 스트림으로 별도 누적(04 §3.2.2/§3.2.5) | `MessageBubble` 내 점진 텍스트 + streaming caret(§6.1) / `channel:"thought"`이면 thinking 블록(§6.2) |
 | `plan_updated` | plan **전체 교체**(04 §3.3 "replace-only") | `PlanBlock` |
@@ -195,9 +214,14 @@ graph TD
 | `error` | `recoverable`에 따라 retry/실패 표시(04 §5) | `ErrorNotice` |
 | `terminal_output_delta` | transcript 아님 — 보조/legacy terminal surface 전용(04 §3.5) | `TerminalRuntimeSurface`(§7.4) |
 
-> **content delta 시 가상화 주의**: `agent_message_delta`/`command_output_delta`는 고빈도다. `MessageList` 가상화는 "현재 streaming 중인 마지막 item"을 항상 mount 상태로 유지해야 한다(끝부분이 unmount되면 caret/append가 깜빡인다). 권장: streaming 중인 item id를 `runtimeState.streamingItemId`로 보유하고 가상화 윈도우에 강제 포함.
+> **content delta 시 가상화 주의**: `agent_message_delta`/`command_output_delta`는 고빈도다. `MessageList` 가상화는 "현재 streaming 중인 마지막 item"을 항상 mount 상태로 유지해야 한다(끝부분이 unmount되면 caret/append가 깜빡이고, scrollHeight 점프로 auto-follow가 튄다 — §7.1/§7.2). 권장: streaming 중인 item id를 `runtimeState.streamingItemId`로 보유하고 가상화 윈도우에 강제 포함하며, 바닥 N개도 함께 강제 mount한다(§7.2). 이 §3↔§7.1↔§7.2 강제 mount 규칙은 상호참조다.
 >
 > **shallow 반응형과의 정합**: streaming delta는 `TranscriptModel.itemsById`(plain Map, 비반응형)의 body를 직접 갱신하고 `itemVersions[itemId]`만 bump해 해당 item 렌더를 트리거한다(§5). 반응형 표면이 `visibleItemIds`/`itemVersions`로 한정돼 있어, delta가 고빈도여도 반응성 비용은 세션 길이가 아니라 "현재 보이는/스트리밍 item 수"에 비례한다. streaming 중 turn은 항상 `unsealed`(또는 sealed-retained의 late-event unseal)이라 eviction 대상이 아니다(04 §3.7).
+>
+> **`user_message` provider 소스 비대칭(공백 보완)**: 같은 `MessageBubble`(role=user)로 렌더되지만 `user_message` event의 **출처가 provider별로 다르다.**
+> - **ACP(Claude)**: 라이브 turn의 user prompt를 wire로 echo하지 **않는다.** 따라서 어댑터 `sendPrompt`가 running 전에 **로컬 optimistic `user_message` AgentEvent를 emit**한다(합성 `messageId` = `<sessionId>:t<n>:u`, content = 원본 `AgentContent[]`). 배선 정본은 04 §3.1·06 §3.6, 시퀀스는 14 Claude 분기의 user_message step.
+> - **Codex**: wire가 `userMessage` item을 echo하므로 어댑터는 그 item을 경유해 `user_message`를 emit하고 **로컬 optimistic echo는 금지**한다(이중 렌더 방지, 05 명시).
+> - UI는 두 경우 모두 동일한 reducer upsert(by `ref`, 04 §3.1)·`MessageBubble`로 흡수한다. 합성 messageId 충돌·비텍스트 echo 정확도는 [13](13-risks-open-questions.md) OQ-57.
 
 ### 3.1 stop reason / refusal notice
 
@@ -338,6 +362,7 @@ export interface AgentRuntimeViewState {
   usage: TokenUsage | null;                    // 15 §5 (turn 토큰)
   contextUsage?: { used: number; size: number } | null; // ACP usage_update → 15 §5 TokenUsage.contextUsed/contextSize(OQ-02 해소, 06 §3.6)
   autoFollow: boolean;                         // §7.2
+  availableCommands: AgentCommand[];           // §6.6 — provider slash 명령 목록(15 AgentCommand). reducer가 available_commands_updated로 전체 교체(04 §3.8). composer는 adapter가 아니라 이 슬롯을 본다(우회 금지).
 }
 
 /** composer가 capability에 따라 활성/비활성하는 입력 기능(§6.4). */
@@ -423,20 +448,44 @@ composer 입력 기능은 provider capability에 따라 동적 enable/disable한
 └──────────────────────────────────────────────────────────────┘
 ```
 
+### 6.6 Command palette / completion triggers (정본)
+
+> **공백 보완**: 설계가 composer의 `/`·`@`·`$` 완성 트리거를 명세하지 않아 구현에서 드러났다. 슬래시 명령 소스는 신규 event `available_commands_updated`(15)·신규 타입 `AgentCommand`(15)에 의존한다.
+
+composer는 입력 첫 토큰(또는 커서 위치)으로 세 가지 완성 트리거를 띄운다. 각 팝업은 키보드 내비게이션(↑/↓ 이동, Enter 확정, Esc 닫기)을 지원하고 마우스 hover/click도 허용한다.
+
+| 트리거 | 의미 | 소스 | 게이트 |
+|---|---|---|---|
+| `/` | **명령 팔레트** | provider `availableCommands`(15 `available_commands_updated` event → `AgentCommand[]`) **+ 로컬 `/resume`** | 항상(provider 소스 없으면 로컬만) |
+| `@` | **file/resource mention** | 워크스페이스 파일/리소스 → `AgentContent{type:"resource"}`(§6.3) | `embeddedContext` capability(§6.4) 게이트 |
+| `$` | (예약) | — | **v1 보류**([13](13-risks-open-questions.md) OQ-56) |
+
+- **`/` 명령 팔레트**: provider가 제시한 `AgentCommand{ name; description?; inputHint? }`(15 정본) 목록을 표시한다. ACP `available_commands_update`(06 §5)는 어댑터가 `available_commands_updated { ref; commands: AgentCommand[] }` event로 emit한다(`UnstructuredCommandInput.hint`만 `inputHint`로 추출, 미지 input variant는 방어적으로 무시; ref-acp §566-569). **Codex는 provider-backed slash 소스가 없다**(client-side 정적 명령만, 05 명시) → Codex 세션의 `/` 팔레트는 로컬 명령(`/resume`)만 노출한다.
+- **로컬 `/resume`**: provider 명령과 함께 노출하며 선택 시 `AgentRuntimePort.resumeSession`로 라우팅한다(10 §4 `canResume`/`canLoad` 게이트).
+- **`@` mention**: 선택 시 §6.3의 resource 첨부 흐름으로 합류한다. `embeddedContext` capability 미지원이면 트리거를 비활성/숨김(§6.4).
+- **`$`**: v1에서는 트리거를 잡지 않는다(의미·소스 미정 = OQ-56).
+- i18n: 명령 팔레트/완성 UI text는 `agentRuntime.composer.command.*` namespace를 예약한다(§8). 명령 `name`/`description`/`inputHint` 원본은 provider 값을 그대로 표시하되(브랜딩 §8 준수), UI 셸 라벨("명령", "파일 멘션" 등)만 i18n으로 감싼다.
+
 ---
 
 ## 7. 긴 출력 / terminal embed / 스크롤 처리
 
-### 7.1 auto-follow
+### 7.1 auto-follow (스크롤 컨테이너 DOM 부수효과 — 정본)
 
-ux-reference §7.1(Claude fullscreen) 패턴을 채택한다:
-- streaming 중 transcript는 하단을 추종한다(`autoFollow=true`).
-- 사용자가 위로 스크롤하면 auto-follow 일시 정지("Scrolling up pauses auto-follow"). 맨 아래 도달 또는 명시적 행동(`Ctrl+End` 등)으로 재개.
-- **approval dialog는 auto-scroll 설정과 무관하게 항상 view로 스크롤**(ux-reference §7.1, §9, §4.4).
+> **공백 보완**: auto-follow를 단순 '상태 토글'로만 본 초기 설계는 구현에서 부족했다. auto-follow는 `autoFollow` boolean 1개의 토글이 아니라, **스크롤 컨테이너(`.transcript-region`)의 DOM 부수효과**로 정밀 명세한다. 적용 대상은 `AgentTranscriptSurface`의 scrollable region(`.transcript-region`)이며 **`MessageList` 루트가 아니다**(MessageList는 그 안의 가상화 뷰포트).
+
+ux-reference §7.1(Claude fullscreen) 패턴을 채택하되 다음 DOM 규칙으로 구현한다:
+
+- **추종(follow) 부수효과**: `autoFollow=true`이고 스크롤이 바닥에 anchored면, 새 item/delta가 transcript에 반영될 때마다 `.transcript-region.scrollTop = .transcript-region.scrollHeight`로 바닥 고정한다. `agent_message_delta`/`command_output_delta`는 고빈도이므로 매 delta마다 동기 호출하지 않고 **`tick()`/`requestAnimationFrame`로 디바운스**해 프레임당 1회만 바닥 스크롤한다(append 깜빡임·레이아웃 스래싱 방지).
+- **추종 on/off 전환**: 컨테이너 `onscroll` 핸들러가 "바닥 근접 여부"(`scrollHeight - scrollTop - clientHeight <= 임계값`)로 `autoFollow`를 토글한다. 사용자가 위로 스크롤하면 off("Scrolling up pauses auto-follow"), 바닥 재도달 또는 명시적 행동(`Ctrl+End` 등)으로 on. 토글은 부수효과의 게이트일 뿐, 스크롤 위치 자체는 항상 DOM이 권위다.
+- **approval은 항상 scrollIntoView**: approval card(inline/modal 진입 전 inline)는 `autoFollow`/바닥 anchored 여부와 **무관하게 항상** `scrollIntoView`로 view에 끌어온다(ux-reference §7.1, §9, §4.4). 이는 follow 디바운스 경로를 우회하는 별도 즉시 호출이다.
+- `autoFollow`(§5 `AgentRuntimeViewState.autoFollow`)는 이 부수효과의 **게이트 플래그**로만 남고, 스크롤의 실제 권위는 컨테이너 DOM이다.
 
 ### 7.2 가상화 (소싱 + 격리 replay 뷰)
 
 긴 transcript 성능을 위해 **보이는 item만 mount**(ux-reference §1.1, §7.1). `MessageList`는 `TranscriptModel.visibleItemIds`(순서·표시 대상)로 윈도잉하고 각 id의 body를 `TranscriptModel.itemsById`(plain Map, §5)에서 소싱한다(전체 배열 순회 없음). §3 주의대로 `streamingItemId` item은 윈도우에 강제 포함. 권장 라이브러리/방식은 `결정 필요`(직접 구현 vs 라이브러리, [13](13-risks-open-questions.md)).
+
+> **가상화 × auto-follow 상호작용(공백 보완 — 강제 mount 규칙)**: 가상화 도입 시 **`streamingItemId` + 바닥 N개 item은 항상 mount**해야 한다(§3 강제 포함 규칙의 확장). 끝부분 item이 unmount되면 그 높이가 윈도우에서 빠져 `.transcript-region.scrollHeight`가 점프하고, §7.1의 follow 부수효과(`scrollTop = scrollHeight`)가 잘못된 위치로 튄다. 따라서 바닥 추종이 안정적이려면 가상화 하단 경계는 "마지막 N개 + streaming item"을 강제 mount해 scrollHeight를 안정화한다. §3(streamingItemId 강제 mount) ↔ §7.1(follow 부수효과) ↔ 본 절(바닥 N개 강제 mount)은 상호참조이며, auto-follow × 가상화 상호작용의 잔여 튜닝(N·임계값 실측)은 [13](13-risks-open-questions.md) OQ-58에서 확정한다.
 
 > **두 경계가 별개임(① DOM 가상화 vs ② residency eviction vs ③ surface unmount 금지)**. ① **DOM 가상화(item 레벨)**는 `MessageList`가 **보이지 않는 transcript item DOM만** mount/unmount하는 것으로, store(`itemsById`) body는 그대로 둔다. ② **residency eviction(heap 레벨)**은 sealed-turn 윈도우 초과 시 `itemsById`에서 oldest sealed turn body를 비워 heap을 줄이는 것이다(`evicted-tombstone`, 04 §3.7). 즉 surface가 **살아 있어도(DOM/store 유지) heap은 감소**한다 — OQ-17이 다루는 "surface unmount"와는 직교한다. ③ [10](10-persistence-migration.md) §4.3의 "process 생존 중 unmount 금지"는 **transcript surface(host = `AgentRuntimeShell`/`AgentTranscriptSurface`) 전체**에 적용되는 규칙이다. host는 `visible=false`(탭 비활성)에도 `.hidden` CSS로만 숨기고 unmount하지 않으며(§2.2), late-attach store(`AgentRuntimeViewState` §5)는 **surface 내부 메모리에 유지**된다. 가상화로 끝부분 item이 unmount돼도 store와 surface는 살아 있으므로 seq 재구성 없이 안전하다. 이 경계 확인은 [13](13-risks-open-questions.md) OQ-17의 "08 가상화 경로가 surface를 unmount하지 않음" 게이트를 충족한다.
 
@@ -483,6 +532,7 @@ diagnostic 토글은 `Terminal.svelte`의 "두 surface mount + viewMode 토글" 
 - `agentRuntime.errors.*` — error/retry/stop-reason notice(refusal/maxTokens/maxTurnRequests/processExited)
 - `agentRuntime.fallback.*` — legacy fallback/diagnostic 안내
 - `agentRuntime.composer.*` — placeholder, send/stop, mention/image, "전체 로그 열기", "복원 중"
+- `agentRuntime.composer.command.*` — 명령 팔레트/완성 트리거 UI 셸 라벨(§6.6: `/` 명령 팔레트, `@` 파일 멘션, 로컬 `/resume`). provider 명령 `name`/`description`/`inputHint` 원본은 i18n으로 감싸지 않고 그대로 표시(브랜딩 준수)
 
 > **브랜딩 주의**([09](09-permissions-security.md)): provider label·notice·copy는 Claude Code/Anthropic 공식 앱 오인 소지 branding/ASCII art/visual copy를 쓰지 않는다. 중립적·기능적 표현만.
 
@@ -561,9 +611,11 @@ direct runtime은 ptyId가 없다. `onPtyId`/`onAuxStateChange`/`onExit`/`onResu
 - 긴 command/path/model name은 wrapping 또는 horizontal scroll(§7.3).
 - terminal embed는 고정 높이 + resize handle(§7.3).
 - 좁은 폭에서는 composer indicator(provider/model/mode)를 2줄로 접거나 아이콘 축약.
+- **타이포 토큰(§1.6 준수)**: 카드/메시지/composer 타이포는 절대 px/rem이 아니라 `--ui-font-size-*` 스케일 단계(xs/sm/base/md/lg)·`--ui-font-stack`(코드/명령 출력은 `--ui-font-mono-stack`)으로만 표기한다. 하드코딩 rem·미정의 `--color-*`/`--font-mono` 금지.
 
 ### 10.2 카드 밀도
 
+- 카드 밀도 단계(요약 1줄 / 본문 / 코드 블록)의 글자 크기는 `--ui-font-size-*` 스케일 단계로 매핑한다(예: collapsed summary = `--ui-font-size-sm`, 본문 = `--ui-font-size-base`, 코드/명령 출력 = `--ui-font-mono-stack` + `--ui-font-size-sm`). 절대 rem 금지 — 사용자 UI 크기/스케일 설정(§1.6)에 자동 반응해야 한다.
 - `/focus` 류 밀도 축소 뷰(마지막 prompt + tool call 1줄 요약 + 최종 응답)는 "compact transcript" 옵션으로 고려(ux-reference §7.2, §11 #16) — `결정 필요`(v1 포함 여부, [13](13-risks-open-questions.md)).
 
 ### 10.3 focus / shortcut 회귀 방지 (높은 위험)
@@ -592,7 +644,9 @@ direct runtime은 ptyId가 없다. `onPtyId`/`onAuxStateChange`/`onExit`/`onResu
 | 8 | approval inline/modal(§4.4), options 원본 보존, label만 i18n | 04 §4, 09, ux-reference §8 |
 | 9 | composer(§6): multiline/image/mention/send-stop/indicator/capability gating | ux-reference §9, §10 |
 | 9a | `channel:"thought"` 접이식 thinking 블록 렌더(§6.2, 기본 collapsed, response와 시각 구분) | 15 §3 channel, 04 §3.2.2 |
-| 10 | auto-follow + 가상화(`visibleItemIds`+`itemsById` 소싱) + streamingItemId 강제 포함(§3, §7.2) | ux-reference §7 |
+| 9b | composer 완성 트리거(§6.6): `/` 명령 팔레트(provider availableCommands + 로컬 /resume), `@` mention(capability 게이트), `$` v1 보류. `agentRuntime.composer.command.*` i18n | 15 `available_commands_updated`/`AgentCommand`, 06 §5, OQ-56 |
+| 9c | transcript surface 설정 소비(§1.6): settings store 직접 import 금지, `--ui-*` 토큰만(테마/글꼴/크기/스케일), 코드/명령 mono = `--ui-font-mono-stack`. 하드코딩 rem·미정의 `--color-*`/`--font-mono` 금지 | 15 `UI_CSS_VARS.fontMonoStack`, OQ-55 |
+| 10 | auto-follow(§7.1 `.transcript-region` DOM 부수효과: follow scrollTop=scrollHeight 디바운스, onscroll 토글, approval 항상 scrollIntoView) + 가상화(`visibleItemIds`+`itemsById` 소싱) + streamingItemId·바닥 N개 강제 포함(§3, §7.2) | ux-reference §7, OQ-58 |
 | 10a | sealed-turn 윈도우 eviction + tombstone 격리 replay 뷰(§7.2; live 미병합, scratch 폐기), 무거운 item bounded 표현 | 04 §3.7, 10 §4.7, 13 §1.8/§1.12, OQ-52/54/12 |
 | 11 | xterm 새 역할(§7.4): legacy/embed/aux/diagnostic | 04 §3.5 |
 | 12 | i18n `agentRuntime.*` en/ko 동시 추가(§8), 브랜딩 준수 | research/codebase-frontend.md §6, 09 |
@@ -610,6 +664,7 @@ direct runtime은 ptyId가 없다. `onPtyId`/`onAuxStateChange`/`onExit`/`onResu
 | seal 불변식·seal 조건·3-상태 residency·late-event 규칙(정본) | [`04-normalized-agent-model.md`](04-normalized-agent-model.md) | §3.7 |
 | runtime scrollback replay(read-only history inspection; live 미병합) | [`10-persistence-migration.md`](10-persistence-migration.md) | §4.7 |
 | Long-session transcript memory(S2)·window/cap 실측·격리 replay 범위 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | §1.12, OQ-52/53/54 |
+| mono 글꼴 재사용·composer `$`/Codex slash 소스·user_message 합성 messageId·auto-follow×가상화 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | OQ-55/56/57/58 |
 | UX 패턴 근거 | [`research/ux-reference.md`](research/ux-reference.md) | §1–§11 |
 | frontend feature 레이어·host 분기·룬 store·연결점 | [`research/codebase-frontend.md`](research/codebase-frontend.md) | §1, §2, §3, §8, §9, §10, §11 |
 | 권한·승인·브랜딩 제약 | [`09-permissions-security.md`](09-permissions-security.md) | 전체 |

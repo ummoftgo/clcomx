@@ -144,6 +144,12 @@ export type AgentEvent =
   | { type: "agent_message_delta"; ref: ProviderRef; delta: string; channel?: "response" | "thought" }
   /** 실행 계획 전체 교체(ACP plan, Codex turn/plan/updated). */
   | { type: "plan_updated"; ref: ProviderRef; entries: AgentPlanEntry[] }
+  /**
+   * provider가 제공하는 slash 명령 목록 갱신(전체 교체). composer `/` 팔레트 소스.
+   * ACP `available_commands_update`→이 event. Codex는 provider-backed slash 소스가 없으므로
+   * 이 event를 내보내지 않는다(client-side 정적 명령만; 05 명시). §5 AgentCommand 참조.
+   */
+  | { type: "available_commands_updated"; ref: ProviderRef; commands: AgentCommand[] }
   /** tool call 신규 생성 또는 부분 갱신(id 기준 upsert). */
   | { type: "tool_call_updated"; ref: ProviderRef; update: ToolCallUpdate }
   /** tool call에 붙는 content 증분(예: streaming output). */
@@ -173,6 +179,8 @@ export type AgentEvent =
 > **audio gap (unverified, 결정 필요)**: ACP `audio` content에 대응하는 AgentContent variant가 없다 (ref-acp §13.2, §14). v1은 audio를 미지원으로 두고 `raw` 보존만 한다.
 >
 > **transcript 메모리 관리 (신규 타입 없음 — 정책 위치 명시)**: 긴 세션에서 frontend in-memory transcript가 unbounded로 증가하는 문제의 해법(shallow 반응형 표면 + sealed-turn 윈도우 eviction + 3-상태 turn residency)은 **view-model/reducer 내부 정책**이며 **wire 계약을 바꾸지 않는다**. `AgentEvent`(§3)·Agent Runtime Port(§6)·Tauri command/event 계약(§8)은 **변경 없음**이다. seal/eviction은 reducer가 들고 다니는 view-model 상태일 뿐 adapter가 내보내는 event 형태에 영향을 주지 않는다. 따라서 본 문서(15)는 이와 관련해 **신규 타입을 정의하지 않는다**. `TranscriptModel`·`TranscriptTurnResidency`(view-model 타입) 정본은 [`08-ui-composition.md`](08-ui-composition.md) §5, seal 불변식·3-상태·late-event 규칙 정본은 [`04-normalized-agent-model.md`](04-normalized-agent-model.md) §3.7, 위험·윈도우/cap 수치는 [`13-risks-open-questions.md`](13-risks-open-questions.md) §1.12(S2)/OQ-52에 있다.
+>
+> **UI 토큰 소비 (정본 위치는 코드 tokens.ts — 신규 wire 타입 없음)**: transcript surface는 settings store를 직접 import하지 않고 앱이 `:root`에 주입하는 **정본 `--ui-*` CSS 토큰만 소비**한다(테마=`--ui-*` 색, UI 글꼴/크기/스케일=`--ui-font-stack`/`--ui-font-size-*`/`--ui-scale`; `applyRuntimeStyleLayer` 경유, `src/lib/ui/theme-bridge.ts`·`style-layers.ts`). 코드/명령출력 mono 폰트는 **신규 토큰 `UI_CSS_VARS.fontMonoStack = "--ui-font-mono-stack"`** 로 소비한다 — 이 토큰은 `settings.terminal.fontFamily`/`fontFamilyFallback`에서 `buildFontStack`으로 산출하며(Terminal.svelte `terminalFontFamily` 로직 재사용), 정본 토큰 정의 위치는 본 문서가 아니라 **코드 `tokens.ts`**(`UI_CSS_VARS` 표)다. transcript 측에서 하드코딩 rem·미정의 `--color-*`/`--font-mono` 사용은 금지. **agent-runtime 전용 신규 Settings 섹션은 신설하지 않고** 기존 `TerminalSettings`(mono 폰트 구동)/`InterfaceSettings`(테마·UI 글꼴/크기/스케일)를 재사용한다(13 OQ-55: v1=재사용; mono 전용 설정 분리는 보류). 이 결정은 **신규 wire 타입을 만들지 않는다**.
 
 ---
 
@@ -204,6 +212,18 @@ export interface AgentPlanEntry {
   content: string;
   status: "pending" | "in_progress" | "completed";
   priority?: "low" | "medium" | "high";
+}
+
+/**
+ * provider가 제공하는 slash 명령 1건(composer `/` 팔레트가 렌더). `available_commands_updated`(§3)가 운반.
+ * ACP `AvailableCommand{name,description,input}` 정규화: name/description 직접, `input`이
+ * `UnstructuredCommandInput`이면 `hint`만 inputHint로 추출(미지 input variant는 방어적 무시; ref-acp §566-569).
+ * Codex는 provider-backed slash 소스가 없어 미해당(05; 로컬 /resume 등 client-side 정적 명령은 composer가 별도 합성).
+ */
+export interface AgentCommand {
+  name: string;
+  description?: string;
+  inputHint?: string;
 }
 
 /**
@@ -789,7 +809,7 @@ pub enum AgentRuntimeEvent {
 
 다른 문서/구현은 이 타입들을 **재정의하지 말고** 이 파일을 import/링크한다.
 
-- normalized: `AgentProvider`, `ProviderRef`, `AgentSessionStatus`, `AgentEvent`, `AgentContent`, `ToolCallUpdate`, `ApprovalRequest`, `ApprovalOption`, `ApprovalDecision`, `AgentPlanEntry`, `FileLocation`, `FileChangeSummary`, `TokenUsage`
+- normalized: `AgentProvider`, `ProviderRef`, `AgentSessionStatus`, `AgentEvent`, `AgentContent`, `ToolCallUpdate`, `ApprovalRequest`, `ApprovalOption`, `ApprovalDecision`, `AgentPlanEntry`, `AgentCommand`, `FileLocation`, `FileChangeSummary`, `TokenUsage`
 - port: `AgentRuntimePort`, `AgentSessionHandle`, `StartSessionParams`, `ResumeSessionParams`, `SendPromptInput`, `SessionStartResult`
 - persistence: `SessionRuntimeKind`, `AgentRuntimeMetadata` (+ Rust `AgentRuntimeMetadataRecord`)
 - tauri: `RuntimeId`, `JsonRpcId`, `JsonRpcMessage`, `JsonRpcError`, `AgentRuntimeStartParams`, `AgentRuntimeCancelTarget`, `AgentRuntimeSnapshot`, `AgentRuntimeEvent`

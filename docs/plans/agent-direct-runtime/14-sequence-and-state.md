@@ -135,8 +135,9 @@ sequenceDiagram
 
 ## 3. Prompt + streaming (delta → completed reconcile → turn_completed)
 
-흐름: `sendPrompt` → turn 시작(`running`) → streaming delta → completed item reconcile → turn 종료(`idle`). 두 provider를 한 다이어그램의 `alt`로 나란히 보여준다.
+흐름: `sendPrompt` → (Claude만) 로컬 optimistic `user_message` emit → turn 시작(`running`) → streaming delta → completed item reconcile → turn 종료(`idle`). 두 provider를 한 다이어그램의 `alt`로 나란히 보여준다.
 
+- **user_message echo 비대칭**(04 §3.1, 06 §3.6): ACP는 라이브 prompt를 wire로 echo하지 않으므로, Claude adapter가 `sendPrompt`에서 로컬 optimistic `user_message` AgentEvent를 emit한다(messageId 합성 `<sessionId>:t<n>:u`, content=원본 `AgentContent[]`, `running` emit 전). **Codex는 로컬 echo를 금지**한다 — wire `userMessage` item echo를 경유하므로 로컬 emit 시 이중 렌더된다. → [13 OQ-57](13-risks-open-questions.md)(합성 messageId 충돌·비텍스트 echo 정확도).
 - Codex reconcile 규칙: 메시지는 `item/agentMessage/delta`(append) 후 `item/completed`의 `text`가 **권위**(04 §3.2 규칙 1, ref-codex §7). reconcile 키는 `itemId`.
 - ACP chunk 규칙: `agent_message_chunk`는 `messageId` 기준 append, tool 등은 별도(04 §3.3, ref-acp §13.2).
 - 상태 전이: `ready`/`idle` → `running`(04 §2.1 규칙 2) → `turn_completed` → `idle`(규칙 5).
@@ -157,6 +158,7 @@ sequenceDiagram
     Note over Adapter: AgentContent[] → provider input 변환 (ref-codex §6.4 / ref-acp §4)
 
     alt Codex
+        Note over Adapter: Codex는 로컬 user_message echo 금지 — wire userMessage item echo 경유 (이중 렌더 방지, 04 §3.1·06 §3.6 provider 비대칭)
         Adapter->>Transport: agentRuntimeSend(rt, {id:n, method:"turn/start", params:{threadId, input}})
         Transport->>Provider: turn/start
         Provider-->>Transport: {id:n, result:{turn:{id:turnId}}}
@@ -165,6 +167,9 @@ sequenceDiagram
         Adapter->>Router: AgentEvent{type:"session_status_changed", status:"running", ref:{threadId, turnId}}
     else Claude (ACP)
         Adapter->>Adapter: turnId 합성 = "<sessionId>:t<n>" (04 §1 turn id 합성)
+        Adapter->>Router: AgentEvent{type:"user_message", ref:{sessionId, messageId:"<sessionId>:t<n>:u", turnId}, content, mode:"replace"}
+        Note right of Adapter: ACP는 라이브 prompt를 wire echo 안 함 → adapter가 로컬 optimistic user_message emit (04 §3.1, 06 §3.6)<br/>messageId 합성 "<sessionId>:t<n>:u" · running emit 전 · content=원본 AgentContent[]
+        Router->>Store: user_message upsert by messageId, replace (04 §3.1) — 라이브 user 메시지 렌더
         Adapter->>Transport: agentRuntimeSend(rt, {jsonrpc:"2.0", id:n, method:"session/prompt", params:{sessionId, prompt}})
         Transport->>Provider: session/prompt
         Adapter->>Router: AgentEvent{type:"session_status_changed", status:"running", ref:{sessionId, turnId}}
