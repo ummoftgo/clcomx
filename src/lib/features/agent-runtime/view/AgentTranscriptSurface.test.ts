@@ -13,6 +13,7 @@ import { TEST_IDS } from "../../../testids";
 import type { AgentEvent } from "../contracts/normalized";
 import type { AgentRuntimePort, SessionStartResult } from "../contracts/runtime-port";
 import type { ReplayLoader } from "../service/runtime-replay";
+import type { TranscriptCacheSnapshot } from "../service/transcript-cache";
 import { resetRegistry } from "../controller/agent-event-router";
 import AgentTranscriptSurface from "./AgentTranscriptSurface.svelte";
 
@@ -22,6 +23,28 @@ const editorMocks = vi.hoisted(() => ({
 
 vi.mock("../../../editors", () => ({
   searchSessionFiles: editorMocks.searchSessionFiles,
+}));
+
+// OQ-16: 진행 중 재개 id·transcript 캐시 저장 훅 검증용 mock(Task 4/5/6 서비스).
+const resumeStoreMocks = vi.hoisted(() => ({
+  saveResumeKeys: vi.fn().mockResolvedValue(undefined),
+}));
+const transcriptCacheMocks = vi.hoisted(() => ({
+  saveTranscriptCache: vi.fn().mockResolvedValue(undefined),
+  serializeTranscript: vi.fn<(model: unknown) => TranscriptCacheSnapshot>(() => ({
+    schemaVersion: 1,
+    visibleItemIds: [],
+    items: [],
+    turns: [],
+  })),
+}));
+
+vi.mock("../service/resume-store", () => ({
+  saveResumeKeys: resumeStoreMocks.saveResumeKeys,
+}));
+vi.mock("../service/transcript-cache", () => ({
+  saveTranscriptCache: transcriptCacheMocks.saveTranscriptCache,
+  serializeTranscript: transcriptCacheMocks.serializeTranscript,
 }));
 
 function makeFakePort(options: { canResume?: boolean; canLoad?: boolean } = {}) {
@@ -83,6 +106,17 @@ describe("AgentTranscriptSurface", () => {
     initializeI18n("en", "en-US");
     editorMocks.searchSessionFiles.mockReset();
     editorMocks.searchSessionFiles.mockResolvedValue({ rootDir: "/w", results: [] });
+    resumeStoreMocks.saveResumeKeys.mockReset();
+    resumeStoreMocks.saveResumeKeys.mockResolvedValue(undefined);
+    transcriptCacheMocks.saveTranscriptCache.mockReset();
+    transcriptCacheMocks.saveTranscriptCache.mockResolvedValue(undefined);
+    transcriptCacheMocks.serializeTranscript.mockReset();
+    transcriptCacheMocks.serializeTranscript.mockReturnValue({
+      schemaVersion: 1,
+      visibleItemIds: [],
+      items: [],
+      turns: [],
+    });
   });
 
   afterEach(() => {
@@ -633,6 +667,62 @@ describe("AgentTranscriptSurface", () => {
         canLoad: true,
       });
     });
+  });
+
+  it("OQ-16: persists resume keys and a transcript cache snapshot when metadata is saved", async () => {
+    const { port } = makeFakePort();
+    const onAgentRuntimeMetadataChange = vi.fn();
+    const snapshot: TranscriptCacheSnapshot = {
+      schemaVersion: 1,
+      visibleItemIds: ["i1"],
+      items: [],
+      turns: [],
+    };
+    transcriptCacheMocks.serializeTranscript.mockReturnValue(snapshot);
+
+    render(AgentTranscriptSurface, {
+      props: baseProps(port, { onAgentRuntimeMetadataChange }),
+    });
+
+    await waitFor(() => {
+      expect(onAgentRuntimeMetadataChange).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(resumeStoreMocks.saveResumeKeys).toHaveBeenCalledWith("S1", {
+        providerThreadId: "thread-1",
+        providerSessionId: "session-tree-1",
+        canResume: true,
+        canLoad: true,
+      });
+    });
+    await waitFor(() => {
+      expect(transcriptCacheMocks.saveTranscriptCache).toHaveBeenCalledWith("S1", snapshot);
+    });
+  });
+
+  it("OQ-16: keeps the runtime alive when resume key / transcript cache persistence rejects", async () => {
+    const { port } = makeFakePort();
+    resumeStoreMocks.saveResumeKeys.mockRejectedValue(new Error("secret store unavailable"));
+    transcriptCacheMocks.saveTranscriptCache.mockRejectedValue(new Error("disk full"));
+    const onAgentRuntimeMetadataChange = vi.fn();
+
+    const { findByTestId } = render(AgentTranscriptSurface, {
+      props: baseProps(port, { onAgentRuntimeMetadataChange }),
+    });
+
+    await waitFor(() => {
+      expect(onAgentRuntimeMetadataChange).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(resumeStoreMocks.saveResumeKeys).toHaveBeenCalled();
+    });
+
+    // surface는 여전히 정상 렌더/구동 상태여야 한다(저장 실패가 runtime을 죽이지 않음).
+    const shell = await findByTestId(TEST_IDS.agentRuntimeShell);
+    expect(shell).toBeInTheDocument();
+    const metadata = await findByTestId(TEST_IDS.agentRuntimeMetadata);
+    expect(metadata.textContent).toContain("codex");
   });
 
   it("OQ-06: publishes direct runtime status changes for tab badges", async () => {

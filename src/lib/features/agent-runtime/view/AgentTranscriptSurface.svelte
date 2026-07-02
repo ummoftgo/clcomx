@@ -29,6 +29,8 @@
     type AgentRuntimeController,
   } from "../controller/agent-runtime-controller";
   import { createDefaultPortFactory } from "../service/runtime-port-factory";
+  import { saveResumeKeys } from "../service/resume-store";
+  import { saveTranscriptCache, serializeTranscript } from "../service/transcript-cache";
   import type { AgentRuntimePort, SessionStartResult } from "../contracts/runtime-port";
   import MessageList from "./MessageList.svelte";
   import AgentComposer from "./AgentComposer.svelte";
@@ -187,6 +189,17 @@
     } catch {
       // metadata 저장 실패는 runtime 자체 실패가 아니므로 fallback 패널로 전환하지 않는다.
     }
+    // OQ-16: 재개 id는 workspace.json이 아닌 암호화 저장소로 별도 저장한다(보안 경계).
+    if (metadata.providerThreadId || metadata.providerSessionId) {
+      void saveResumeKeys(props.sessionId, {
+        providerThreadId: metadata.providerThreadId,
+        providerSessionId: metadata.providerSessionId,
+        canResume: metadata.canResume ?? false,
+        canLoad: metadata.canLoad ?? false,
+      });
+    }
+    // bounded transcript 캐시 저장(scrub·redaction은 serialize 내부). 둘 다 best-effort — 실패해도 runtime 유지.
+    void saveTranscriptCache(props.sessionId, serializeTranscript(store.getTranscript()));
   }
 
   /** provider title을 live session title에 저장한다. 실패해도 runtime은 유지한다. */
