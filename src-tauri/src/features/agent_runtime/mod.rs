@@ -11,6 +11,7 @@ mod allowlist;
 mod audit;
 mod process;
 pub(crate) mod resolver;
+mod secret_store;
 mod transport;
 pub mod types;
 
