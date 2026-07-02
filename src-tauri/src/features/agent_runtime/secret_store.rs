@@ -23,6 +23,8 @@ pub enum SecretStoreError {
     /// 암·복호화 관련 실패(Task 2~3에서 확장 사용).
     Crypto(String),
     /// 파일 입출력 실패(Task 2~3에서 확장 사용).
+    // plan(15/Task 2) 4-variant 계약상 예약 — 파일 IO 확장 대비
+    #[allow(dead_code)]
     Io(String),
     /// 직렬화/역직렬화 실패(Task 2~3에서 확장 사용).
     Serde(String),

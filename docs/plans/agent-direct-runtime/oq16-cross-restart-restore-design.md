@@ -51,7 +51,7 @@
 **신규 B — bounded transcript 캐시** (frontend 직렬화 + backend 파일 IO):
 - 대상: `TranscriptModel`([`transcript.ts`](../../../src/lib/features/agent-runtime/contracts/transcript.ts):104). `itemsById`/`turnsById`가 `Map`이라 **직렬화 시 Map→array, 복원 시 array→Map** 변환 헬퍼가 필요.
 - 범위: residency 윈도우(`DEFAULT_TRANSCRIPT_RESIDENCY_CONFIG`)의 sealed-retained turn 본문만(이미 heap-bounded). tombstone 구간은 제외.
-- redaction: 저장 전 display-redaction/scrub 통과분만(09 §3.4·§5 재사용). credential/명령전문 비포함.
+- redaction: 저장 전 display-redaction/scrub 통과분만(09 §3.4·§5 재사용) — 렌더와 동일한 env 값 마스킹 + credential 마스킹. 명령 전문/diff/파일 텍스트 같은 비밀 아닌 workspace 콘텐츠는 설계상 평문으로 캐시된다(§6 참조).
 - 세션별 캐시 파일(app-data cache 디렉토리), 스키마 버전 필드 포함.
 
 ## 5. 데이터 흐름
@@ -78,7 +78,7 @@
 
 - 평문 디스크에 재개 id 없음(암호화 저장). id는 bearer 아닌 provider 로컬 스토어 포인터지만 방어적으로 암호화(사용자 선택 posture).
 - 암호화 키는 OS 키스토어 단일 엔트리. 키 유출 없으면 app-data 파일 단독으로는 복호화 불가.
-- transcript 캐시는 기존 redaction/scrub 통과분만 — credential/명령 전문/파일 내용 비포함([`09`](09-permissions-security.md) §3.4·§5).
+- 캐시는 렌더와 동일한 display-redaction(env 값 마스킹 + credential 마스킹)을 통과한 콘텐츠를 담으며, 명령/diff/파일 텍스트 같은 **비밀 아닌 workspace 콘텐츠는 설계상 평문 캐시**된다(암호화 대상은 재개 id뿐)([`09`](09-permissions-security.md) §3.4·§5·§7.1).
 - `providerResumeToken` scrub 유지(TB-3 경계 불변, [`09`](09-permissions-security.md):75).
 - frontend `sanitizeWorkspaceSnapshotForSave`의 보조 마스킹과 backend `sanitize_workspace_for_persist`의 최종 scrub 경계는 그대로. 신규 저장은 이 경계 **밖의 별도 암호화 저장소**를 통하므로 기존 경계를 약화하지 않는다.
 

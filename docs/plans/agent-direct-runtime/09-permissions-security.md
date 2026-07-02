@@ -345,7 +345,7 @@ redaction은 로그·transcript·디스크 평문 노출을 막지만, **OS 관�
 - **TB-3과의 관계(경계 불변)**: `workspace.json`에 대한 frontend 보조 마스킹(`sanitizeWorkspaceSnapshotForSave`)과 backend 최종 scrub(`sanitize_workspace_for_persist`)은 **변경되지 않았다**. TB-5는 TB-3이 의도적으로 비워둔 자리(재개 id는 어디에도 평문 저장하지 않는다)에 **별도의, 더 강한 통제(암호화)가 걸린 저장소**를 추가한 것이지, TB-3 경계를 우회하거나 대체한 것이 아니다.
 - **command**: `agent_runtime_save_resume_keys`/`agent_runtime_load_resume_keys`/`agent_runtime_clear_resume_keys`(`src-tauri/src/commands/agent_runtime.rs`). frontend는 `loadResumeKeys`/`saveResumeKeys`/`clearResumeKeys` 래퍼로 호출한다.
 - **실패 처리(graceful degrade, Information disclosure/DoS 방어)**: 키스토어 접근 실패, 키 부재, 복호화 실패(키 회전/손상 등)는 모두 예외로 전파하지 않고 **`Ok(None)`으로 낮춘다**. 상위(`AgentTranscriptSurface`)는 이를 "재개 id 없음"과 동일하게 취급해 §4.4a의 read-only 히스토리 또는 §4.4 fallback으로 낮춘다. 즉 암호화 저장소 장애가 크래시나 무한 대기로 이어지지 않는다.
-- **transcript 캐시와의 구분**: bounded transcript 캐시(`transcript_cache.rs`)는 이 TB-5 대상이 **아니다** — 캐시 파일은 이미 display-redaction을 통과한 non-secret 콘텐츠만 담으므로 평문 JSON으로 저장한다(암호화 불필요). 암호화 대상은 재개 id뿐이다.
+- **transcript 캐시와의 구분**: bounded transcript 캐시(`transcript_cache.rs`)는 이 TB-5 대상이 **아니다**. 캐시는 렌더와 동일한 display-redaction(env 값 마스킹 + credential 마스킹)을 통과한 콘텐츠를 담으며, 명령/diff/파일 텍스트 같은 **비밀 아닌 workspace 콘텐츠는 설계상 평문 캐시**된다(display 정책과 동일, 의도된 것) — 그래서 평문 JSON으로 저장한다(암호화 불필요). 암호화 대상은 재개 id뿐이다.
 - **GC와의 상호작용**: 탭을 명시적으로 닫을 때(`handleCloseTab`)만 `clearResumeKeys`로 이 저장소의 항목을 지운다. 앱 종료 시에는 오히려 `captureResumeIdsBeforeAppClose`로 보존한다(다음 cold restore에 대비) — TB-5는 "세션 종료"와 "앱 종료"를 GC 관점에서 구분하는 유일한 경계다.
 
 > **구현 시 점검 (§7.1)**

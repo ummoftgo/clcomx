@@ -55,7 +55,7 @@ function scrubJsonRpcEnvelopeForDisplay(value: unknown): unknown {
 }
 
 /** 표시용 raw의 env map 값은 key만 남기고 숨긴다(MCP/command env 표시 경계). */
-function scrubEnvValuesForDisplay(value: unknown): unknown {
+export function scrubEnvValuesForDisplay(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(scrubEnvValuesForDisplay);
   if (value && typeof value === "object") {
     return Object.fromEntries(

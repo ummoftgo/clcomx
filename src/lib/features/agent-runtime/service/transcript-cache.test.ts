@@ -160,6 +160,73 @@ describe("transcript-cache 직렬화", () => {
     // [REDACTED] 마커가 있음을 검증(redaction이 일어남)
     expect(redactedText).toContain("[REDACTED]");
   });
+
+  it("credential 모양이 아닌 env 값도 직렬화 시 실제로 마스킹됨(렌더 경로와 동일 강도)", () => {
+    // MY_TOKEN=plainsecret12345는 sk-/Bearer/api_key= 같은 credential 패턴에 걸리지 않는다.
+    // redactDisplayText만 쓰면 이 값이 캐시에 평문으로 남는다 — scrubEnvValuesForDisplay가
+    // env map 값을 전부 [REDACTED]로 치환해야 실제로 가려진다(렌더 경로 stringifyRedactedRaw와 동치).
+    const plainEnvSecret = "plainsecret12345";
+
+    const toolCallItem: TranscriptItem = {
+      type: "tool_call",
+      id: "tc1",
+      expanded: false,
+      update: {
+        id: "call-1",
+        kind: "execute",
+        status: "completed",
+        rawInput: {
+          command: "run",
+          env: { MY_TOKEN: plainEnvSecret, PATH: "/usr/bin" },
+        },
+        rawOutput: {
+          env: { OTHER_SECRET: plainEnvSecret },
+        },
+      },
+    };
+
+    const model: TranscriptModel = {
+      visibleItemIds: ["tc1"],
+      itemVersions: { tc1: 1 },
+      itemsById: new Map([["tc1", toolCallItem]]),
+      turnsById: new Map([
+        [
+          "t1",
+          {
+            residency: "sealed-retained",
+            itemIds: ["tc1"],
+            terminated: true,
+            openItemCount: 0,
+            pendingRequestCount: 0,
+            resealCount: 0,
+          },
+        ],
+      ]),
+      tombstones: { lru: [], droppedLateEventCount: 0 },
+    };
+
+    const snap = serializeTranscript(model);
+
+    const toolCallSnapshot = snap.items.find(([id]) => id === "tc1");
+    expect(toolCallSnapshot).toBeDefined();
+
+    const snapshotItem = toolCallSnapshot![1];
+    expect(snapshotItem.type).toBe("tool_call");
+    if (snapshotItem.type !== "tool_call") throw new Error("expected tool_call item");
+
+    const rawInput = snapshotItem.update.rawInput as { command: string; env: Record<string, string> };
+    const rawOutput = snapshotItem.update.rawOutput as { env: Record<string, string> };
+
+    // env map 값은 마스킹, 키는 보존, 다른 필드(command)는 영향 없음
+    expect(rawInput.env.MY_TOKEN).toBe("[REDACTED]");
+    expect(rawInput.env.PATH).toBe("[REDACTED]");
+    expect(rawInput.command).toBe("run");
+    expect(rawOutput.env.OTHER_SECRET).toBe("[REDACTED]");
+
+    // 원본 secret이 스냅샷 전체 어디에도 평문으로 남지 않았음을 증명
+    const serialized = JSON.stringify(snap);
+    expect(serialized).not.toContain(plainEnvSecret);
+  });
 });
 
 describe("transcript-cache invoke 래퍼", () => {

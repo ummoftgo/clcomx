@@ -4,7 +4,7 @@
  * 재시작 즉시 표시용 read-only 히스토리로 쓴다. 권위 히스토리는 provider replay다(이 캐시는 즉시표시+폴백용).
  */
 import type { TranscriptItem, TranscriptModel, TranscriptTurnState } from "../contracts/transcript";
-import { redactDisplayText } from "./display-redaction";
+import { redactDisplayText, scrubEnvValuesForDisplay } from "./display-redaction";
 import { invoke } from "../../../tauri/core";
 
 /** 파일 저장 가능한 TranscriptModel 스냅샷(schemaVersion으로 호환성 판별). */
@@ -53,11 +53,16 @@ export function deserializeTranscript(snap: TranscriptCacheSnapshot): Transcript
   };
 }
 
-/** item을 deep clone한 뒤 표시 문자열류 필드에 redaction을 적용한다(구조는 보존). */
+/**
+ * item을 deep clone한 뒤 표시 문자열류 필드에 redaction을 적용한다(구조는 보존).
+ * 렌더 경로(`stringifyRedactedRaw`)와 동일 강도로 맞추기 위해 env map 값(`scrubEnvValuesForDisplay`)까지
+ * 마스킹한 뒤 남은 문자열에 credential 마스킹(`redactDisplayText`)을 적용한다. `rawInput`/`rawOutput`
+ * (tool_call unknown 페이로드) 안의 env map도 이 재귀로 함께 마스킹된다.
+ */
 function redactItem(item: TranscriptItem): TranscriptItem {
-  const clone = structuredClone(item);
-  redactStringsDeep(clone);
-  return clone;
+  const scrubbed = scrubEnvValuesForDisplay(structuredClone(item)) as TranscriptItem;
+  redactStringsDeep(scrubbed);
+  return scrubbed;
 }
 
 /** object 그래프를 재귀 순회하며 string 값을 표시 redaction으로 치환한다(제자리 수정). */
