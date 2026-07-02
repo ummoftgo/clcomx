@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { serializeTranscript, deserializeTranscript } from "./transcript-cache";
+import { describe, expect, it, vi } from "vitest";
+vi.mock("../../../tauri/core", () => ({ invoke: vi.fn().mockResolvedValue(null) }));
+import { invoke } from "../../../tauri/core";
+import {
+  serializeTranscript,
+  deserializeTranscript,
+  saveTranscriptCache,
+  loadTranscriptCache,
+  clearTranscriptCache,
+  type TranscriptCacheSnapshot,
+} from "./transcript-cache";
 import { createEmptyTranscriptModel, applyEvent } from "../controller/agent-event-reducer";
 import type { TranscriptItem, TranscriptModel, TranscriptTurnState } from "../contracts/transcript";
 
@@ -149,5 +158,47 @@ describe("transcript-cache 직렬화", () => {
 
     // [REDACTED] 마커가 있음을 검증(redaction이 일어남)
     expect(redactedText).toContain("[REDACTED]");
+  });
+});
+
+describe("transcript-cache invoke 래퍼", () => {
+  it("커맨드 이름/인자를 그대로 넘긴다", async () => {
+    const snap: TranscriptCacheSnapshot = {
+      schemaVersion: 1,
+      visibleItemIds: [],
+      items: [],
+      turns: [],
+    };
+    await saveTranscriptCache("H", snap);
+    expect(invoke).toHaveBeenCalledWith("agent_runtime_save_transcript_cache", {
+      sessionHandle: "H",
+      json: JSON.stringify(snap),
+    });
+
+    await loadTranscriptCache("H");
+    expect(invoke).toHaveBeenCalledWith("agent_runtime_load_transcript_cache", { sessionHandle: "H" });
+
+    await clearTranscriptCache("H");
+    expect(invoke).toHaveBeenCalledWith("agent_runtime_clear_transcript_cache", { sessionHandle: "H" });
+  });
+
+  it("로드 결과가 유효한 JSON이면 파싱해 반환한다", async () => {
+    const snap: TranscriptCacheSnapshot = {
+      schemaVersion: 1,
+      visibleItemIds: ["a"],
+      items: [],
+      turns: [],
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(JSON.stringify(snap));
+    const result = await loadTranscriptCache("H");
+    expect(result).toEqual(snap);
+  });
+
+  it("로드 결과가 null/파싱 불가면 null을 반환한다", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    expect(await loadTranscriptCache("H")).toBeNull();
+
+    vi.mocked(invoke).mockResolvedValueOnce("not-json");
+    expect(await loadTranscriptCache("H")).toBeNull();
   });
 });

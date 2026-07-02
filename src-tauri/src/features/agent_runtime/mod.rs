@@ -12,6 +12,7 @@ mod audit;
 mod process;
 pub(crate) mod resolver;
 pub(crate) mod secret_store;
+pub(crate) mod transcript_cache;
 mod transport;
 pub mod types;
 

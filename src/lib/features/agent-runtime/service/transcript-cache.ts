@@ -5,6 +5,7 @@
  */
 import type { TranscriptItem, TranscriptModel, TranscriptTurnState } from "../contracts/transcript";
 import { redactDisplayText } from "./display-redaction";
+import { invoke } from "../../../tauri/core";
 
 /** 파일 저장 가능한 TranscriptModel 스냅샷(schemaVersion으로 호환성 판별). */
 export interface TranscriptCacheSnapshot {
@@ -70,4 +71,28 @@ function redactStringsDeep(value: unknown): void {
       redactStringsDeep(val);
     }
   }
+}
+
+/** scrub된 스냅샷을 저장한다. */
+export function saveTranscriptCache(
+  sessionHandle: string,
+  snapshot: TranscriptCacheSnapshot,
+): Promise<void> {
+  return invoke("agent_runtime_save_transcript_cache", { sessionHandle, json: JSON.stringify(snapshot) });
+}
+
+/** 저장된 스냅샷을 로드한다. 없음/파싱 실패 → null. */
+export async function loadTranscriptCache(sessionHandle: string): Promise<TranscriptCacheSnapshot | null> {
+  const json = await invoke<string | null>("agent_runtime_load_transcript_cache", { sessionHandle });
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as TranscriptCacheSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+/** 캐시 파일을 삭제한다. */
+export function clearTranscriptCache(sessionHandle: string): Promise<void> {
+  return invoke("agent_runtime_clear_transcript_cache", { sessionHandle });
 }

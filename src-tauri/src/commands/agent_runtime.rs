@@ -5,6 +5,7 @@
 
 use crate::app_env::is_test_mode;
 use crate::features::agent_runtime::secret_store::{self, ResumeKeys};
+use crate::features::agent_runtime::transcript_cache;
 pub use crate::features::agent_runtime::types::{
     AgentRuntimeCancelTarget, AgentRuntimeSnapshot, AgentRuntimeStartParams, JsonRpcMessage,
     RuntimeId,
@@ -104,4 +105,27 @@ pub fn agent_runtime_load_resume_keys(
 #[tauri::command]
 pub fn agent_runtime_clear_resume_keys(session_handle: String) -> Result<(), String> {
     secret_store::clear_resume_keys(&session_handle)
+}
+
+/// scrub된 transcript 스냅샷 JSON을 캐시 파일로 저장한다(OQ-16).
+#[tauri::command]
+pub fn agent_runtime_save_transcript_cache(
+    session_handle: String,
+    json: String,
+) -> Result<(), String> {
+    transcript_cache::save_transcript_cache(&session_handle, &json)
+}
+
+/// 저장된 transcript 스냅샷 JSON을 로드한다(없음 → None).
+#[tauri::command]
+pub fn agent_runtime_load_transcript_cache(
+    session_handle: String,
+) -> Result<Option<String>, String> {
+    transcript_cache::load_transcript_cache(&session_handle)
+}
+
+/// transcript 캐시 파일을 삭제한다(탭 삭제 GC).
+#[tauri::command]
+pub fn agent_runtime_clear_transcript_cache(session_handle: String) -> Result<(), String> {
+    transcript_cache::clear_transcript_cache(&session_handle)
 }

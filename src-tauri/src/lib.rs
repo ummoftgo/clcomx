@@ -3,10 +3,11 @@ mod commands;
 mod features;
 
 use commands::agent_runtime::{
-    agent_runtime_cancel, agent_runtime_clear_resume_keys, agent_runtime_get_snapshot,
-    agent_runtime_load_resume_keys, agent_runtime_resolve_adapter_entry,
-    agent_runtime_save_resume_keys, agent_runtime_send, agent_runtime_shutdown,
-    agent_runtime_start,
+    agent_runtime_cancel, agent_runtime_clear_resume_keys, agent_runtime_clear_transcript_cache,
+    agent_runtime_get_snapshot, agent_runtime_load_resume_keys,
+    agent_runtime_load_transcript_cache, agent_runtime_resolve_adapter_entry,
+    agent_runtime_save_resume_keys, agent_runtime_save_transcript_cache, agent_runtime_send,
+    agent_runtime_shutdown, agent_runtime_start,
 };
 use commands::clipboard::{
     clear_image_cache, get_image_cache_stats, open_image_cache_folder, save_clipboard_image,
@@ -100,6 +101,9 @@ pub fn run() {
             agent_runtime_save_resume_keys,
             agent_runtime_load_resume_keys,
             agent_runtime_clear_resume_keys,
+            agent_runtime_save_transcript_cache,
+            agent_runtime_load_transcript_cache,
+            agent_runtime_clear_transcript_cache,
             load_settings,
             load_tab_history,
             load_workspace,
