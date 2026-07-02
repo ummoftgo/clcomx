@@ -669,60 +669,120 @@ describe("AgentTranscriptSurface", () => {
     });
   });
 
-  it("OQ-16: persists resume keys and a transcript cache snapshot when metadata is saved", async () => {
-    const { port } = makeFakePort();
-    const onAgentRuntimeMetadataChange = vi.fn();
-    const snapshot: TranscriptCacheSnapshot = {
-      schemaVersion: 1,
-      visibleItemIds: ["i1"],
-      items: [],
-      turns: [],
-    };
-    transcriptCacheMocks.serializeTranscript.mockReturnValue(snapshot);
+  it("OQ-16: persists resume keys immediately and a debounced transcript cache snapshot when metadata is saved", async () => {
+    vi.useFakeTimers();
+    try {
+      const { port } = makeFakePort();
+      const onAgentRuntimeMetadataChange = vi.fn();
+      const snapshot: TranscriptCacheSnapshot = {
+        schemaVersion: 1,
+        visibleItemIds: ["i1"],
+        items: [],
+        turns: [],
+      };
+      transcriptCacheMocks.serializeTranscript.mockReturnValue(snapshot);
 
-    render(AgentTranscriptSurface, {
-      props: baseProps(port, { onAgentRuntimeMetadataChange }),
-    });
-
-    await waitFor(() => {
-      expect(onAgentRuntimeMetadataChange).toHaveBeenCalled();
-    });
-
-    await waitFor(() => {
-      expect(resumeStoreMocks.saveResumeKeys).toHaveBeenCalledWith("S1", {
-        providerThreadId: "thread-1",
-        providerSessionId: "session-tree-1",
-        canResume: true,
-        canLoad: true,
+      render(AgentTranscriptSurface, {
+        props: baseProps(port, { onAgentRuntimeMetadataChange }),
       });
-    });
-    await waitFor(() => {
+
+      await waitFor(() => {
+        expect(onAgentRuntimeMetadataChange).toHaveBeenCalled();
+      });
+
+      // saveResumeKeys는 값이 싸므로 디바운스 없이 즉시 호출된다.
+      await waitFor(() => {
+        expect(resumeStoreMocks.saveResumeKeys).toHaveBeenCalledWith("S1", {
+          providerThreadId: "thread-1",
+          providerSessionId: "session-tree-1",
+          canResume: true,
+          canLoad: true,
+        });
+      });
+
+      // transcript 캐시 저장은 디바운스되어 타이머가 도달하기 전에는 아직 호출되지 않는다.
+      expect(transcriptCacheMocks.saveTranscriptCache).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
       expect(transcriptCacheMocks.saveTranscriptCache).toHaveBeenCalledWith("S1", snapshot);
-    });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("OQ-16: coalesces rapid metadata persists into a single debounced transcript cache save", async () => {
+    vi.useFakeTimers();
+    try {
+      const { port, emit } = makeFakePort();
+      render(AgentTranscriptSurface, {
+        props: baseProps(port),
+      });
+
+      await waitFor(() => {
+        expect(port.startSession).toHaveBeenCalledOnce();
+      });
+      // 첫 metadata persist(session start) 이후 곧바로 두 번째 patch를 흘려 짧은 시간 내 재트리거한다.
+      transcriptCacheMocks.saveTranscriptCache.mockClear();
+      emit({
+        type: "runtime_metadata_changed",
+        ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+        metadata: { permissionMode: "default" },
+      } as unknown as AgentEvent);
+      await vi.advanceTimersByTimeAsync(200);
+      emit({
+        type: "runtime_metadata_changed",
+        ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+        metadata: { permissionMode: "bypassPermissions" },
+      } as unknown as AgentEvent);
+
+      // 디바운스 창(1000ms) 이전에는 아직 저장되지 않는다.
+      expect(transcriptCacheMocks.saveTranscriptCache).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(transcriptCacheMocks.saveTranscriptCache).toHaveBeenCalledTimes(1);
+      expect(transcriptCacheMocks.saveTranscriptCache).toHaveBeenCalledWith(
+        "S1",
+        expect.anything(),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("OQ-16: keeps the runtime alive when resume key / transcript cache persistence rejects", async () => {
-    const { port } = makeFakePort();
-    resumeStoreMocks.saveResumeKeys.mockRejectedValue(new Error("secret store unavailable"));
-    transcriptCacheMocks.saveTranscriptCache.mockRejectedValue(new Error("disk full"));
-    const onAgentRuntimeMetadataChange = vi.fn();
+    vi.useFakeTimers();
+    try {
+      const { port } = makeFakePort();
+      resumeStoreMocks.saveResumeKeys.mockRejectedValue(new Error("secret store unavailable"));
+      transcriptCacheMocks.saveTranscriptCache.mockRejectedValue(new Error("disk full"));
+      const onAgentRuntimeMetadataChange = vi.fn();
 
-    const { findByTestId } = render(AgentTranscriptSurface, {
-      props: baseProps(port, { onAgentRuntimeMetadataChange }),
-    });
+      const { findByTestId } = render(AgentTranscriptSurface, {
+        props: baseProps(port, { onAgentRuntimeMetadataChange }),
+      });
 
-    await waitFor(() => {
-      expect(onAgentRuntimeMetadataChange).toHaveBeenCalled();
-    });
-    await waitFor(() => {
-      expect(resumeStoreMocks.saveResumeKeys).toHaveBeenCalled();
-    });
+      await waitFor(() => {
+        expect(onAgentRuntimeMetadataChange).toHaveBeenCalled();
+      });
+      await waitFor(() => {
+        expect(resumeStoreMocks.saveResumeKeys).toHaveBeenCalled();
+      });
 
-    // surface는 여전히 정상 렌더/구동 상태여야 한다(저장 실패가 runtime을 죽이지 않음).
-    const shell = await findByTestId(TEST_IDS.agentRuntimeShell);
-    expect(shell).toBeInTheDocument();
-    const metadata = await findByTestId(TEST_IDS.agentRuntimeMetadata);
-    expect(metadata.textContent).toContain("codex");
+      await vi.advanceTimersByTimeAsync(1000);
+      await waitFor(() => {
+        expect(transcriptCacheMocks.saveTranscriptCache).toHaveBeenCalled();
+      });
+
+      // surface는 여전히 정상 렌더/구동 상태여야 한다(저장 실패가 runtime을 죽이지 않음).
+      const shell = await findByTestId(TEST_IDS.agentRuntimeShell);
+      expect(shell).toBeInTheDocument();
+      const metadata = await findByTestId(TEST_IDS.agentRuntimeMetadata);
+      expect(metadata.textContent).toContain("codex");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("OQ-06: publishes direct runtime status changes for tab badges", async () => {

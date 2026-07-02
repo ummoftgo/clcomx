@@ -189,7 +189,7 @@
     } catch {
       // metadata 저장 실패는 runtime 자체 실패가 아니므로 fallback 패널로 전환하지 않는다.
     }
-    // OQ-16: 재개 id는 workspace.json이 아닌 암호화 저장소로 별도 저장한다(보안 경계).
+    // OQ-16: 재개 id는 workspace.json이 아닌 암호화 저장소로 별도 저장한다(보안 경계). 값이 싸므로 즉시 저장.
     if (metadata.providerThreadId || metadata.providerSessionId) {
       void saveResumeKeys(props.sessionId, {
         providerThreadId: metadata.providerThreadId,
@@ -198,8 +198,9 @@
         canLoad: metadata.canLoad ?? false,
       });
     }
-    // bounded transcript 캐시 저장(scrub·redaction은 serialize 내부). 둘 다 best-effort — 실패해도 runtime 유지.
-    void saveTranscriptCache(props.sessionId, serializeTranscript(store.getTranscript()));
+    // bounded transcript 캐시 저장(scrub·redaction은 serialize 내부)은 매번 전체 transcript를 재직렬화하므로
+    // 디바운스로 묶어 고빈도 metadata patch에서의 IO 경합을 완화한다(best-effort — 실패해도 runtime 유지).
+    scheduleTranscriptCacheSave();
   }
 
   /** provider title을 live session title에 저장한다. 실패해도 runtime은 유지한다. */
@@ -483,6 +484,19 @@
   let sealTimer: ReturnType<typeof setInterval> | null = null;
   let surfaceDisposed = false;
 
+  // OQ-16: transcript 캐시 저장(전체 재직렬화)을 디바운스로 묶는 타이머. 재개 id 저장(saveResumeKeys)은
+  // 값이 싸므로 즉시 저장하고, 이 타이머는 transcript 캐시 저장에만 적용한다.
+  let cacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** 짧은 시간 내 반복되는 metadata persist를 마지막 1건으로 합쳐 transcript 캐시 저장 IO 빈도를 완화한다. */
+  function scheduleTranscriptCacheSave(): void {
+    if (cacheSaveTimer) clearTimeout(cacheSaveTimer);
+    cacheSaveTimer = setTimeout(() => {
+      cacheSaveTimer = null;
+      void saveTranscriptCache(props.sessionId, serializeTranscript(store.getTranscript()));
+    }, 1000);
+  }
+
   /** host teardown 공통 경계: tab close, component destroy, webview reload 모두 같은 shutdown을 탄다. */
   function disposeSurfaceRuntime(): void {
     if (surfaceDisposed) return;
@@ -490,6 +504,11 @@
     if (sealTimer !== null) {
       clearInterval(sealTimer);
       sealTimer = null;
+    }
+    // pending transcript 캐시 저장은 unmount 시 유실돼도 무방하다(best-effort, 권위는 provider replay).
+    if (cacheSaveTimer !== null) {
+      clearTimeout(cacheSaveTimer);
+      cacheSaveTimer = null;
     }
     void controller?.dispose();
   }
