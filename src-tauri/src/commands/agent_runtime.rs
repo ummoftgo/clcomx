@@ -1,9 +1,10 @@
-//! Direct Agent Runtime — 얇은 #[tauri::command] 래퍼 6종(15 §8.2).
+//! Direct Agent Runtime — 얇은 #[tauri::command] 래퍼 9종(15 §8.2).
 //!
 //! 정본: `07-tauri-process-runtime.md` §2.1. 로직·상태는 `features/agent_runtime/`에 두고
 //! 여기서는 command 진입점만 둔다. 모든 command는 `Result<T, String>` 반환(전역 에러 컨벤션).
 
 use crate::app_env::is_test_mode;
+use crate::features::agent_runtime::secret_store::{self, ResumeKeys};
 pub use crate::features::agent_runtime::types::{
     AgentRuntimeCancelTarget, AgentRuntimeSnapshot, AgentRuntimeStartParams, JsonRpcMessage,
     RuntimeId,
@@ -80,4 +81,27 @@ pub fn agent_runtime_resolve_adapter_entry(
         return Ok("/mock/claude-agent-acp/dist/index.js".to_string());
     }
     resolver::resolve_trusted_adapter_entry(&provider, &distro)
+}
+
+/// 세션 재개 id를 암호화 저장한다(OQ-16).
+#[tauri::command]
+pub fn agent_runtime_save_resume_keys(
+    session_handle: String,
+    keys: ResumeKeys,
+) -> Result<(), String> {
+    secret_store::save_resume_keys(&session_handle, &keys)
+}
+
+/// 세션 재개 id를 로드한다(없음/실패 → null).
+#[tauri::command]
+pub fn agent_runtime_load_resume_keys(
+    session_handle: String,
+) -> Result<Option<ResumeKeys>, String> {
+    secret_store::load_resume_keys(&session_handle)
+}
+
+/// 세션 재개 id 파일을 삭제한다(탭 삭제 GC).
+#[tauri::command]
+pub fn agent_runtime_clear_resume_keys(session_handle: String) -> Result<(), String> {
+    secret_store::clear_resume_keys(&session_handle)
 }
