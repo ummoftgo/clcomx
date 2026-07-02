@@ -128,6 +128,55 @@ pub fn decrypt_resume_keys(blob: &[u8], key: &[u8; 32]) -> Result<ResumeKeys, Se
     serde_json::from_slice(&plaintext).map_err(|e| SecretStoreError::Serde(e.to_string()))
 }
 
+/// 세션 핸들을 암호화 파일 경로로 변환한다.
+///
+/// 핸들 값을 파일명에 그대로 쓰면 경로 구분자 등 안전하지 않은 문자가 섞일 수 있으므로
+/// base64 URL-safe(패딩 없음)로 인코딩해 파일명 안전 문자로만 구성한다.
+fn resume_keys_path(session_handle: &str) -> Result<std::path::PathBuf, String> {
+    let safe = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(session_handle.as_bytes());
+    crate::app_env::state_path(&format!("agent-runtime/resume-{safe}.enc"))
+}
+
+/// 세션별 재개 id를 암호화해 파일로 저장한다.
+///
+/// 앱 키는 OS 키스토어에서 로드하거나(없으면) 새로 생성한다. 키스토어 접근 실패는
+/// 저장 실패로 취급해 `Err`를 반환한다(저장 시점의 실패는 폴백 대상이 아님).
+pub fn save_resume_keys(session_handle: &str, keys: &ResumeKeys) -> Result<(), String> {
+    let app_key = load_or_create_app_key().map_err(|e| e.to_string())?;
+    let blob = encrypt_resume_keys(keys, &app_key).map_err(|e| e.to_string())?;
+    let path = resume_keys_path(session_handle)?;
+    crate::app_env::ensure_parent_dir(&path)?;
+    std::fs::write(&path, blob).map_err(|e| format!("write resume keys: {e}"))
+}
+
+/// 세션별 재개 id를 로드한다.
+///
+/// 파일 없음/키스토어 접근 실패/복호화 실패는 모두 `Ok(None)`으로 낮춘다(graceful
+/// 폴백). 상위 계층은 이를 "재개 불가 → 새 세션/히스토리 로드"로 처리한다.
+pub fn load_resume_keys(session_handle: &str) -> Result<Option<ResumeKeys>, String> {
+    let path = resume_keys_path(session_handle)?;
+    let blob = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("read resume keys: {e}")),
+    };
+    let app_key = match load_or_create_app_key() {
+        Ok(k) => k,
+        Err(_) => return Ok(None), // 키스토어 접근 불가 → 폴백
+    };
+    Ok(decrypt_resume_keys(&blob, &app_key).ok())
+}
+
+/// 세션 재개 id 파일을 삭제한다(탭 삭제 시 GC 목적). 파일이 이미 없으면 성공으로 간주한다.
+pub fn clear_resume_keys(session_handle: &str) -> Result<(), String> {
+    let path = resume_keys_path(session_handle)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove resume keys: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +252,42 @@ mod tests {
         assert_eq!(rk, back);
         // 다른 키로는 복호화 실패(무결성).
         assert!(decrypt_resume_keys(&blob, &[9u8; 32]).is_err());
+    }
+
+    // ===== 세션별 재개 id 파일 저장/로드/삭제 테스트 =====
+
+    // 이 빌드 환경(Linux/WSL)에는 OS 키스토어 데몬이 없어 save가 필요로 하는
+    // load_or_create_app_key가 실패한다. 실제 OS 키스토어(Windows Credential
+    // Manager/libsecret)가 필요 — 로컬/Windows에서 검증.
+    #[test]
+    #[ignore]
+    fn save_load_clear_resume_keys_by_handle() {
+        let _g = crate::app_env::test_support::set_state_dir_env(
+            &std::env::temp_dir().join("clcomx-oq16-test"),
+        );
+        let rk = ResumeKeys {
+            provider_thread_id: Some("th_9".into()),
+            provider_session_id: None,
+            can_resume: true,
+            can_load: false,
+        };
+        save_resume_keys("H1", &rk).expect("save");
+        assert_eq!(load_resume_keys("H1").expect("load"), Some(rk));
+        // 없는 핸들 → None.
+        assert_eq!(load_resume_keys("nope").expect("load"), None);
+        // clear 후 None.
+        clear_resume_keys("H1").expect("clear");
+        assert_eq!(load_resume_keys("H1").expect("load"), None);
+    }
+
+    #[test]
+    fn corrupt_blob_loads_as_none_not_error() {
+        let _g = crate::app_env::test_support::set_state_dir_env(
+            &std::env::temp_dir().join("clcomx-oq16-corrupt"),
+        );
+        let path = resume_keys_path("H2").unwrap();
+        crate::app_env::ensure_parent_dir(&path).unwrap();
+        std::fs::write(&path, b"not-a-valid-blob").unwrap();
+        assert_eq!(load_resume_keys("H2").expect("load graceful"), None);
     }
 }
