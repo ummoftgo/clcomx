@@ -24,7 +24,7 @@
 | state | `src/lib/features/agent-runtime/state/agent-runtime-store.svelte.ts` | new | 세션 단위 transcript[]/status/pendingApproval (1.3 class 패턴) + composer state | FE §1.3, §8 |
 | controller | `src/lib/features/agent-runtime/controller/agent-event-router.ts` | new | `AgentEvent`→store dispatch + pending request table (03 §Event Router) | FE §1.5, §8 |
 | controller | `src/lib/features/agent-runtime/controller/agent-event-reducer.ts` | new | 순수 함수 prev+event→next (04 §3 규칙) | FE §1.5, §8 |
-| service | `src/lib/features/agent-runtime/service/transport.ts` | new | 15 §8.2 invoke 래퍼 + 15 §8.3 listen 구독 + transport wrapper export **`createAgentTransportController`**(`pty.ts` 대응; **adapter는 여기 두지 않음**; 08 §2.2 host가 이 심볼을 `service/transport.ts`에서 import — controller/service 경계 정합) | FE §4.1, §4.2 |
+| service | `src/lib/features/agent-runtime/service/transport.ts` | new | 15 §8.2 invoke 래퍼 + 15 §8.3 event 이름 정본 + diagnostic transport wrapper export **`createAgentTransportController`**(`pty.ts` 대응; **adapter는 여기 두지 않음**). 프로덕션 host는 `runtime-port-factory.ts`를 통해 provider adapter를 만들고, adapter/factory deps가 raw `agent-runtime-message` bridge를 직접 구독한다. public diagnostic wrapper는 stderr/exit/error/backpressure만 노출한다(OQ-59). | FE §4.1, §4.2 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/codex-app-server-adapter.ts` | new | Codex wire↔`AgentEvent`/Port (05) | FE §8 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/codex-wire-mapper.ts` | new | Codex notification/request↔normalized 매핑(05) | FE §8 |
 | adapters | `src/lib/features/agent-runtime/adapters/codex/codex-launch.ts` | new | Codex stdio start params 생성(provider/distro/workDir/args/env; **command 미생성 — backend resolve, S1**)(05·07) | FE §8 |
@@ -36,9 +36,9 @@
 | view | `src/lib/features/agent-runtime/view/AgentTranscriptSurface.svelte` | new | host(`Terminal.svelte` 대응) + transcript 렌더 | FE §2.4, §8, UX |
 | view | `src/lib/features/agent-runtime/view/MessageList.svelte` | new | 메시지 리스트 | FE §8, UX |
 | view | `src/lib/features/agent-runtime/view/MessageBubble.svelte` | new | 메시지 버블(response/thought 구분) | FE §8, UX |
-| view | `src/lib/features/agent-runtime/view/ToolCallCard.svelte` | new | tool call 카드(collapsed/expanded) | FE §8, UX |
-| view | `src/lib/features/agent-runtime/view/CommandOutputCard.svelte` | new | command output(terminal embed) | FE §8, UX |
-| view | `src/lib/features/agent-runtime/view/FileDiffCard.svelte` | new | 파일 diff 카드 | FE §8, UX |
+| view | `src/lib/features/agent-runtime/view/tool-cards/ToolCallCard.svelte` | new | tool call 카드(collapsed/expanded) | FE §8, UX |
+| view | `src/lib/features/agent-runtime/view/tool-cards/CommandOutputCard.svelte` | new | command output(terminal embed) | FE §8, UX |
+| view | `src/lib/features/agent-runtime/view/tool-cards/FileDiffCard.svelte` | new | 파일 diff 카드 | FE §8, UX |
 | view | `src/lib/features/agent-runtime/view/ApprovalModal.svelte` | new | approval modal(testid `approvalModal`) | FE §8, UX |
 | view | `src/lib/features/agent-runtime/view/ApprovalInlineCard.svelte` | new | inline approval 카드(testid `approvalInlineCard`) | FE §8, UX |
 | view | `src/lib/features/agent-runtime/view/PlanBlock.svelte` | new | plan 블록 | FE §8, UX |
@@ -57,7 +57,7 @@
 | 7 | `src/lib/agents/registry.ts` / `types.ts` `AgentDefinition` | edit | direct 지원 capability 플래그 추가 (FE §10-7, BE §6) |
 | 8 | `src/lib/i18n/locales/{en,ko}.ts` | edit | `agentRuntime.*` namespace (en/ko 동시) (FE §6) |
 | 9 | `src/lib/testids.ts` `TEST_IDS` | edit | transcript/composer/approval testid (FE §1.6, §10-9) |
-| 10 | `src/lib/stores/settings.svelte.ts` + `components/settings/registry.ts` | edit | 새 설정 섹션 시 `cloneDefaults`/`normalizeSettings`/`updateSettings` 3함수 동기화 (FE §7.3, §11) |
+| 10 | `src/lib/stores/settings.svelte.ts` + `components/settings/registry.ts` | n/a(v1) | agent-runtime 전용 Settings 섹션은 신설하지 않음(08 §2.1, 15 §3). 향후 새 설정 섹션/필드 추가 시에만 `cloneDefaults`/`normalizeSettings`/`updateSettings` 3함수와 registry를 동기화(FE §7.3, §11) |
 | 11 | `src/lib/features/workspace/session-store-snapshot.ts` + `src/lib/features/session/service/live-session-workspace-sync.ts` | edit | 저장은 `createWorkspaceTabSnapshot`, 복원은 `createSessionCore`/`createRuntimeSession` 및 기존 세션 갱신은 `applyWorkspaceWindowSnapshot`에서 `runtimeKind`/`agentRuntime` 전파 |
 | 12 | `App.svelte` live-session-store mutator wiring | edit | direct runtime은 `onPtyId` 흐름 우회/대체 (FE §10-12, §11 위험) |
 
@@ -71,13 +71,13 @@
 | `src-tauri/src/features/agent_runtime/types.rs` | new | 15 §8 Rust 미러 struct/enum (serde camelCase) | BE §3.3, 15 §8 |
 | `src-tauri/src/features/agent_runtime/allowlist.rs` | new | provider별 검증: backend-resolved 신뢰 절대경로 command(renderer 비제어, S1) + 정확 args + env key allowlist (신규 강화점, 07 §8.1) | BE §6, §10 권고 6 |
 | `src-tauri/src/features/agent_runtime/tests.rs` | new | fixture replay, framing, snapshot/delta, allowlist 단위 테스트 | BE §8.1, §2.3 |
-| `src-tauri/src/commands/agent_runtime.rs` | new | 얇은 `#[tauri::command]` 래퍼 5종 + re-export | BE §3.1, `commands/pty.rs` |
+| `src-tauri/src/commands/agent_runtime.rs` | new | 얇은 `#[tauri::command]` 래퍼 6종 + re-export(start/send/cancel/shutdown/get_snapshot/resolve_adapter_entry) | BE §3.1, `commands/pty.rs` |
 | `src-tauri/src/commands/mod.rs` | edit | `pub mod agent_runtime;` 추가 | BE §3.2 |
 | `src-tauri/src/lib.rs` | edit | `use` + `.manage(AgentRuntimeState::default())` + `generate_handler![]` 3곳 | BE §3.2 |
 | `src-tauri/src/features/workspace/types.rs` | edit | `runtime_kind`/`agent_runtime` 필드 + `AgentRuntimeMetadataRecord` (15 §7.3) | BE §4.2 |
 | `src-tauri/src/features/workspace/store.rs` `sanitize_workspace_for_persist` | edit | `provider_session_id`/`provider_thread_id`/`provider_resume_token` scrub (15 §7.3) | BE §4.2, §10 권고 7 |
 
-> **UTF-8 framer 공유(BE §2.6, §10 권고 4)**: `decode_utf8_stream_chunk`는 현재 `features/terminal/parsing.rs`에 `pub(super)`로 있다. transport.rs가 재사용하려면 공용 위치(예: `features/io_util.rs`)로 추출하거나 가시성을 `pub(crate)`로 올린다. terminal 테스트(`features/terminal/tests.rs`)의 `use super::parsing::...` import를 함께 갱신해야 한다 — 이는 **결정 필요** 항목으로 [13](13-risks-open-questions.md)에 연결.
+> **UTF-8 framer 공유(BE §2.6, §10 권고 4, 해소됨 OQ-26/RS-3)**: `decode_utf8_stream_chunk`는 최소 변경인 `pub(crate)` 가시성 상향으로 공유한다. `agent_runtime/transport.rs`가 `features/terminal/parsing.rs`의 함수를 직접 재사용하므로 별도 `features/io_util.rs` 추출과 terminal 테스트 import 재작성은 필요 없다.
 
 ### 0.4 i18n / settings / generated 핀
 
@@ -85,30 +85,31 @@
 |---|---|---|
 | i18n namespace | `src/lib/i18n/locales/en.ts`, `ko.ts` | `agentRuntime.status.*`/`.approval.*`/`.toolKind.*`/`.errors.*`/`.fallback.*` (08에서 예약, FE §6.2) |
 | Codex 타입 생성 | `codex app-server generate-ts` → `generated/codex-app-server/` | pinned ref `rust-v0.142.0` (15 머리말, [01](01-source-map.md)) |
-| ACP/Claude 기준 | `@agentclientprotocol/claude-agent-acp@0.51.0` (commit `23626c9`), ACP wire `protocolVersion=1`; schema artifact는 T0.0/OQ-41에서 확정(`schema-v1.16.0`은 baseline 후보, 구현 핀 아님) | 15 머리말, [01](01-source-map.md) |
+| ACP/Claude 기준 | `@agentclientprotocol/claude-agent-acp@0.51.0` (commit `23626c9`), ACP wire `protocolVersion=1`; 현 구현 기준은 SDK `0.29.0` package schema/types + 부분 wire mirror(`schema-v1.16.0`은 baseline 후보, 구현 핀 아님) | 15 머리말, [01](01-source-map.md) |
 
 ---
 
 ## Phase 0: 준비 (Foundation & Pinning)
 
-선행: 없음. 목표: 후속 모든 Phase가 의존하는 타입·생성 코드·fixture 포맷·migration 계획을 고정. **T0.0은 hard gate**다. T0.0 완료 전에는 T0.1 스캐폴드, generated 타입 생성, Claude dependency 추가를 시작하지 않는다. **이 Phase는 코드 동작을 만들지 않으므로 app launch 없음.**
+선행: 없음. 목표: 후속 모든 Phase가 의존하는 타입·생성 코드·fixture 포맷·migration 계획을 고정. **T0.0은 계획상 hard gate**다. 현재 구현 브랜치에서는 T0.0/OQ-41 preflight가 완료됐고 그 증거는 [13](13-risks-open-questions.md) OQ-41과 [impl-log](impl-log.md)에 기록돼 있다. 이후 dependency refresh나 schema 재생성 작업에서는 같은 gate를 다시 적용한다. **Phase 0 자체는 코드 동작을 만들지 않는 초기 gate였으므로 app launch 대상이 아니었다.** 현재 브랜치는 이후 Phase 구현이 진행된 상태이므로, 이어가기 작업자는 아래 초기 산출물을 스텁으로 되돌리지 않는다.
 
 ### T0.0 — 작업 루트·브랜치·baseline preflight
 
 - 대상: 로컬 작업 환경 + 본 문서 집합.
 - 선행: 없음.
 - 산출물: 구현 로그 또는 PR 설명에 `pwd`, `git rev-parse --show-toplevel`, `git status --short --branch`, `codex --version`(가능 시), `npm view @agentclientprotocol/claude-agent-acp version`(가능 시) 결과를 기록. 경로는 확인된 저장소 루트 기준 상대경로로만 사용한다.
-- DoD: 문서 baseline(`e7a5f9e`, Codex `rust-v0.142.0`, ACP schema baseline 후보 `schema-v1.16.0`, Claude adapter `0.51.0`)과 현재 환경의 차이를 확인하고, 차이가 있으면 [01](01-source-map.md) §4와 [13](13-risks-open-questions.md) OQ-41 절차로 diff 검토 범위를 적는다. ACP는 public release/tag 목록과 패키지 내 schema artifact를 대조해 **실제 생성 타입 정본**을 확정해야 한다. 네트워크가 없으면 "미확인"으로 남기고 schema/runtime 생성 전 gate로 유지한다.
+- DoD: 문서 baseline(`e7a5f9e`, Codex `rust-v0.142.0`, ACP schema baseline 후보 `schema-v1.16.0`, Claude adapter `0.51.0`)과 현재 환경의 차이를 확인하고, 차이가 있으면 [01](01-source-map.md) §4와 [13](13-risks-open-questions.md) OQ-41 절차로 diff 검토 범위를 적는다. 현재 구현 브랜치는 이 preflight를 완료했고, ACP는 package schema artifact와 생성 타입을 실제 정본으로 확정했다. 향후 dependency refresh에서 네트워크나 package artifact 대조가 불가능하면 refresh 범위를 "미확인"으로 남기고 schema/runtime 재생성 전 gate로 유지한다.
 - 테스트(11): 없음(preflight).
 - 계약(15 §): 없음.
 - ref §: 01 §4, 13 OQ-41.
 
-### T0.1 — 모듈 스캐폴드 생성
+### T0.1 — 모듈 스캐폴드 생성 (초기 완료 기록)
 
 - 대상: §0.1/§0.3 표의 디렉토리만 빈 파일/`mod.rs` 선언으로 생성. 기존 파일 수정 없음.
 - 선행: T0.0.
-- 산출물: `src/lib/features/agent-runtime/{contracts,state,controller,service,adapters,view,generated}/` 디렉토리, `src-tauri/src/features/agent_runtime/{mod,transport,process,types,allowlist,tests}.rs` 스텁(빈 `pub fn` 또는 `// TODO`). `mod.rs`에 서브모듈 mod 선언(스텁) 포함: `mod transport; mod process; mod types; mod allowlist;` + `#[cfg(test)] mod tests;`(스캐폴드 컴파일 통과의 전제 — 선언 없으면 미참조 파일은 빌드에 포함되지 않음).
-- DoD: `npm run check:frontend`와 `npm run check:rust`가 빈 스캐폴드 상태에서 통과(미참조 모듈은 컴파일에 영향 없음). `mod.rs`는 아직 `lib.rs`에 등록하지 않는다. 디렉토리·파일 분할은 도메인 단위 분리 규약(17 §A)을 따른다(이후 task의 공통 DoD 적용 시작점).
+- 초기 산출물: `src/lib/features/agent-runtime/{contracts,state,controller,service,adapters,view,generated}/` 디렉토리, `src-tauri/src/features/agent_runtime/{mod,transport,process,types,allowlist,tests}.rs` 스텁(빈 `pub fn` 또는 `// TODO`). `mod.rs`에 서브모듈 mod 선언(스텁) 포함: `mod transport; mod process; mod types; mod allowlist;` + `#[cfg(test)] mod tests;`(스캐폴드 컴파일 통과의 전제 — 선언 없으면 미참조 파일은 빌드에 포함되지 않음).
+- DoD(초기 scaffold 기준): `npm run check:frontend`와 `npm run check:rust`가 빈 스캐폴드 상태에서 통과(미참조 모듈은 컴파일에 영향 없음). `mod.rs`는 아직 `lib.rs`에 등록하지 않는다. 디렉토리·파일 분할은 도메인 단위 분리 규약(17 §A)을 따른다(이후 task의 공통 DoD 적용 시작점).
+- 현재 구현 상태: 위 디렉토리와 Rust 모듈은 이미 실제 구현·테스트 파일로 채워져 있다(`agent-event-reducer.ts`, `agent-runtime-store.svelte.ts`, `transport.ts`, provider adapters, `agent_runtime/{mod,transport,process,types,allowlist,resolver,audit,tests}.rs` 등). 이어가기 작업에서는 기존 파일을 유지·수정하며, 빈 scaffold나 TODO 스텁으로 되돌리지 않는다.
 - 테스트(11): 없음(스캐폴드).
 - 계약(15 §): §9 type 인덱스(어떤 파일에 무엇이 들어갈지).
 - ref §: 없음.
@@ -128,11 +129,11 @@
 - 대상: `src/lib/features/agent-runtime/generated/codex-app-server/`.
 - 선행: T0.0, T0.1.
 - 산출물: `codex app-server generate-ts` 실행 결과를 그대로 배치. 생성 명령·버전을 디렉토리 `README` 또는 헤더 주석에 기록(T0.0에서 확정한 Codex ref/CLI 버전). 이 디렉토리는 **수동 수정 금지**.
-- DoD: generated 타입이 import 가능하고 `svelte-check` 통과. 생성 버전이 T0.0에서 확정한 핀과 일치. **generate-ts 미제공 시 fallback**: `codex` 바이너리가 `generate-ts` subcommand를 제공하지 않으면 ref-codex §6 핵심 타입을 **수기 미러**한다 — `generated/` 대신 `src/lib/features/agent-runtime/contracts/codex-wire.ts`(수기 표시·핀 주석)에 두고, generate-ts 미제공 사실과 미러 출처(ref-codex §6 버전)를 [13](13-risks-open-questions.md)에 기록한다. 이때 Phase 3 입력은 수기 미러가 정본이 된다.
+- DoD: generated 타입이 import 가능하고 `svelte-check` 통과. 생성 버전이 T0.0에서 확정한 핀과 일치. **현재 구현 상태**: OQ-41/T0.0에서 `codex app-server generate-ts --out` 제공을 확인했고 `src/lib/features/agent-runtime/generated/codex-app-server/`를 vendoring했다. **dependency refresh 시 fallback**: 새 Codex 바이너리가 `generate-ts` subcommand를 제공하지 않으면 ref-codex §6 핵심 타입을 **수기 미러**한다 — `generated/` 대신 `src/lib/features/agent-runtime/contracts/codex-wire.ts`(수기 표시·핀 주석)에 두고, generate-ts 미제공 사실과 미러 출처(ref-codex §6 버전)를 [13](13-risks-open-questions.md)에 기록한다. 이때 Phase 3 입력은 수기 미러가 정본이 된다.
 - 테스트(11): 없음.
 - 계약(15 §): §3 매핑이 generated 타입(또는 fallback 수기 미러 `contracts/codex-wire.ts`)을 사용함을 명시.
 - ref §: ref-codex §6(핵심 타입), §1.2(envelope).
-- 미확정: `codex` 바이너리가 generate-ts subcommand를 제공하는지 환경 검증 필요 → [13](13-risks-open-questions.md). T0.0이 "미확인"이면 이 task는 시작하지 않는다(단 generate-ts 미제공이 확인되면 위 fallback 수기 미러 경로로 진행).
+- 현재 상태: `codex` 바이너리의 `generate-ts` 제공 여부는 OQ-41에서 확인 완료다. 향후 Codex dependency refresh나 target 환경 재검증 때만 같은 T0.0 절차를 반복하고, 그때 미제공이 확인되면 위 fallback 수기 미러 경로로 진행한다.
 
 ### T0.4 — Claude ACP 의존성 고정
 
@@ -154,17 +155,18 @@
 - 계약(15 §): §8.1 `JsonRpcMessage`.
 - ref §: ref-codex §1.2, ref-acp §1.
 
-### T0.6 — migration 계획 확정 (session runtime kind)
+### T0.6 — migration 계획 확정 (session runtime kind, 초기 완료 기록)
 
-- 대상: 문서 [10](10-persistence-migration.md) cross-check + `src/lib/types.ts`/`features/workspace/types.rs` 변경 설계만(코드 미작성).
+- 대상: 문서 [10](10-persistence-migration.md) cross-check + `src/lib/types.ts`/`features/workspace/types.rs` 변경 설계. 초기 Phase 0에서는 코드 미작성 결정 task였고, 현재 구현 브랜치에서는 Phase 6 구현이 이 결정을 반영했다.
 - 선행: 없음.
-- 산출물: `runtimeKind` 부재→`"pty"` normalize 규칙, scrub 대상 3필드 확정 메모. 실제 코드 변경은 Phase 6.
-- DoD: 10과 15 §7이 일치함을 확인. 미정 항목은 [13](13-risks-open-questions.md)에 기록.
+- 초기 산출물: `runtimeKind` 부재→`"pty"` normalize 규칙, scrub 대상 3필드 확정 메모. 실제 코드 변경은 Phase 6에서 수행.
+- 현재 구현 상태: `SessionCore`/`WorkspaceTabSnapshot`/Rust `WorkspaceTabSnapshot`에 `runtimeKind`/`agentRuntime` 경계가 반영됐고, frontend snapshot/restore와 backend `sanitize_workspace_for_persist`가 provider session/thread/resume secret을 저장 직전에 scrub한다. OQ-16/OQ-18은 13에서 해소됐으며, 앱 재시작 후 direct 대화 복원은 v1 범위 밖이다.
+- DoD: 10과 15 §7이 일치함을 확인. 미정 항목은 [13](13-risks-open-questions.md)에 기록. 현재 구현 브랜치에서는 `session-store-snapshot.test.ts`, `workspace.test.ts`, Rust workspace store tests가 legacy default/metadata round-trip/scrub 경계를 검증한다.
 - 테스트(11): "legacy record compatibility"(Phase 6).
 - 계약(15 §): §7.1–§7.3.
 - ref §: 없음.
 
-**Verification gate (Phase 0)**: `npm run check`(frontend+rust) 통과. app launch 금지(동작 코드 없음). fixture 포맷·핀·타입 정본이 후속 Phase 입력으로 동결됨.
+**Verification gate (Phase 0, 초기 gate)**: `npm run check`(frontend+rust) 통과. app launch 금지(Phase 0 자체에는 동작 코드 없음). fixture 포맷·핀·타입 정본이 후속 Phase 입력으로 동결됨. 현재 구현 브랜치에서 Phase 0을 재확인할 때는 기존 구현을 비우지 말고 핀/fixture/타입 drift만 확인한다.
 
 ---
 
@@ -217,7 +219,7 @@
 
 - 대상: `src/lib/features/agent-runtime/controller/agent-event-router.ts` + `state/agent-runtime-store.svelte.ts`의 module-level registry.
 - 선행: T1.3.
-- 산출물: router는 `AgentEvent`를 `ref`(provider/sessionId/threadId/turnId/messageId/itemId/toolCallId/requestId) 기준으로 올바른 세션 state로 dispatch(03 §Event Router). **id-index 라우팅(08 §5)**: dispatch된 event를 세션 state 내부에서 `itemsById`(item body)·`turnsById`(turn별 itemIds/residency)로 라우팅하고, **sealed-turn 윈도우 eviction**(최근 N개 sealed turn + 모든 unsealed/active turn + streaming을 윈도우로 유지, cap 초과 시 oldest sealed turn body evict→tombstone 강등)과 **tombstone LRU/TTL**(`droppedLateEventCount` 동반)을 적용한다(seal 조건·3-상태·late-event 규칙 정본은 04 §3.7, reducer가 수행하며 router/state는 그 결과를 윈도우 정책으로 관리). module-level registry는 handle→runtimeId/port 매핑과 pending request table(FE §1.4 module store). **approval pending request table key = `(sessionHandle, requestId)`**(03 §2.8). JSON-RPC id(`requestId`)는 runtime/connection(=adapter 연결) 단위에서만 유일하므로 **전역 단독 `requestId`를 key로 쓰는 것을 금지**한다 — 두 runtime이 같은 id를 받아도 서로의 approval로 오라우팅·오응답하지 않아야 한다(불변식). **윈도우 소유권/수명 모델은 13 OQ-48/위험 §1.11의 선행 gate**: registry 단일 윈도우 소유 + `runtimeId`↔window 바인딩 + window-close 시 소유 엔트리만 정리 + cross-window dispatch 금지(불변식). 구현 전 OQ-48 확정.
+- 산출물: router는 `AgentEvent`를 `ref`(provider/sessionId/threadId/turnId/messageId/itemId/toolCallId/requestId) 기준으로 올바른 세션 state로 dispatch(03 §Event Router). **id-index 라우팅(08 §5)**: dispatch된 event를 세션 state 내부에서 `itemsById`(item body)·`turnsById`(turn별 itemIds/residency)로 라우팅하고, **sealed-turn 윈도우 eviction**(최근 N개 sealed turn + 모든 unsealed/active turn + streaming을 윈도우로 유지, cap 초과 시 oldest sealed turn body evict→tombstone 강등)과 **tombstone LRU/TTL**(`droppedLateEventCount` 동반)을 적용한다(seal 조건·3-상태·late-event 규칙 정본은 04 §3.7, reducer가 수행하며 router/state는 그 결과를 윈도우 정책으로 관리). module-level registry는 handle→runtimeId/port 매핑과 pending request table(FE §1.4 module store). **approval pending request table key = `(sessionHandle, requestId)`**(03 §2.8). JSON-RPC id(`requestId`)는 runtime/connection(=adapter 연결) 단위에서만 유일하므로 **전역 단독 `requestId`를 key로 쓰는 것을 금지**한다 — 두 runtime이 같은 id를 받아도 서로의 approval로 오라우팅·오응답하지 않아야 한다(불변식). **윈도우 소유권/수명 모델은 OQ-48에서 해소됐다**: registry 단일 윈도우 소유 + `runtimeId`↔window 바인딩 + window-close 시 소유 엔트리만 정리 + cross-window dispatch 금지(불변식).
 - DoD: 라우팅 키 표(15 §1.1)대로 Codex 삼중 키·ACP `(sessionId,messageId)`/`(sessionId,toolCallId)` 분기 동작. **`itemsById`/`turnsById` 라우팅 + sealed-turn 윈도우 eviction + tombstone LRU 동작 검증**: cap 초과 시 oldest sealed turn body evict + tombstone 강등, tombstone 구간 늦은 event는 apply 금지 + `droppedLateEventCount` 증가, 윈도우는 세션 길이와 무관하게 bounded(heap bounded). **pending request table이 `(sessionHandle, requestId)` 복합 키로 인덱싱**되고, 서로 다른 두 runtime이 동일 `requestId`를 받아도 각자의 pending에만 매칭(오응답 없음)됨을 검증(11 충돌 회귀 테스트). co-located 테스트 통과. window-close 격리·cross-window dispatch 차단(OQ-48/§1.11) 동작.
 - 테스트(11): "interleaved turn stream이 turn id별로 분리되는지"의 store 측(adapter는 Phase 3). sealed-turn 윈도우 cap eviction·tombstone LRU·tombstone late-event drop. **"두 runtime이 같은 JSON-RPC id를 받아도 오응답하지 않음"(`(sessionHandle, requestId)` 키 충돌 회귀)**. window-close 시 소유 엔트리만 정리되는지(OQ-48).
 - 계약(15 §): §1.1 라우팅 키(approval 라우팅 키 = `(sessionHandle, requestId)`). transcript view-model(`itemsById`/`turnsById`/`tombstones`) 형태는 08 §5 정본.
@@ -233,15 +235,15 @@
 - 계약(15 §): §3 `terminal_output_delta`.
 - ref §: 없음.
 
-### T1.6 — approval audit trail (in-memory + opt-in redacted 영속 로그)
+### T1.6 — approval audit trail (v1 in-memory; opt-in 영속 로그는 후속 enhancement)
 
 - 대상: `agent-event-reducer.ts`(또는 `agent-runtime-store.svelte.ts` audit 헬퍼) — 모든 approval 결정 경로(T1.2 lifecycle)에 audit 기록을 부착.
 - 선행: T1.2.
-- 산출물: approval 결정이 닫힐 때마다 **in-memory audit entry 1건**을 기록한다(Repudiation 방어, 09 §3.4). 한 entry는 `requestId`/`optionId`/`kind`/`outcome`/결정 시각과 **`decidedBy: "user" | "auto" | "cleanup"`**(사용자 선택·자동 결정·exit/cancel/shutdown cleanup)을 담는다 — 즉 user/auto/cleanup 세 경로 모두 정확히 1건 기록(T1.2 멱등 종료와 정합: pending 1개당 audit 1건, 이중 기록 없음). 추가로 **opt-in redacted 영속 로그**: 설정으로 켤 때만 디스크에 redacted entry를 append하며, **명령 전문·credential·파일 내용은 절대 저장하지 않는다**(09 §3.4 형식 — 결정·시각·requestId·optionId·kind·outcome·scope만). secret scrub 경계는 09 §3.4를 따르고, 저장 위치/보존/포맷은 [13](13-risks-open-questions.md) **OQ-51** 선행 결정에 의존한다(미결 시 in-memory만 v1 기본, 영속 로그는 OQ-51 확정 후).
-- DoD: 11 audit 수용 케이스 통과 — 모든 approval 결정(user/auto/cleanup)이 audit entry 1건을 남기고, audit·영속 로그 어디에도 명령 전문/credential/파일 내용이 포함되지 않음(비밀 비포함 단정). 영속 로그 포맷·저장 위치는 OQ-51 결정을 인용해 구현(미결 시 in-memory만). audit 기록 함수에 한글 doc-comment(17 §B.1).
+- 산출물: approval 결정이 닫힐 때마다 **in-memory audit entry 1건**을 기록한다(Repudiation 방어, 09 §3.4). 한 entry는 `requestId`/`optionId`/`kind`/`outcome`/결정 시각과 **`decidedBy: "user" | "auto" | "cleanup"`**(사용자 선택·자동 결정·exit/cancel/shutdown cleanup)을 담는다 — 즉 user/auto/cleanup 세 경로 모두 정확히 1건 기록(T1.2 멱등 종료와 정합: pending 1개당 audit 1건, 이중 기록 없음). adapter가 user 선택이 아닌 경로에서 `approval_resolved`를 emit할 때는 15 §3의 `decidedBy`를 함께 싣고, store는 생략값을 `"user"`로 해석해 audit에 기록한다. [13](13-risks-open-questions.md) **OQ-51** 결론에 따라 v1 audit은 store 수명 안의 in-memory trail만 기본이며, opt-in redacted 영속 로그는 설정·저장 위치·보존·포맷을 후속 enhancement에서 별도 확정한다.
+- DoD: 11 audit 수용 케이스 통과 — 모든 approval 결정(user/auto/cleanup)이 audit entry 1건을 남기고, audit entry에 명령 전문/credential/파일 내용이 포함되지 않음(비밀 비포함 단정). audit 기록 함수에 한글 doc-comment(17 §B.1). 영속 로그 포맷·저장 위치·retention은 v1 DoD가 아니며, 필요해질 때 별도 task/test로 추가한다.
 - 테스트(11): "approval 결정 audit 기록(모든 결정 1건 + decidedBy)", "audit/영속 로그에 비밀(명령 전문/credential/파일 내용) 비포함"(09 §3.4 scrub과 교차).
 - 계약(15 §): §5 `Approval*`(audit는 결정 메타만 보존, 09 §3.4 형식).
-- ref §: 09 §3.4(audit trail 형식·redaction), 13 OQ-51(저장 위치/보존/포맷 선행 결정).
+- ref §: 09 §3.4(audit trail 형식·redaction), 13 OQ-51(v1 in-memory audit 확정, 영속 로그는 후속 enhancement).
 
 **Verification gate (Phase 1)**: `npm run test`(reducer/router/state 단위 테스트) + `npm run check` 통과. app launch 금지(UI/transport 미연결). fixture event만으로 모델 정합 검증 완료.
 
@@ -251,13 +253,13 @@
 
 선행: Phase 0(타입 핀). **Phase 1과 병렬 가능**(interface 합의=15 §8 고정 후). 목표: stdio subprocess 기동·framing·event emit. 이 Phase는 protocol 의미를 모름 — raw JSON-RPC만 다룬다(15 §8.3 주석).
 
-> **Phase 2 진입 gate**: T2.2/T2.4 구현 전 OQ-36(command/entry resolve owner/cache/entry 탐색)과 OQ-38(provider별 non-secret env key allowlist)을 확정한다. T2.3 구현 전 OQ-39(backpressure cap/line cap/notify interval)를 확정한다. mock 테스트는 가능하지만 실제 allowlist/backpressure 코드는 이 세 결정 없이 작성하지 않는다. **이 gate를 닫는 task가 아래 T2.0**이다.
+> **Phase 2 진입 gate(해소됨)**: T2.2/T2.4 구현 전 OQ-36(command/entry resolve owner/cache/entry 탐색)과 OQ-38(provider별 non-secret env key allowlist)을 확정하고, T2.3 구현 전 OQ-39(backpressure cap/line cap/notify interval)를 확정해야 했다. 현재 이 gate는 T2.0에서 닫혔고, 13 OQ-36/OQ-38/OQ-39와 Rust 구현(`resolver.rs`/`allowlist.rs`/`types.rs`)이 결정값을 고정한다. 아래 T2.0은 현재 구현의 선행 완료 기록이다.
 
-### T2.0 — Phase 2 진입 결정 게이트
+### T2.0 — Phase 2 진입 결정 게이트 (완료 기록)
 
-- 대상: 결정 산출물 + 문서 동기화([13](13-risks-open-questions.md)/[07](07-tauri-process-runtime.md)/[11](11-testing-acceptance.md)/[15](15-data-contracts.md)). 코드 미작성(결정 task).
+- 대상: 결정 산출물 + 문서 동기화([13](13-risks-open-questions.md)/[07](07-tauri-process-runtime.md)/[11](11-testing-acceptance.md)/[15](15-data-contracts.md)). 초기 성격은 코드 미작성 결정 task였고, 현재 구현은 그 결정값을 `resolver.rs`/`allowlist.rs`/`types.rs`에 반영했다.
 - 선행: T0.0.
-- 산출물: 위 Phase 2 진입 gate의 미결정 OQ를 확정해 각 결정값을 산출한다.
+- 산출물: 위 Phase 2 진입 gate의 미결정 OQ를 확정해 각 결정값을 산출했다.
   - **OQ-36**: `resolve_trusted_executable(provider,distro)`/`resolve_trusted_adapter_entry(provider,distro)`의 owner 모듈(`agent_runtime/allowlist.rs` 또는 별도 `resolver.rs`), npm 설치 위치 탐색 방식, WSL distro별 cache key/TTL/clear(무효화 트리거) 조건, resolve 실패 에러 문구.
   - **OQ-37**: `src-tauri/Cargo.toml`·lockfile의 serde 버전을 확인해 `#[serde(rename_all_fields="camelCase")]` 사용 가능(≥1.0.181) 여부 또는 필드별 `#[serde(rename)]` 대체 방식 확정(15 §8, T2.1 직렬화 방식 결정).
   - **OQ-38**: Codex/Claude 각각의 non-secret env key allowlist 집합(05/06/07/09 동일 이름).
@@ -286,7 +288,7 @@
   - **`--cd <wslWorkDir>` cwd 경계**: spawn argv에 `--cd`와 canonicalize된 WSL absolute workDir이 정확히 포함되는지(Windows path·relative workDir 거부는 §9/T2.4 allowlist 책임이나 spawn 조립에서 cwd 인자 위치를 검증).
   - **non-secret env argv 경계**: `non_secret_env`의 `KEY=VAL`만 `-e env` 뒤 argv에 조립되는지.
   - **secret env 경계**: `secret_env` 키가 child argv(`-e env KEY=VAL`)에 **부재**하고 `Command::env()`+`WSLENV`(`KEY/u` 형태)에만 등재되는지(07 §5.1 C1, AC-10b).
-  - **allowlist(backend-resolved executable + 정확 args) 경계**: spawn에 들어오는 executable이 backend resolve 신뢰 절대경로이고, argv가 provider별 정확 일치(Codex `["app-server","--stdio"]`, Claude `[검증된 adapterEntryPath]`)인 검증을 통과한 값만 spawn되는지(07 §8.1, T2.4 연계). renderer는 command를 넘기지 않음(S1).
+  - **allowlist(backend-resolved executable + 정확 args) 경계**: spawn에 들어오는 executable이 backend resolve 신뢰 절대경로이고, argv가 provider별 정확 일치(Codex `["app-server","--stdio"]`, Claude `[검증된 adapterEntryPath,"--hide-claude-auth"]`)인 검증을 통과한 값만 spawn되는지(07 §8.1, T2.4 연계). renderer는 command를 넘기지 않음(S1).
 - 테스트(11): "shutdown timeout 후 kill", "`spawn_wsl_process` argv 조립(`--cd` cwd·non-secret env argv·secret env는 `Command::env()`+`WSLENV`)", "backend-resolved executable + 정확 args allowlist"(T2.4와 교차).
 - 계약(15 §): §8.1 `AgentRuntimeStartParams`(provider/distro/workDir/args/env; **command 필드 없음 — backend가 provider로 신뢰 절대경로 resolve, S1**), §8.2 시그니처.
 - ref §: 07 §5.1(launch 정본 형태·cwd·non-secret/secret env 경계), §5.2/§5.3(shutdown·wait/kill), §8.1(R4 allowlist·backend-resolved executable·정확 args), §9(WSL path 경계).
@@ -307,18 +309,18 @@
 
 - 대상: `src-tauri/src/features/agent_runtime/allowlist.rs`.
 - 선행: T2.0, T2.1 (OQ-36/OQ-38 결정 = T2.0).
-- 산출물: provider enum(`codex`|`claude`)별 검증(07 §8.1 R4 정본 — basename/prefix 비교 폐지). **command는 renderer가 넘기지 않는다**: backend가 provider로 신뢰 절대경로를 resolve(codex→codex 절대경로, claude→node 절대경로; OQ-36에서 확정한 owner/cache/entry 탐색 방식, 또는 사전 등록 절대경로 화이트리스트)하고 동명 바이너리(`/tmp/codex`·`/tmp/node`)를 거부한다(S1). args는 **provider별 정확 일치**: Codex `["app-server","--stdio"]`, Claude `args.length==1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js`). env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + OQ-38에서 확정한 provider별 허용 key, 값은 non-secret 전용). renderer가 임의 args/shell string/비신뢰 entry를 넘기면 `Err(String)`(15 §8.1 주석, 07 §8.1). PTY에 선례 없는 신규 강화점(BE §6, §10 권고 6).
-- **실제 resolve 구현(T2.0 결정 반영)**: OQ-36 결정에 따라 `resolve_trusted_executable(provider,distro)`/`resolve_trusted_adapter_entry(provider,distro)`의 **실제 성공경로**(npm 설치 위치 탐색→신뢰 절대경로 반환)와 **미설치/탐색 실패 경로**(`Err(String)`, RS-10c)와 **캐시 무효화 정책**(distro별 cache key/TTL/clear 조건)을 구현한다(owner 모듈은 OQ-36 결정 = `allowlist.rs` 또는 별도 `resolver.rs`). mock 주입은 테스트 격리용이고, 실제 resolve 본체는 이 task가 소유한다.
+- 산출물: provider enum(`codex`|`claude`)별 검증(07 §8.1 R4 정본 — basename/prefix 비교 폐지). **command는 renderer가 넘기지 않는다**: backend가 provider로 신뢰 절대경로를 resolve(codex→codex 절대경로, claude→node 절대경로; OQ-36에서 확정한 owner/cache/entry 탐색 방식, 또는 사전 등록 절대경로 화이트리스트)하고 동명 바이너리(`/tmp/codex`·`/tmp/node`)를 거부한다(S1). args는 **provider별 정확 일치**: Codex `["app-server","--stdio"]`, Claude `args.length==2` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js`), `args[1]`이 고정 `--hide-claude-auth`. env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + OQ-38에서 확정한 provider별 허용 key, 값은 non-secret 전용). renderer가 임의 args/shell string/비신뢰 entry를 넘기면 `Err(String)`(15 §8.1 주석, 07 §8.1). PTY에 선례 없는 신규 강화점(BE §6, §10 권고 6).
+- **실제 resolve 구현(T2.0 결정 반영)**: OQ-36 결정에 따라 `resolve_trusted_executable(provider,distro)`/`resolve_trusted_adapter_entry(provider,distro)`의 **실제 성공경로**(npm 설치 위치 탐색→신뢰 절대경로 반환)와 **미설치/탐색 실패 경로**(`Err(String)`, RS-10c)와 **캐시 무효화 정책**(distro별 cache key/TTL/clear 조건)을 구현한다(owner 모듈은 OQ-36 결정 = `allowlist.rs` 또는 별도 `resolver.rs`). OQ-24에 따라 spawn 직전 resolved executable `--version` preflight도 수행하되, 이 probe는 path cache와 별개로 startup마다 실행한다(RS-10f/10g). mock 주입은 테스트 격리용이고, 실제 resolve/preflight 본체는 이 task가 소유한다.
 - DoD: 허용/거부 케이스 단위 테스트(backend-resolved 절대경로 통과 vs 동명 바이너리 거부, Codex 정확 args vs 그 외 거부, Claude `adapterEntryPath` 신뢰 vs 비신뢰 거부, env key allowlist 위반 거부). **실제 resolve 함수 + 미설치 실패경로(RS-10c) + 캐시 무효화 정책** 구현·검증(11 RS-8..RS-10c는 현재 실패/mock 주입만 명시 — backend resolve 성공경로 테스트가 추가로 필요함을 11에 인용). `agent_runtime_start`가 spawn 전에 이 검증을 호출.
 - 테스트(11): "provider별 startup executable allowlist 검증"(backend-resolved executable + 정확 args + env key, 07 AC-7), backend resolve 성공경로(설치된 codex/node 절대경로 resolve)는 11 RS-8..RS-10c에 성공경로 케이스 추가 필요(11 에이전트가 추가).
 - 계약(15 §): §8.1 `AgentRuntimeStartParams`(command 필드 없음 — backend resolve, S1).
 - ref §: 07 §8.1(R4 allowlist 정본), §5.1(launch 형태).
 
-### T2.5 — runtime state + command 5종 + 등록
+### T2.5 — runtime state + command 6종 + 등록
 
 - 대상: `src-tauri/src/features/agent_runtime/mod.rs`, `src-tauri/src/commands/agent_runtime.rs`, `commands/mod.rs`(edit), `lib.rs`(edit).
 - 선행: T2.2, T2.3, T2.4.
-- 산출물: `AgentRuntimeState`(`Mutex<HashMap<RuntimeId, AgentRuntime>>`+`next_id`, PtyState와 별도, BE §10 권고 1). 얇은 `#[tauri::command]` 5종: `agent_runtime_start/send/cancel/shutdown/get_snapshot`(15 §8.2). `lib.rs` 3곳 등록(`use`+`.manage`+`generate_handler![]`, BE §3.2). process exit이 모든 pending request 실패로 닫음(07 §Process lifecycle). **test-mode mock JSON-RPC 스트림 정의**: `is_test_mode()` 경로가 재생할 스트림은 **T0.5 fixture 포맷(NDJSON 한 줄=`{direction,message}`, `.jsonl`)을 그대로 재사용**한다(E2E mock과 fixture replay 단일 출처, 11 §1과 동일 형식). provider별 최소 시나리오를 정의: Codex `initialize→thread/started→turn delta→item/completed→turn/completed` 및 approval(`requestApproval→respondApproval`); Claude `initialize→session/new→session/update chunk→stopReason` 및 `session/request_permission`. mock은 별도 스크립트가 아니라 T0.5 fixture(`.jsonl`)를 줄 단위로 로드해 재생한다.
+- 산출물: `AgentRuntimeState`(`Mutex<HashMap<RuntimeId, AgentRuntime>>`+`next_id`, PtyState와 별도, BE §10 권고 1). 얇은 `#[tauri::command]` 6종: `agent_runtime_start/send/cancel/shutdown/get_snapshot/resolve_adapter_entry`(15 §8.2). `resolve_adapter_entry`는 Claude adapter가 backend-resolved `adapterEntryPath`를 얻는 보조 command다(S1). `lib.rs` 3곳 등록(`use`+`.manage`+`generate_handler![]`, BE §3.2). process exit이 모든 pending request 실패로 닫음(07 §Process lifecycle). **test-mode mock JSON-RPC 스트림 정의**: `is_test_mode()` 경로는 **T0.5 fixture 포맷(NDJSON 한 줄=`{direction,message}`, `.jsonl`)을 deterministic handshake/lifecycle 블록의 우선 출처로 재사용**한다(E2E mock과 fixture replay 형식 단일화, 11 §1과 동일 형식). 현재 Rust mock은 Codex `initialize`, Claude `initialize`/`session/new`/`session/load`를 fixture 우선으로 처리하고, prompt echo·approval처럼 입력값에 따라 달라지는 시나리오는 provider별 generator fallback으로 생성한다. provider별 최소 시나리오: Codex `initialize→thread/started→turn delta→item/completed→turn/completed` 및 approval(`requestApproval→respondApproval`); Claude `initialize→session/new→session/update chunk→stopReason` 및 `session/request_permission→permission response→tool_call_update→stopReason`.
 - DoD: `cargo check`+`cargo test` 통과. command가 `Result<T,String>` 반환(15 §0.5). test-mode mock 경로 제공(`is_test_mode()`로 가짜 JSON-RPC 스트림, BE §10 권고 8).
 - 테스트(11): Tauri tests 전체 + test-mode mock fixture(BE §8.1 `create_mock_session` 본뜸).
 - 계약(15 §): §8.2 command 시그니처.
@@ -328,7 +330,7 @@
 
 - 대상: `src/lib/features/agent-runtime/service/transport.ts`.
 - 선행: T2.5(command 이름 확정), 15 §8.2.
-- 산출물: 15 §8.2 invoke 래퍼(`agentRuntimeStart/Send/Cancel/Shutdown/GetSnapshot`) + 15 §8.3 `listen` 구독(`agent-runtime-message`/`-stderr`/`-exit`/`-error`/`-backpressure`). **반드시 `$lib/tauri/core.ts` invoke·`$lib/tauri/event.ts` listen 경유**(15 §0.6, FE §4.1).
+- 산출물: 15 §8.2 invoke 래퍼(`agentRuntimeStart/Send/Cancel/Shutdown/GetSnapshot`) + 15 §8.3 event 이름 정본(`AGENT_RUNTIME_EVENTS`/`AGENT_RUNTIME_EVENT_NAMES`) + diagnostic `listen` wrapper(stderr/exit/error/backpressure). raw `agent-runtime-message`는 provider adapter/factory deps의 내부 bridge로만 구독하고 `createAgentTransportController`에는 노출하지 않는다(OQ-59). **반드시 `$lib/tauri/core.ts` invoke·`$lib/tauri/event.ts` listen 경유**(15 §0.6, FE §4.1).
 - DoD: co-located `transport.test.ts`가 `src/test/mocks/tauri.test.ts` 기반 invoke/listen 모킹으로 통과(FE §8.2).
 - 테스트(11): frontend transport 단위.
 - 계약(15 §): §8.2, §8.3.
@@ -345,8 +347,8 @@
 ### T3.1 — Codex Port 구현 (initialize/thread/turn)
 
 - 대상: `src/lib/features/agent-runtime/adapters/codex/codex-app-server-adapter.ts`(+ `codex-launch.ts` start params 생성).
-- 선행: T2.6, T0.3, **OQ-33 wire 실측 hard gate**(13 OQ-33, "Codex wire 실측" 묶음 H4 — T0.0 직후 처리). OQ-33이 미해소이면 outbound `UserInput.text` wire 필드가 미확정이므로 05 §5.3d `makeTextUserInput`/`mapAgentContentToUserInput`은 **기본 구현 금지(throw/stub)** 로 두고, OQ-33 확정(wire 실측) 후에만 채운다 — 틀리면 `turn/start`가 거부되어 Codex 경로 전체가 막힌다(Phase 3 blocker).
-- 산출물: `AgentRuntimePort` 구현(15 §6). `startSession`=process start→initialize→thread start, `resumeSession`=thread/resume·thread/read(replay), `sendPrompt`=turn start, `cancelTurn`, `respondApproval`, `subscribeEvents`, `shutdown`. Codex는 envelope에 `jsonrpc` 미포함(15 §8.1 주석, ref-codex §1.2). `codex-launch.ts`는 `AgentRuntimeStartParams`(provider/distro/workDir/args=`["app-server","--stdio"]`/env)만 생성하고 **executable command는 넘기지 않는다 — backend가 codex 신뢰 절대경로를 resolve한다(S1, 07 §8.1)**.
+- 선행: T2.6, T0.3, **H4/OQ-33 해소 결과 적용**(13 OQ-33, "Codex wire 실측" 묶음). outbound `UserInput.text` wire 필드는 `{ type:"text", text, text_elements: [] }`로 확정됐으므로 05 §5.3d `makeTextUserInput`/`mapAgentContentToUserInput`은 이 정본을 사용한다.
+- 산출물: `AgentRuntimePort` 구현(15 §6). `startSession`=process start→initialize→thread start, `resumeSession`=thread/resume·thread/read(replay), `sendPrompt`=turn start, `searchResources`=Codex `fuzzyFileSearch` file 후보 + `skills/list` enabled skill 후보 조회, `cancelTurn`, `respondApproval`, `subscribeEvents`, `shutdown`. Codex는 envelope에 `jsonrpc` 미포함(15 §8.1 주석, ref-codex §1.2). `codex-launch.ts`는 `AgentRuntimeStartParams`(provider/distro/workDir/args=`["app-server","--stdio"]`/env)만 생성하고 **executable command는 넘기지 않는다 — backend가 codex 신뢰 절대경로를 resolve한다(S1, 07 §8.1)**.
 - DoD: 아래 mapping 테스트 통과.
 - 테스트(11): "thread start/resume mapping", "app-server process exit 처리".
 - 계약(15 §): §6 Port, §7.1 `ResumeSessionParams`.
@@ -355,7 +357,7 @@
 ### T3.2 — notification→AgentEvent 매핑 (delta/completion reconcile)
 
 - 대상: `adapters/codex/codex-wire-mapper.ts`.
-- 선행: T3.1, T1.1, **OQ-33 wire 실측 hard gate**(13 OQ-33). outbound `UserInput.text` 매핑(05 §5.3d `makeTextUserInput`)은 OQ-33 확정 전 stub 유지 — T3.1과 동일 gate.
+- 선행: T3.1, T1.1, **H4/OQ-33 해소 결과 적용**(13 OQ-33). outbound `UserInput.text` 매핑(05 §5.3d `makeTextUserInput`)은 `{ type:"text", text, text_elements: [] }` 정본을 유지한다.
 - 산출물: Codex notification/request→`AgentEvent`(15 §3) 변환. delta→completed reconcile(04 §3.2): message는 completed `text` 권위, plan/reasoning은 completed 권위. command output `outputDelta`→`command_output_delta`, fileChange→`file_change_updated`. 삼중 키 `(threadId,turnId,itemId)` ref 보존(15 §1.1).
 - DoD: interleaved stream fixture 테스트 통과(turn id별 분리).
 - 테스트(11): "agent message delta와 completed item reconcile", "command output delta routing", "interleaved turn stream이 turn id별로 분리되는지".
@@ -384,7 +386,7 @@
 
 - 대상: `src/lib/features/agent-runtime/adapters/claude-acp/claude-acp-adapter.ts`.
 - 선행: T2.6, T0.4.
-- 산출물: Claude ACP start params 생성(ref-claude §2) + ACP initialize(`protocolVersion=1`)→`session/new`/`session/load`. `AgentRuntimePort` 구현. envelope는 JSON-RPC 2.0(`jsonrpc:"2.0"`, ref-acp §1). start params는 `args = [adapterEntryPath]`(claude-agent-acp `dist/index.js`)만 넘기고 **executable command(node)는 넘기지 않는다 — backend가 node 신뢰 절대경로를 resolve하고 `adapterEntryPath`도 backend 검증(고정 npm 의존 위치 resolve/사전 등록 절대경로) 대상이다(S1, 07 §8.1)**.
+- 산출물: Claude ACP start params 생성(ref-claude §2) + ACP initialize(`protocolVersion=1`)→`session/new`/`session/load`. `AgentRuntimePort` 구현. envelope는 JSON-RPC 2.0(`jsonrpc:"2.0"`, ref-acp §1). start params는 `args = [adapterEntryPath, "--hide-claude-auth"]`(claude-agent-acp `dist/index.js` + auth 숨김 고정 플래그)만 넘기고 **executable command(node)는 넘기지 않는다 — backend가 node 신뢰 절대경로를 resolve하고 `adapterEntryPath`도 backend 검증(고정 npm 의존 위치 resolve/사전 등록 절대경로) 대상이다(S1, 07 §8.1)**.
 - DoD: initialize/session new/load flow 테스트 통과. capability mismatch 처리.
 - 테스트(11): "initialize/session new/session load flow", "capability mismatch".
 - 계약(15 §): §6 Port.
@@ -440,7 +442,7 @@
 
 ### T5.3 — tool/command/diff 카드
 
-- 대상: `view/ToolCallCard.svelte`, `view/CommandOutputCard.svelte`, `view/FileDiffCard.svelte`.
+- 대상: `view/tool-cards/ToolCallCard.svelte`, `view/tool-cards/CommandOutputCard.svelte`, `view/tool-cards/FileDiffCard.svelte`.
 - 선행: T5.2.
 - 산출물: ToolCallCard(collapsed/expanded), CommandOutputCard(terminal embed), FileDiffCard. tool kind→아이콘/라벨은 i18n `agentRuntime.toolKind.*`.
 - DoD: collapsed/expanded 토글, command output terminal embed 렌더 테스트 통과. embed가 app shortcut을 가로채지 않음(FE §11 focus 위험).
@@ -452,10 +454,10 @@
 
 - 대상: `view/ApprovalModal.svelte`(testid `approvalModal`), `view/ApprovalInlineCard.svelte`(testid `approvalInlineCard`), `view/AgentComposer.svelte`; approval/composer 상태·동작은 `state/agent-runtime-store.svelte.ts`에 포함.
 - 선행: T5.2, T1.2.
-- 산출물: approval option 렌더(label은 i18n wrap, 04 §4.1)+선택→`respondApproval`. composer send/cancel→Port `sendPrompt`/`cancelTurn`. 이미지 paste 재사용(FE §2.2 overlay-clipboard).
+- 산출물: approval option 렌더(label은 i18n wrap, 04 §4.1)+선택→`respondApproval`. composer send/cancel→Port `sendPrompt`/`cancelTurn`, provider-backed resource 후보→Port `searchResources`(Codex `fuzzyFileSearch` file + `skills/list` skill) + workspace search fallback. 이미지 paste/drop 재사용(FE §2.2 overlay-clipboard).
 - DoD: `ApprovalModal`/`ApprovalInlineCard` option 렌더 + send/cancel flow 테스트 통과. composer focus가 app shortcut과 충돌 안 함(FE §11).
 - 테스트(11): "approval modal option rendering", "focus/shortcut 회귀".
-- 계약(15 §): §5 `Approval*`, §6 `sendPrompt`/`cancelTurn`.
+- 계약(15 §): §5 `Approval*`, §6 `sendPrompt`/`searchResources`/`cancelTurn`.
 - ref §: 없음.
 
 ### T5.5 — i18n + locale 키
@@ -470,10 +472,10 @@
 
 ### T5.6 — 격리 scrollback replay 뷰 (read-only history inspection)
 
-- 대상: `view/AgentTranscriptSurface.svelte`(+ tombstone 구간 placeholder/notice) + `state/agent-runtime-store.svelte.ts`(격리 scratch replay 세션 진입/폐기) + `service/transport.ts`(read-only `session/load`·`thread/read` 호출 경유).
+- 대상: `view/AgentTranscriptSurface.svelte`(+ tombstone 구간 placeholder/notice) + `service/runtime-replay.ts`(격리 scratch replay loader/reduce) + provider adapter Port(`resumeSession({replay:true})` → `session/load`·`thread/read` 경유).
 - 선행: T5.2, **T2.x transport**(Codex `thread/read`/`session/load`·Claude `session/load` 경유 = T2.5/T2.6 + 해당 adapter Port), T6.x persistence 미요구(런타임 전용 — disk/cache 아님).
-- 산출물: `evicted-tombstone`으로 강등된 turn 구간을 스크롤백하면 "이전 기록 불러오기" affordance를 표시한다. 사용자가 요청하면 `canLoad`(provider resume/read 가능)인 경우에 한해 **read-only 격리 scratch replay 세션**을 연다 — provider의 `session/load`·`thread/read`(replay)로 해당 구간을 조회하되, 결과를 live store(`itemsById`/`turnsById`)에 **병합하지 않고** 별도 scratch transcript model에만 채워 read-only로 렌더한다(10 §4.7 runtime scrollback replay; §4.2 cold restore와 구분 — 디스크 X, full cache 아님, live 미병합). `canLoad`가 아니면(resume token 부재·provider 미지원) "사용 불가" notice를 표시한다. scratch 세션은 닫을 때 폐기(영속/캐시 안 함). = 복원/영속 캐시가 아니라 **read-only history inspection**이다. `thread/read includeTurns` 조회 범위(gap-only vs 전체 snapshot)는 OQ-54 확정에 의존.
-- DoD: **live store 미병합**(scratch replay가 running live 세션의 transcript/status/pending을 변경하지 않음), **scratch store는 닫을 때 폐기**(다음 진입 시 재조회), **running 세션과 충돌 없음**(동시에 진행 중인 turn/streaming·approval에 간섭 없음, registry/window 소유권 불변식 유지), `canLoad` 아니면 "사용 불가" notice. read-only 보장(scratch에서 `sendPrompt`/`respondApproval` 등 mutating 동작 비노출). `svelte-check` 통과.
+- 산출물: `evicted-tombstone`으로 강등된 turn 구간을 스크롤백하면 "이전 기록 불러오기" affordance를 표시한다. 사용자가 요청하면 `canLoad`(provider resume/read 가능)인 경우에 한해 **read-only 격리 scratch replay 세션**을 연다 — provider의 `session/load`·`thread/read`(replay)로 해당 구간을 조회하되, 결과를 live store(`itemsById`/`turnsById`)에 **병합하지 않고** 별도 scratch transcript model에만 채워 read-only로 렌더한다(10 §4.7 runtime scrollback replay; §4.2 cold restore와 구분 — 디스크 X, full cache 아님, live 미병합). `canLoad`가 아니면(resume token 부재·provider 미지원) "사용 불가" notice를 표시한다. scratch 세션은 조회 성공/실패 뒤 폐기하고, 닫기·unmount는 멱등 보조 cleanup으로만 남긴다(영속/캐시 안 함). = 복원/영속 캐시가 아니라 **read-only history inspection**이다. `thread/read includeTurns` 조회 범위(gap-only vs 전체 snapshot)는 OQ-54 확정에 의존.
+- DoD: **live store 미병합**(scratch replay가 running live 세션의 transcript/status/pending을 변경하지 않음), **scratch 세션은 조회 성공/실패 뒤 폐기**(다음 진입 시 재조회, 닫기·unmount는 중복 cleanup), **running 세션과 충돌 없음**(동시에 진행 중인 turn/streaming·approval에 간섭 없음, registry/window 소유권 불변식 유지), `canLoad` 아니면 "사용 불가" notice. read-only 보장(scratch에서 `sendPrompt`/`respondApproval` 등 mutating 동작 비노출). `svelte-check` 통과.
 - 테스트(11): "tombstone 구간 격리 replay 뷰 진입/폐기", "replay가 live store에 병합되지 않음", "running 세션과 충돌 없음", "`canLoad` 아닐 때 사용 불가 notice".
 - 계약(15 §): §6 Port(`resumeSession`/read 경로 — read-only 조회용), §7.1 `AgentRuntimeMetadata`(resume 가능성 판단). transcript view-model(scratch `TranscriptModel`) 형태는 08 §5 정본.
 - ref §: 10 §4.7(runtime scrollback replay; §4.2 cold restore와 구분), 08 §5(scratch transcript model), 13 OQ-54(`thread/read includeTurns` 조회 범위)·§1.12(S2).
@@ -510,8 +512,8 @@
 
 - 대상: edit launcher/history 표시 경로 + `AgentTranscriptSurface` fallback.
 - 선행: T6.2, T1.5(legacy adapter).
-- 산출물: direct runtime recent history 표시(metadata 기반). direct runtime 실패 시 legacy PTY fallback action(08 §"legacy PTY fallback session", FE §9 옵션 B fallback).
-- DoD: fallback이 동일 세션을 `Terminal.svelte`로 graceful 전환. recent history에 provider id 추적 가능.
+- 산출물: direct runtime recent history 표시(`runtimeKind` 기반 direct 배지). direct runtime 실패 시 legacy PTY fallback action(08 §"legacy PTY fallback session", FE §9 옵션 B fallback).
+- DoD: fallback이 동일 세션을 `Terminal.svelte`로 graceful 전환. recent history는 비밀이 아닌 `runtimeKind`만 보존하고 provider id/session id/resume key는 저장하지 않음(10 §5.5, 15 §7.3).
 - 테스트(11): "direct runtime metadata 저장/복원 표시", "direct runtime 실패 후 legacy PTY fallback 선택".
 - 계약(15 §): §7.1 `AgentRuntimeMetadata`.
 - ref §: 없음.

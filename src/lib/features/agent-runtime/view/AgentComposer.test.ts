@@ -2,11 +2,24 @@
  * AgentComposer 테스트(T5.4) — send/stop flow·Enter 전송·Shift+Enter 비전송·focus/shortcut 회귀(08 §6, FE §11).
  */
 
-import { fireEvent, render } from "@testing-library/svelte";
+import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "../../../i18n";
 import { TEST_IDS } from "../../../testids";
 import AgentComposer from "./AgentComposer.svelte";
+
+function imageTransfer(file: File): DataTransfer {
+  return {
+    files: [file],
+    items: [
+      {
+        kind: "file",
+        type: file.type,
+        getAsFile: () => file,
+      },
+    ],
+  } as unknown as DataTransfer;
+}
 
 describe("AgentComposer", () => {
   beforeEach(() => {
@@ -35,6 +48,25 @@ describe("AgentComposer", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it("keeps app tab shortcuts from firing while the composer textarea is focused", async () => {
+    const onWindowKeydown = vi.fn();
+    window.addEventListener("keydown", onWindowKeydown);
+    try {
+      const { getByTestId } = render(AgentComposer, {
+        props: { status: "ready", providerLabel: "codex", onSend: vi.fn(), onStop: vi.fn() },
+      });
+      const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+      input.focus();
+
+      await fireEvent.keyDown(input, { key: "t", ctrlKey: true });
+      await fireEvent.keyDown(input, { key: "w", ctrlKey: true });
+
+      expect(onWindowKeydown).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("keydown", onWindowKeydown);
+    }
+  });
+
   it("shows a stop button while running and calls onStop", async () => {
     const onStop = vi.fn();
     const { getByTestId } = render(AgentComposer, {
@@ -42,6 +74,22 @@ describe("AgentComposer", () => {
     });
     await fireEvent.click(getByTestId(TEST_IDS.agentComposerSend));
     expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the draft editable while running without sending on Enter", async () => {
+    const onSend = vi.fn();
+    const { getByTestId } = render(AgentComposer, {
+      props: { status: "running", providerLabel: "codex", onSend, onStop: vi.fn() },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+
+    expect(input.disabled).toBe(false);
+
+    await fireEvent.input(input, { target: { value: "queue later" } });
+    await fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input.value).toBe("queue later");
   });
 
   it("disables input while waiting for approval (requires_action)", () => {
@@ -55,6 +103,20 @@ describe("AgentComposer", () => {
     });
     const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
     expect(input.disabled).toBe(true);
+  });
+
+  it("shows a stop button while waiting for approval (requires_action)", async () => {
+    const onStop = vi.fn();
+    const { getByTestId } = render(AgentComposer, {
+      props: {
+        status: "requires_action",
+        providerLabel: "codex",
+        onSend: vi.fn(),
+        onStop,
+      },
+    });
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerSend));
+    expect(onStop).toHaveBeenCalledTimes(1);
   });
 
   it("opens the slash command palette and filters by query", async () => {
@@ -95,6 +157,49 @@ describe("AgentComposer", () => {
     expect(input.value).toBe("/resume ");
   });
 
+  it("normalizes provider command names with a leading slash before display and insertion", async () => {
+    const onSend = vi.fn();
+    const { getByTestId, getAllByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        availableCommands: [{ name: "/review", description: "Review changes" }],
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+
+    await fireEvent.input(input, { target: { value: "/rev" } });
+    const opts = getAllByTestId(TEST_IDS.agentComposerCommandOption);
+    expect(opts).toHaveLength(1);
+    expect(opts[0].textContent).toContain("/review");
+    expect(opts[0].textContent).not.toContain("//review");
+
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input.value).toBe("/review ");
+  });
+
+  it("deduplicates provider command names case-insensitively before adding local fallbacks", async () => {
+    const { getByTestId, getAllByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableCommands: [{ name: "/Resume", description: "Provider resume" }],
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+
+    await fireEvent.input(input, { target: { value: "/" } });
+
+    const opts = getAllByTestId(TEST_IDS.agentComposerCommandOption);
+    const resumeOptions = opts.filter((o) => o.textContent?.toLowerCase().includes("/resume"));
+    expect(resumeOptions).toHaveLength(1);
+  });
+
   it("always offers a local /resume command when no provider commands exist", async () => {
     const { getByTestId, getAllByTestId } = render(AgentComposer, {
       props: { status: "ready", providerLabel: "codex", onSend: vi.fn(), onStop: vi.fn() },
@@ -103,5 +208,485 @@ describe("AgentComposer", () => {
     await fireEvent.input(input, { target: { value: "/" } });
     const opts = getAllByTestId(TEST_IDS.agentComposerCommandOption);
     expect(opts.some((o) => o.textContent?.includes("/resume"))).toBe(true);
+  });
+
+  it("closes the slash command palette once command arguments start", async () => {
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableCommands: [{ name: "compact", inputHint: "<turns>" }],
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: "/co" } });
+    expect(queryByTestId(TEST_IDS.agentComposerCommandPalette)).toBeTruthy();
+
+    await fireEvent.input(input, { target: { value: "/compact now" } });
+    expect(queryByTestId(TEST_IDS.agentComposerCommandPalette)).toBeNull();
+  });
+
+  it("does not open completion popups for @ without a resource source or for $", async () => {
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableCommands: [{ name: "compact" }],
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+
+    await fireEvent.input(input, { target: { value: "@" } });
+    expect(queryByTestId(TEST_IDS.agentComposerCommandPalette)).toBeNull();
+    expect(queryByTestId(TEST_IDS.agentComposerResourcePalette)).toBeNull();
+
+    await fireEvent.input(input, { target: { value: "$" } });
+    expect(queryByTestId(TEST_IDS.agentComposerCommandPalette)).toBeNull();
+    expect(queryByTestId(TEST_IDS.agentComposerResourcePalette)).toBeNull();
+  });
+
+  it("opens a resource mention token from the resource action button", async () => {
+    const resourceSearch = vi.fn(async () => []);
+    const { getByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        resourceSearch,
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+
+    await fireEvent.input(input, { target: { value: "please inspect" } });
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerResourceButton));
+
+    expect(input.value).toBe("please inspect @");
+    expect(document.activeElement).toBe(input);
+    expect(resourceSearch).toHaveBeenCalledWith("");
+  });
+
+  it("hides the resource action button when no resource source is configured", () => {
+    const { queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+      },
+    });
+
+    expect(queryByTestId(TEST_IDS.agentComposerResourceButton)).toBeNull();
+  });
+
+  it("disables the resource action button while composer input is locked", async () => {
+    const resourceSearch = vi.fn(async () => []);
+    const { getByTestId } = render(AgentComposer, {
+      props: {
+        status: "requires_action",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        resourceSearch,
+      },
+    });
+    const button = getByTestId(TEST_IDS.agentComposerResourceButton) as HTMLButtonElement;
+
+    expect(button.disabled).toBe(true);
+    await fireEvent.click(button);
+    expect(resourceSearch).not.toHaveBeenCalled();
+  });
+
+  it("selects an @ file mention and sends it as resource content", async () => {
+    const onSend = vi.fn();
+    const resourceSearch = vi.fn(async (query: string) =>
+      query === "app"
+        ? [
+            {
+              label: "src/App.svelte",
+              uri: "file:///home/tester/project/src/App.svelte",
+              detail: "/home/tester/project/src/App.svelte",
+            },
+          ]
+        : [],
+    );
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        resourceSearch,
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+
+    await fireEvent.input(input, { target: { value: "@app" } });
+    expect(await findByTestId(TEST_IDS.agentComposerResourcePalette)).toBeTruthy();
+    expect(getByTestId(TEST_IDS.agentComposerResourceOption).textContent).toContain("src/App.svelte");
+
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input.value).toBe("@src/App.svelte ");
+
+    await fireEvent.input(input, { target: { value: "@src/App.svelte please inspect" } });
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith([
+      { type: "text", text: "@src/App.svelte please inspect" },
+      { type: "resource", uri: "file:///home/tester/project/src/App.svelte" },
+    ]);
+  });
+
+  it("selects a Codex skill mention and preserves skill metadata in resource content", async () => {
+    const onSend = vi.fn();
+    const resourceSearch = vi.fn(async (query: string) =>
+      query === "review"
+        ? [
+            {
+              label: "review",
+              uri: "file:///home/tester/.codex/skills/review/SKILL.md",
+              detail: "Review changes",
+              mimeType: "application/vnd.codex.skill",
+              text: "review",
+              resourceKind: "skill" as const,
+            },
+          ]
+        : [],
+    );
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "codex",
+        onSend,
+        onStop: vi.fn(),
+        resourceSearch,
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+
+    await fireEvent.input(input, { target: { value: "@review" } });
+    expect(await findByTestId(TEST_IDS.agentComposerResourcePalette)).toBeTruthy();
+    await fireEvent.keyDown(input, { key: "Enter" });
+    await fireEvent.input(input, { target: { value: "@review please inspect" } });
+    await fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSend).toHaveBeenCalledWith([
+      { type: "text", text: "@review please inspect" },
+      {
+        type: "resource",
+        uri: "file:///home/tester/.codex/skills/review/SKILL.md",
+        mimeType: "application/vnd.codex.skill",
+        text: "review",
+        resourceKind: "skill",
+      },
+    ]);
+  });
+
+  it("selects an inline @ file mention without dropping the prompt prefix", async () => {
+    const onSend = vi.fn();
+    const resourceSearch = vi.fn(async (query: string) =>
+      query === "app"
+        ? [
+            {
+              label: "src/App.svelte",
+              uri: "file:///home/tester/project/src/App.svelte",
+            },
+          ]
+        : [],
+    );
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        resourceSearch,
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+
+    await fireEvent.input(input, { target: { value: "please inspect @app" } });
+    expect(await findByTestId(TEST_IDS.agentComposerResourcePalette)).toBeTruthy();
+
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("please inspect @src/App.svelte ");
+
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith([
+      { type: "text", text: "please inspect @src/App.svelte" },
+      { type: "resource", uri: "file:///home/tester/project/src/App.svelte" },
+    ]);
+  });
+
+  it("does not attach a resource when the selected @ mention token is edited into another word", async () => {
+    const onSend = vi.fn();
+    const resourceSearch = vi.fn(async (query: string) =>
+      query === "app"
+        ? [
+            {
+              label: "src/App.svelte",
+              uri: "file:///home/tester/project/src/App.svelte",
+            },
+          ]
+        : [],
+    );
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        resourceSearch,
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+
+    await fireEvent.input(input, { target: { value: "@app" } });
+    expect(await findByTestId(TEST_IDS.agentComposerResourcePalette)).toBeTruthy();
+    await fireEvent.keyDown(input, { key: "Enter" });
+
+    await fireEvent.input(input, { target: { value: "@src/App.sveltex please inspect" } });
+    await fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSend).toHaveBeenCalledWith([
+      { type: "text", text: "@src/App.sveltex please inspect" },
+    ]);
+  });
+
+  it("shows image attach controls only when provider image capability is enabled", () => {
+    const enabled = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        capabilities: { image: true, embeddedContext: true, audio: false },
+      },
+    });
+    expect(enabled.queryByTestId(TEST_IDS.agentComposerImageButton)).toBeTruthy();
+    expect(enabled.queryByTestId(TEST_IDS.agentComposerImageInput)).toBeTruthy();
+    enabled.unmount();
+
+    const disabled = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "codex",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        capabilities: { image: false, embeddedContext: false, audio: false },
+      },
+    });
+    expect(disabled.queryByTestId(TEST_IDS.agentComposerImageButton)).toBeNull();
+    expect(disabled.queryByTestId(TEST_IDS.agentComposerImageInput)).toBeNull();
+  });
+
+  it("sends selected image files as image content and allows image-only prompts", async () => {
+    const onSend = vi.fn();
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        capabilities: { image: true, embeddedContext: true, audio: false },
+      },
+    });
+
+    const fileInput = getByTestId(TEST_IDS.agentComposerImageInput) as HTMLInputElement;
+    const image = new File(["abc"], "diagram.png", { type: "image/png" });
+    await fireEvent.change(fileInput, { target: { files: [image] } });
+
+    expect((await findByTestId(TEST_IDS.agentComposerImageAttachment)).textContent).toContain("diagram.png");
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerSend));
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend).toHaveBeenCalledWith([
+      { type: "image", uri: "data:image/png;base64,YWJj", mimeType: "image/png" },
+    ]);
+  });
+
+  it("inserts image reference tokens into a non-empty draft and sends them with image content", async () => {
+    const onSend = vi.fn();
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        capabilities: { image: true, embeddedContext: true, audio: false },
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    const fileInput = getByTestId(TEST_IDS.agentComposerImageInput) as HTMLInputElement;
+
+    await fireEvent.input(input, { target: { value: "Compare this" } });
+    const image = new File(["abc"], "diagram.png", { type: "image/png" });
+    await fireEvent.change(fileInput, { target: { files: [image] } });
+
+    const attachment = await findByTestId(TEST_IDS.agentComposerImageAttachment);
+    expect(input.value).toBe("Compare this [Image #1]");
+    expect(attachment.textContent).toContain("[Image #1]");
+    await fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSend).toHaveBeenCalledWith([
+      { type: "text", text: "Compare this [Image #1]" },
+      { type: "image", uri: "data:image/png;base64,YWJj", mimeType: "image/png" },
+    ]);
+  });
+
+  it("removes the image reference token when the matching attachment is removed", async () => {
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        capabilities: { image: true, embeddedContext: true, audio: false },
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    const fileInput = getByTestId(TEST_IDS.agentComposerImageInput) as HTMLInputElement;
+
+    await fireEvent.input(input, { target: { value: "Compare this" } });
+    const image = new File(["abc"], "diagram.png", { type: "image/png" });
+    await fireEvent.change(fileInput, { target: { files: [image] } });
+    const attachment = await findByTestId(TEST_IDS.agentComposerImageAttachment);
+    await fireEvent.click(attachment.querySelector("button") as HTMLButtonElement);
+
+    expect(input.value).toBe("Compare this");
+  });
+
+  it("renumbers remaining image references after removing an attachment", async () => {
+    const { getByTestId, findAllByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        capabilities: { image: true, embeddedContext: true, audio: false },
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    const fileInput = getByTestId(TEST_IDS.agentComposerImageInput) as HTMLInputElement;
+
+    await fireEvent.input(input, { target: { value: "Compare" } });
+    const first = new File(["one"], "one.png", { type: "image/png" });
+    const second = new File(["two"], "two.png", { type: "image/png" });
+    await fireEvent.change(fileInput, { target: { files: [first, second] } });
+    let attachments = await findAllByTestId(TEST_IDS.agentComposerImageAttachment);
+    expect(input.value).toBe("Compare [Image #1] [Image #2]");
+
+    await fireEvent.click(attachments[0].querySelector("button") as HTMLButtonElement);
+
+    attachments = await findAllByTestId(TEST_IDS.agentComposerImageAttachment);
+    expect(input.value).toBe("Compare [Image #1]");
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0].textContent).toContain("[Image #1]");
+    expect(attachments[0].textContent).not.toContain("[Image #2]");
+  });
+
+  it("starts image reference numbering from one for the next prompt", async () => {
+    const onSend = vi.fn();
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        capabilities: { image: true, embeddedContext: true, audio: false },
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    const fileInput = getByTestId(TEST_IDS.agentComposerImageInput) as HTMLInputElement;
+
+    await fireEvent.input(input, { target: { value: "First" } });
+    await fireEvent.change(fileInput, {
+      target: { files: [new File(["one"], "one.png", { type: "image/png" })] },
+    });
+    await findByTestId(TEST_IDS.agentComposerImageAttachment);
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerSend));
+
+    await fireEvent.input(input, { target: { value: "Second" } });
+    await fireEvent.change(fileInput, {
+      target: { files: [new File(["two"], "two.png", { type: "image/png" })] },
+    });
+    await findByTestId(TEST_IDS.agentComposerImageAttachment);
+
+    expect(input.value).toBe("Second [Image #1]");
+  });
+
+  it("attaches pasted image files when image capability is enabled", async () => {
+    const onSend = vi.fn();
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        capabilities: { image: true, embeddedContext: true, audio: false },
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    const image = new File(["paste"], "pasted.png", { type: "image/png" });
+
+    await fireEvent.paste(input, { clipboardData: imageTransfer(image) });
+
+    expect((await findByTestId(TEST_IDS.agentComposerImageAttachment)).textContent).toContain("pasted.png");
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerSend));
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend).toHaveBeenCalledWith([
+      { type: "image", uri: "data:image/png;base64,cGFzdGU=", mimeType: "image/png" },
+    ]);
+  });
+
+  it("inserts pasted image reference tokens at the textarea cursor", async () => {
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        capabilities: { image: true, embeddedContext: true, audio: false },
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: "Compare please" } });
+    input.setSelectionRange("Compare".length, "Compare".length);
+    const image = new File(["paste"], "pasted.png", { type: "image/png" });
+
+    await fireEvent.paste(input, { clipboardData: imageTransfer(image) });
+
+    await findByTestId(TEST_IDS.agentComposerImageAttachment);
+    expect(input.value).toBe("Compare [Image #1] please");
+  });
+
+  it("attaches dropped image files when image capability is enabled", async () => {
+    const onSend = vi.fn();
+    const { getByTestId, findByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend,
+        onStop: vi.fn(),
+        capabilities: { image: true, embeddedContext: true, audio: false },
+      },
+    });
+    const input = getByTestId(TEST_IDS.agentComposerInput) as HTMLTextAreaElement;
+    const image = new File(["drop"], "dropped.png", { type: "image/png" });
+
+    await fireEvent.drop(input, { dataTransfer: imageTransfer(image) });
+
+    expect((await findByTestId(TEST_IDS.agentComposerImageAttachment)).textContent).toContain("dropped.png");
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerSend));
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend).toHaveBeenCalledWith([
+      { type: "image", uri: "data:image/png;base64,ZHJvcA==", mimeType: "image/png" },
+    ]);
   });
 });

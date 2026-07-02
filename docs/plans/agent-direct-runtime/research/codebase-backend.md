@@ -373,7 +373,7 @@ interface AgentCommandOptions { extraArgs?: readonly string[]; envVars?: Record<
 | `src-tauri/src/features/agent_runtime/transport.rs` | newline-delimited JSON-RPC framing, stdin write, stdout/stderr reader thread | `features/terminal/parsing.rs::decode_utf8_stream_chunk` 재사용 + terminal reader loop(mod.rs:513-582) |
 | `src-tauri/src/features/agent_runtime/process.rs` | child spawn + graceful shutdown(stdin close→timeout→kill→reap). **launch 정본 형태는 07 §5.1·12 T2.2**: `wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL <backend-resolved-exe> <argv>`(non-secret env argv + secret은 `Command::env()`+`WSLENV`). 이 표의 옛 `-e <executable> <argv>`는 위치 안내용 스냅샷일 뿐 launch 권위가 아니다 | `commands/wsl.rs::WslShell::spawn`(비-PTY `std::process::Command` + `CREATE_NO_WINDOW`) |
 | `src-tauri/src/features/agent_runtime/tests.rs` | fixture replay, snapshot/delta, framing 단위 테스트 | `features/terminal/tests.rs` |
-| `src-tauri/src/commands/agent_runtime.rs` | 얇은 `#[tauri::command]` 래퍼 5종 + re-export | `commands/pty.rs`(re-export) / `commands/workspace.rs`(wrapper) |
+| `src-tauri/src/commands/agent_runtime.rs` | 얇은 `#[tauri::command]` 래퍼 6종 + re-export(start/send/cancel/shutdown/get_snapshot/resolve_adapter_entry) | `commands/pty.rs`(re-export) / `commands/workspace.rs`(wrapper) |
 | `src/lib/features/agent-runtime/*.ts` | frontend transport client + normalized event store + adapter | `src/lib/pty.ts`(invoke wrapper) + 기존 controller 패턴 |
 
 연동 지점(integration points):
@@ -399,9 +399,9 @@ interface AgentCommandOptions { extraArgs?: readonly string[]; envVars?: Record<
 
 ---
 
-## 11. 미해결/확인 필요 (추정 표기)
+## 11. 미해결/확인 필요 (추정 표기, 현재 구현 상태 병기)
 
 - (추정) tokio 채택 여부는 코드에 강제 사실이 없다. 현 컨벤션은 `std::thread`이며, async 도입은 ADR 결정 사항이다. 본 문서는 두 옵션의 trade-off만 사실 기반으로 제시한다(§7).
-- (확인 필요) `decode_utf8_stream_chunk`를 공용화할 때 모듈 가시성(`pub(super)` → `pub(crate)`) 변경 범위와 terminal 테스트 import 영향.
-- (확인 필요) `WorkspaceTabSnapshot`에 `runtime_kind` 추가 시 frontend `WorkspaceSnapshot` TS 타입(`src/lib`)과 `merge_workspace_snapshot`(service/window_ops.rs) 동작. 직렬화 forward-compat은 `#[serde(default)]`로 보장되나, frontend 측 타입/저장 로직 동기화는 별도 확인 대상이다.
-- (확인 필요) Codex websocket transport(`transportKind: "websocket"`)는 [`07-tauri-process-runtime.md`](../07-tauri-process-runtime.md)에서 "검증 후 optional"로 명시. 현 backend에 websocket 클라이언트 코드/의존성 없음(`Cargo.toml` 확인). 1차 구현은 `jsonrpc-stdio`만 권고.
+- (해소됨, OQ-26) `decode_utf8_stream_chunk` 공용화는 최소 변경인 `pub(crate)` 가시성 상향으로 구현됐다. `agent_runtime/transport.rs`가 `features/terminal/parsing.rs`의 함수를 직접 import하고, RS-3 UTF-8 read-boundary 테스트가 경계를 고정한다. 별도 `features/io_util.rs` 추출이나 terminal 테스트 import 재작성은 필요 없었다.
+- (해소됨, OQ-18) `WorkspaceTabSnapshot.runtime_kind`/`agent_runtime` 동기화는 frontend 저장·복원·기존 세션 갱신 경로와 Rust `merge_workspace_snapshot` 보존 경계까지 구현됐다. 증거는 `session-store-snapshot.test.ts`, `live-session-workspace-sync.ts` 경로 테스트, Rust `merge_workspace_snapshot_preserves_direct_runtime_metadata`, 10 §3/§6, 13 OQ-18이다.
+- (v1 결정 유지) Codex websocket transport(`transportKind: "websocket"`)는 [`07-tauri-process-runtime.md`](../07-tauri-process-runtime.md)에서 "검증 후 optional"로 명시. backend에 websocket 클라이언트 코드/의존성은 없고, v1 handler는 `authToken` 로깅 전 즉시 reject한다(09 §5.1/§5.2, 13 OQ-15). 1차 구현은 `jsonrpc-stdio`만 쓴다.

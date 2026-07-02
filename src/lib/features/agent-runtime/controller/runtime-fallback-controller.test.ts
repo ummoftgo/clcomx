@@ -50,6 +50,20 @@ describe("runtime-fallback-controller", () => {
     expect(controller.state.message).toBe("[object Object]");
   });
 
+  it("redacts credential-like values from fallback failure messages", () => {
+    const { controller } = createController();
+
+    controller.markFailed(
+      new Error("spawn failed\nAuthorization: Bearer account-secret\nANTHROPIC_AUTH_TOKEN=anthropic-secret"),
+    );
+
+    expect(controller.state.message).toBe(
+      "spawn failed\nAuthorization: [REDACTED]\nANTHROPIC_AUTH_TOKEN=[REDACTED]",
+    );
+    expect(controller.state.message).not.toContain("account-secret");
+    expect(controller.state.message).not.toContain("anthropic-secret");
+  });
+
   it("delegates legacy PTY fallback with the failed session context and hides the panel", async () => {
     const onFallbackToPty = vi.fn(async () => {});
     const { controller } = createController({ onFallbackToPty });

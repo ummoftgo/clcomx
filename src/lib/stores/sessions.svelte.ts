@@ -7,6 +7,8 @@ export {
   removeSession,
   setActiveSession,
   setSessionAuxState,
+  setSessionAgentRuntime,
+  setSessionAgentRuntimeStatus,
   setSessionDirtyPaths,
   setSessionEditorRootDir,
   setSessionEditorState,

@@ -10,14 +10,19 @@ use std::collections::HashMap;
 
 /// Codex args 정본(ref-codex §1.1): 정확히 `["app-server", "--stdio"]`.
 const CODEX_REQUIRED_ARGS: &[&str] = &["app-server", "--stdio"];
+/// Claude ACP auth method 노출 축소용 고정 플래그(09 §9): 자유 argv가 아니라 정확 검증 대상이다.
+const CLAUDE_HIDE_AUTH_ARG: &str = "--hide-claude-auth";
 
 /// 공통 허용 env key(non-secret). OQ-38 확정값.
 const COMMON_ALLOWED_ENV_KEYS: &[&str] = &["RUST_LOG", "RUST_BACKTRACE", "NO_COLOR"];
 /// Codex 전용 추가 허용 env key.
 const CODEX_EXTRA_ENV_KEYS: &[&str] = &["CODEX_DISABLE_UPDATE_CHECK"];
 /// Claude 전용 추가 허용 env key.
-const CLAUDE_EXTRA_ENV_KEYS: &[&str] =
-    &["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_EXECUTABLE", "NODE_OPTIONS"];
+const CLAUDE_EXTRA_ENV_KEYS: &[&str] = &[
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_EXECUTABLE",
+    "NODE_OPTIONS",
+];
 
 /// provider별 허용 env key 집합을 합쳐 돌려준다.
 fn allowed_env_keys(provider: &str) -> Option<Vec<&'static str>> {
@@ -91,8 +96,7 @@ where
     };
 
     // 1) provider enum 검증 + 허용 env key 집합 확정.
-    let allowed = allowed_env_keys(provider)
-        .ok_or_else(|| format!("unknown provider: {provider}"))?;
+    let allowed = allowed_env_keys(provider).ok_or_else(|| "unknown provider".to_string())?;
 
     if distro.trim().is_empty() {
         return Err("distro is required".into());
@@ -108,22 +112,18 @@ where
     match provider.as_str() {
         "codex" => {
             if args.as_slice() != CODEX_REQUIRED_ARGS {
-                return Err(format!(
-                    "codex args must be exactly {CODEX_REQUIRED_ARGS:?}, got {args:?}"
-                ));
+                return Err("codex args must match the app-server stdio contract".into());
             }
         }
         "claude" => {
-            // 1차 argv 검증: args.length == 1 && args[0] == 신뢰 adapterEntryPath(절대경로).
-            if args.len() != 1 {
-                return Err(format!(
-                    "claude args must be exactly [adapterEntryPath], got {args:?}"
-                ));
+            // 1차 argv 검증: 신뢰 adapterEntryPath + 고정 auth 숨김 플래그만 허용한다.
+            if args.len() != 2 || args[1] != CLAUDE_HIDE_AUTH_ARG {
+                return Err("claude args must match the trusted adapter entry contract".into());
             }
             let entry = &args[0];
             let trusted_entry = resolve_entry(provider, distro)?;
             if !entry.starts_with('/') || entry != &trusted_entry {
-                return Err(format!("claude adapterEntryPath not trusted: {entry}"));
+                return Err("claude adapterEntryPath not trusted".into());
             }
         }
         _ => unreachable!("provider already validated"),
@@ -132,7 +132,7 @@ where
     // 3b) shell 메타문자 방어(정확 검증 통과 후에도 잔여 방어).
     for a in args {
         if has_shell_metachar(a) {
-            return Err(format!("argument contains shell metacharacter: {a}"));
+            return Err("argument contains shell metacharacter".into());
         }
     }
 
@@ -148,7 +148,9 @@ where
             return Err(format!("env key '{k}' violates ^[A-Za-z_][A-Za-z0-9_]*$"));
         }
         if !allowed.contains(&k.as_str()) {
-            return Err(format!("env key '{k}' not allowed for provider '{provider}'"));
+            return Err(format!(
+                "env key '{k}' not allowed for provider '{provider}'"
+            ));
         }
         if has_shell_metachar(v) {
             return Err(format!("env value for '{k}' contains shell metacharacter"));

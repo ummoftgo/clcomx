@@ -58,6 +58,7 @@ describe("session-launch-controller", () => {
         title: "Saved title",
         lastOpenedAt: "2026-04-06T12:00:00.000Z",
         resumeToken: "resume-token",
+        runtimeKind: "direct-codex",
       },
     );
 
@@ -68,6 +69,7 @@ describe("session-launch-controller", () => {
       workDir: "/tmp/reopened",
       title: "Saved title",
       resumeToken: "resume-token",
+      runtimeKind: "direct-codex",
     });
     expect(hideSessionLauncher).toHaveBeenCalledTimes(1);
     expect(persistWorkspace).toHaveBeenCalledTimes(1);

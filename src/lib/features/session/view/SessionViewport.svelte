@@ -15,6 +15,9 @@
     onSessionAuxStateChange,
     onSessionExit,
     onSessionResumeFallback,
+    onSessionAgentRuntimeMetadataChange,
+    onSessionAgentRuntimeStatusChange,
+    onSessionTitleChange,
     onSessionFallbackToPty,
   }: SessionViewportProps = $props();
 </script>
@@ -47,6 +50,9 @@
           onSessionAuxStateChange={onSessionAuxStateChange}
           onSessionExit={onSessionExit}
           onSessionResumeFallback={onSessionResumeFallback}
+          onSessionAgentRuntimeMetadataChange={onSessionAgentRuntimeMetadataChange}
+          onSessionAgentRuntimeStatusChange={onSessionAgentRuntimeStatusChange}
+          onSessionTitleChange={onSessionTitleChange}
           onSessionFallbackToPty={onSessionFallbackToPty}
         />
       {/each}

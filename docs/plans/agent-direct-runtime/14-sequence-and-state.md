@@ -5,7 +5,7 @@
 > **권위 분리 (반드시 준수)**: 이 문서는 **흐름을 시각화만** 한다. 새 타입을 정의하지 않으며 규칙을 새로 만들지 않는다.
 > - 모든 타입(`AgentEvent`, `ProviderRef`, `ToolCallUpdate`, `Approval*`, `AgentSessionStatus`, `JsonRpcMessage`, `AgentRuntimeStartParams`, `AgentRuntimeEvent`, `AgentRuntimeSnapshot` 등)의 정의는 [`15-data-contracts.md`](15-data-contracts.md)가 권위다. 본 문서는 그 타입을 **이름으로만** 사용한다.
 > - 상태 전이·upsert/reconcile·approval 생명주기·process exit 정리 **규칙**은 [`04-normalized-agent-model.md`](04-normalized-agent-model.md)가 권위다. 본 문서의 다이어그램은 그 규칙을 그림으로 옮긴 것이며, 충돌 시 04가 이긴다.
-> - wire 메서드명/필드명은 protocol ref가 권위다: Codex [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) (`rust-v0.142.0`), ACP [`ref-acp-protocol.md`](ref-acp-protocol.md) (`protocolVersion = 1`; schema artifact는 T0.0/OQ-41에서 확정, `schema-v1.16.0`은 baseline 후보), Claude 구현체 [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md) (`@agentclientprotocol/claude-agent-acp@0.51.0`).
+> - wire 메서드명/필드명은 protocol ref가 권위다: Codex [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) (`rust-v0.142.0`), ACP [`ref-acp-protocol.md`](ref-acp-protocol.md) (`protocolVersion = 1`; 현 구현 기준은 SDK `0.29.0` package schema/types + 부분 wire mirror, `schema-v1.16.0`은 baseline 후보), Claude 구현체 [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md) (`@agentclientprotocol/claude-agent-acp@0.51.0`).
 > - 코드 현실(actor 매핑·실제 파일/심볼)은 [`research/codebase-backend.md`](research/codebase-backend.md), [`research/codebase-frontend.md`](research/codebase-frontend.md)가 권위다.
 >
 > 미확정 항목은 **unverified** 또는 **결정 필요**로 표시하고 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 연결한다.
@@ -21,10 +21,10 @@
 | 다이어그램 행위자 | 의미 | 실제 코드 레이어 / 권장 위치 |
 |---|---|---|
 | `UI` | Composer + Transcript view (Svelte view 레이어). 사용자 입력·렌더링만 담당, 로직 없음 | `src/lib/features/agent-runtime/view/AgentComposer.svelte`, `AgentTranscriptSurface.svelte` (frontend §8) |
-| `Store` | Session Store. transcript/tool card/approval/status 보존, single source of truth | `src/lib/features/agent-runtime/state/agent-runtime-state.svelte.ts` (`createAgentRuntimeState`) + `live-session-store.svelte.ts` (frontend §1.4, §8) |
-| `Router` | Event Router. `AgentEvent`를 store/pending table로 분배, 순서·라우팅 키 적용 | `src/lib/features/agent-runtime/controller/agent-runtime-controller.ts` + `service/transcript-reducer.ts` (frontend §8) |
+| `Store` | Session Store. transcript/tool card/approval/status 보존, single source of truth | `src/lib/features/agent-runtime/state/agent-runtime-store.svelte.ts` (`createAgentRuntimeStore`) + `live-session-store.svelte.ts` (frontend §1.4, §8) |
+| `Router` | Event Router. `AgentEvent`를 store/pending table로 분배, 순서·라우팅 키 적용 | `src/lib/features/agent-runtime/controller/agent-runtime-controller.ts` + `controller/agent-event-reducer.ts` (frontend §8) |
 | `Port` | Agent Runtime Port. UI/store가 보는 유일한 추상(메서드 7종) | `src/lib/features/agent-runtime/contracts/runtime-port.ts` (`AgentRuntimePort`, 15 §6) |
-| `Adapter` | Codex/Claude Adapter. provider wire ↔ `AgentEvent`/`JsonRpcMessage` 변환 | `src/lib/features/agent-runtime/service/` (Codex/Claude adapter). 매핑은 [`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)/[`06-claude-acp-adapter.md`](06-claude-acp-adapter.md) |
+| `Adapter` | Codex/Claude Adapter. provider wire ↔ `AgentEvent`/`JsonRpcMessage` 변환 | `src/lib/features/agent-runtime/adapters/{codex,claude-acp}/`. 매핑은 [`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)/[`06-claude-acp-adapter.md`](06-claude-acp-adapter.md) |
 | `Transport` | Tauri Process Runtime (Rust). subprocess lifecycle·stdio framing·stderr·bounded queue | `commands/agent_runtime.rs` + `features/agent_runtime/` (`AgentRuntimeState`) (backend §3.2, 15 §8) |
 | `Provider` | provider process (Codex `codex app-server` / Claude `claude-agent-acp`) | WSL subprocess (backend §6) |
 | `User` | 사람 (approval 응답 등 명시적 상호작용에만 등장) | — |
@@ -37,9 +37,9 @@
 
 흐름: `startSession` → process spawn → `initialize`/`initialized` → `thread/start` → `thread/started`. 세션 상태는 `starting` → (`thread/start` 응답) → `ready`로 전이한다(04 §2.1 규칙 1).
 
-wire 근거: ref-codex §2 (`initialize`/`initialized`), §3.1 (`thread/start`), §5.1 (`thread/started`), §9 (대표 시퀀스). 단 ref-codex §10은 `initialize`→`initialized` 핸드셰이크가 **필수인지 unverified**라고 명시한다 → [13 결정 필요](13-risks-open-questions.md).
+wire 근거: ref-codex §2 (`initialize`/`initialized`), §3.1 (`thread/start`), §5.1 (`thread/started`), §9 (대표 시퀀스). ref-codex §10의 strict 필수 여부는 원 조사 당시 unverified였지만, H4/OQ-07 결론에 따라 v1 adapter는 방어적 기본값으로 `initialize` 응답 후 `initialized` notification을 항상 보낸다([13](13-risks-open-questions.md)).
 
-> **command resolve 경계 (S1 정본, 15 §8.1·07 §8.1)**: renderer/adapter는 실행 파일 `command`를 **넘기지 않는다**. `AgentRuntimeStartParams`에서 `command` 필드는 제거됐고(15 §8.1), adapter는 `provider`/`distro`/`workDir`/`args`(검증 대상)/`env`(non-secret)만 넘긴다. backend가 provider로 신뢰 절대경로를 resolve한다(Codex → resolve된 codex 절대경로). 동명 바이너리(`/tmp/codex`) 우회는 불가하다. resolve 주체·캐시 무효화 방식은 [13 결정 필요](13-risks-open-questions.md).
+> **command resolve 경계 (S1 정본, 15 §8.1·07 §8.1)**: renderer/adapter는 실행 파일 `command`를 **넘기지 않는다**. `AgentRuntimeStartParams`에서 `command` 필드는 제거됐고(15 §8.1), adapter는 `provider`/`distro`/`workDir`/`args`(검증 대상)/`env`(non-secret)만 넘긴다. backend가 provider로 신뢰 절대경로를 resolve한다(Codex → resolve된 codex 절대경로). 동명 바이너리(`/tmp/codex`) 우회는 불가하다. resolve owner/cache는 OQ-36 확정값을 따른다: `agent_runtime/resolver.rs`, `(provider,distro)` cache key, TTL 없는 process-lifetime cache, `clear()` 명시 무효화.
 
 ```mermaid
 sequenceDiagram
@@ -90,7 +90,7 @@ sequenceDiagram
 
 wire 근거: ref-acp §3.1 (`initialize` + capability 구조), §3.3 (`session/new`), §13.1 (매핑). 주의: ACP에는 `initialized` notification이 **없다**(Codex와 다름) — `initialize` 응답 직후 바로 `session/new` 가능.
 
-> **command resolve 경계 (S1 정본, 15 §8.1·07 §8.1)**: Claude도 `command`를 renderer가 넘기지 않는다. backend가 신뢰 `node` 절대경로를 resolve하고, `args`는 `args.length==1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(claude-agent-acp `dist/index.js`) 절대경로여야 한다. `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록 절대경로)한다. resolve 주체·`adapterEntryPath` 탐색 방식은 [13 결정 필요](13-risks-open-questions.md).
+> **command resolve 경계 (S1 정본, 15 §8.1·07 §8.1)**: Claude도 `command`를 renderer가 넘기지 않는다. backend가 신뢰 `node` 절대경로를 resolve하고, `args`는 `args.length==2` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`(claude-agent-acp `dist/index.js`) 절대경로, `args[1]`이 고정 `--hide-claude-auth`여야 한다. `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록 절대경로)한다. resolve owner/cache와 pinned adapter entry 탐색은 OQ-36 확정값을 따른다: `agent_runtime/resolver.rs`, `(provider,distro)` cache key, TTL 없는 process-lifetime cache, `clear()` 명시 무효화, `node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js` 레이아웃만 신뢰.
 
 ```mermaid
 sequenceDiagram
@@ -106,8 +106,8 @@ sequenceDiagram
     Note over Store: status = starting (15 §2)
     UI->>Port: startSession(StartSessionParams)
     Port->>Adapter: startSession(params)
-    Adapter->>Transport: agentRuntimeStart({transportKind:"jsonrpc-stdio", provider:"claude", distro, workDir, args:[adapterEntryPath], env})
-    Note right of Transport: command(node)는 renderer가 안 넘김 — backend가 신뢰 node 절대경로 resolve(S1)<br/>args.length==1 && args[0]==backend가 resolve/등록한 adapterEntryPath(claude-agent-acp dist/index.js) 절대경로 (15 §8.1, 07 §8.1)
+    Adapter->>Transport: agentRuntimeStart({transportKind:"jsonrpc-stdio", provider:"claude", distro, workDir, args:[adapterEntryPath, "--hide-claude-auth"], env})
+    Note right of Transport: command(node)는 renderer가 안 넘김 — backend가 신뢰 node 절대경로 resolve(S1)<br/>args.length==2 && args[0]==backend가 resolve/등록한 adapterEntryPath(claude-agent-acp dist/index.js) 절대경로 && args[1]=="--hide-claude-auth" (15 §8.1, 07 §8.1)
     Transport->>Provider: spawn resolve된 node 절대경로 <adapterEntryPath> (WSL stdio)
     Transport-->>Adapter: RuntimeId
 
@@ -115,7 +115,7 @@ sequenceDiagram
     Transport->>Provider: initialize (NDJSON, stdout purity, ref-acp §1)
     Provider-->>Transport: {jsonrpc:"2.0", id:1, result:{protocolVersion:1, agentCapabilities:{loadSession, sessionCapabilities:{resume}}, authMethods}}
     Transport-->>Adapter: agent-runtime-message
-    Note over Adapter: protocolVersion==1 확인, authMethods 비었으면 authenticate 생략 (ref-acp §3.1/§3.2)
+    Note over Adapter: protocolVersion==1 확인, authMethods는 파싱만 수행(v1 authenticate 자동 삽입 없음)
 
     Adapter->>Transport: agentRuntimeSend(rt, {jsonrpc:"2.0", id:2, method:"session/new", params:{cwd, mcpServers, additionalDirectories}})
     Transport->>Provider: session/new (cwd absolute MUST, ref-acp §3.3)
@@ -129,7 +129,7 @@ sequenceDiagram
 ```
 
 > **capability 비대칭 주의**(ref-acp §3.5): `loadSession`은 top-level `AgentCapabilities.loadSession`, `resume`는 `AgentCapabilities.sessionCapabilities.resume`에 있다. adapter는 §7 resume/load 흐름에서 각 메서드마다 올바른 위치를 확인해야 한다. 미지원 capability는 전부 UNSUPPORTED로 취급(MUST, ref-acp §3.1).
-> auth가 필요한 경우(`authMethods` 비어있지 않음)는 `session/new` 전에 `authenticate{methodId}`를 끼워야 한다(ref-acp §3.2). v1 정책·자동 처리 여부는 [13 결정 필요](13-risks-open-questions.md).
+> **v1 auth 정책(06 §3.3, 13 OQ-43 해소)**: CLCOMX는 `DEFAULT_CLIENT_CAPABILITIES`에서 `auth.terminal=false`, `auth._meta.gateway=false`, `_meta["terminal-auth"]=false`를 전송하므로 terminal/gateway auth를 광고하지 않는다. adapter는 initialize 응답의 `authMethods`를 파싱하지만 v1 start sequence에서 `authenticate` RPC를 자동 삽입하지 않고, 곧바로 `session/new`를 시도한다. 인증은 WSL 측 기존 `claude login`/config 또는 명시적으로 설계된 후속 secret 전달 경로에 의존한다. 자격 부족으로 `session/new`가 `-32000` 등으로 실패하면 `startSession` 실패(`authentication required`)와 fallback 선택 UI로 표면화한다. gateway `authenticate`나 terminal login passthrough를 켜는 것은 secret 전달/redaction/audit UX를 먼저 설계해야 하는 후속 scope다.
 
 ---
 
@@ -394,6 +394,8 @@ sequenceDiagram
 
 순서 정본: 04 §5(exit/shutdown 시 모든 pending을 정확히 한 번, 멱등 종료) + 07 §5.2(backend graceful shutdown: stdin EOF → grace poll → kill → child wait reap 후 반환) + 07 §5.3(child wait thread가 reap 후 `agent-runtime-exit` emit).
 
+Claude ACP v1은 OQ-44 결론에 따라 **process-per-session** 모델이다. 따라서 shutdown 시 `session/close` wire를 별도로 보내지 않고, pending 정리 후 runtime process shutdown을 권위 경계로 삼는다. 한 process에서 여러 ACP session을 multiplex하는 구조를 도입하면 이 시퀀스에 `session/close`/delete/list/fork capability 처리를 추가해야 한다.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -519,9 +521,9 @@ sequenceDiagram
 
 ## 8. Direct runtime 실패 → PTY fallback 선택
 
-흐름: direct runtime 시작/초기화 실패(process spawn 실패, `initialize` 실패, capability 미지원 등) → 사용자에게 fallback 제안 → 동일 세션을 legacy PTY runtime으로 재시작. fallback은 host 컴포넌트 분기(옵션 B)로 구현하며, legacy PTY는 보존된다(03 §설계 원칙, frontend §9 옵션 B).
+흐름: fresh direct runtime 시작/초기화 실패(process spawn/preflight/allowlist 실패, `initialize` 실패, session 생성 실패 등으로 `startSession`이 reject) → 사용자에게 fallback 선택지 표시 → 사용자가 명시적으로 선택하면 실패한 direct controller를 shutdown/정리한 뒤 legacy PTY 새 세션으로 전환한다. fallback은 host 컴포넌트 분기(옵션 B)로 구현하며, legacy PTY는 보존된다(03 §설계 원칙, frontend §9 옵션 B).
 
-근거: frontend §9 (옵션 B host 분기, `SessionShell.svelte`), 15 §7.1 (`SessionRuntimeKind` "pty"|"direct-codex"|"direct-claude"), 08 §"legacy PTY fallback session". 어떤 실패가 fallback을 trigger하는지의 정확한 기준은 [13 결정 필요](13-risks-open-questions.md).
+근거: frontend §9 (옵션 B host 분기, `SessionShell.svelte`), 15 §7.1 (`SessionRuntimeKind` "pty"|"direct-codex"|"direct-claude"), 08 §"legacy PTY fallback session", 10 §4.6. v1 구현의 trigger 기준은 `AgentTranscriptSurface.startRuntime()`의 fresh start 실패 catch와 `RuntimeFallbackController.markFailed()`다. cold restore의 provider `resumeSession`/load 실패는 먼저 복원 불가 notice + fresh direct start로 낮추며, 그 fresh start까지 실패할 때만 fallback panel을 표시한다(10 §4.4/§4.6, 11 FE-24c).
 
 ```mermaid
 sequenceDiagram
@@ -537,26 +539,27 @@ sequenceDiagram
     UI->>Port: startSession(...) (runtimeKind = "direct-codex" | "direct-claude")
     Port->>Adapter: startSession
     Adapter->>Transport: agentRuntimeStart(...)
-    alt 실패 경로 (택1)
-        Transport--xAdapter: spawn 실패 / agent-runtime-exit(code≠0) / agent-runtime-error(recoverable:false)
+    alt fresh start 실패 경로 (택1)
+        Transport--xAdapter: spawn/preflight/allowlist 실패
     else
         Adapter--xAdapter: initialize/session 생성 타임아웃 또는 protocol 에러
     end
     Adapter->>Port: throw / SessionStartResult 실패
     Port->>Store: status = failed (04 §2.1 규칙 6), error notice
-    Store-->>UI: render 실패 + "터미널 모드로 전환" 제안 (i18n: agentRuntime.fallback.*)
+    Store-->>UI: render 실패 + fallback panel 표시 (i18n: agentRuntime.fallback.*)
 
     User->>UI: PTY fallback 수락
-    Note over UI,Store: runtimeKind = "pty"로 전환 (15 §7.1). SessionShell.svelte 분기 재평가 (frontend §9 옵션 B)
-    UI->>Store: setSessionRuntimeKind(handle, "pty")
+    UI->>Port: failed direct controller shutdown/registry cleanup
+    Note over UI,Store: legacy PTY 새 세션 생성. 새 세션 runtimeKind = "pty"(15 §7.1)
+    UI->>Store: onFallbackToPty({sessionId, agentId, distro, workDir, resumeToken?})
     Store-->>UI: SessionShell {#if useDirectRuntime}=false → <Terminal/> 렌더
     UI->>PTY: spawnPty(cols, rows, agentId, distro, workDir, resumeToken?) (pty_spawn, frontend §4.2)
     PTY-->>UI: pty-output / pty-exit (terminal_output_delta surface)
     Note over Store: direct runtime 흐름은 legacy terminal_output_delta로 격리 (04 §3.5)
 ```
 
-> fallback은 **runtime kind 전환**이지 viewMode 전환이 아니다(frontend §5, §9): `SessionViewMode`(`terminal`/`editor`)는 한 host 내부 토글, `SessionRuntimeKind`는 host 종류 자체다. fallback 시 `SessionShell.svelte`의 `{#if useDirectRuntime}` 분기가 재평가되어 `Terminal.svelte`(PTY host)가 mount된다.
-> 자동 fallback vs 사용자 확인, 어떤 실패 코드가 fallback 대상인지(예: `usageLimitExceeded`는 fallback 아님, spawn 실패는 fallback)는 미확정 → [13 결정 필요](13-risks-open-questions.md).
+> fallback은 **runtime kind 전환**이지 viewMode 전환이 아니다(frontend §5, §9): `SessionViewMode`(`terminal`/`editor`)는 한 host 내부 토글, `SessionRuntimeKind`는 host 종류 자체다. fallback 시 legacy PTY 새 세션이 `runtimeKind:"pty"`로 열리고 `SessionShell.svelte`의 `{#if useDirectRuntime}` 분기가 `Terminal.svelte`(PTY host)를 mount한다.
+> v1은 **자동 fallback을 금지**한다. start 실패는 fallback panel만 표시하고, PTY 전환은 사용자가 "터미널로 열기"를 선택해야 발생한다. `usageLimitExceeded` 같은 provider runtime error는 Codex adapter에서 recoverable `error` event로 매핑되며, fresh start 실패 trigger가 아니므로 PTY fallback panel을 자동 표시하지 않는다. process exit/`recoverable:false` 같은 post-start fatal event는 현재 실패/종료 notice 경로로 남기며, PTY fallback panel trigger는 fresh start 실패와 fresh start로 낮춘 cold restore 실패에 한정한다. transport framing error는 optional `AgentRuntimeErrorCode` seed(`framing_invalid_json`/`framing_line_too_large`/`framing_broken`)를 보존하지만, post-start recovery UX와 provider별 stable failure-code taxonomy는 [13 OQ-60](13-risks-open-questions.md)에 남긴다.
 
 ---
 

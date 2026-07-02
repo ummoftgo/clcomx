@@ -145,6 +145,31 @@ export async function getTerminalOutputSnapshot(
   });
 }
 
+export async function waitForTerminalOutputSnapshot(
+  driver: WebDriver,
+  sessionId: string,
+  predicate: (snapshot: TerminalOutputSnapshot) => boolean,
+  timeoutMs = 10_000,
+): Promise<TerminalOutputSnapshot> {
+  let matchedSnapshot: TerminalOutputSnapshot | null = null;
+
+  await driver.wait(async () => {
+    const snapshot = await getTerminalOutputSnapshot(driver, sessionId);
+    if (!snapshot || !predicate(snapshot)) {
+      return false;
+    }
+
+    matchedSnapshot = snapshot;
+    return true;
+  }, timeoutMs);
+
+  if (!matchedSnapshot) {
+    throw new Error(`Timed out waiting for terminal output snapshot: ${sessionId}`);
+  }
+
+  return matchedSnapshot;
+}
+
 export async function getAuxTerminalOutputSnapshot(
   driver: WebDriver,
   sessionId: string,

@@ -1,5 +1,5 @@
 /**
- * Codex fixture replay 테스트(11 §1, FR-CX-1..4). NDJSON {direction,message} → AgentEvent[].
+ * Codex fixture replay 테스트(11 §1, FR-CX-0..4). NDJSON {direction,message} → AgentEvent[].
  * mapper를 AdapterUnderTest로 감싸 replay하고 *.expected.json과 비교한다.
  * fixture 본문은 Vite `?raw` glob import로 로드한다(node fs 비의존).
  */
@@ -50,7 +50,7 @@ for (const [path, expected] of Object.entries(expectedFiles)) {
   if (cur) cur.expected = expected;
 }
 
-describe("codex fixture replay (FR-CX-1..4)", () => {
+describe("codex fixture replay (FR-CX-0..4)", () => {
   for (const [name, { jsonl, expected }] of fixtures) {
     it(`${name} → expected AgentEvent[]`, () => {
       const events = replayFixture(makeMapperAdapter(), jsonl);

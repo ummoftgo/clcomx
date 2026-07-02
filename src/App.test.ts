@@ -5,6 +5,7 @@ import { setBootstrap } from "./lib/bootstrap";
 import { initializeI18n } from "./lib/i18n";
 import { replaceLiveSessions, getSessions } from "./lib/features/session/state/live-session-store.svelte";
 import { getCurrentWindowName, setCurrentWindowName } from "./lib/features/workspace/session-store.svelte";
+import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
 import { initializeSettings } from "./lib/stores/settings.svelte";
 import { DEFAULT_SETTINGS, type Session } from "./lib/types";
 import { isWindowReady, moveSessionToWindow, openEmptyWindow } from "./lib/workspace";
@@ -356,6 +357,30 @@ describe("App", () => {
     });
   });
 
+  it("FE-17: skips global tab shortcuts when an assistant/aux surface already consumed the keydown", async () => {
+    render(App);
+
+    await fireEvent.keyDown(window, { key: "t", ctrlKey: true });
+    expect(await screen.findByTestId("session-launcher-stub")).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByTestId("session-launcher-cancel"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("session-launcher-stub")).toBeNull();
+    });
+
+    const event = new KeyboardEvent("keydown", {
+      key: "t",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    event.preventDefault();
+    window.dispatchEvent(event);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByTestId("session-launcher-stub")).toBeNull();
+  });
+
   it("opens and closes the settings modal from the tab bar trigger", async () => {
     render(App);
 
@@ -493,6 +518,47 @@ describe("App", () => {
     });
     expect(openEmptyWindow).not.toHaveBeenCalled();
     expect(moveSessionToWindow).not.toHaveBeenCalled();
+  });
+
+  it("passes a legacy resume token through direct fallback to the PTY session", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByTestId("session-viewport-fallback-pty"));
+
+    const lifecycleMock = vi.mocked(createSessionLifecycleController);
+    const lifecycle = lifecycleMock.mock.results[lifecycleMock.mock.results.length - 1]?.value;
+    expect(lifecycle).toBeDefined();
+    await waitFor(() => {
+      expect(lifecycle.createSession).toHaveBeenCalledWith(
+        "claude",
+        "Ubuntu",
+        "/workspace/demo",
+        "demo",
+        "legacy-resume-1",
+        undefined,
+      );
+    });
+  });
+
+  it("applies direct runtime provider title updates to the live session", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByTestId("session-viewport-title-change"));
+
+    await waitFor(() => {
+      expect(getSessions()[0]?.title).toBe("Provider title");
+    });
+  });
+
+  it("falls back to the workdir name when a direct runtime clears the provider title", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByTestId("session-viewport-title-change"));
+    await fireEvent.click(screen.getByTestId("session-viewport-title-clear"));
+
+    await waitFor(() => {
+      expect(getSessions()[0]?.title).toBe("demo");
+    });
   });
 
   it("shows dirty app close dialog from the window listener and confirms app close", async () => {

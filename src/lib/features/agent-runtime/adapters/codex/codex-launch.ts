@@ -7,6 +7,7 @@
  */
 
 import type { AgentRuntimeStartParams } from "../../service/transport";
+import { assertNonSecretLaunchEnv } from "../launch-env";
 
 /** buildCodexStartParams 입력. workDir는 WSL absolute path(backend canonicalize). */
 export interface CodexLaunchInput {
@@ -26,6 +27,7 @@ export interface CodexLaunchInput {
  * @param input distro/workDir/extraEnv.
  */
 export function buildCodexStartParams(input: CodexLaunchInput): AgentRuntimeStartParams {
+  assertNonSecretLaunchEnv("codex", input.extraEnv);
   return {
     transportKind: "jsonrpc-stdio",
     provider: "codex",

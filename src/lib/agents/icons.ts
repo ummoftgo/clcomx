@@ -5,13 +5,13 @@ const BUILTIN_AGENT_ICONS: Record<string, AgentIconConfig> = {
     type: "builtin",
     fallbackText: "Cl",
     sourceUrl: "https://claude.com/product/overview",
-    licenseNote: "Anthropic product page reference. Replace with official asset files when available.",
+    licenseNote: "Product page reference only; CLCOMX bundles no Claude logo asset.",
   },
   codex: {
     type: "builtin",
     fallbackText: "Cx",
     sourceUrl: "https://openai.com/brand/",
-    licenseNote: "OpenAI brand page reference. Replace with official asset files when available.",
+    licenseNote: "Brand page reference only; CLCOMX bundles no Codex logo asset.",
   },
 };
 
@@ -21,4 +21,3 @@ export function getBuiltinAgentIcon(agentId: AgentId): AgentIconConfig {
     fallbackText: agentId.slice(0, 2).toUpperCase(),
   };
 }
-

@@ -5,19 +5,21 @@
   - execute → CommandOutputCard(stdout/stderr embed)
   - edit/delete/move → FileDiffCard(diff)
   - read/search/fetch/think/other → 일반 content(text/json) 렌더
-  헤더를 클릭하면 collapsed↔expanded 토글한다. 단, 더 보여줄 내용(content/locations/rawOutput)이
+  헤더를 클릭하면 collapsed↔expanded 토글한다. 단, 더 보여줄 내용(content/locations/rawInput/rawOutput)이
   없으면 expand affordance를 숨긴다(08 §4.1). status(pending/in_progress/...)는 시각적으로 구분한다.
   inline approval 카드는 호출부가 children 슬롯으로 하단에 끼운다(08 §4.4). 문자열은 i18n 키만 쓴다.
 -->
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { t } from "../../../../i18n";
-  import { TEST_IDS, agentTranscriptItemTestId } from "../../../../testids";
+  import { TEST_IDS, agentToolLocationTestId, agentTranscriptItemTestId } from "../../../../testids";
   import type {
     AgentContent,
+    FileLocation,
     FileChangeSummary,
     ToolCallUpdate,
   } from "../../contracts/normalized";
+  import { redactDisplayText, stringifyRedactedRaw } from "../../service/display-redaction";
   import CommandOutputCard from "./CommandOutputCard.svelte";
   import FileDiffCard from "./FileDiffCard.svelte";
 
@@ -30,11 +32,13 @@
     expanded?: boolean;
     /** file_change_updated에서 합쳐진 변경 요약(있으면 diff 우선 표시, 08 §4.2). */
     fileChange?: FileChangeSummary;
+    /** location row 클릭 시 상위 editor/file-open 경계로 전달한다(08 §4.3). */
+    onOpenLocation?: (location: FileLocation) => void;
     /** 하단 inline approval 슬롯(severity normal일 때 호출부가 끼움). */
     approval?: Snippet;
   }
 
-  let { id, update, expanded = false, fileChange, approval }: Props = $props();
+  let { id, update, expanded = false, fileChange, onOpenLocation, approval }: Props = $props();
 
   // 사용자 토글 상태(초기값은 prop expanded). store 모델과 별개의 view-local 토글이다.
   // svelte-ignore state_referenced_locally
@@ -47,16 +51,17 @@
 
   // collapsed summary 보조 텍스트: 첫 location path 또는 title.
   const firstPath = $derived(update.locations?.[0]?.path ?? fileChange?.path);
-  const summary = $derived(
+  const rawSummary = $derived(
     update.title ?? firstPath ?? $t("agentRuntime.toolCard.noLocation"),
   );
+  const summary = $derived(redactDisplayText(rawSummary));
 
   // content에서 terminal block(execute 출력) 추출.
-  const terminal = $derived.by<{ command?: string; output: string } | null>(() => {
+  const terminal = $derived.by<{ command?: string; output: string; stderr?: string } | null>(() => {
     const term = update.content?.find(
       (c): c is Extract<AgentContent, { type: "terminal" }> => c.type === "terminal",
     );
-    return term ? { command: term.command, output: term.output } : null;
+    return term ? { command: term.command, output: term.output, stderr: term.stderr } : null;
   });
 
   // content에서 diff block 추출(execute가 아닌 edit류).
@@ -81,15 +86,29 @@
       fileChange !== undefined ||
       generalContent.length > 0 ||
       (update.locations?.length ?? 0) > 0 ||
+      update.rawInput !== undefined ||
       update.rawOutput !== undefined,
   );
 
   /** 일반 content 한 블록을 표시 문자열로 변환. */
   function contentText(c: AgentContent): string {
-    if (c.type === "text") return c.text;
-    if (c.type === "resource") return c.text ?? c.uri;
-    if (c.type === "json") return JSON.stringify(c.value, null, 2);
+    if (c.type === "text") return redactDisplayText(c.text);
+    if (c.type === "resource") return redactDisplayText(c.text ?? c.uri);
+    if (c.type === "json") return stringifyRedactedRaw(c.value);
     return $t("agentRuntime.fallback.unsupportedContent");
+  }
+
+  /** provider file location을 경로:line:column 형태로 표시한다. */
+  function formatLocation(location: FileLocation): string {
+    const parts: Array<string | number> = [location.path];
+    if (location.line != null) parts.push(location.line);
+    if (location.column != null) parts.push(location.column);
+    return redactDisplayText(parts.join(":"));
+  }
+
+  /** raw location은 표시 redaction과 분리해 상위 open handler에 그대로 넘긴다. */
+  function openLocation(location: FileLocation): void {
+    onOpenLocation?.(location);
   }
 </script>
 
@@ -120,7 +139,7 @@
   {#if open && hasMore}
     <div class="tool-body">
       {#if terminal}
-        <CommandOutputCard command={terminal.command} stdout={terminal.output} />
+        <CommandOutputCard command={terminal.command} stdout={terminal.output} stderr={terminal.stderr} />
       {/if}
       {#if fileChange}
         <FileDiffCard
@@ -135,6 +154,38 @@
       {#each generalContent as c, i (i)}
         <pre class="tool-content">{contentText(c)}</pre>
       {/each}
+      {#if (update.locations?.length ?? 0) > 0}
+        <ol class="tool-locations" aria-label={$t("agentRuntime.toolCard.locations")}>
+          {#each update.locations ?? [] as location, i (`${location.path}:${location.line ?? ""}:${location.column ?? ""}:${i}`)}
+            <li>
+              {#if onOpenLocation}
+                <button
+                  type="button"
+                  class="tool-location-link"
+                  data-testid={agentToolLocationTestId(id, i)}
+                  onclick={() => openLocation(location)}
+                >
+                  {formatLocation(location)}
+                </button>
+              {:else}
+                {formatLocation(location)}
+              {/if}
+            </li>
+          {/each}
+        </ol>
+      {/if}
+      {#if update.rawInput !== undefined}
+        <div class="tool-raw-block">
+          <div class="tool-raw-label">{$t("agentRuntime.toolCard.rawInput")}</div>
+          <pre class="tool-content tool-raw">{stringifyRedactedRaw(update.rawInput)}</pre>
+        </div>
+      {/if}
+      {#if update.rawOutput !== undefined}
+        <div class="tool-raw-block">
+          <div class="tool-raw-label">{$t("agentRuntime.toolCard.rawOutput")}</div>
+          <pre class="tool-content tool-raw">{stringifyRedactedRaw(update.rawOutput)}</pre>
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -222,6 +273,43 @@
     line-height: 1.4;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .tool-locations {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    margin: 0;
+    padding-left: 1.1rem;
+    color: var(--ui-text-secondary, inherit);
+    font-family: var(--ui-font-mono-stack, monospace);
+    font-size: var(--ui-font-size-sm);
+    line-height: 1.35;
+    word-break: break-word;
+  }
+  .tool-location-link {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--ui-accent, #4a90d9);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .tool-location-link:hover,
+  .tool-location-link:focus-visible {
+    text-decoration: underline;
+  }
+  .tool-raw-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .tool-raw-label {
+    font-size: var(--ui-font-size-xs);
+    opacity: 0.65;
+  }
+  .tool-raw {
+    opacity: 0.85;
   }
   .tool-approval {
     border-top: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.2));

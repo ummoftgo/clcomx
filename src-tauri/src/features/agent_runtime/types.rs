@@ -84,7 +84,7 @@ pub enum AgentRuntimeStartParams {
         distro: String,
         /// WSL absolute path(spawn 직전 canonicalize). → "workDir".
         work_dir: String,
-        /// provider별 정확 검증 대상(codex=["app-server","--stdio"], claude=[adapterEntryPath]).
+        /// provider별 정확 검증 대상(codex=["app-server","--stdio"], claude=[adapterEntryPath,"--hide-claude-auth"]).
         args: Vec<String>,
         /// non-secret 전용 env. key allowlist로 재검증된다.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,7 +108,11 @@ pub enum AgentRuntimeStartParams {
 ///
 /// S2: variant 필드 `request_id`/`turn_id`를 `requestId`/`turnId`로 직렬화하려면 `rename_all_fields` 필요.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AgentRuntimeCancelTarget {
     /// approval 요청 취소. → "requestId".
     Request { request_id: String },
@@ -140,7 +144,11 @@ pub struct AgentRuntimeSnapshot {
 /// M-4: `Message.message`는 Rust `serde_json::Value`로 무손실 통과시키고, TS는 `JsonRpcMessage`로 받는다
 /// (`JsonRpcMessage`가 untagged라 동일 JSON이므로 비대칭이어도 wire-compat).
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AgentRuntimeEvent {
     /// raw JSON-RPC response/notification/request. → "runtimeId"; TS는 JsonRpcMessage로 수신(M-4 비대칭).
     Message {
@@ -162,6 +170,8 @@ pub enum AgentRuntimeEvent {
         runtime_id: RuntimeId,
         message: String,
         recoverable: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
     },
     /// bounded replay log saturation. → "droppedMessages".
     Backpressure {

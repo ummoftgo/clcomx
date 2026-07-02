@@ -105,6 +105,25 @@ describe("tab-rename-orchestration-controller", () => {
     });
   });
 
+  it("keeps direct runtime kind when recording renamed tab history", () => {
+    const { state, recordTabHistory, controller } = createRuntime(new Map([
+      ["session-1", createSession({ runtimeKind: "direct-claude" })],
+    ]));
+    state.renameDialogKind = "tab";
+    state.renameDialogValue = "renamed";
+    state.renameTargetSessionId = "session-1";
+
+    expect(controller.confirmRename()).toBe(true);
+    expect(recordTabHistory).toHaveBeenCalledWith(
+      "claude",
+      "Ubuntu",
+      "/workspace/demo",
+      "renamed",
+      "resume-1",
+      "direct-claude",
+    );
+  });
+
   it("falls back to the workdir basename when confirming a blank tab title", () => {
     const { state, setSessionTitle, controller } = createRuntime(new Map([
       ["session-1", createSession({ title: "Old", workDir: "/workspace/project" })],

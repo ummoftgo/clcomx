@@ -11,6 +11,11 @@ function getDefaultSessionTitle(workDir: string) {
   return workDir.split("/").pop() || workDir;
 }
 
+/** direct runtime host는 PTY lifecycle 상태를 소유하지 않는다. */
+function isDirectRuntimeKind(runtimeKind: WorkspaceTabSnapshot["runtimeKind"]) {
+  return runtimeKind?.startsWith("direct-") ?? false;
+}
+
 function createSessionCore(tab: WorkspaceTabSnapshot): SessionCore {
   return {
     id: tab.sessionId,
@@ -30,6 +35,15 @@ function createSessionCore(tab: WorkspaceTabSnapshot): SessionCore {
 function createSessionShellRuntimeState(
   tab: WorkspaceTabSnapshot,
 ): SessionShellRuntimeState {
+  if (isDirectRuntimeKind(tab.runtimeKind)) {
+    return {
+      ptyId: -1,
+      auxPtyId: -1,
+      auxVisible: false,
+      auxHeightPercent: null,
+    };
+  }
+
   return {
     ptyId: tab.ptyId ?? -1,
     auxPtyId: tab.auxPtyId ?? -1,
@@ -95,10 +109,14 @@ export function applyWorkspaceWindowSnapshot(params: {
       existing.resumeToken = tab.resumeToken ?? null;
       existing.distro = tab.distro;
       existing.workDir = tab.workDir;
-      existing.runtimeKind = tab.runtimeKind ?? "pty";
+      const nextRuntimeKind = tab.runtimeKind ?? "pty";
+      const nextIsDirectRuntime = isDirectRuntimeKind(nextRuntimeKind);
+      existing.runtimeKind = nextRuntimeKind;
       existing.agentRuntime = tab.agentRuntime;
-      existing.auxVisible = tab.auxVisible ?? false;
-      existing.auxHeightPercent = tab.auxHeightPercent ?? null;
+      existing.auxVisible = nextIsDirectRuntime ? false : (tab.auxVisible ?? false);
+      existing.auxHeightPercent = nextIsDirectRuntime
+        ? null
+        : (tab.auxHeightPercent ?? null);
       existing.viewMode = tab.viewMode ?? "terminal";
       existing.editorRootDir = tab.editorRootDir || tab.workDir;
       existing.openEditorTabs = nextOpenEditorTabs;
@@ -106,12 +124,16 @@ export function applyWorkspaceWindowSnapshot(params: {
       existing.dirtyPaths = existing.dirtyPaths.filter((wslPath) =>
         nextOpenEditorPathSet.has(wslPath),
       );
-      if (preservePtyIds && typeof tab.ptyId === "number") {
+      if (nextIsDirectRuntime) {
+        existing.ptyId = -1;
+      } else if (preservePtyIds && typeof tab.ptyId === "number") {
         existing.ptyId = tab.ptyId;
       } else if (!preservePtyIds) {
         existing.ptyId = -1;
       }
-      if (preservePtyIds && typeof tab.auxPtyId === "number") {
+      if (nextIsDirectRuntime) {
+        existing.auxPtyId = -1;
+      } else if (preservePtyIds && typeof tab.auxPtyId === "number") {
         existing.auxPtyId = tab.auxPtyId;
       } else if (!preservePtyIds) {
         existing.auxPtyId = -1;

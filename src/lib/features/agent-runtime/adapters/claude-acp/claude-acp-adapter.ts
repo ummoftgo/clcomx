@@ -9,7 +9,9 @@
  */
 
 import type {
+  AgentContent,
   AgentEvent,
+  AgentRuntimeMetadataUpdate,
   ApprovalDecision,
   ProviderRef,
   TokenUsage,
@@ -17,6 +19,8 @@ import type {
 import type {
   AgentRuntimePort,
   AgentSessionHandle,
+  ResourceSearchInput,
+  ResourceSearchResult,
   ResumeSessionParams,
   SendPromptInput,
   SessionStartResult,
@@ -43,6 +47,8 @@ import { buildPermissionResponse, mapRequestPermission } from "./claude-acp-perm
 import { toAcpPromptContent } from "./claude-acp-content";
 import { AdapterError, resolveRpc } from "./claude-acp-pending";
 import { buildClaudeAcpLaunchParams } from "./claude-acp-launch";
+import { mapClaudeStopReason } from "./claude-acp-stop-reason";
+import { extractModeConfigValue } from "./claude-acp-mode";
 
 /** Claude ACP 세션 런타임 상태(04 §1 라우팅 키 + pending + update 상태). */
 interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
@@ -80,6 +86,41 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
   tearingDown: boolean;
 }
 
+/** 미지원 ACP request/notification 원본 payload 보관 — transcript event 없이 진단 표면에 남긴다. */
+const claudeAcpUnknownNotificationRawPayloads: unknown[] = [];
+/** 미지원 ACP request/notification 누계 — silent drop이 아님을 검증하는 진단 카운터다. */
+let claudeAcpUnknownNotificationCount = 0;
+
+/** 미지원 ACP request/notification raw payload 누계(진단/테스트용). */
+export function getClaudeAcpUnknownNotificationRawPayloads(): readonly unknown[] {
+  return claudeAcpUnknownNotificationRawPayloads;
+}
+
+/** 미지원 ACP request/notification 카운터(진단/테스트용). */
+export function getClaudeAcpUnknownNotificationCount(): number {
+  return claudeAcpUnknownNotificationCount;
+}
+
+/** 미지원 ACP request/notification 진단 상태를 리셋한다(테스트 격리용). */
+export function resetClaudeAcpUnknownNotifications(): void {
+  claudeAcpUnknownNotificationCount = 0;
+  claudeAcpUnknownNotificationRawPayloads.length = 0;
+}
+
+/** 모듈 단위 unknown payload 진단 로그에 원본을 보존한다. */
+function recordClaudeAcpUnknownPayload(raw: unknown): void {
+  claudeAcpUnknownNotificationCount += 1;
+  claudeAcpUnknownNotificationRawPayloads.push(raw);
+}
+
+/** runtime-local counter/raw와 모듈 진단 로그를 함께 갱신한다. */
+function recordUnknownAdapterPayload(rt: ClaudeAcpSessionRuntime, raw: unknown): void {
+  rt.unknownCounter += 1;
+  if (!rt.unknownRaw) rt.unknownRaw = [];
+  rt.unknownRaw.push(raw);
+  recordClaudeAcpUnknownPayload(raw);
+}
+
 /**
  * Claude ACP 어댑터 생성. deps(transport client + resolve + id 발급)를 받아 AgentRuntimePort를 돌려준다.
  */
@@ -108,6 +149,21 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
   /** 라우팅용 ProviderRef(message-level). */
   function refFor(rt: ClaudeAcpSessionRuntime): ProviderRef {
     return { provider: "claude", sessionId: rt.providerSessionId, turnId: rt.activeTurnId };
+  }
+
+  /** ACP promptCapabilities에 맞춰 composer content를 전송 가능한 항목으로 제한한다(08 §6.4). */
+  function filterPromptContentForCapabilities(
+    content: AgentContent[],
+    caps: ParsedInitialize | undefined,
+  ): AgentContent[] {
+    return content.filter((item) => {
+      if (item.type === "image") return caps?.promptImage === true;
+      if (item.type === "resource") {
+        // text가 있는 resource만 embedded context이며, link-only resource는 ACP baseline resource_link로 보낸다.
+        return typeof item.text === "string" ? caps?.promptEmbeddedContext === true : true;
+      }
+      return true;
+    });
   }
 
   // ───────────────────────── RPC 헬퍼(§3.1a) ─────────────────────────
@@ -180,7 +236,11 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       default:
         // R5: 미지원 server request는 무응답 폐기 금지 — JSON-RPC error(-32601) 응답 필수.
         // id는 원본 JSON-RPC id 타입 보존(String화 금지, R3).
-        rt.unknownCounter += 1;
+        recordUnknownAdapterPayload(rt, {
+          id: msg.id,
+          method: msg.method,
+          params: "params" in msg ? msg.params : undefined,
+        });
         void deps.sendMessage(rt.runtimeId, {
           jsonrpc: "2.0",
           id: msg.id,
@@ -196,17 +256,28 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       const params = (msg.params ?? {}) as { update?: unknown };
       const update = params.update;
       if (!update || typeof update !== "object") {
-        rt.unknownCounter += 1;
+        recordUnknownAdapterPayload(rt, { method: msg.method, params });
         return;
       }
-      // config/session_info/available_commands는 상태만 보관(전용 event 없음).
+      const rawStart = rt.unknownRaw?.length ?? 0;
+      // 상태 보관이 필요한 variant를 먼저 반영한 뒤 mapper가 UI/metadata event를 만든다.
       stashSessionState(rt, update as { sessionUpdate?: string; configOptions?: unknown[] });
       const events = mapSessionUpdate(rt, update as Parameters<typeof mapSessionUpdate>[1]);
+      for (const raw of (rt.unknownRaw ?? []).slice(rawStart)) {
+        recordClaudeAcpUnknownPayload({ method: msg.method, params: { ...params, update: raw } });
+      }
+      const metadata = modeMetadataFromUpdate(
+        rt,
+        update as { sessionUpdate?: string; currentModeId?: unknown; configOptions?: unknown[] },
+      );
+      if (metadata) {
+        emit(rt, { type: "runtime_metadata_changed", ref: refFor(rt), metadata });
+      }
       for (const ev of events) emit(rt, ev);
       return;
     }
     // 그 외 notification은 미지원 → raw 보존 + counter(응답 불필요, 04 §5).
-    rt.unknownCounter += 1;
+    recordUnknownAdapterPayload(rt, { method: msg.method, params: msg.params });
   }
 
   /** config_option_update 등 상태 보관(전용 event 없는 variant). */
@@ -216,28 +287,23 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     }
   }
 
-  /** stopReason → turn_completed AgentEvent(§3.6 표). */
-  function mapStopReason(rt: ClaudeAcpSessionRuntime, stopReason: unknown): AgentEvent[] {
-    const ref = refFor(rt);
-    const usage = rt.lastUsage;
-    switch (stopReason) {
-      case "cancelled":
-        return [{ type: "turn_completed", ref, status: "cancelled", usage }];
-      case "refusal":
-        // refusal은 CLCOMX status에 없음 → completed로 표시 + metadata 보존(ref-acp §13.1).
-        return [
-          { type: "turn_completed", ref, status: "completed", usage },
-          { type: "session_status_changed", ref, status: "idle", reason: "refusal" },
-        ];
-      case "end_turn":
-      case "max_tokens":
-      case "max_turn_requests":
-      default:
-        return [
-          { type: "turn_completed", ref, status: "completed", usage },
-          { type: "session_status_changed", ref, status: "idle" },
-        ];
+  /** ACP session/update에서 metadata로 노출할 mode patch를 추출한다. */
+  function modeMetadataFromUpdate(
+    rt: ClaudeAcpSessionRuntime,
+    update: { sessionUpdate?: string; currentModeId?: unknown; configOptions?: unknown[] },
+  ): AgentRuntimeMetadataUpdate | undefined {
+    if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
+      rt.currentModeId = update.currentModeId;
+      return { sessionMode: update.currentModeId, permissionMode: update.currentModeId };
     }
+    if (update.sessionUpdate === "config_option_update") {
+      const mode = extractModeConfigValue(update.configOptions);
+      if (mode) {
+        rt.currentModeId = mode;
+        return { sessionMode: mode, permissionMode: mode };
+      }
+    }
+    return undefined;
   }
 
   // ───────────────────────── 런타임 생성/구독 ─────────────────────────
@@ -277,12 +343,20 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
         return;
       case "exit":
         // process_exited emit + 남은 pending 정리(멱등, §4.4 (c)).
+        if (rt.closed) return;
         rt.tearingDown = true; // in-flight respondApproval이 cleanup으로 인식하도록(exit 경로).
+        rt.closed = true; // 중복 exit 이벤트와 reentrant shutdown을 한 번만 처리한다.
         emit(rt, { type: "process_exited", ref: refFor(rt), code: e.code, signal: e.signal });
-        closePending(rt);
+        void closePending(rt);
         return;
       case "error":
-        emit(rt, { type: "error", ref: refFor(rt), message: e.message, recoverable: e.recoverable });
+        emit(rt, {
+          type: "error",
+          ref: refFor(rt),
+          message: e.message,
+          recoverable: e.recoverable,
+          code: e.code,
+        });
         return;
       case "stderr":
         // stderr는 log stream(transcript 비오염). 1차는 무시(진단은 backend 로그).
@@ -304,17 +378,22 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
    * - pending request: 로컬 reject.
    * exit 경로(process 사망)에서는 wire 송신 불가 → 내부 정리만.
    */
-  function closePending(rt: ClaudeAcpSessionRuntime, sendWire: boolean = false): void {
+  async function closePending(rt: ClaudeAcpSessionRuntime, sendWire: boolean = false): Promise<void> {
     for (const [key, ap] of [...rt.pendingApprovals.entries()]) {
       if (ap.closing) continue; // 이미 닫는 중 → 멱등 무시.
       ap.closing = true;
       if (sendWire) {
-        void deps.sendMessage(rt.runtimeId, buildPermissionResponse(ap.rpcId, { outcome: "cancelled" }));
+        try {
+          await deps.sendMessage(rt.runtimeId, buildPermissionResponse(ap.rpcId, { outcome: "cancelled" }));
+        } catch {
+          // shutdown 중 transport가 먼저 닫힌 경우 내부 cleanup이 권위다.
+        }
       }
       emit(rt, {
         type: "approval_resolved",
         ref: ap.ref,
         decision: { requestId: String(ap.rpcId), outcome: sendWire ? "cancelled" : "failed" },
+        decidedBy: "cleanup",
       });
       rt.pendingApprovals.delete(key);
     }
@@ -356,7 +435,19 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       const ref: ProviderRef = { provider: "claude", sessionId: rt.providerSessionId };
       emit(rt, { type: "session_started", ref, cwd: params.workDir });
       emit(rt, { type: "session_status_changed", ref, status: "ready" });
-      return { ref };
+      return {
+        ref,
+        canResume: rt.caps.canResume,
+        canLoad: rt.caps.canLoad,
+        composerCapabilities: {
+          image: rt.caps.promptImage,
+          embeddedContext: rt.caps.promptEmbeddedContext,
+          audio: false,
+        },
+        protocolVersion: String(rt.caps.protocolVersion),
+        providerVersion: rt.caps.agentInfo?.version,
+        ...currentModeMetadata(rt),
+      };
     } catch (err) {
       // initialize/session 실패 → status→failed + protocol error 분류(§3.2 규칙 1, §9, fallback §10).
       failSession(rt, err);
@@ -403,7 +494,19 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       const ref: ProviderRef = { provider: "claude", sessionId: rt.providerSessionId };
       emit(rt, { type: "session_loaded", ref });
       emit(rt, { type: "session_status_changed", ref, status: "ready" });
-      return { ref };
+      return {
+        ref,
+        canResume: rt.caps.canResume,
+        canLoad: rt.caps.canLoad,
+        composerCapabilities: {
+          image: rt.caps.promptImage,
+          embeddedContext: rt.caps.promptEmbeddedContext,
+          audio: false,
+        },
+        protocolVersion: String(rt.caps.protocolVersion),
+        providerVersion: rt.caps.agentInfo?.version,
+        ...currentModeMetadata(rt),
+      };
     } catch (err) {
       failSession(rt, err);
       throw err;
@@ -413,18 +516,28 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
   /** sendPrompt: turn id 합성 + session/prompt(§3.6, §7). */
   async function sendPrompt(handle: AgentSessionHandle, input: SendPromptInput): Promise<void> {
     const rt = byHandle(handle);
-    const acpPrompt = toAcpPromptContent(input.content);
+    const promptContent = filterPromptContentForCapabilities(input.content, rt.caps);
+    if (promptContent.length === 0) {
+      emit(rt, {
+        type: "error",
+        ref: refFor(rt),
+        message: "prompt content is not supported by this ACP session",
+        recoverable: true,
+      });
+      return;
+    }
+    const acpPrompt = toAcpPromptContent(promptContent);
     // turnId 합성: prompt 송신 직전 turnSeq 증가 + activeTurnId 할당(04 §turn id 합성, <sessionId>:t<n>).
     rt.turnSeq += 1;
     rt.activeTurnId = `${rt.providerSessionId}:t${rt.turnSeq}`;
     // 로컬 optimistic user_message echo: ACP는 라이브 prompt를 wire echo하지 않으므로(user_message_chunk는
     // session/load replay 때만) 클라이언트가 직접 transcript에 사용자 메시지를 넣는다. Codex는 wire
     // userMessage item으로 echo되므로 이 로컬 echo를 더하지 않는다(이중 렌더 방지). content는 wire 변환본이
-    // 아니라 원본 input.content.
+    // 아니라 capability gate를 통과한 원본 AgentContent.
     emit(rt, {
       type: "user_message",
       ref: { ...refFor(rt), messageId: `${rt.activeTurnId}:u` },
-      content: input.content,
+      content: promptContent,
       mode: "replace",
     });
     emit(rt, { type: "session_status_changed", ref: refFor(rt), status: "running" });
@@ -442,9 +555,17 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       throw err;
     }
     // stopReason → turn_completed(§3.6 표). usage 동승.
-    for (const ev of mapStopReason(rt, result.stopReason)) emit(rt, ev);
+    for (const ev of mapClaudeStopReason(rt, result.stopReason)) emit(rt, ev);
     // turn 종료: activeTurnId clear(turn 경계 명시, §3.6).
     rt.activeTurnId = undefined;
+  }
+
+  /** ACP v1에는 provider-backed resource search request가 없으므로 workspace fallback을 위해 빈 결과를 반환한다. */
+  async function searchResources(
+    _handle: AgentSessionHandle,
+    _input: ResourceSearchInput,
+  ): Promise<ResourceSearchResult[]> {
+    return [];
   }
 
   /**
@@ -469,6 +590,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
         type: "approval_resolved",
         ref: ap.ref,
         decision: { requestId: String(ap.rpcId), outcome: "cancelled" },
+        decidedBy: "cleanup",
       });
       rt.pendingApprovals.delete(key);
     }
@@ -488,6 +610,9 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       emit(rt, { type: "approval_resolved", ref: ap.ref, decision });
       return;
     }
+    if (decision.outcome === "selected" && !ap.request.options.some((o) => o.id === decision.optionId)) {
+      throw new Error(`unknown approval optionId: ${decision.optionId ?? "<missing>"}`);
+    }
     // wire 전 원자적 선점(New-F1 race): send await 동안 cancelTurn/closePending이 같은 pending을
     // 닫지 못하게 closing으로 표시한다. 실패 시 되돌려 재시도·cleanup 재대상화를 허용한다.
     ap.closing = true;
@@ -503,7 +628,12 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
         // cleanup outcome(failed, wire 미전송)으로 닫아 종료 이벤트 누락을 막는다. throw 안 함
         // (teardown 중 실패는 정상 — approve Promise의 unhandled rejection을 막는다).
         if (rt.pendingApprovals.delete(decision.requestId)) {
-          emit(rt, { type: "approval_resolved", ref: ap.ref, decision: { requestId: decision.requestId, outcome: "failed" } });
+          emit(rt, {
+            type: "approval_resolved",
+            ref: ap.ref,
+            decision: { requestId: decision.requestId, outcome: "failed" },
+            decidedBy: "cleanup",
+          });
         }
         return;
       }
@@ -555,15 +685,15 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
    */
   async function shutdown(handle: AgentSessionHandle): Promise<void> {
     const rt = sessions.get(handle);
-    if (!rt || rt.closed) return; // 멱등.
-    rt.closed = true;
+    if (!rt || rt.closed || rt.tearingDown) return; // 멱등.
     rt.tearingDown = true; // in-flight respondApproval send 실패를 cleanup으로 인식(New-F1).
     // 1. pending 종료(process 생존 → wire 송신 가능).
-    closePending(rt, true);
+    await closePending(rt, true);
     // 2. backend shutdown await(reap 후 반환).
     await deps.shutdownRuntime(rt.runtimeId);
     // 3. unlisten + 세션 삭제.
     rt.unlisten?.();
+    rt.closed = true;
     sessions.delete(handle);
   }
 
@@ -586,6 +716,17 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (Array.isArray(result.configOptions)) rt.configOptions = result.configOptions;
   }
 
+  /** 현재 runtime state를 start/resume result용 non-secret mode metadata로 축약한다. */
+  function currentModeMetadata(rt: ClaudeAcpSessionRuntime): AgentRuntimeMetadataUpdate {
+    const configMode = extractModeConfigValue(rt.configOptions);
+    const sessionMode = rt.currentModeId ?? configMode;
+    const permissionMode = configMode ?? rt.currentModeId;
+    const metadata: AgentRuntimeMetadataUpdate = {};
+    if (sessionMode) metadata.sessionMode = sessionMode;
+    if (permissionMode) metadata.permissionMode = permissionMode;
+    return metadata;
+  }
+
   /** 세션 실패 전이(§3.2 규칙 1, §9). protocol error 분류 + status→failed emit. */
   function failSession(rt: ClaudeAcpSessionRuntime, err: unknown): void {
     const recoverable = false;
@@ -601,13 +742,14 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     emit(rt, { type: "error", ref, message, recoverable });
     emit(rt, { type: "session_status_changed", ref, status: "failed" });
     // pending 정리(아직 process 생존 여부 불명 → wire 송신 안 함, 내부 reject만).
-    closePending(rt, false);
+    void closePending(rt, false);
   }
 
   return {
     startSession,
     resumeSession,
     sendPrompt,
+    searchResources,
     cancelTurn,
     respondApproval,
     subscribeEvents,

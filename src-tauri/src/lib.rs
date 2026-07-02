@@ -9,7 +9,6 @@ use commands::agent_runtime::{
 use commands::clipboard::{
     clear_image_cache, get_image_cache_stats, open_image_cache_folder, save_clipboard_image,
 };
-use features::agent_runtime::AgentRuntimeState;
 use commands::editors::{
     list_available_editors, list_session_files, open_in_editor, read_session_file,
     resolve_terminal_path, search_session_files, write_session_file,
@@ -36,6 +35,7 @@ use commands::workspace::{
     set_session_resume_token, update_window_geometry, WorkspaceState,
 };
 use commands::wsl::{list_wsl_directories, list_wsl_distros, WslState};
+use features::agent_runtime::AgentRuntimeState;
 use tauri::{Manager, PhysicalPosition, PhysicalSize};
 
 fn restore_main_window(app: &tauri::AppHandle) {

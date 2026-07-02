@@ -7,9 +7,9 @@
  * 책임:
  * - start(): mount 시 port.startSession/resumeSession + subscribeEvents(event→store.dispatch).
  * - submit(content): composer 전송 → port.sendPrompt.
- * - approve(decision): 사용자 승인 → store.respondApproval(audit) + port.respondApproval(wire).
- * - cancel(): 진행 turn 취소 → port.cancelTurn + store cancel cleanup(04 §4.2).
- * - dispose(): teardown 시 unsubscribe + port.shutdown(04 §5.0 순서).
+ * - approve(decision): 사용자 승인 → port.respondApproval(wire). `failed`는 내부 cleanup 전용이라 거부.
+ * - cancel(): 진행 turn 취소 → port.cancelTurn(04 §4.2).
+ * - dispose(): teardown 시 port.shutdown 후 unsubscribe(04 §5.0 순서).
  *
  * 규약: transport/invoke를 직접 부르지 않는다. port·store·registry만 deps로 받는다(DI). 상대경로만.
  */
@@ -17,12 +17,15 @@
 import type {
   AgentContent,
   AgentEvent,
+  AgentRuntimeMetadataUpdate,
   ApprovalDecision,
 } from "../contracts/normalized";
 import type { SessionRuntimeKind } from "../contracts/metadata";
 import type {
   AgentRuntimePort,
+  ResourceSearchResult,
   ResumeSessionParams,
+  SessionStartResult,
   StartSessionParams,
 } from "../contracts/runtime-port";
 import type { AgentRuntimeStore } from "../state/agent-runtime-store.svelte";
@@ -40,6 +43,12 @@ function providerForRuntimeKind(
   if (kind === "direct-claude") return "claude";
   // pty는 이 controller를 쓰지 않는다 — 방어적 throw.
   throw new Error(`agent-runtime-controller: unsupported runtimeKind "${kind}"`);
+}
+
+/** 사용자 승인 action이 실제 pending approval에 대응하는지 확인한다(09 §2 표시-선택 일치). */
+function hasPendingApproval(store: AgentRuntimeStore, requestId: string): boolean {
+  if (store.escalationApproval?.id === requestId) return true;
+  return store.pendingApprovals.some((request) => request.id === requestId);
 }
 
 /** controller 시작 파라미터(start/resume 분기). */
@@ -61,21 +70,27 @@ export interface AgentRuntimeStartConfig {
  * controller DI deps.
  * - createPort: runtimeKind로 해당 provider의 `AgentRuntimePort`를 만든다(테스트는 fake port 주입).
  * - store: 이 세션의 transcript/status store(reducer/pending/audit 포함).
+ * - onRuntimeMetadataChange: transcript 외 세션 metadata patch를 host persistence로 전달한다.
+ * - onSessionTitleChange: provider session_info_update title을 앱 session title로 전달한다.
  * - windowLabel: registry 소유 window(OQ-48 바인딩, 기본 main).
  */
 export interface AgentRuntimeControllerDeps {
   createPort: (kind: SessionRuntimeKind) => AgentRuntimePort;
   store: AgentRuntimeStore;
+  onRuntimeMetadataChange?: (metadata: AgentRuntimeMetadataUpdate) => void | Promise<void>;
+  onSessionTitleChange?: (title: string | null) => void | Promise<void>;
   windowLabel?: string;
 }
 
 /** view가 호출하는 controller 표면. */
 export interface AgentRuntimeController {
-  /** mount 시 1회: 세션 시작(또는 재개) + event 구독. */
-  start(config: AgentRuntimeStartConfig): Promise<void>;
+  /** mount 시 1회: 세션 시작(또는 재개) + event 구독 후 provider 시작 결과를 돌려준다. */
+  start(config: AgentRuntimeStartConfig): Promise<SessionStartResult | null>;
   /** composer 전송. */
   submit(content: AgentContent[]): Promise<void>;
-  /** 사용자 승인 응답(store 멱등 기록 + wire 전송). */
+  /** composer @mention provider-backed resource search. */
+  searchResources(query: string, limit?: number): Promise<ResourceSearchResult[]>;
+  /** 사용자 승인 응답. `failed`는 cleanup 내부 전용이라 wire 경로에서 거부한다. */
   approve(decision: ApprovalDecision): Promise<void>;
   /** 진행 turn 취소. */
   cancel(turnId?: string): Promise<void>;
@@ -90,6 +105,7 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
   private port: AgentRuntimePort | null = null;
   private unsubscribe: UnlistenFn | null = null;
   private sessionHandle: string | null = null;
+  private workDir: string | null = null;
   private started = false;
   private disposed = false;
 
@@ -97,11 +113,12 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
     this.deps = deps;
   }
 
-  async start(config: AgentRuntimeStartConfig): Promise<void> {
+  async start(config: AgentRuntimeStartConfig): Promise<SessionStartResult | null> {
     // 멱등: 이미 시작했거나 dispose된 controller는 재시작하지 않는다.
-    if (this.started || this.disposed) return;
+    if (this.started || this.disposed) return null;
     this.started = true;
     this.sessionHandle = config.sessionHandle;
+    this.workDir = config.workDir;
 
     const provider = providerForRuntimeKind(config.runtimeKind);
     const port = this.deps.createPort(config.runtimeKind);
@@ -114,10 +131,21 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
     // 상태의 구독을 pending listener로 보관했다 runtime 생성 시 attach한다. 이로써 start 중 lifecycle
     // 이벤트 유실이 없고, replay event도 unbounded 버퍼 없이 곧장 store(seal/eviction bounded)로 흐른다.
     this.unsubscribe = port.subscribeEvents(config.sessionHandle, (event: AgentEvent) => {
+      if (event.type === "runtime_metadata_changed") {
+        void Promise.resolve(this.deps.onRuntimeMetadataChange?.(event.metadata)).catch(() => {
+          // metadata 저장 실패는 transcript lifecycle 실패로 승격하지 않는다.
+        });
+      }
+      if (event.type === "session_title_changed") {
+        void Promise.resolve(this.deps.onSessionTitleChange?.(event.title)).catch(() => {
+          // title 저장 실패는 transcript lifecycle 실패로 승격하지 않는다.
+        });
+      }
       this.deps.store.dispatch(event);
     });
 
     // start/resume 분기(04 §lifecycle).
+    let result: SessionStartResult;
     if (config.resume) {
       const params: ResumeSessionParams = {
         sessionHandle: config.sessionHandle,
@@ -129,7 +157,7 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
         replay: config.resume.replay,
         options: config.options,
       };
-      await port.resumeSession(params);
+      result = await port.resumeSession(params);
     } else {
       const params: StartSessionParams = {
         sessionHandle: config.sessionHandle,
@@ -138,8 +166,10 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
         workDir: config.workDir,
         options: config.options,
       };
-      await port.startSession(params);
+      result = await port.startSession(params);
     }
+    if (result.composerCapabilities) this.deps.store.setCapabilities(result.composerCapabilities);
+    return result;
   }
 
   async submit(content: AgentContent[]): Promise<void> {
@@ -147,8 +177,24 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
     await this.port.sendPrompt(this.sessionHandle, { content });
   }
 
+  async searchResources(query: string, limit?: number): Promise<ResourceSearchResult[]> {
+    if (!this.port?.searchResources || !this.sessionHandle || !this.workDir || this.disposed) return [];
+    const q = query.trim();
+    return this.port.searchResources(this.sessionHandle, {
+      query: q,
+      workDir: this.workDir,
+      ...(limit !== undefined ? { limit } : {}),
+    });
+  }
+
   async approve(decision: ApprovalDecision): Promise<void> {
     if (!this.port || !this.sessionHandle || this.disposed) return;
+    if (decision.outcome === "failed") {
+      throw new Error("failed approval decisions are client-internal and must not be sent to provider wire");
+    }
+    if (!hasPendingApproval(this.deps.store, decision.requestId)) {
+      throw new Error(`approval requestId is not pending: ${decision.requestId}`);
+    }
     // wire 전송만 한다(Finding 2 + New-F1): 성공 시 adapter가 wire 응답 후 approval_resolved를
     // emit해 store가 닫힌다(single source). wire 실패면 throw로 store·adapter 모두 pending을 유지해
     // 재시도가 가능하다 — 낙관적 close나 backstop의 no-op close로 인한 UI/provider 분기를 원천 제거.
@@ -189,7 +235,7 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
     this.unsubscribe = null;
 
     // 3. registry/store 정리.
-    if (this.sessionHandle) unregisterSession(this.sessionHandle);
+    if (this.sessionHandle) unregisterSession(this.sessionHandle, this.deps.store);
     this.port = null;
   }
 }

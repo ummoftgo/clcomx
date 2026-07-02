@@ -34,6 +34,9 @@ export function nextSessionStatus(
     case "session_status_changed":
       // provider가 합성한 명시 status를 그대로 채택(04 §2.2 합성표는 adapter가 적용).
       return event.status;
+    case "runtime_metadata_changed":
+    case "session_title_changed":
+      return current;
     case "user_message":
     case "agent_message":
     case "agent_message_delta":

@@ -3,19 +3,21 @@
 
   role별 분기: user / agent(response) / reasoning(thought). reasoning은 접이식 thinking 블록으로
   기본 collapsed 렌더한다(08 §6.2). streaming 중이면 끝에 caret(▌)을 붙인다(08 §6.1).
-  텍스트는 AgentContent{type:"text"}만 누적해 표시한다. UI 문자열은 i18n 키만 쓴다(하드코딩 금지).
+  text/resource/json content를 표시하고, 나머지 content는 명시적 fallback으로 표시한다.
+  UI 문자열은 i18n 키만 쓴다(하드코딩 금지).
 -->
 <script lang="ts">
   import { t } from "../../../i18n";
   import { TEST_IDS, agentTranscriptItemTestId } from "../../../testids";
   import type { AgentContent } from "../contracts/normalized";
+  import { redactDisplayText, stringifyRedactedRaw } from "../service/display-redaction";
 
   interface Props {
     /** transcript item id(가상화·렌더 키). */
     id: string;
     /** user / agent / reasoning(thought) 구분. */
     role: "user" | "agent" | "reasoning";
-    /** 렌더할 content 블록(현재 text만 표시, 그 외는 무시). */
+    /** 렌더할 content 블록. */
     content: AgentContent[];
     /** streaming 중이면 caret 표시. */
     streaming: boolean;
@@ -26,13 +28,31 @@
   // reasoning 블록은 기본 접힘(08 §6.2). 사용자 토글로 펼친다.
   let expanded = $state(false);
 
-  // text content만 이어붙여 표시 문자열을 만든다(diff/image 등은 후속 stage 카드).
-  const text = $derived(
-    content
-      .filter((c): c is Extract<AgentContent, { type: "text" }> => c.type === "text")
-      .map((c) => c.text)
-      .join(""),
-  );
+  interface DisplayBlock {
+    /** inline text는 이어서, pre는 독립 블록으로 렌더한다. */
+    kind: "text" | "pre";
+    /** 표시 직전 redaction이 적용된 문자열. */
+    text: string;
+  }
+
+  /** AgentContent를 transcript 표시용 문자열 블록으로 변환한다. */
+  function contentBlockToDisplay(contentBlock: AgentContent): DisplayBlock {
+    if (contentBlock.type === "text") {
+      return { kind: "text", text: redactDisplayText(contentBlock.text) };
+    }
+    if (contentBlock.type === "resource") {
+      return {
+        kind: "pre",
+        text: redactDisplayText(contentBlock.text ?? contentBlock.uri),
+      };
+    }
+    if (contentBlock.type === "json") {
+      return { kind: "pre", text: stringifyRedactedRaw(contentBlock.value) };
+    }
+    return { kind: "pre", text: $t("agentRuntime.fallback.unsupportedContent") };
+  }
+
+  const displayBlocks = $derived(content.map(contentBlockToDisplay));
 
   const roleLabel = $derived(
     role === "user"
@@ -64,13 +84,27 @@
     </button>
     {#if expanded}
       <div class="message-body reasoning-body">
-        {text}{#if streaming}<span class="caret" aria-hidden="true">▌</span>{/if}
+        {#each displayBlocks as block, i (i)}
+          {#if block.kind === "text"}
+            {block.text}
+          {:else}
+            <pre class="message-content-block">{block.text}</pre>
+          {/if}
+        {/each}
+        {#if streaming}<span class="caret" aria-hidden="true">▌</span>{/if}
       </div>
     {/if}
   {:else}
     <div class="message-role" aria-hidden="true">{roleLabel}</div>
     <div class="message-body">
-      {text}{#if streaming}<span class="caret" aria-hidden="true">▌</span>{/if}
+      {#each displayBlocks as block, i (i)}
+        {#if block.kind === "text"}
+          {block.text}
+        {:else}
+          <pre class="message-content-block">{block.text}</pre>
+        {/if}
+      {/each}
+      {#if streaming}<span class="caret" aria-hidden="true">▌</span>{/if}
     </div>
   {/if}
 </div>
@@ -107,6 +141,18 @@
   .message-body {
     font-size: var(--ui-font-size-base);
     line-height: 1.5;
+  }
+  .message-content-block {
+    margin: 0.35rem 0 0;
+    padding: 0.45rem 0.55rem;
+    border-radius: 0.35rem;
+    background: var(--ui-bg-code, rgba(127, 127, 127, 0.08));
+    font-family: var(--ui-font-mono-stack, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: var(--ui-font-size-sm);
+    line-height: 1.45;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   .reasoning-body {
     font-style: italic;

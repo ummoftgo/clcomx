@@ -58,6 +58,8 @@ describe("workspace persistence helpers", () => {
                 providerThreadId: "thread-secret",
                 providerResumeToken: "resume-token-secret",
                 lastTurnId: "turn-9",
+                permissionMode: "bypassPermissions",
+                sessionMode: "bypassPermissions",
                 canLoad: true,
               },
             },
@@ -75,6 +77,8 @@ describe("workspace persistence helpers", () => {
       sessionRuntimeKind: "direct-codex",
       provider: "codex",
       lastTurnId: "turn-9",
+      permissionMode: "bypassPermissions",
+      sessionMode: "bypassPermissions",
       canLoad: true,
     });
     expect(tab.runtimeKind).toBe("direct-codex");

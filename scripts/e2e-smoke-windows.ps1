@@ -49,11 +49,6 @@ function Add-ToPath([string]$DirectoryPath) {
 }
 
 function Resolve-EdgeDriverPath([string]$ProjectRoot) {
-  $command = Get-Command "msedgedriver.exe" -ErrorAction SilentlyContinue
-  if ($command) {
-    return $command.Source
-  }
-
   $candidates = @(
     (Join-Path $ProjectRoot ".tools\windows\e2e\msedgedriver.exe"),
     (Join-Path $ProjectRoot "msedgedriver.exe")
@@ -65,7 +60,34 @@ function Resolve-EdgeDriverPath([string]$ProjectRoot) {
     }
   }
 
+  $command = Get-Command "msedgedriver.exe" -ErrorAction SilentlyContinue
+  if ($command) {
+    return $command.Source
+  }
+
   return $null
+}
+
+$allProjects = @(
+  "smoke",
+  "settings",
+  "windows-tabs",
+  "workspace-restore",
+  "image-paste",
+  "agent-runtime",
+  "terminal-input",
+  "terminal-links",
+  "terminal-aux"
+)
+
+function Invoke-E2eProject([string]$ProjectName) {
+  $vitestArgs = @("run", "--config", ".\vitest.e2e.config.ts")
+  $vitestArgs += @("--project", $projectName)
+  Write-Host "[Windows] Running E2E project: $ProjectName"
+  & node.exe .\node_modules\vitest\vitest.mjs @vitestArgs
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
 }
 
 if ($HelpText) {
@@ -170,16 +192,13 @@ try {
 
   $env:CLCOMX_E2E_BINARY = $binaryPath
 
-  $vitestArgs = @("run", "--config", ".\vitest.e2e.config.ts")
   if (-not [string]::IsNullOrWhiteSpace($Project)) {
-    $vitestArgs += @("--project", $Project)
-    Write-Host "[Windows] Running E2E project: $Project"
+    Invoke-E2eProject $Project
   } else {
-    Write-Host "[Windows] Running all E2E projects..."
-  }
-  & node.exe .\node_modules\vitest\vitest.mjs @vitestArgs
-  if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+    Write-Host "[Windows] Running all E2E projects sequentially..."
+    foreach ($projectName in $allProjects) {
+      Invoke-E2eProject $projectName
+    }
   }
 }
 finally {

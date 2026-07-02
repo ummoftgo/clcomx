@@ -85,6 +85,45 @@ async function waitForPort(port: number, timeoutMs: number, child?: ChildProcess
   throw new Error(`Timed out waiting for tauri-driver on port ${port}`);
 }
 
+/** child process가 종료될 때까지 짧게 기다려 다음 E2E 세션의 고정 port 경합을 줄인다. */
+async function waitForProcessExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  await new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      child.off("exit", done);
+      child.off("close", done);
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    child.once("exit", done);
+    child.once("close", done);
+  });
+}
+
+/** 고정 tauri-driver port가 해제될 때까지 기다린다. timeout은 cleanup best-effort로 흡수한다. */
+async function waitForPortClosed(port: number, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const connected = await new Promise<boolean>((resolve) => {
+      const socket = net.connect(port, "127.0.0.1");
+      socket.once("connect", () => {
+        socket.end();
+        resolve(true);
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+
+    if (!connected) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 export interface TauriSession {
   driver: WebDriver;
   stateDir: string;
@@ -93,6 +132,7 @@ export interface TauriSession {
 
 export interface StartTauriSessionOptions {
   stateDir?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export function createE2eStateDir(prefix = "clcomx-e2e-"): string {
@@ -126,6 +166,7 @@ export async function startTauriSession(
   const stateDir = options.stateDir ?? createE2eStateDir();
   const env = {
     ...process.env,
+    ...(options.env ?? {}),
     CLCOMX_TEST_MODE: "1",
     CLCOMX_STATE_DIR: stateDir,
   };
@@ -153,12 +194,20 @@ export async function startTauriSession(
     .usingServer(DRIVER_URL)
     .build();
 
+  let cleanedUp = false;
   async function cleanup() {
+    if (cleanedUp) return;
+    cleanedUp = true;
+
     try {
       await driver.quit();
     } catch {}
 
-    tauriDriver.kill();
+    if (tauriDriver.exitCode === null && tauriDriver.signalCode === null) {
+      tauriDriver.kill();
+    }
+    await waitForProcessExit(tauriDriver, 5_000);
+    await waitForPortClosed(DRIVER_PORT, 5_000);
   }
 
   return { driver, stateDir, cleanup };
@@ -292,6 +341,24 @@ export async function clickTestId(
 ): Promise<WebElement> {
   const element = await waitForTestId(driver, testId, timeoutMs);
   await clickElement(driver, element);
+  return element;
+}
+
+/** WebDriver native click이 장시간 E2E에서 간헐적으로 no-op 되는 picker류 버튼에 DOM click을 직접 보낸다. */
+export async function clickTestIdByScript(
+  driver: WebDriver,
+  testId: string,
+  timeoutMs = 15_000,
+): Promise<WebElement> {
+  const element = await waitForTestId(driver, testId, timeoutMs);
+  await driver.executeScript(
+    `
+      const el = arguments[0];
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      el.click();
+    `,
+    element,
+  );
   return element;
 }
 

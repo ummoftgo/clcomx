@@ -3,7 +3,6 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Key } from "selenium-webdriver";
 import { TEST_IDS } from "../../src/lib/testids";
-import { summarizeResumeToken } from "../../src/lib/agents";
 import {
   startTauriSession,
   createE2eStateDir,
@@ -18,7 +17,7 @@ import {
   openMockWorkspaceSession,
 } from "../helpers/launcher";
 import { createStepLogger } from "../helpers/log";
-import { getTerminalOutputSnapshot } from "../helpers/terminal";
+import { waitForTerminalOutputSnapshot } from "../helpers/terminal";
 
 async function waitForHistoryTitles(
   historyPath: string,
@@ -91,7 +90,7 @@ describe.skipIf(process.platform !== "win32")("CLCOMX smoke", () => {
     log.step("state files created", { workspacePath, historyPath });
   });
 
-  it("supports agent selection for codex and renders recent history metadata", async () => {
+  it("supports agent selection for codex and renders scrubbed recent history metadata", async () => {
     await session.cleanup();
     session = await startTauriSession();
     let { driver } = session;
@@ -113,8 +112,13 @@ describe.skipIf(process.platform !== "win32")("CLCOMX smoke", () => {
       10_000,
     );
     const sessionId = await (await waitForTestId(driver, TEST_IDS.terminalShell)).getAttribute("data-session-id");
-    const codexOutput = await getTerminalOutputSnapshot(driver, sessionId!);
-    expect(codexOutput?.data).toContain("Agent: Codex");
+    const codexOutput = await waitForTerminalOutputSnapshot(
+      driver,
+      sessionId!,
+      (snapshot) => snapshot.data.includes("Agent: Codex"),
+      10_000,
+    );
+    expect(codexOutput.data).toContain("Agent: Codex");
     log.step("codex session launched", { sessionId });
 
     await session.cleanup();
@@ -149,10 +153,11 @@ describe.skipIf(process.platform !== "win32")("CLCOMX smoke", () => {
     log.step("waiting for seeded recent list");
     const recentList = await waitForTestId(driver, TEST_IDS.launcherRecentList);
     const recentText = await recentList.getText();
-    const expectedSummary = summarizeResumeToken("019c9fe6-12fa-7272-a1b0-e541b71f608c");
-    log.step("seeded recent list text", { recentText, expectedSummary });
+    log.step("seeded recent list text", { recentText });
+    expect(recentText).toContain("codex history");
     expect(recentText).toContain("Codex");
-    expect(recentText).toContain(expectedSummary);
+    expect(recentText).toContain(`${TEST_HOME}/projects`);
+    expect(recentText).not.toContain("019c9fe6-12fa-7272");
     log.step("recent history metadata rendered", { recentText });
 
     await openHistoryEntryByIndex(driver, 0);

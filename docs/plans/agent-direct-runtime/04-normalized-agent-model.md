@@ -88,7 +88,7 @@ ACP의 신호 합성과 Codex의 thread/turn status를 공통 상태로 축약�
 
 event apply는 **순서 보존이 핵심**이다. 같은 session 안에서 message id별 append/replace 순서를 보존한다. v1 권위는 **per-(라우팅 키) receive-order**이며(단일 stdio 스트림이라 같은 키 내 순서가 보존됨), cross-key 전역 정렬용 adapter sequence 부여는 후속 enhancement다(§3.4).
 
-> **reasoning/thinking 채널 정책 (정본, 해소됨)**: reasoning/thinking은 전용 event variant를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel?: "response" | "thought"` 필드로 구분한다(타입 정본 15 §3, 미지정 시 `"response"`). `"thought"` 채널은 `"response"`와 **별도 스트림**으로 messageId/contentIndex별 누적하며, completed reasoning item이 thought 채널의 **권위**(reconcile)다. provider별 매핑은 Codex §3.2.2/§3.2.5(05 §5.2), ACP §3.3(06 §5). UI는 thought 채널을 접이식 'thinking' 블록(기본 collapsed)으로 response와 시각 구분해 렌더한다(08).
+> **reasoning/thinking 채널 정책 (정본, 해소됨)**: reasoning/thinking은 전용 event variant를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel?: "response" | "thought"` 필드로 구분한다(타입 정본 15 §3, 미지정 시 `"response"`). `"thought"` 채널은 `"response"`와 **별도 스트림**으로 누적하며, Codex reasoning은 `segment:{kind:"summary"|"content", index}`로 `summaryIndex`/`contentIndex`를 보존해 같은 segment에만 append한다. completed reasoning item이 thought 채널의 **권위**(reconcile)다. provider별 매핑은 Codex §3.2.2/§3.2.5(05 §5.2), ACP §3.3(06 §5). UI는 thought 채널을 접이식 'thinking' 블록(기본 collapsed)으로 response와 시각 구분해 렌더한다(08).
 
 ### 3.1 message upsert / append / replace
 
@@ -121,9 +121,9 @@ Codex는 streaming delta와 최종 completed item을 모두 보낸다. reconcile
 #### 3.2.2 plan · reasoning
 
 - **plan**: 소스 주석상 "concatenated delta가 completed와 일치하지 않을 수 있음"이 명시돼 있다 → **completed item을 권위로 삼고, delta는 점진 렌더링용으로만** 쓴다. 메시지처럼 delta=completed를 가정하면 안 된다.
-- **reasoning / thinking (channel:"thought" 정본)**: Codex `reasoning` item은 전용 event를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel:"thought"`로 흘린다(15 §3). `item/reasoning/textDelta` → `agent_message_delta{channel:"thought"}`로 append하고, completed reasoning item → `agent_message{channel:"thought", mode:"replace"}`로 reconcile한다. **thought 채널은 `channel:"response"`와 별도 스트림으로 누적**하며(한 본문에 섞지 않음), completed reasoning item이 thought 채널의 **권위**다. plan과 마찬가지로 delta 누적=completed를 가정하지 않는다(점진 렌더용). 인덱스별 누적은 §3.2.5, UI 렌더(접이식 'thinking' 블록, 기본 collapsed)는 08.
-- **누적 키 (provider별 — 정본)**: Codex에는 `messageId` 개념이 없고 `itemId`가 메시지 역할을 한다(15 §1.1). 따라서 thought 채널 누적 키는 provider별로 다르다 — **Codex = `(itemId, contentIndex/summaryIndex)`, ACP = `(messageId, contentIndex)`**. §3.2.5의 "인덱스별 누적"과 §3.3의 "같은 messageId 청크 누적"은 각각 이 두 키를 가리킨다. `channel:"response"` 본문 누적도 같은 키를 쓴다.
-- **Codex reasoning completed 권위 필드 (미확정)**: Codex `reasoning` item은 completed 시 `summary: string[]`과 `content: string[]`을 모두 가질 수 있어(ref-codex §6.3) 어느 쪽이 권위인지 미확정이다. v1 보수적 기본값 = 둘 다 표시(`[...item.summary, ...item.content].join("\n")`). wire 실측에서 단일/우선 필드를 확정한다([13](13-risks-open-questions.md) OQ-46, 05 §5.3 reasoning completed 매핑과 연동).
+- **reasoning / thinking (channel:"thought" 정본)**: Codex `reasoning` item은 전용 event를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel:"thought"`로 흘린다(15 §3). `item/reasoning/textDelta` → `agent_message_delta{channel:"thought", segment:{kind:"content", index:contentIndex}}`, `summaryTextDelta` → `segment:{kind:"summary", index:summaryIndex}`로 append하고, completed reasoning item → `agent_message{channel:"thought", mode:"replace"}`로 reconcile한다. **thought 채널은 `channel:"response"`와 별도 스트림으로 누적**하며(한 본문에 섞지 않음), completed reasoning item이 thought 채널의 **권위**다. plan과 마찬가지로 delta 누적=completed를 가정하지 않는다(점진 렌더용). 인덱스별 누적은 §3.2.5, UI 렌더(접이식 'thinking' 블록, 기본 collapsed)는 08.
+- **누적 키 (provider별 — 정본)**: Codex에는 `messageId` 개념이 없고 `itemId`가 메시지 역할을 한다(15 §1.1). 따라서 thought 채널 누적 키는 provider별로 다르다 — **Codex thought = `(itemId, segment.kind, segment.index)`, ACP thought = `messageId`**. 일반 response 채널은 Codex `(itemId)`, ACP `(messageId)`로 append한다. §3.2.5의 "인덱스별 누적"은 Codex reasoning segment를, §3.3의 "같은 messageId 청크 누적"은 ACP 청크를 가리킨다.
+- **Codex reasoning completed 권위 필드 (OQ-46 해소)**: Codex `reasoning` item은 schema상 `summary: string[]`과 `content: string[]`을 모두 가질 수 있지만(ref-codex §6.3), `codex app-server --stdio` read-only snapshot 실측(48 threads, reasoning 2,026 items)에서는 completed reasoning이 모두 `summary[]`만 채우고 `content[]`는 비어 있었다. v1 권위 텍스트는 `summary[]`를 사용한다. `summary[]`가 비어 있는 schema-drift/legacy 입력만 `content[]` fallback으로 보존한다([13](13-risks-open-questions.md) OQ-46, 05 §5.3 reasoning completed 매핑과 연동).
 
 #### 3.2.3 명령 출력
 
@@ -131,8 +131,8 @@ Codex는 streaming delta와 최종 completed item을 모두 보낸다. reconcile
 
 **`command_output_delta` vs `tool_call_content_delta` 책임 분리 (정본)**: 두 event는 모두 진행 중 tool call에 출력을 흘리지만(15 §3 두 variant 공존, 08 §3 라우팅), 책임이 다르다.
 
-- **`command_output_delta`** = `execute` kind(명령 실행) stdout/stderr **전용**이다. `stream:"stdout"|"stderr"`별로 각각 append하며, UI는 `CommandOutputCard`의 stdout/stderr 버퍼에 stream별로 쌓는다(08 §3). Codex thread 내 `item/commandExecution/outputDelta`가 이 event로 매핑된다(05 §5.2; standalone `command/exec/outputDelta`는 base64 디코드 후 동일, 05 §8.1 두 채널 구분).
-- **`tool_call_content_delta`** = 비-execute tool(`read`/`search`/`fetch` 등)의 점진 content **전용**이다. stream 구분이 없는 단일 content 증분이며, UI는 `ResourceContentCard` 등 kind별 카드에 누적한다(08 §3·§4). ACP `tool_call_update.content`는 replace 의미라 1차는 이 delta를 쓰지 않고 마지막 update로 통째 갈아끼운다(§3.3, 06 §5.4).
+- **`command_output_delta`** = `execute` kind(명령 실행) stdout/stderr **전용**이다. `stream:"stdout"|"stderr"`별로 각각 append하며, UI는 `CommandOutputCard`의 stdout/stderr 버퍼에 stream별로 쌓는다(08 §3). Codex thread 내 `item/commandExecution/outputDelta`는 generated payload에 `stream` 필드가 없어 `stream:"stdout"`으로 매핑된다(05 §5.2, OQ-22). standalone `command/exec/outputDelta`는 별도 base64 채널이며 v1에서는 `command_output_delta`로 매핑하지 않고 raw/unknown 경계로만 보존한다(05 §8.1, OQ-21, CX-9).
+- **`tool_call_content_delta`** = 비-execute tool(`read`/`search`/`fetch` 등)의 점진 content **전용**이다. stream 구분이 없는 단일 content 증분이며, UI는 `ToolCallCard`의 general content block에 누적한다(08 §3·§4). ACP `tool_call_update.content`는 replace 의미라 1차는 이 delta를 쓰지 않고 마지막 update로 통째 갈아끼운다(§3.3, 06 §5.4).
 
 즉 stdout/stderr 구분이 필요한 명령 출력은 `command_output_delta`로, stream 구분이 없는 일반 tool content 증분은 `tool_call_content_delta`로 보낸다.
 
@@ -148,7 +148,7 @@ Codex는 streaming delta와 최종 completed item을 모두 보낸다. reconcile
 
 #### 3.2.5 reasoning 인덱스 누적
 
-`item/reasoning/textDelta`(`contentIndex`)·`summaryTextDelta`(`summaryIndex`)는 같은 `itemId` 안에서 인덱스별로 다중 스트림을 누적한다. 이 누적은 §3.2.2의 thought 채널(`channel:"thought"`) 스트림으로 흐른다. **누적 키는 Codex `(itemId, contentIndex/summaryIndex)`**이며(Codex엔 `messageId`가 없어 `itemId`가 메시지 역할 — 15 §1.1; ACP의 `(messageId, contentIndex)`와 대비되는 §3.2.2 "누적 키" 규칙), 각 키별로 append하고 completed reasoning item이 권위(reconcile)다 — `channel:"response"` 스트림과 섞지 않는다. completed의 권위 텍스트가 `summary`인지 `content`인지(둘 다인지)는 미확정이라 v1은 둘 다 표시한다(§3.2.2 "권위 필드", 13 OQ-46).
+`item/reasoning/textDelta`(`contentIndex`)·`summaryTextDelta`(`summaryIndex`)는 같은 `itemId` 안에서 인덱스별로 다중 스트림을 누적한다. 이 누적은 §3.2.2의 thought 채널(`channel:"thought"`) 스트림으로 흐르며, `agent_message_delta.segment`에 각각 `{kind:"content", index:contentIndex}` / `{kind:"summary", index:summaryIndex}`를 싣는다. **누적 키는 Codex `(itemId, segment.kind, segment.index)`**이며(Codex엔 `messageId`가 없어 `itemId`가 메시지 역할 — 15 §1.1), 각 키별로 append하고 completed reasoning item이 권위(reconcile)다 — `channel:"response"` 스트림과 섞지 않는다. 점진 렌더 표시 순서는 `summary[]` 다음 `content[]`, 각 배열 index 오름차순이다. completed의 권위 텍스트는 OQ-46 실측에 따라 `summary[]`이며, `summary[]`가 비어 있는 경우에만 `content[]` fallback을 사용한다.
 
 ### 3.3 ACP chunk vs update replace
 
@@ -193,7 +193,7 @@ turn이 아래 (a)~(e)를 **모두** 만족하면 `unsealed` → `sealed-retaine
 - **(a) 종료신호**: Codex `turn/completed`(status 무관 — `completed`/`failed`/`cancelled`) 또는 ACP `stopReason` 수신. (turn 종료 합성은 §2.1 규칙 5·"turn id 합성 규칙(ACP)".)
 - **(b) open item 0**: 해당 turn에 아직 streaming 중이거나 `item/completed` 미수신인 open item이 없다(§3.2 reconcile 완료).
 - **(c) pending approval/request 0**: 그 turn에 매인 pending approval·server request가 pending table에 남아 있지 않다(§4 pending table key `(sessionHandle, requestId)`).
-- **(d) turn-level 슬롯 settle**: turn-level `tokenUsage`/`plan`/`diff` 슬롯이 각각 **settle**됐다 — 즉 (최종값 수신) **또는** (해당 turn에 해당 없음/provider 미지원) **또는** (grace 후 미도착으로 부재 확정) 중 하나로 확정됐다. 세 슬롯이 항상 도착해야 하는 것은 아니다(plan/diff/usage 없는 turn도 정상).
+- **(d) turn-level 슬롯 settle**: turn-level `tokenUsage`/`plan`/`diff` 슬롯이 각각 **settle**됐다 — 즉 (최종값 수신) **또는** (해당 turn에 해당 없음/provider 미지원) **또는** (grace 후 미도착으로 부재 확정) 중 하나로 확정됐다. 세 슬롯이 항상 도착해야 하는 것은 아니다(plan/diff/usage 없는 turn도 정상). **(v1 구현 주의, 코드와 정합)**: 현재 구현(`agent-event-reducer.ts`의 `sealEligibleTurns`)은 별도의 강제 turn-level 슬롯을 두지 않으므로 (a)~(c)만 seal 전제로 점검하고 (d)는 v1에서 별도 강제하지 않는다. 강제 슬롯이 도입되면 이 조건을 활성화한다.
 - **(e) 짧은 quiescence grace**: 해당 turn 라우팅 키(§3.4: Codex `(threadId, turnId)`, ACP 합성 `turnId`)로 더 이상 event가 도착하지 않는 짧은 정적 구간을 둔다. 이 grace는 turn/completed 후 도착할 수 있는 늦은 same-turn 보조 notification(아래 3-상태 규칙)을 흡수하기 위한 것이다.
 
 #### 3-상태 turn residency (`TranscriptTurnResidency` — 08 §5 타입 인용)
@@ -206,7 +206,7 @@ turn이 아래 (a)~(e)를 **모두** 만족하면 `unsealed` → `sealed-retaine
 
 #### eviction 윈도우 (정본)
 
-residency 윈도우 = **최근 N개 `sealed-retained` turn + 모든 `unsealed`/active turn(§3.4 라우팅 키로 인터리빙된 동시 turn 포함) + 현재 streaming**은 항상 body를 유지한다. cap(윈도우 크기·heap 한도) 초과 시 가장 오래된 `sealed-retained` turn body를 evict해 `evicted-tombstone`으로 전이시킨다. **eviction은 body(`itemsById`)만 비우는 게 아니라 메타 인덱스도 함께 pruning한다**: evict된 turn의 `itemVersions` 항목을 제거하고, `turnsById`는 {`unsealed`/`sealed-retained` turn + tombstone LRU 범위}만 유지한다(그 밖의 turn 엔트리는 삭제). 그렇지 않으면 `itemVersions`(반응형)·`turnsById`가 evict된 turn마다 남아 세션 길이에 비례해 자란다. 이로써 body·반응형 표면·메타 인덱스가 **모두** 세션 길이와 무관하게 bounded된다. 무거운 item(diff/이미지/출력)은 bounded 표현+지연 로드를 별도로 적용한다([`13`](13-risks-open-questions.md) §1.8 ring/요약, image는 OQ-12 연동). 구체 cap·N·grace 수치는 실측으로 정한다([`13`](13-risks-open-questions.md) OQ-52; image cap은 OQ-12 연동).
+residency 윈도우 = **최근 N개 `sealed-retained` turn + 모든 `unsealed`/active turn(§3.4 라우팅 키로 인터리빙된 동시 turn 포함) + 현재 streaming**은 항상 body를 유지한다. cap(윈도우 크기·heap 한도) 초과 시 가장 오래된 `sealed-retained` turn body를 evict해 `evicted-tombstone`으로 전이시킨다. **eviction은 body(`itemsById`)만 비우는 게 아니라 메타 인덱스도 함께 pruning한다**: evict된 turn의 `itemVersions` 항목을 제거하고, `turnsById`는 {`unsealed`/`sealed-retained` turn + tombstone LRU 범위}만 유지한다(그 밖의 turn 엔트리는 삭제). 그렇지 않으면 `itemVersions`(반응형)·`turnsById`가 evict된 turn마다 남아 세션 길이에 비례해 자란다. 이로써 body·반응형 표면·메타 인덱스가 **모두** 세션 길이와 무관하게 bounded된다. 무거운 item(diff/이미지/출력)은 bounded 표현+지연 로드를 별도로 적용한다([`13`](13-risks-open-questions.md) §1.8 ring/요약, image는 OQ-12 연동). v1 보수 기본값은 구현에 고정됐고, 정확한 운영 튜닝값·TTL·heavy item cap은 실측 후 조정한다([`13`](13-risks-open-questions.md) OQ-52; image cap은 OQ-12 연동).
 
 #### late same-turn 보조 notification (wire 실측 미결)
 
@@ -250,7 +250,7 @@ turn cancel 시 **unresolved approval은 반드시 cancelled로 닫는다**(이�
 2. **cancelled 응답을 wire로 먼저 전송**: `closing`으로 표시한 각 pending approval에 cancelled 응답을 **provider turn cancel보다 먼저** wire로 보낸다.
    - Codex: `{ id, result: { decision: "cancel" } }` (ref-codex §4.1; `jsonrpc` 필드 없음).
    - ACP: `{ jsonrpc:"2.0", id, result: { outcome: { outcome:"cancelled" } } }` (ref-acp §6).
-   각 응답 직후 `approval_resolved{decision: ApprovalDecision{outcome:"cancelled"}}`를 emit하고 pending table에서 제거(`closing`→closed)한다.
+   각 응답 직후 `approval_resolved{decision: ApprovalDecision{outcome:"cancelled"}, decidedBy:"cleanup"}`를 emit하고 pending table에서 제거(`closing`→closed)한다.
 3. **그 다음 provider turn cancel 전송**: 모든 approval cancelled 응답을 보낸 뒤에 provider turn cancel을 보낸다.
    - Codex: `turn/interrupt` request `{threadId, turnId}` (ref-codex §3.2).
    - ACP: `session/cancel` notification `{sessionId}` (ref-acp §3.8; notification이므로 응답 없음).
@@ -270,7 +270,7 @@ turn cancel 시 **unresolved approval은 반드시 cancelled로 닫는다**(이�
 ## 5. process exit / 에러 정리
 
 - `process_exited`는 모든 pending request(approval 포함)를 실패로 닫는다 (`07-tauri-process-runtime.md` §Process lifecycle "process exit은 모든 pending request를 실패로 닫는다"). 정확히-한-번 멱등 종료 규칙과 shutdown authoritative cleanup 경계는 **§5.0 정본**.
-- `error` event의 `recoverable`은 재시도 가능 여부다. Codex `error.willRetry`→`recoverable`, 그리고 `error.codexErrorInfo`(`usageLimitExceeded`/`contextWindowExceeded` 등)로 코드 분류 가능(ref-codex §6.9·§8). 매핑 불가 항목은 `raw` 보존.
+- `error` event의 `recoverable`은 재시도 가능 여부다. 선택 필드 `code`는 transport/runtime이 안정적으로 분류 가능한 경우만 채운다. 현재 stable code seed는 backend framing 계열(`framing_invalid_json`/`framing_line_too_large`/`framing_broken`)이며, Codex `error.codexErrorInfo`(`usageLimitExceeded`/`contextWindowExceeded` 등)를 포함한 provider별 세부 taxonomy는 OQ-60 후속이다. 매핑 불가 항목은 `raw` 보존.
 - `turn_completed{status:"failed"}`는 turn 실패이고 세션은 `idle`로 갈 수 있다. 세션 전체 `failed`(systemError)와 구분한다(§2.1 규칙 6).
 
 ### 5.0 exit/shutdown pending cleanup 정본 (불변식 — 정확히 한 번 멱등 종료)
@@ -280,7 +280,7 @@ turn cancel 시 **unresolved approval은 반드시 cancelled로 닫는다**(이�
 규칙:
 
 1. **종료 분류 (정본)**: pending cleanup 시 각 pending은 의미에 따라 닫는다.
-   - pending **approval**(server→client request)은: process가 **살아 있는** cancel/shutdown 경로에서는 `outcome:"cancelled"`로 닫고 wire `cancelled` 응답을 보낸다(§4.2); process가 **이미 종료된** exit 경로에서는 wire 응답이 불가하므로 `outcome:"failed"`(client 내부 전용, wire 미전송 — §4.2 규칙 4, 14 process exit, 15 §5)로 닫는다. 어느 쪽이든 `approval_resolved{decision}`를 emit한다.
+   - pending **approval**(server→client request)은: process가 **살아 있는** cancel/shutdown 경로에서는 `outcome:"cancelled"`로 닫고 wire `cancelled` 응답을 보낸다(§4.2); process가 **이미 종료된** exit 경로에서는 wire 응답이 불가하므로 `outcome:"failed"`(client 내부 전용, wire 미전송 — §4.2 규칙 4, 14 process exit, 15 §5)로 닫는다. 어느 쪽이든 `approval_resolved{decision, decidedBy:"cleanup"}`를 emit한다.
    - pending **RPC**(client가 보낸 요청의 응답 대기분)는 로컬에서 **failed로 reject**한다. process가 이미 종료됐거나 종료 중이면 wire 응답이 도착하지 않으므로, adapter가 대기 중인 promise/continuation을 실패로 정리한다.
 
 2. **정확히 한 번 · 멱등 (불변식)**: 한 `requestId`(approval 또는 RPC)의 종료는 그 pending의 생애 동안 **정확히 한 번만** 일어난다. 종료 시 pending table에서 제거(또는 closed 표시)하고, 그 `requestId`에 대해 **늦게 도착하는** exit notification·provider 응답·`serverRequest/resolved`(Codex)·`stopReason`(ACP)·동일 `requestId`에 대한 resolve는 대상이 이미 종료/부재이면 **멱등하게 무시**한다(상태 변경·재emit 없음). 이는 §4.2 cancel cleanup의 `closing`/closed 멱등 무시 규칙(§4.2 규칙 4)과 동일한 메커니즘을 exit/shutdown 축으로 확장한 것이다.

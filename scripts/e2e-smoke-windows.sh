@@ -67,6 +67,8 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MIRROR_SCRIPT="$MIRROR_DIR/scripts/e2e-smoke-windows.ps1"
+DEFAULT_POWERSHELL_EXE="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+POWERSHELL_EXE="${POWERSHELL_EXE:-}"
 
 echo "=== CLCOMX Windows E2E Smoke (from WSL) ==="
 echo ""
@@ -78,6 +80,17 @@ echo ""
 if [ ! -f "$MIRROR_SCRIPT" ]; then
   echo "[WSL] Mirror PowerShell runner was not found: $MIRROR_SCRIPT" >&2
   exit 1
+fi
+
+if [ -z "$POWERSHELL_EXE" ]; then
+  if command -v powershell.exe >/dev/null 2>&1; then
+    POWERSHELL_EXE="$(command -v powershell.exe)"
+  elif [ -x "$DEFAULT_POWERSHELL_EXE" ]; then
+    POWERSHELL_EXE="$DEFAULT_POWERSHELL_EXE"
+  else
+    echo "[WSL] PowerShell was not found on PATH or at $DEFAULT_POWERSHELL_EXE" >&2
+    exit 1
+  fi
 fi
 
 PS_ARGS=()
@@ -92,4 +105,4 @@ if [ -n "$PROJECT_NAME" ]; then
 fi
 
 echo "[Windows] Launching local mirror PowerShell runner..."
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$WIN_MIRROR_SCRIPT" "${PS_ARGS[@]}"
+"$POWERSHELL_EXE" -NoProfile -ExecutionPolicy Bypass -File "$WIN_MIRROR_SCRIPT" "${PS_ARGS[@]}"

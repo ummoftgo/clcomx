@@ -12,12 +12,18 @@ import type { ParsedInitialize } from "../../contracts/claude-acp";
 export interface ClaudeAcpClientCapabilities {
   fs: { readTextFile: boolean; writeTextFile: boolean };
   terminal: boolean;
+  auth?: { terminal: boolean; _meta?: Record<string, unknown> };
+  elicitation?: { form: null; url: null } | null;
+  _meta?: Record<string, unknown>;
 }
 
-/** 1차 client capability(fs/terminal 모두 false, 06 §3.2 / OQ-43). */
+/** 1차 client capability(fs/terminal/auth/elicitation/Claude meta 모두 미광고, 06 §3.2 / OQ-43). */
 export const DEFAULT_CLIENT_CAPABILITIES: ClaudeAcpClientCapabilities = {
   fs: { readTextFile: false, writeTextFile: false },
   terminal: false,
+  auth: { terminal: false, _meta: { gateway: false } },
+  elicitation: { form: null, url: null },
+  _meta: { terminal_output: false, "terminal-auth": false },
 };
 
 /**

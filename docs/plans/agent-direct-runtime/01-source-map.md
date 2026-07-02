@@ -2,25 +2,25 @@
 
 > 이 문서는 CLCOMX "Direct Agent Runtime" 계획의 **조사 근거와 버전 핀**을 모은다. 각 프로토콜은 별도 ref 문서로 1차 소스에서 검증되었으며, 본 문서는 그 검증 결과를 요약하고 ref로 링크한다. 코드 현실 근거는 `research/*`에 있다.
 
-확인일: 2026-06-25 (초기 조사 2026-06-24, 버전 핀 검증 2026-06-25)
+확인일: 2026-06-28 (초기 조사 2026-06-24, 버전 핀 검증 2026-06-25/2026-06-28)
 
 ---
 
 ## 0. 검증 상태 요약 (baseline pins)
 
-ref-* 3종은 **각 프로토콜의 1차 소스(저장소 태그 소스/생성 schema/패키지 메타데이터)를 기준으로 작성한 baseline 조사 결과**다. 아래 값은 ref 문서의 §0(버전 축 절)과 일치하되, 구현 핀은 T0.0/OQ-41 preflight에서 현재 public artifact와 대조한 뒤 확정한다.
+ref-* 3종은 **각 프로토콜의 1차 소스(저장소 태그 소스/생성 schema/패키지 메타데이터)를 기준으로 작성한 baseline 조사 결과**다. 아래 값은 ref 문서의 §0(버전 축 절)과 일치하되, 구현 핀은 OQ-41 preflight에서 현재 public/package artifact와 대조한 뒤 확정했다.
 
 | 프로토콜 / 구현체 | baseline / pinned 값 | wire/protocol 축 | 검증 근거(ref) |
 |---|---|---|---|
 | OpenAI Codex app-server | git tag `rust-v0.142.0`, CLI `codex-cli 0.142.0` | protocol **v2**(thread/turn/item); `initialize`만 v1 | [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §0 |
-| Agent Client Protocol (ACP) | schema baseline 후보 `schema-v1.16.0` (**구현 핀 아님; T0.0/OQ-41에서 public artifact 확정**) | wire `protocolVersion = 1` (stable; v2는 unstable draft) | [`ref-acp-protocol.md`](ref-acp-protocol.md) §0 |
+| Agent Client Protocol (ACP) | 구현 기준은 `@agentclientprotocol/sdk@0.29.0` package schema/dist + 부분 wire mirror. public schema 최신 확인값은 `agent-client-protocol` tag `v1.1.0` `schema/v1`(2026-06-28) | wire `protocolVersion = 1` (stable; v2는 unstable draft) | [`ref-acp-protocol.md`](ref-acp-protocol.md) §0, [`13`](13-risks-open-questions.md) OQ-41 |
 | Claude ACP adapter | `@agentclientprotocol/claude-agent-acp@0.51.0` (release commit `23626c9`) | ACP `protocolVersion = 1` 회신 | [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md) §버전 고정, §4 |
 
-> **주의 — baseline과 구현 시점 검증을 분리한다.** 위 값은 ref 문서를 작성한 조사 baseline이다. Codex/ACP/Claude adapter는 릴리스 주기가 빠르므로 구현 착수 직전 `codex --version`, `codex app-server generate-ts`, ACP public tag/release 및 패키지 내 schema artifact, `npm view @agentclientprotocol/claude-agent-acp version`을 다시 확인한다. baseline과 현재 환경이 다르면 자동으로 문서 값을 따라가지 말고 schema diff와 fixture replay 결과를 13 OQ-41에 기록한 뒤 결정한다.
+> **주의 — baseline과 구현 시점 검증을 분리한다.** 위 값은 ref 문서를 작성한 조사 baseline과 구현 시점 preflight 결과를 함께 적은 것이다. Codex/ACP/Claude adapter는 릴리스 주기가 빠르므로 dependency refresh나 target 환경 재검증 시 `codex --version`, `codex app-server generate-ts`, ACP public tag/release 및 패키지 내 schema artifact, `npm view @agentclientprotocol/claude-agent-acp version`을 다시 확인한다. baseline과 현재 환경이 다르면 자동으로 문서 값을 따라가지 말고 schema diff와 fixture replay 결과를 13 OQ-41에 기록한 뒤 결정한다.
 
 > **세 개의 독립 버전 축을 혼동하지 말 것**([`ref-acp-protocol.md`](ref-acp-protocol.md) §0):
 > 1. **wire protocolVersion** (ACP는 정수 `1`, Codex는 v1/v2 표면 구분) — `initialize`로 협상하는 값.
-> 2. **schema release tag** (ACP baseline 후보 `schema-v1.16.0`, Codex `rust-v0.142.0`) — 저장소가 타입을 배포하는 semver 태그. protocol version과 독립적으로 자주 올라간다. ACP의 실제 생성 타입 artifact는 T0.0/OQ-41에서 확정한다.
+> 2. **schema release tag / package schema** (ACP public `v1.1.0` `schema/v1`, 구현 기준 `@agentclientprotocol/sdk@0.29.0` package schema, Codex `rust-v0.142.0`) — 저장소/패키지가 타입을 배포하는 semver 축. protocol version과 독립적으로 자주 올라간다.
 > 3. **구현체 패키지 버전** (Claude adapter `0.51.0`) — 실제 실행하는 바이너리/패키지 semver.
 
 ---
@@ -42,10 +42,10 @@ Codex 계획은 CLI terminal 출력 파싱이 아니라 app-server protocol을 1
 
 - 문서: https://agentclientprotocol.com
 - 저장소: https://github.com/agentclientprotocol/agent-client-protocol
-- schema baseline 후보: **`schema-v1.16.0`** (2026-06-24 조사값, **구현 핀 아님**). wire **`protocolVersion = 1`**(stable).
-- 1차 ref 문서: [`ref-acp-protocol.md`](ref-acp-protocol.md) — baseline 후보 schema cut의 `schema/v1` JSON Schema와 `agent-client-protocol-schema/src/version.rs`를 근거로 transport/JSON-RPC 2.0, lifecycle(initialize/session_new/load/resume/prompt/cancel), `ContentBlock`, `ToolCall`/`ToolCallUpdate`, permission, fs/terminal client method, MCP config, modes/usage, error code, normalized 매핑을 기술했다(§1–§13). 실제 구현 타입 정본은 T0.0/OQ-41에서 public artifact와 대조 후 확정한다.
+- public schema 최신 확인값: **`v1.1.0`** `schema/v1` (2026-06-28, `gh api repos/agentclientprotocol/agent-client-protocol/tags` 및 `schema/v1/{meta.json,schema.json}`). wire **`protocolVersion = 1`**(stable). ref 문서의 과거 `schema-v1.16.0`은 구현 핀이 아니며, 현재 public tag 목록과 다르므로 직접 따라가지 않는다.
+- 1차 ref 문서: [`ref-acp-protocol.md`](ref-acp-protocol.md) — baseline 후보 schema cut의 `schema/v1` JSON Schema와 `agent-client-protocol-schema/src/version.rs`를 근거로 transport/JSON-RPC 2.0, lifecycle(initialize/session_new/load/resume/prompt/cancel), `ContentBlock`, `ToolCall`/`ToolCallUpdate`, permission, fs/terminal client method, MCP config, modes/usage, error code, normalized 매핑을 기술했다(§1–§13). 실제 구현 타입 정본은 T0.0/OQ-41에서 `@agentclientprotocol/claude-agent-acp@0.51.0`이 고정하는 `@agentclientprotocol/sdk@0.29.0` package schema/dist + CLCOMX 부분 wire mirror로 확정했다.
 
-확인된 핵심 방향: CLCOMX adapter는 **stable wire `protocolVersion = 1`**을 타겟으로 구현한다(ref-acp §0). v2(draft)는 `session/set_mode` 제거·`fs/*`/`terminal/*` 재배치 논의 중이므로 **참고만** 한다. `schema-v1.16.0`은 구현 핀이 아니며, 생성 타입 정본으로 쓸 ACP artifact는 T0.0/OQ-41에서 확정한다.
+확인된 핵심 방향: CLCOMX adapter는 **stable wire `protocolVersion = 1`**을 타겟으로 구현한다(ref-acp §0). v2(draft)는 `session/set_mode` 제거·`fs/*`/`terminal/*` 재배치 논의 중이므로 **참고만** 한다. 2026-06-28 현재 public `v1.1.0` schema의 `SessionUpdate`는 11종이고, 로컬 pinned `@agentclientprotocol/sdk@0.29.0` package schema는 `plan_update`/`plan_removed`를 포함한 13종이다. 따라서 v1 구현은 실제 실행 adapter가 의존하는 SDK 0.29.0의 13종 부분 mirror를 유지하고, dependency refresh 시 public schema diff + fixture replay로 핀 갱신 여부를 다시 결정한다.
 
 ### 1.3 Claude Agent / ACP Adapter
 
@@ -93,27 +93,27 @@ Claude 계획은 `claude -p --output-format stream-json`을 주 경로로 삼지
 
 ### 4.1 Codex
 
-- [ ] `codex app-server --help`에서 `generate-ts`, `generate-json-schema`, `--listen` 옵션 확인.
-- [ ] `codex app-server generate-ts` 결과를 `src/lib/features/agent-runtime/generated/codex-app-server/`의 생성 타입과 비교(ref-codex §0의 schema 산출물 기준).
-- [ ] 로컬 CLI 버전이 baseline `rust-v0.142.0`과 다르면 thread/turn/item 표면 diff 확인. 최신 릴리스가 존재해도 schema diff와 adapter fixture가 통과하기 전에는 핀을 임의로 올리지 않는다.
+- [x] `codex app-server --help`에서 `generate-ts`, `generate-json-schema`, `--listen` 옵션 확인. 증거(2026-06-28): `codex-cli 0.142.2`, `codex app-server --help`가 세 항목을 모두 표시한다.
+- [x] `codex app-server generate-ts` 결과를 `src/lib/features/agent-runtime/generated/codex-app-server/`의 생성 타입과 비교(ref-codex §0의 schema 산출물 기준). 증거(2026-06-28): `/tmp/codex-gen.nHNf7l`에 fresh generate 후 `diff -qr` 결과는 저장소 전용 `README.md` 외 차이 없음.
+- [x] 로컬 CLI 버전이 baseline `rust-v0.142.0`과 다르면 thread/turn/item 표면 diff 확인. 최신 릴리스가 존재해도 schema diff와 adapter fixture가 통과하기 전에는 핀을 임의로 올리지 않는다. 증거(2026-06-28): 현재 `codex-cli 0.142.2` generated type이 vendored generated type과 동일해 patch drift는 없음(README만 저장소 보강 파일).
 
 ### 4.2 ACP
 
-- [ ] ACP public release/tag 목록, 패키지 내 `schema/v1` artifact, adapter가 실제 협상하는 `protocolVersion`(=1)을 대조한다(ref-acp §0, ux-reference §0 주의). baseline 후보 `schema-v1.16.0`과 public artifact가 다르면 어느 artifact를 생성 타입의 정본으로 쓸지 13 OQ-41에 기록하고, 확정 전에는 ACP 타입 생성/매핑 구현을 시작하지 않는다. 구현 핀 확정 시 생성 타입은 sdk `0.29.0`(`session/update` 13 variant, 13 OQ-32) 정합을 확인한다 — public artifact를 고르더라도 13종 정본을 우선한다.
-- [ ] `agent_thought_chunk`/`user_message_chunk`의 정확한 discriminator를 schema에서 확정([15](15-data-contracts.md) §3 모델 gap, [`research/ux-reference.md`](research/ux-reference.md) §12-2).
-- [ ] ACP diff content(`oldText`/`newText`) → [15](15-data-contracts.md) §4 `{type:"diff", patch}` 변환 규칙 확정([`research/ux-reference.md`](research/ux-reference.md) §12-3).
+- [x] ACP public release/tag 목록, 패키지 내 schema artifact, adapter가 실제 협상하는 `protocolVersion`(=1)을 대조한다(ref-acp §0, ux-reference §0 주의). 증거(2026-06-28): 공식 `agent-client-protocol` tag latest는 `v1.1.0`이고 `schema/v1/{meta.json,schema.json}`이 존재하며 `meta.version=1`, `version.rs`의 `LATEST=V1`이다. 현재 public `v1.1.0` schema의 `SessionUpdate`는 11종이고, 로컬 pinned `@agentclientprotocol/sdk@0.29.0` package schema는 `plan_update`/`plan_removed`를 포함한 13종이다. 구현 기준은 13 OQ-41/RD-7처럼 `@agentclientprotocol/claude-agent-acp@0.51.0` → `@agentclientprotocol/sdk@0.29.0` package schema/dist + CLCOMX 부분 wire mirror로 유지한다. npm latest `@agentclientprotocol/claude-agent-acp@0.52.0`/`@agentclientprotocol/sdk@1.0.0`은 임의 상향하지 않고 dependency refresh 때 schema diff + fixture replay로 판단한다.
+- [x] `agent_thought_chunk`/`user_message_chunk`의 정확한 discriminator를 schema에서 확정([15](15-data-contracts.md) §3 모델 gap, [`research/ux-reference.md`](research/ux-reference.md) §12-2). 증거: `contracts/claude-acp.ts` `AcpSessionUpdate`가 sdk 0.29.0 기준 13종 discriminant를 mirror하고, `claude-acp-session-update.test.ts`가 `user_message_chunk` 및 `agent_thought_chunk → channel:"thought"` 매핑을 검증한다(13 OQ-01/OQ-32).
+- [x] ACP diff content(`oldText`/`newText`) → [15](15-data-contracts.md) §4 `{type:"diff", patch}` 변환 규칙 확정([`research/ux-reference.md`](research/ux-reference.md) §12-3). 증거: `contracts/claude-acp.ts` `ToolCallContent{type:"diff", path, oldText, newText}` mirror, `claude-acp-content.ts` `mapToolCallContent`/`buildUnifiedDiff`, `claude-acp-content.test.ts` diff→patch 및 `oldText=null` 신규 파일 테스트(13 OQ-03/OQ-45).
 
 ### 4.3 Claude adapter
 
-- [ ] `@agentclientprotocol/claude-agent-acp` 버전을 정확히 핀(`0.51.0`)하고 caret 범위를 쓰지 않는다(ref-claude §버전 고정).
-- [ ] adapter가 회신하는 `protocolVersion`이 `1`인지 확인, 불일치 시 protocol error 처리(ref-claude §4).
-- [ ] **`@zed-industries/claude-code-acp`(deprecated)는 새 의존성에 추가하지 않는다.** bin 이름 차이(`claude-code-acp` vs `claude-agent-acp`) 주의(ref-claude §구버전과의 관계).
-- [ ] CI에 capability 회귀 테스트 추가(minor마다 capability/session mode 변동 가능, ref-claude §4, §6).
+- [x] `@agentclientprotocol/claude-agent-acp` 버전을 정확히 핀(`0.51.0`)하고 caret 범위를 쓰지 않는다(ref-claude §버전 고정). 증거(2026-06-28): `package.json`과 `package-lock.json` 루트 dependency가 모두 `"@agentclientprotocol/claude-agent-acp": "0.51.0"`이고, `npm ls @agentclientprotocol/claude-agent-acp @agentclientprotocol/sdk --depth=1` 결과는 `@agentclientprotocol/claude-agent-acp@0.51.0` → `@agentclientprotocol/sdk@0.29.0`.
+- [x] adapter가 회신하는 `protocolVersion`이 `1`인지 확인, 불일치 시 protocol error 처리(ref-claude §4). 증거: `claude-acp-initialize.ts`가 `protocolVersion !== 1`이면 `InitializeProtocolError`를 throw하고, `claude-acp-initialize.test.ts`/`claude-acp-adapter.test.ts`가 start failure 경로를 검증한다.
+- [x] **`@zed-industries/claude-code-acp`(deprecated)는 새 의존성에 추가하지 않는다.** bin 이름 차이(`claude-code-acp` vs `claude-agent-acp`) 주의(ref-claude §구버전과의 관계). 증거(2026-06-28): `package.json`/`package-lock.json` dependency에 deprecated package가 없고, runtime resolver는 pinned `node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js` layout만 신뢰한다.
+- [x] CI에 capability 회귀 테스트 추가(minor마다 capability/session mode 변동 가능, ref-claude §4, §6). 증거: `.github/workflows/test.yml`은 `npm run test`를 실행하고, 해당 suite에 `claude-acp-initialize.test.ts` OQ-43 capability 미광고/CL-2/CL-3, `claude-acp-session-update.test.ts`, `claude-acp-adapter.test.ts` permission/session mode metadata tests가 포함된다.
 
 ### 4.4 환경/브랜딩
 
-- [ ] WSL에서 node `>=22` 기반 bin 실행 전제 확인(ref-claude §5).
-- [ ] Anthropic Agent SDK 약관과 branding guideline 확인: 제품이 Claude Code 또는 Anthropic 제품처럼 보이면 안 된다([13](13-risks-open-questions.md) Branding).
+- [x] WSL에서 node `>=22` 기반 bin 실행 전제 확인(ref-claude §5). 증거(2026-06-28): 현재 WSL `node --version`은 `v24.11.1`.
+- [x] Anthropic Agent SDK 약관과 branding guideline 확인: 제품이 Claude Code 또는 Anthropic 제품처럼 보이면 안 된다([13](13-risks-open-questions.md) Branding). 증거(2026-06-28): 공식 Agent SDK overview의 branding guidelines는 제품이 Anthropic이 만들었거나 후원/보증한 것처럼 암시하지 말라고 요구하고, authentication 항목은 third-party products에 Claude app credentials/rate limits 제공이 허용되지 않으며 API key 사용을 권장한다고 명시한다. v1 UI는 direct runtime provider 라벨을 중립화하고(`09 §9`), Claude ACP는 terminal/gateway auth capability를 광고하지 않는다(OQ-43).
 
 ---
 

@@ -44,6 +44,21 @@ pub struct AgentRuntimeMetadataRecord {
     /// provider 바이너리 버전(호환성 추적).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_version: Option<String>,
+    /// provider sandbox/mode 표시용 metadata(09 §8.2). 비밀이 아니므로 보존한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    /// provider approval policy 표시용 metadata(09 §8.2). 비밀이 아니므로 보존한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<String>,
+    /// provider approval reviewer 표시용 metadata(09 §8.2). 비밀이 아니므로 보존한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals_reviewer: Option<String>,
+    /// Claude SDK permissionMode 또는 동등 provider permission mode id. 비밀이 아니므로 보존한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// ACP session mode 또는 동등 provider session mode id. 비밀이 아니므로 보존한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_mode: Option<String>,
     /// replay 없는 재개 가능 여부(복원 전략 선택 입력).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_resume: Option<bool>,

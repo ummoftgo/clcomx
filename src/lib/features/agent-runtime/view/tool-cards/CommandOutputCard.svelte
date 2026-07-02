@@ -9,6 +9,7 @@
 <script lang="ts">
   import { t } from "../../../../i18n";
   import { TEST_IDS } from "../../../../testids";
+  import { redactDisplayText } from "../../service/display-redaction";
 
   interface Props {
     /** 실행 명령(헤더 표시). */
@@ -27,6 +28,8 @@
   let stderrExpanded = $state(false);
   const hasStderr = $derived(stderr.trim().length > 0);
   const hasStdout = $derived(stdout.trim().length > 0);
+  const redactedStdout = $derived(redactDisplayText(stdout));
+  const redactedStderr = $derived(redactDisplayText(stderr));
 </script>
 
 <div class="command-output-card" data-testid={TEST_IDS.agentCommandOutputCard}>
@@ -47,7 +50,7 @@
     aria-label={$t("agentRuntime.command.stdoutLabel")}
   >
     {#if hasStdout}
-      <pre class="cmd-pre">{stdout}</pre>
+      <pre class="cmd-pre">{redactedStdout}</pre>
     {:else}
       <span class="cmd-empty">{$t("agentRuntime.command.empty")}</span>
     {/if}
@@ -64,7 +67,7 @@
     </button>
     {#if stderrExpanded}
       <div class="cmd-output stderr" data-stream="stderr" role="log">
-        <pre class="cmd-pre">{stderr}</pre>
+        <pre class="cmd-pre">{redactedStderr}</pre>
       </div>
     {/if}
   {/if}

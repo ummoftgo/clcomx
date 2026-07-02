@@ -10,8 +10,14 @@ function sameHistoryEntry(left: TabHistoryEntry, right: TabHistoryEntry) {
     left.distro === right.distro &&
     left.workDir === right.workDir &&
     left.title === right.title &&
+    (left.runtimeKind ?? "pty") === (right.runtimeKind ?? "pty") &&
     left.lastOpenedAt === right.lastOpenedAt
   );
+}
+
+/** preview history도 실제 저장 계층처럼 direct host 표식만 보존한다. */
+function normalizeHistoryRuntimeKind(value: unknown): TabHistoryEntry["runtimeKind"] | undefined {
+  return value === "direct-codex" || value === "direct-claude" ? value : undefined;
 }
 
 function normalizeHistoryLimit(bootstrap: AppBootstrap, value: unknown) {
@@ -37,6 +43,7 @@ export function recordPreviewHistoryEntry(
     workDir: String(args?.workDir ?? defaultWorkDir),
     title: String(args?.title ?? "workspace"),
     resumeToken: null,
+    runtimeKind: normalizeHistoryRuntimeKind(args?.runtimeKind),
     lastOpenedAt: new Date().toISOString(),
   };
 
@@ -44,7 +51,8 @@ export function recordPreviewHistoryEntry(
     return !(
       existing.agentId === entry.agentId &&
       existing.distro === entry.distro &&
-      existing.workDir === entry.workDir
+      existing.workDir === entry.workDir &&
+      (existing.runtimeKind ?? "pty") === (entry.runtimeKind ?? "pty")
     );
   });
 

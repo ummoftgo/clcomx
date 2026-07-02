@@ -3,6 +3,8 @@ import type { Session } from "../../types";
 import {
   moveSessionInList,
   removeSessionAndResolveActive,
+  setSessionAgentRuntimeInList,
+  setSessionAgentRuntimeStatusInList,
   setSessionEditorStateInList,
   setSessionPinnedInList,
 } from "./session-store-mutations";
@@ -77,5 +79,34 @@ describe("session-store-mutations", () => {
       activeEditorPath: "/tmp/a/src/main.ts",
       dirtyPaths: ["/tmp/a/src/main.ts"],
     });
+  });
+
+  it("updates direct runtime metadata without touching PTY resume state", () => {
+    const sessions = [createSession("a")];
+
+    setSessionAgentRuntimeInList(sessions, "a", {
+      sessionRuntimeKind: "direct-codex",
+      provider: "codex",
+      providerThreadId: "thread-1",
+      providerSessionId: "session-tree-1",
+      canResume: true,
+      canLoad: true,
+    });
+
+    expect(sessions[0].resumeToken).toBeNull();
+    expect(sessions[0].agentRuntime).toMatchObject({
+      sessionRuntimeKind: "direct-codex",
+      provider: "codex",
+      providerThreadId: "thread-1",
+      providerSessionId: "session-tree-1",
+    });
+  });
+
+  it("OQ-06: updates the live-only direct runtime tab status", () => {
+    const sessions = [createSession("a")];
+
+    setSessionAgentRuntimeStatusInList(sessions, "a", "requires_action");
+
+    expect(sessions[0].agentRuntimeStatus).toBe("requires_action");
   });
 });

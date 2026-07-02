@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 const STATE_DIR_ENV: &str = "CLCOMX_STATE_DIR";
 const TEST_MODE_ENV: &str = "CLCOMX_TEST_MODE";
+const TEST_MODE_EDITOR_REAL_LAUNCH_ENV: &str = "CLCOMX_TEST_MODE_EDITOR_REAL_LAUNCH";
+const AGENT_RUNTIME_DEBUG_LOG_ENV: &str = "CLCOMX_AGENT_DEBUG_LOG";
 const DEBUG_TERMINAL_HOOKS_ENV: &str = "CLCOMX_DEBUG_TERMINAL_HOOKS";
 const SOFT_FOLLOW_EXPERIMENT_ENV: &str = "CLCOMX_SOFT_FOLLOW_EXPERIMENT";
 const TEST_DISTRO_ENV: &str = "CLCOMX_TEST_DISTRO";
@@ -33,6 +35,14 @@ fn optional_bool_env_var(name: &str) -> Option<bool> {
 
 pub fn is_test_mode() -> bool {
     is_truthy_env_var(TEST_MODE_ENV)
+}
+
+pub fn is_test_mode_editor_real_launch_enabled() -> bool {
+    is_truthy_env_var(TEST_MODE_EDITOR_REAL_LAUNCH_ENV)
+}
+
+pub fn is_agent_runtime_debug_log_enabled() -> bool {
+    is_truthy_env_var(AGENT_RUNTIME_DEBUG_LOG_ENV)
 }
 
 pub fn is_terminal_debug_hooks_enabled() -> bool {
@@ -82,12 +92,22 @@ pub fn test_home_path() -> String {
 
 #[cfg(test)]
 pub mod test_support {
-    use super::STATE_DIR_ENV;
+    use super::{STATE_DIR_ENV, TEST_MODE_EDITOR_REAL_LAUNCH_ENV, TEST_MODE_ENV};
     use std::ffi::OsString;
     use std::path::Path;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     pub struct StateDirEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        previous: Option<OsString>,
+    }
+
+    pub struct TestModeEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        previous: Option<OsString>,
+    }
+
+    pub struct TestModeEditorRealLaunchEnvGuard {
         _lock: MutexGuard<'static, ()>,
         previous: Option<OsString>,
     }
@@ -102,7 +122,37 @@ pub mod test_support {
         }
     }
 
+    impl Drop for TestModeEnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(TEST_MODE_ENV, value);
+            } else {
+                std::env::remove_var(TEST_MODE_ENV);
+            }
+        }
+    }
+
+    impl Drop for TestModeEditorRealLaunchEnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(TEST_MODE_EDITOR_REAL_LAUNCH_ENV, value);
+            } else {
+                std::env::remove_var(TEST_MODE_EDITOR_REAL_LAUNCH_ENV);
+            }
+        }
+    }
+
     fn state_dir_env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn test_mode_env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn test_mode_editor_real_launch_env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -116,11 +166,31 @@ pub mod test_support {
             previous,
         }
     }
+
+    pub fn set_test_mode_env() -> TestModeEnvGuard {
+        let lock = test_mode_env_lock().lock().unwrap();
+        let previous = std::env::var_os(TEST_MODE_ENV);
+        std::env::set_var(TEST_MODE_ENV, "1");
+        TestModeEnvGuard {
+            _lock: lock,
+            previous,
+        }
+    }
+
+    pub fn set_test_mode_editor_real_launch_env() -> TestModeEditorRealLaunchEnvGuard {
+        let lock = test_mode_editor_real_launch_env_lock().lock().unwrap();
+        let previous = std::env::var_os(TEST_MODE_EDITOR_REAL_LAUNCH_ENV);
+        std::env::set_var(TEST_MODE_EDITOR_REAL_LAUNCH_ENV, "1");
+        TestModeEditorRealLaunchEnvGuard {
+            _lock: lock,
+            previous,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::optional_bool_env_var;
+    use super::{is_test_mode_editor_real_launch_enabled, optional_bool_env_var};
 
     const TEST_ENV: &str = "CLCOMX_TEST_OPTIONAL_BOOL_ENV";
 
@@ -137,5 +207,20 @@ mod tests {
 
         std::env::remove_var(TEST_ENV);
         assert_eq!(optional_bool_env_var(TEST_ENV), None);
+    }
+
+    #[test]
+    fn test_mode_editor_real_launch_guard_sets_and_restores_env() {
+        let previous = std::env::var_os("CLCOMX_TEST_MODE_EDITOR_REAL_LAUNCH");
+
+        {
+            let _guard = super::test_support::set_test_mode_editor_real_launch_env();
+            assert!(is_test_mode_editor_real_launch_enabled());
+        }
+
+        assert_eq!(
+            std::env::var_os("CLCOMX_TEST_MODE_EDITOR_REAL_LAUNCH"),
+            previous
+        );
     }
 }

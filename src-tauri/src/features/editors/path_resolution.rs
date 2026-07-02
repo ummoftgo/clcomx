@@ -736,6 +736,31 @@ pub(super) fn resolve_terminal_path_record(
     })
 }
 
+/// test mode의 agent location fixture를 실제 파일 접근 없이 external editor 경로로 해석한다.
+fn mock_test_mode_resolve_terminal_path_record(
+    raw: &str,
+    wsl_path: &str,
+    line: Option<u32>,
+    column: Option<u32>,
+    distro: &str,
+) -> Option<ResolvedTerminalPath> {
+    let normalized = normalize_posix_path(wsl_path);
+    if !normalized.ends_with("/src/lib/example.ts") {
+        return None;
+    }
+
+    let windows_path = wsl_path_to_windows(&normalized, distro).ok()?;
+    Some(ResolvedTerminalPath {
+        raw: raw.to_string(),
+        copy_text: build_copy_text(&normalized, line, column),
+        wsl_path: normalized,
+        windows_path,
+        line,
+        column,
+        is_directory: false,
+    })
+}
+
 pub(super) fn resolve_terminal_path_with_state(
     workspace_state: Option<&WorkspaceState>,
     pty_state: Option<&PtyState>,
@@ -761,6 +786,19 @@ pub(super) fn resolve_terminal_path_with_state(
     );
     let direct_wsl_path =
         resolve_wsl_path_from(effective_home_dir.as_deref(), &raw_path, &work_dir)?;
+
+    if is_test_mode() && path_is_within_root(&direct_wsl_path, &work_dir) {
+        // E2E fixture 파일은 WSL mock에만 존재하므로 실제 FS metadata 없이 해석한다.
+        if let Some(path) = mock_test_mode_resolve_terminal_path_record(
+            &cleaned,
+            &direct_wsl_path,
+            line,
+            column,
+            &distro,
+        ) {
+            return Ok(TerminalPathResolution::Resolved { path });
+        }
+    }
 
     if let Ok(path) = resolve_terminal_path_record(&cleaned, direct_wsl_path, line, column, &distro)
     {
@@ -831,7 +869,12 @@ pub fn resolve_terminal_path(
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_posix_path, path_is_within_root, wsl_path_to_windows};
+    use crate::app_env::test_support::set_test_mode_env;
+
+    use super::{
+        normalize_posix_path, path_is_within_root, resolve_terminal_path_with_state,
+        wsl_path_to_windows, TerminalPathResolution,
+    };
 
     #[test]
     fn normalize_posix_path_converts_windows_separators() {
@@ -865,5 +908,31 @@ mod tests {
                 .expect("windows UNC path should pass through"),
             r"\\wsl.localhost\Ubuntu-20.04\home\xenia\project"
         );
+    }
+
+    #[test]
+    fn test_mode_resolves_location_fixture_without_real_file() {
+        let _test_mode = set_test_mode_env();
+
+        let result = resolve_terminal_path_with_state(
+            None,
+            None,
+            "/home/tester/workspace/src/lib/example.ts".into(),
+            "clcomx-test".into(),
+            "/home/tester/workspace".into(),
+            None,
+            None,
+        )
+        .expect("test-mode location fixture should resolve");
+
+        let TerminalPathResolution::Resolved { path } = result else {
+            panic!("fixture should resolve to one path");
+        };
+        assert_eq!(path.wsl_path, "/home/tester/workspace/src/lib/example.ts");
+        assert_eq!(
+            path.windows_path,
+            r"\\wsl.localhost\clcomx-test\home\tester\workspace\src\lib\example.ts"
+        );
+        assert!(!path.is_directory);
     }
 }

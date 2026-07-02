@@ -144,6 +144,36 @@
     }
   }
 
+  /** direct runtime 표시는 공식 앱명이 아니라 provider 선택 문맥으로 노출한다. */
+  function getDirectRuntimeProviderLabel(agentId: string) {
+    return t("launcher.directRuntime.providerLabel", {
+      values: { provider: getAgentDefinition(agentId).shortLabel },
+    });
+  }
+
+  /** 현재 launcher 선택 상태에 맞는 agent/provider 라벨을 반환한다. */
+  function getSelectedAgentDisplayLabel(agentId: string) {
+    if (launcher.useDirectRuntime && launcherController.selectedAgentSupportsDirect()) {
+      return getDirectRuntimeProviderLabel(agentId);
+    }
+
+    return getAgentLabel(agentId);
+  }
+
+  /** direct history는 provider 재개 키를 UI에 노출하지 않는다. */
+  function isDirectRuntimeHistoryEntry(entry: TabHistoryEntry) {
+    return entry.runtimeKind?.startsWith("direct-") ?? false;
+  }
+
+  /** 최근/삭제 히스토리에서 direct runtime 항목은 provider 라벨로 표시한다. */
+  function getHistoryAgentDisplayLabel(entry: TabHistoryEntry) {
+    if (isDirectRuntimeHistoryEntry(entry)) {
+      return getDirectRuntimeProviderLabel(entry.agentId ?? "claude");
+    }
+
+    return getAgentLabel(entry.agentId ?? "claude");
+  }
+
   function handleMouseHistory(e: MouseEvent) {
     if (!visible || launcher.step !== "browser") return;
     if (e.button === 3) {
@@ -224,12 +254,17 @@
                         <AgentIcon agentId={entry.agentId ?? "claude"} />
                         <span class="recent-title">{entry.title}</span>
                       </span>
-                      <span class="recent-meta">{getAgentLabel(entry.agentId ?? "claude")} · {entry.distro}</span>
+                      <span class="recent-meta">
+                        {getHistoryAgentDisplayLabel(entry)} · {entry.distro}
+                        {#if entry.runtimeKind?.startsWith("direct-")}
+                          <span class="recent-runtime-badge">{t("launcher.directRuntime.badge")}</span>
+                        {/if}
+                      </span>
                     </div>
                     <span class="recent-path" title={entry.workDir}>{entry.workDir}</span>
-                    {#if entry.resumeToken}
+                    {#if entry.resumeToken && !isDirectRuntimeHistoryEntry(entry)}
                       <span class="recent-token">
-                        {getAgentLabel(entry.agentId ?? "claude")} · {getAgentDefinition(entry.agentId ?? "claude").resumeTokenLabel} · {summarizeResumeToken(entry.resumeToken)}
+                        {getHistoryAgentDisplayLabel(entry)} · {getAgentDefinition(entry.agentId ?? "claude").resumeTokenLabel} · {summarizeResumeToken(entry.resumeToken)}
                       </span>
                     {/if}
                   </button>
@@ -275,7 +310,7 @@
                   onclick={launcherController.openAgentPicker}
                 >
                   <AgentIcon agentId={launcher.selectedAgentId} size="sm" />
-                  <span>{getAgentLabel(launcher.selectedAgentId)}</span>
+                  <span>{getSelectedAgentDisplayLabel(launcher.selectedAgentId)}</span>
                 </button>
                 <button
                   class="picker-badge distro-trigger"
@@ -412,7 +447,7 @@
     {#if launcher.pendingDeleteEntry}
       <div class="history-delete-entry">
         <span class="history-delete-meta">
-          {getAgentLabel(launcher.pendingDeleteEntry.agentId ?? "claude")} · {launcher.pendingDeleteEntry.distro}
+          {getHistoryAgentDisplayLabel(launcher.pendingDeleteEntry)} · {launcher.pendingDeleteEntry.distro}
         </span>
         <span class="history-delete-path" title={launcher.pendingDeleteEntry.workDir}>
           {launcher.pendingDeleteEntry.workDir}
@@ -1046,6 +1081,19 @@
   .shortcut,
   .list-hint {
     font-size: var(--ui-font-size-sm);
+  }
+
+  .recent-runtime-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 18px;
+    margin-left: 6px;
+    padding: 0 6px;
+    border: 1px solid var(--ui-border-strong);
+    border-radius: 6px;
+    color: var(--ui-text);
+    font-size: 11px;
+    line-height: 1;
   }
 
   .recent-path,

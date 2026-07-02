@@ -3,10 +3,14 @@
  *
  * S1 정본(command 비제어): adapter는 실행 executable(node 절대경로)을 생성하지 않는다.
  * backend가 provider="claude"로 신뢰 node 절대경로를 resolve한다(R4, 07 §8.1). adapter가 제어하는 것은
- * args(=[adapterEntryPath], 검증 대상)·distro·workDir·env(non-secret)뿐이다.
+ * args(=[adapterEntryPath, --hide-claude-auth], 검증 대상)·distro·workDir·env(non-secret)뿐이다.
  */
 
 import type { AgentRuntimeStartParams } from "../../service/transport";
+import { assertNonSecretLaunchEnv } from "../launch-env";
+
+/** Claude subscription auth method 노출을 줄이는 고정 adapter 플래그(09 §9). */
+export const CLAUDE_ACP_HIDE_AUTH_ARG = "--hide-claude-auth";
 
 /** buildClaudeAcpLaunchParams 입력(06 §2.2). */
 export interface ClaudeAcpLaunchConfig {
@@ -27,16 +31,17 @@ export interface ClaudeAcpLaunchConfig {
 
 /**
  * Claude ACP launch용 AgentRuntimeStartParams(15 §8.1 jsonrpc-stdio + provider:"claude") 생성.
- * command(node)는 만들지 않는다(S1) — args=[adapterEntryPath]만 채운다.
+ * command(node)는 만들지 않는다(S1) — args=[adapterEntryPath, --hide-claude-auth]만 채운다.
  */
 export function buildClaudeAcpLaunchParams(cfg: ClaudeAcpLaunchConfig): AgentRuntimeStartParams {
+  assertNonSecretLaunchEnv("claude", cfg.env);
   return {
     transportKind: "jsonrpc-stdio",
     provider: "claude",
     distro: cfg.distro,
     workDir: cfg.workDir,
-    // backend allowlist(07 §8.1)는 claude일 때 args.length==1 && args[0]==검증된 adapterEntryPath를 요구한다.
-    args: [cfg.adapterEntryPath],
+    // backend allowlist(07 §8.1)는 검증된 adapterEntryPath와 고정 auth 숨김 플래그만 허용한다.
+    args: [cfg.adapterEntryPath, CLAUDE_ACP_HIDE_AUTH_ARG],
     // C1 경계: env는 non-secret 전용이다.
     env: cfg.env,
   };

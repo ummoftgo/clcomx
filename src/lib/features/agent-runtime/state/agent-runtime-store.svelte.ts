@@ -15,6 +15,7 @@ import type {
   AgentEvent,
   AgentProvider,
   AgentSessionStatus,
+  ApprovalDecidedBy,
   ApprovalDecision,
   ApprovalRequest,
   TokenUsage,
@@ -42,7 +43,6 @@ import {
 import {
   ApprovalAuditTrail,
   type ApprovalAuditEntry,
-  type ApprovalDecidedBy,
 } from "../controller/approval-audit";
 
 /** store 생성 옵션. */
@@ -99,6 +99,8 @@ export interface AgentRuntimeStore {
   flushSealAndEvict(): void;
   /** auto-follow 토글(08 §7.2 — 스크롤 추종 on/off). */
   setAutoFollow(value: boolean): void;
+  /** provider prompt capability를 composer 게이트용 상태로 반영한다(08 §6.4). */
+  setCapabilities(value: ComposerCapabilities): void;
   /** 세션 teardown(table/audit 정리). */
   dispose(): void;
 }
@@ -192,15 +194,24 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
     // usage 보강.
     if (event.type === "turn_completed" && event.usage) this.usage = event.usage;
 
-    // 슬래시 커맨드 목록 갱신(composer 팔레트 소스, 최신 목록 전체 교체).
-    if (event.type === "available_commands_updated") this.availableCommands = event.commands;
+    // 슬래시 커맨드 목록 갱신(composer 팔레트 소스). available_commands_updated는 최신 목록 전체 교체,
+    // session start/load·process exit 전이는 이전 세션의 stale 목록을 비운다(04 §3.8).
+    if (event.type === "available_commands_updated") {
+      this.availableCommands = event.commands;
+    } else if (
+      event.type === "session_started" ||
+      event.type === "session_loaded" ||
+      event.type === "process_exited"
+    ) {
+      this.availableCommands = [];
+    }
 
     // exit 시 pending 전부 failed 종료(04 §5.0 규칙 3) — store 자체에서 처리.
     if (event.type === "process_exited") {
       this.closePendingOnExit();
     }
 
-    // streaming item 추적(가상화 강제 포함 대상).
+    // streaming item을 추적해 auto-follow와 후속 DOM 가상화 always-mount 입력으로 쓴다.
     this.updateStreamingItemId(event);
 
     this.syncReactiveSurface();
@@ -213,13 +224,13 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
       const turnKey = turnKeyOf(event.ref);
       this.pending.register(this.sessionHandle, this.provider, event.request, turnKey);
     } else if (event.type === "approval_resolved") {
-      // wire에서 온 resolved(serverRequest/resolved 등) — user 결정으로 멱등 종료.
+      // wire/cleanup에서 온 resolved는 event.decidedBy를 audit에 반영하고, 생략값은 user로 본다.
       const r = this.pending.resolve(
         this.sessionHandle,
         event.decision.requestId,
         event.decision.outcome,
         event.decision.optionId,
-        "user",
+        event.decidedBy ?? "user",
       );
       this.recordAudit(r);
       // ref의 turnId 누락에 의존하지 않고 닫힌 entry의 turnKey로 turn pending을 갱신한다(방어).
@@ -242,7 +253,7 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
     }
   }
 
-  /** streaming 중인 message item id를 추적한다(08 §3 가상화 강제 포함). */
+  /** streaming 중인 message item id를 추적한다(08 §3/§7.2 후속 always-mount 입력). */
   private updateStreamingItemId(event: AgentEvent): void {
     if (event.type === "agent_message_delta") {
       const base = event.ref.itemId ?? event.ref.messageId;
@@ -349,6 +360,10 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
 
   setAutoFollow(value: boolean): void {
     this.autoFollow = value;
+  }
+
+  setCapabilities(value: ComposerCapabilities): void {
+    this.capabilities = value;
   }
 
   dispose(): void {

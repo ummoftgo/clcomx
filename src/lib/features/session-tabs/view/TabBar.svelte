@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import { _ as t } from "svelte-i18n";
   import type { TabBarProps } from "../contracts/tab-bar";
+  import type { AgentSessionStatus } from "../../agent-runtime/contracts/normalized";
   import {
     activateSessionTab,
     scheduleSessionTabFocus,
@@ -162,6 +163,16 @@
     scheduleSessionTabFocus(sessionId, onRequestSessionFocus);
   }
 
+  /** AgentSessionStatus 값을 기존 agentRuntime.status i18n 키로 매핑한다. */
+  function runtimeStatusLabelKey(status: AgentSessionStatus): string {
+    switch (status) {
+      case "requires_action":
+        return "agentRuntime.status.requiresAction";
+      default:
+        return `agentRuntime.status.${status}`;
+    }
+  }
+
 </script>
 
 <div class="tab-bar" data-testid={TEST_IDS.tabBar}>
@@ -197,6 +208,17 @@
         {/if}
         {#if session.locked}
           <span class="tab-state-badge tab-state-badge--locked" title={$t("tabs.menu.lockTab", { default: "Lock Tab Close" })}>LOCK</span>
+        {/if}
+        {#if session.agentRuntimeStatus}
+          {@const runtimeStatusLabel = $t(runtimeStatusLabelKey(session.agentRuntimeStatus))}
+          <span
+            class="tab-runtime-status tab-runtime-status--{session.agentRuntimeStatus}"
+            data-runtime-status={session.agentRuntimeStatus}
+            aria-label={runtimeStatusLabel}
+            title={runtimeStatusLabel}
+          >
+            <span class="tab-runtime-status-dot" aria-hidden="true"></span>
+          </span>
         {/if}
         <AgentIcon agentId={session.agentId} />
         <span class="tab-title">{session.title}</span>
@@ -382,6 +404,46 @@
 
   .tab-state-badge--locked {
     background: color-mix(in srgb, var(--ui-danger-soft) 70%, transparent);
+  }
+
+  .tab-runtime-status {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 auto;
+    width: calc(16px * var(--ui-scale));
+    height: calc(16px * var(--ui-scale));
+    border: 1px solid color-mix(in srgb, currentColor 34%, transparent);
+    border-radius: 999px;
+    color: var(--ui-text-muted);
+    background: color-mix(in srgb, var(--ui-bg-surface) 78%, transparent);
+  }
+
+  .tab-runtime-status-dot {
+    width: calc(6px * var(--ui-scale));
+    height: calc(6px * var(--ui-scale));
+    border-radius: 999px;
+    background: currentColor;
+  }
+
+  .tab-runtime-status--starting,
+  .tab-runtime-status--running {
+    color: var(--ui-accent);
+  }
+
+  .tab-runtime-status--requires_action {
+    color: var(--ui-warning, #f59e0b);
+    background: color-mix(in srgb, var(--ui-warning, #f59e0b) 14%, transparent);
+  }
+
+  .tab-runtime-status--failed,
+  .tab-runtime-status--exited {
+    color: var(--ui-danger, #ef4444);
+    background: color-mix(in srgb, var(--ui-danger-soft) 70%, transparent);
+  }
+
+  .tab-runtime-status--ready,
+  .tab-runtime-status--idle {
+    color: var(--ui-success, #22c55e);
   }
 
   .tab-menu-button,

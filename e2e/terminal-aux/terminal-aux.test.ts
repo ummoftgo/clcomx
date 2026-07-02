@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Key } from "selenium-webdriver";
+import { By, Key, type WebDriver } from "selenium-webdriver";
 import { TEST_IDS } from "../../src/lib/testids";
 import {
   clickTestId,
@@ -11,6 +11,22 @@ import {
 import { openMockWorkspaceSession } from "../helpers/launcher";
 import { createStepLogger } from "../helpers/log";
 import { getAuxTerminalOutputSnapshot } from "../helpers/terminal";
+
+async function waitForAuxLoadingOverlayHidden(driver: WebDriver) {
+  await driver.wait(async () => {
+    const overlays = await driver.findElements(By.css(".terminal-connect-overlay--aux-panel"));
+    for (const overlay of overlays) {
+      try {
+        if (await overlay.isDisplayed()) {
+          return false;
+        }
+      } catch {
+        // Svelte가 loading state를 제거하는 동안 stale overlay node는 무시한다.
+      }
+    }
+    return true;
+  }, 10_000);
+}
 
 describe.skipIf(process.platform !== "win32")("CLCOMX terminal-aux pack", () => {
   let session: TauriSession;
@@ -69,6 +85,7 @@ describe.skipIf(process.platform !== "win32")("CLCOMX terminal-aux pack", () => 
       const snapshot = await getAuxTerminalOutputSnapshot(driver, sessionId!);
       return snapshot?.data.includes("Agent: Shell") && snapshot.data.includes("Mock session ready.");
     }, 10_000);
+    await waitForAuxLoadingOverlayHidden(driver);
     log.step("auxiliary shell output ready");
 
     log.step("typing space into auxiliary shell");

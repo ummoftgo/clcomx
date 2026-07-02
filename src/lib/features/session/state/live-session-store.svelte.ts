@@ -4,9 +4,13 @@ import type {
   SessionEditorState,
   SessionViewMode,
 } from "../../../types";
+import type { AgentRuntimeMetadata } from "../../agent-runtime/contracts/metadata";
+import type { AgentSessionStatus } from "../../agent-runtime/contracts/normalized";
 import {
   moveSessionInList,
   removeSessionAndResolveActive,
+  setSessionAgentRuntimeInList,
+  setSessionAgentRuntimeStatusInList,
   setSessionActiveEditorPathInList,
   setSessionAuxStateInList,
   setSessionDirtyPathsInList,
@@ -69,6 +73,17 @@ export function setSessionAuxState(
 
 export function setSessionResumeToken(id: string, resumeToken: string | null) {
   setSessionResumeTokenInList(sessions, id, resumeToken);
+}
+
+export function setSessionAgentRuntime(
+  id: string,
+  agentRuntime: AgentRuntimeMetadata | undefined,
+) {
+  setSessionAgentRuntimeInList(sessions, id, agentRuntime);
+}
+
+export function setSessionAgentRuntimeStatus(id: string, status: AgentSessionStatus) {
+  setSessionAgentRuntimeStatusInList(sessions, id, status);
 }
 
 export function setSessionTitle(id: string, title: string) {

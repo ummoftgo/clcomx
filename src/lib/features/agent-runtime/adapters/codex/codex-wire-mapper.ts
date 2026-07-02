@@ -13,6 +13,7 @@ import type {
   AgentContent,
   AgentPlanEntry,
   FileChangeSummary,
+  FileLocation,
   ProviderRef,
   TokenUsage,
   ToolCallUpdate,
@@ -38,15 +39,29 @@ import type { AgentSessionStatus } from "../../contracts/normalized";
 
 /** 미지원 notification(id 없음) 카운터 — drop이 아니라 가시화(RD-10). */
 let unknownNotificationCount = 0;
+/** 미지원 request/notification 원본 payload 보관 — transcript event 없이 진단 표면에 남긴다. */
+const unknownNotificationRawPayloads: unknown[] = [];
+
+/** 미지원 request/notification을 counter와 raw payload로 기록한다. */
+function recordUnknownPayload(raw: unknown): void {
+  unknownNotificationCount += 1;
+  unknownNotificationRawPayloads.push(raw);
+}
 
 /** 미지원 notification 누계(진단/테스트용). */
 export function getUnknownNotificationCount(): number {
   return unknownNotificationCount;
 }
 
+/** 미지원 request/notification raw payload 누계(진단/테스트용). */
+export function getUnknownNotificationRawPayloads(): readonly unknown[] {
+  return unknownNotificationRawPayloads;
+}
+
 /** 미지원 notification 카운터 리셋(테스트 격리용). */
 export function resetUnknownNotificationCount(): void {
   unknownNotificationCount = 0;
+  unknownNotificationRawPayloads.length = 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,18 +176,44 @@ function mapFileChange(ch: FileUpdateChange): FileChangeSummary {
   return { path: ch.path, operation: "update", diff: ch.diff };
 }
 
+/** FileLocation line/column으로 쓸 수 있는 1-based 정수를 골라낸다. */
+function mapOneBasedPosition(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/** Codex item의 비표준/추가 locations 배열을 normalized FileLocation으로 보수적으로 변환한다. */
+function mapCodexLocations(item: unknown): FileLocation[] | undefined {
+  if (!isRecord(item) || !Array.isArray(item.locations)) return undefined;
+
+  const locations = item.locations.flatMap((raw): FileLocation[] => {
+    if (!isRecord(raw) || typeof raw.path !== "string" || raw.path.length === 0) return [];
+    const line = mapOneBasedPosition(raw.line);
+    const column = mapOneBasedPosition(raw.column);
+    return [
+      {
+        path: raw.path,
+        ...(line != null ? { line } : {}),
+        ...(column != null ? { column } : {}),
+      },
+    ];
+  });
+  return locations.length > 0 ? locations : undefined;
+}
+
 /** commandExecution item → ToolCallUpdate(15 §5). */
 function mapCommandExec(item: Extract<ThreadItem, { type: "commandExecution" }>): ToolCallUpdate {
   const content: AgentContent[] | undefined =
     item.aggregatedOutput != null
       ? [{ type: "terminal", command: item.command, output: item.aggregatedOutput }]
       : undefined;
+  const locations = mapCodexLocations(item);
   return {
     id: item.id, // toolCallId = itemId(15 §1.1)
     title: item.command,
     kind: "execute",
     status: mapCommandStatus(item.status),
     content,
+    ...(locations != null ? { locations } : {}),
     rawInput: { command: item.command, cwd: item.cwd, commandActions: item.commandActions },
     rawOutput: { exitCode: item.exitCode, durationMs: item.durationMs },
   };
@@ -228,9 +269,11 @@ function mapGenericTool(
   };
 }
 
-/** reasoning item 권위 텍스트 = 보수적 [...summary, ...content].join("\n")(OQ-46). */
+/** reasoning item 권위 텍스트 = summary 우선, summary 부재 시 content fallback(OQ-46). */
 function reasoningText(item: Extract<ThreadItem, { type: "reasoning" }>): string {
-  return [...(item.summary ?? []), ...(item.content ?? [])].join("\n");
+  const summary = item.summary ?? [];
+  if (summary.length > 0) return summary.join("\n");
+  return (item.content ?? []).join("\n");
 }
 
 /** item/started → AgentEvent[](§5.3). */
@@ -254,7 +297,8 @@ export function mapItemStarted(item: ThreadItem, threadId: string, turnId: strin
       // D11: thought 채널 메시지 시작(빈 메시지). delta는 channel:"thought"로 append.
       return [{ type: "agent_message", ref, channel: "thought", content: [], mode: "replace" }];
     default:
-      // plan/imageView/sleep/collabAgent 등 v1 밖: drop 아님, raw는 ref에 보존(빈 배열 반환).
+      // plan/imageView/sleep/collabAgent 등 v1 밖: event 없이 raw diagnostic으로 가시화한다.
+      recordUnknownPayload({ method: "item/started", params: { threadId, turnId, item } });
       return [];
   }
 }
@@ -282,6 +326,15 @@ export function mapItemCompleted(item: ThreadItem, threadId: string, turnId: str
       return [{ type: "tool_call_updated", ref, update: mapGenericTool(item) }];
     case "userMessage":
       return [{ type: "user_message", ref, content: item.content.map(mapUserInput), mode: "replace" }];
+    case "plan":
+      // plan delta는 suppress하지만 completed plan item은 권위 있는 전체 교체로 반영한다(CX-6).
+      return [
+        {
+          type: "plan_updated",
+          ref,
+          entries: [{ id: item.id, content: item.text, status: "completed" }],
+        },
+      ];
     case "reasoning":
       // D11/OQ-46: completed reasoning item이 thought 채널 권위 → replace.
       return [
@@ -294,6 +347,8 @@ export function mapItemCompleted(item: ThreadItem, threadId: string, turnId: str
         },
       ];
     default:
+      // v1 밖 ThreadItem variant는 silent drop하지 않고 raw diagnostic에 남긴다(RD-10).
+      recordUnknownPayload({ method: "item/completed", params: { threadId, turnId, item } });
       return [];
   }
 }
@@ -321,14 +376,25 @@ export function makeTextUserInput(text: string): UserInput {
 
 /** file:// 스킴 제거(localImage path 추출). */
 function stripFileScheme(uri: string): string {
-  return uri.startsWith("file://") ? uri.slice("file://".length) : uri;
+  if (!uri.startsWith("file://")) return uri;
+  return uri
+    .slice("file://".length)
+    .split("/")
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    })
+    .join("/");
 }
 
 /**
  * composer content(15 §4) → Codex turn/start input(ref-codex §6.5/§6.4). 순수 함수.
  * - text → UserInput text(text_elements:[] 동반, H4).
  * - image → capability opt-in이면 image/localImage, 아니면 drop(raw 보존 — 카운터).
- * - resource → mention(reference) 근사 매핑(OQ-33 잔여).
+ * - resource → mention(reference) 근사 매핑(text hard gate와 별개).
  * - 그 외(terminal/diff/json) → composer 비입력 variant, drop.
  * @param caps image opt-in 상태(없으면 보수적).
  */
@@ -354,7 +420,13 @@ export function mapAgentContentToUserInput(
         // 미지원이면 drop(raw 보존은 composer 측; 여기선 단순 미전송).
         break;
       case "resource":
-        // ref-codex §6.4: 전용 resource variant 없음 → mention 근사(OQ-33 잔여).
+        if (c.resourceKind === "skill") {
+          const name = c.text?.trim();
+          const path = stripFileScheme(c.uri).trim();
+          if (name && path) out.push({ type: "skill", name, path });
+          break;
+        }
+        // ref-codex §6.4: 전용 resource variant 없음 → mention 근사.
         out.push({ type: "mention", name: c.text ?? c.uri, path: c.uri });
         break;
       default:
@@ -371,6 +443,69 @@ export function mapAgentContentToUserInput(
 
 /** params를 method별 타입으로 받기 위한 느슨한 접근(generated 타입은 호출부 캐스팅). */
 type AnyParams = Record<string, unknown>;
+
+/** Codex raw/future 필드에서 full-access sandbox 신호를 보수적으로 감지한다(OQ-47). */
+function isCodexFullAccessSignal(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "danger-full-access" || normalized === "agent (full access)" || normalized === "full access";
+}
+
+/**
+ * requestApproval payload에 mode/sandbox 우회 신호가 실려 오면 escalation으로 올린다.
+ * 현재 generated approval params에는 `sandbox`가 없지만, thread/turn raw 확장이나 future field가 붙어도 inline으로
+ * 떨어지지 않게 raw 호환 필드를 둔다.
+ */
+function hasCodexFullAccessApprovalSignal(p: AnyParams): boolean {
+  return [
+    p.sandbox,
+    p.sandboxRequested,
+    p.sandboxMode,
+    p.permissionProfile,
+    p.permissionMode,
+    p.approvalMode,
+  ].some(isCodexFullAccessSignal);
+}
+
+/** object record인지 확인한다(raw/future payload 방어 파싱용). */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/** raw/future additionalPermissions가 네트워크나 파일 쓰기 권한을 요청하면 escalation으로 본다(OQ-47). */
+function hasHighRiskAdditionalPermissions(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+
+  const network = value.network;
+  if (isRecord(network) && network.enabled === true) return true;
+
+  const fileSystem = value.fileSystem;
+  if (!isRecord(fileSystem)) return false;
+
+  const write = fileSystem.write;
+  if (Array.isArray(write) && write.length > 0) return true;
+
+  const entries = fileSystem.entries;
+  if (
+    Array.isArray(entries) &&
+    entries.some((entry) => isRecord(entry) && entry.access === "write")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/** raw/future commandActions가 쓰기·실행·네트워크 부수효과를 명시하면 escalation으로 본다(OQ-47). */
+function hasHighRiskCommandActions(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+
+  const highRiskActionTypes = new Set(["write", "edit", "delete", "move", "execute", "exec", "fetch", "network"]);
+  return value.some((action) => {
+    if (!isRecord(action) || typeof action.type !== "string") return false;
+    return highRiskActionTypes.has(action.type.trim().toLowerCase());
+  });
+}
 
 /**
  * 개별 Codex notification(method only) → AgentEvent[]. method 문자열로 분기(ref-codex §8).
@@ -534,6 +669,10 @@ export function mapCodexNotification(
     case "item/reasoning/textDelta":
     case "item/reasoning/summaryTextDelta": {
       // D11/04 §3.2.5: thought 채널 delta로 흘린다(contentIndex/summaryIndex별 append).
+      const segment =
+        method === "item/reasoning/summaryTextDelta"
+          ? { kind: "summary" as const, index: p.summaryIndex as number }
+          : { kind: "content" as const, index: p.contentIndex as number };
       return [
         {
           type: "agent_message_delta",
@@ -544,6 +683,7 @@ export function mapCodexNotification(
           }),
           channel: "thought",
           delta: p.delta as string,
+          segment,
         },
       ];
     }
@@ -568,6 +708,7 @@ export function mapCodexNotification(
               { requestId: reqId },
             ),
             decision: { requestId: reqId, outcome: "cancelled" },
+            decidedBy: "cleanup",
           },
         ];
       }
@@ -576,7 +717,7 @@ export function mapCodexNotification(
 
     default:
       // 미지원 notification(realtime/hook/account 등): drop 아님, counter 증가(RD-10, 15 §0.2).
-      unknownNotificationCount += 1;
+      recordUnknownPayload({ method, params: p });
       return [];
   }
 }
@@ -613,16 +754,20 @@ function commandApprovalOptions() {
 export function codexApprovalSeverity(method: string, p: AnyParams): "normal" | "escalation" {
   // (1) 권한/sandbox 상승 요청 자체 → 고위험.
   if (method === "item/permissions/requestApproval") return "escalation";
-  // (2) command approval이 exec/network policy 우회 동반 → 고위험.
+  // (2) approval payload에 full-access/sandbox 우회 모드 신호가 있으면 → 고위험.
+  if (method.endsWith("/requestApproval") && hasCodexFullAccessApprovalSignal(p)) return "escalation";
+  // (3) command approval이 exec/network policy 우회 동반 → 고위험.
   if (
     method === "item/commandExecution/requestApproval" &&
     (p.proposedExecpolicyAmendment != null ||
       p.proposedNetworkPolicyAmendments != null ||
-      p.networkApprovalContext != null)
+      p.networkApprovalContext != null ||
+      hasHighRiskCommandActions(p.commandActions) ||
+      hasHighRiskAdditionalPermissions(p.additionalPermissions))
   ) {
     return "escalation";
   }
-  // (3) fileChange가 sandbox writable root 밖 쓰기를 요구(grantRoot) → 고위험.
+  // (4) fileChange가 sandbox writable root 밖 쓰기를 요구(grantRoot) → 고위험.
   if (method === "item/fileChange/requestApproval" && p.grantRoot != null) return "escalation";
   return "normal";
 }
@@ -726,6 +871,7 @@ export function mapCodexServerRequest(
             type: "approval_resolved",
             ref: refOf({ threadId, turnId, itemId }, p),
             decision: { requestId: reqId, outcome: "failed" }, // 내부 전용(04 §4.2 규칙4)
+            decidedBy: "auto",
           },
         ],
         reply: { kind: "auto-decline", id },
@@ -735,7 +881,7 @@ export function mapCodexServerRequest(
     default:
       // 미지원 server REQUEST(id 있음): silent-drop 금지(RD-10). error(-32601) 응답 필수(deadlock 방지).
       //   raw 보존 + counter 증가는 카운터에 합산(미지원 가시화).
-      unknownNotificationCount += 1;
+      recordUnknownPayload({ id, method, params: p });
       return { events: [], reply: { kind: "error", id, method } };
   }
 }

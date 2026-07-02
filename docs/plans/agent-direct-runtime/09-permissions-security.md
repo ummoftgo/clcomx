@@ -22,7 +22,7 @@ Direct runtime은 terminal byte stream보다 **훨씬 풍부한 구조화 권한
 | **Elevation of privilege** | sandbox/permission mode 우회, bypass mode 자동 진입 | provider sandbox 비우회 + mode 명시 표시 + bypass 게이트 | §8 |
 | **제품 오인** | Claude Code/Anthropic 공식 앱처럼 보여 브랜드·약관 위반 | 브랜딩 가이드 | §9 |
 
-> **확인된 사실 vs 추정**: 본 문서에서 ref-*/`research/*` 인용이 붙은 항목은 1차 소스 검증된 사실이다. 그 외 정책 선택(예: allowlist 구체 형태, audit 저장 포맷)은 "결정 필요"로 표기하고 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 연결한다.
+> **확인된 사실 vs 추정**: 본 문서에서 ref-*/`research/*` 인용이 붙은 항목은 1차 소스 검증된 사실이다. 그 외 정책 선택은 미확정이면 "결정 필요"로 표기하고 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 연결한다. 현재 allowlist 구체 형태는 OQ-36/OQ-38로 확정됐고, audit은 v1 기본 in-memory 형식이 OQ-51로 확정됐다. 영속 audit 로그의 저장소/retention/포맷만 후속 enhancement다.
 
 ---
 
@@ -49,7 +49,7 @@ flowchart TB
 
     subgraph FRONT["Frontend (Svelte, webview — semi-trusted)"]
         ADAPTER["Provider Adapter<br/>(wire → AgentEvent)"]
-        STORE["agent-runtime-state<br/>(transcript / pending approval)"]
+        STORE["agent-runtime-store<br/>(transcript / pending approval)"]
         TB4{{"TB-4: 표시 경계<br/>redaction + i18n option label"}}
         UI["Transcript UI / Approval Dialog<br/>(08)"]
         USER(["User decision"])
@@ -88,10 +88,10 @@ approval 결정 타입은 15 §5(`ApprovalRequest`/`ApprovalOption`/`ApprovalDec
 5. **escalation은 modal**: sandbox 우회·`bypassPermissions` 진입·protected path 쓰기 같은 고위험 결정은 비차단 inline이 아니라 modal로 표시한다(`research/ux-reference.md` 라인 336, 08 modal escape 회귀 보호). §8.3 고위험 집합(Claude `bypassPermissions`, Codex `danger-full-access`/sandbox 우회)은 **v1부터 `severity:"escalation"`**(modal)로 분류하며 v1에서 normal로 강등하지 않는다(§8.3, 08 §4.4, 15 §5, [`13`](13-risks-open-questions.md) OQ-47).
 
 > **구현 시 점검 (§2)**
-> - [ ] `respondApproval`은 store의 pending table에 실제로 존재하는 `requestId`에만 응답하는가(없는 id면 거부/로그).
-> - [ ] 보내는 `optionId`가 해당 `ApprovalRequest.options[].id` 집합에 속하는지 wire 전송 직전 assert하는가.
-> - [ ] `outcome:"failed"`가 절대 `agent_runtime_send`로 나가지 않는지 adapter에서 가드하는가(04 §4.2 규칙 4).
-> - [ ] auto-approve 설정 토글이 존재한다면, 켜질 때 audit trail이 함께 활성화되는가(미구현이면 토글 자체를 노출하지 않음).
+> - [x] 사용자 action 경계의 `respondApproval`은 store의 pending table에 실제로 존재하는 `requestId`에만 응답하는가(없는 id면 거부/로그). `AgentRuntimeController.approve`가 `pendingApprovals`/`escalationApproval`에 없는 `requestId`를 port 호출 전에 거부한다. adapter 내부의 늦은/중복 응답 no-op은 04 §4.2 멱등 규칙으로 별도 유지한다. 증거: `agent-runtime-controller.test.ts` SEC-APPROVAL.
+> - [x] 보내는 `optionId`가 해당 `ApprovalRequest.options[].id` 집합에 속하는지 wire 전송 직전 assert하는가. Codex는 공용 `OPTION_KIND_TO_DECISION` 허용 집합으로, Claude ACP는 pending `request.options[].id`로 검증한다. 증거: `codex-app-server-adapter.test.ts` / `claude-acp-adapter.test.ts` SEC-APPROVAL.
+> - [x] `outcome:"failed"`가 절대 `agent_runtime_send`로 나가지 않는지 adapter에서 가드하는가(04 §4.2 규칙 4). 증거: controller/adapters NM-20 tests.
+> - [x] auto-approve 설정 토글이 존재한다면, 켜질 때 audit trail이 함께 활성화되는가(미구현이면 토글 자체를 노출하지 않음). v1 direct runtime에는 client측 auto-approve 설정/UI를 노출하지 않는다. `Settings`/`DEFAULT_SETTINGS`와 `SettingsModal` registry에는 direct runtime approval 설정이 없고, `terminal.claudeCliFlags.enableAutoMode`는 legacy PTY Claude CLI에 `--enable-auto-mode`를 붙이는 터미널 플래그일 뿐 direct runtime approval 자동 허용이 아니다. 향후 자동 결정이 추가되더라도 store audit 경계는 `decidedBy:"auto"`를 포함해 결정 1건당 audit entry 1건을 남긴다. 증거: `types.ts`, `settings.svelte.ts`, `settings/registry.ts`, `TerminalSettingsSection.svelte`, `claude-cli-flags.ts`, `agent-runtime-store.svelte.test.ts` NM-20b/20c.
 
 ---
 
@@ -102,7 +102,7 @@ approval 결정 타입은 15 §5(`ApprovalRequest`/`ApprovalOption`/`ApprovalDec
 정상 흐름 단계는 04 §4.1이 정본이다. 보안 관점 보강:
 
 - provider→client request의 raw payload(Codex `CommandExecutionRequestApprovalParams` 등, ref-codex §4.1; ACP `RequestPermissionRequest`, ref-acp §6)는 매핑되지 않은 필드를 `ProviderRef.raw`/`rawInput`에 보존하되, **raw payload를 transcript에 그대로 펼쳐 렌더링하지 않는다**(§5 redaction). UI에는 정규화된 `title`/`body`/`options`만 노출한다.
-- option `label`은 provider 원본 문자열이므로 **i18n key로 감싸** 표시한다(04 §4.1 단계 2, ref-acp §6, ref-claude-agent-acp §3 request_permission 매핑). label을 코드/HTML로 해석하지 않는다(XSS 방어 — webview에서 text node로만 렌더).
+- option `label`은 provider 원본 문자열이므로 **i18n key로 감싸** 표시한다(04 §4.1 단계 2, ref-acp §6, ref-claude-agent-acp §3 request_permission 매핑). Codex mapper가 넣는 CLCOMX 내부 key(`agentRuntime.approval.*`)는 approval 표시 경계에서 locale 문자열로 변환한 뒤 redaction하고, provider raw label은 raw 문자열로 유지하되 text node로만 렌더한다(XSS 방어). 증거: `ApprovalInlineCard.test.ts`/`ApprovalModal.test.ts`의 approval title/option key 번역 테스트와 credential redaction/XSS 테스트.
 
 ### 3.2 provider별 wire 응답 형태 (검증된 사실)
 
@@ -117,10 +117,10 @@ Codex zsh-exec-bridge 분기 시 한 `itemId`에 복수 approval callback이 붙
 
 ### 3.4 Audit trail (Repudiation 방어)
 
-자동 허용을 도입하든 안 하든, 모든 approval 결정은 추적 가능해야 한다. v1 최소 audit 레코드(메모리 + opt-in redacted 로그):
+자동 허용을 도입하든 안 하든, 모든 approval 결정은 추적 가능해야 한다. v1 최소 audit 레코드(in-memory, store 수명 동안만 보존):
 
 ```ts
-// 결정 필요(13 OQ-51): audit 저장 위치/보존기간/포맷은 미확정. 아래는 최소 필드 권고.
+// v1 확정(13 OQ-51): 기본 audit은 in-memory만이다. 영속 audit은 후속 enhancement에서 별도 결정한다.
 interface ApprovalAuditEntry {
   sessionHandle: string;       // AgentSessionHandle (15 §6)
   provider: AgentProvider;     // 15 §1
@@ -136,27 +136,27 @@ interface ApprovalAuditEntry {
 ```
 
 - audit에는 **명령 전문/파일 내용/credential을 저장하지 않는다** — `requestId`/`optionId`/`kind`/`outcome`/시각만. raw 명령은 §5 redaction 대상.
-- `decidedBy:"auto"`는 향후 auto-approve가 생길 때만 발생하며, 그 자체가 보안 감사 신호다.
+- `decidedBy:"auto"`는 client가 사용자에게 표시하지 않고 자동 결정한 경우의 보안 감사 신호다. v1에서는 Codex permission-profile 미지원 자동 decline 같은 방어적 자동 결정에서 발생할 수 있으며, 사용자 선택이 아닌 cancel/shutdown/exit cleanup은 `decidedBy:"cleanup"`으로 기록한다.
 
-> **구현·검증·저장 분담 (cross-ref)**: 본 §3.4는 approval audit의 **정책 권위**(어떤 필드를 남기고 무엇을 저장 금지하는지)다. v1 기본 형태는 **in-memory audit + opt-in redacted 영속 로그**(위 `ApprovalAuditEntry` 형식, 명령 전문/credential/파일 내용 비저장)이며, 실제 audit task로의 작업분해는 [`12-implementation-workstreams.md`](12-implementation-workstreams.md), 모든 결정 1건 기록 + 비밀 비포함 수용 케이스는 [`11-testing-acceptance.md`](11-testing-acceptance.md), audit 저장 위치·보존기간·포맷의 잔여 결정은 [`13`](13-risks-open-questions.md) **OQ-51**에서 다룬다. 여기서 audit 형식을 재정의하지 않고 위 분담 문서를 인용만 한다.
+> **구현·검증·저장 분담 (cross-ref)**: 본 §3.4는 approval audit의 **정책 권위**(어떤 필드를 남기고 무엇을 저장 금지하는지)다. v1 기본 형태는 **in-memory audit**(위 `ApprovalAuditEntry` 형식, 명령 전문/credential/파일 내용 비저장)이며, 실제 audit task로의 작업분해는 [`12-implementation-workstreams.md`](12-implementation-workstreams.md), 모든 결정 1건 기록 + 비밀 비포함 수용 케이스는 [`11-testing-acceptance.md`](11-testing-acceptance.md)에서 다룬다. [`13`](13-risks-open-questions.md) **OQ-51** 결론에 따라 opt-in redacted 영속 로그는 v1 기본 구현에서 제외하고 후속 enhancement로 둔다. 여기서 audit 형식을 재정의하지 않고 위 분담 문서를 인용만 한다.
 
 > **구현 시 점검 (§3)**
-> - [ ] Codex 응답에 `jsonrpc` 필드를 넣지 않는가 / ACP 응답에 `jsonrpc:"2.0"`을 넣는가(ref-codex §1.2, ref-acp §1).
-> - [ ] pending table 키가 `requestId`(또는 `itemId+approvalId`)로 충돌 없이 분리되는가(§3.3).
-> - [ ] approval option label을 text node로만 렌더하고 코드로 해석하지 않는가(XSS).
-> - [ ] 모든 결정에 audit entry가 1건 기록되는가(user/auto/cleanup 모두).
-> - [ ] audit entry에 명령 전문·credential·파일 내용이 섞이지 않는가.
+> - [x] Codex 응답에 `jsonrpc` 필드를 넣지 않는가 / ACP 응답에 `jsonrpc:"2.0"`을 넣는가(ref-codex §1.2, ref-acp §1). 증거: `codex-app-server-adapter.test.ts` CX-12/Codex envelope, `claude-acp-permission.test.ts` CL-21/CL-22.
+> - [x] pending table 키가 `requestId`(또는 `itemId+approvalId`)로 충돌 없이 분리되는가(§3.3). 증거: `pending-approval-table.test.ts` NM-15b, `codex-routing.test.ts` approval pending table.
+> - [x] approval option label을 text node로만 렌더하고 코드로 해석하지 않는가(XSS). 증거: `ApprovalInlineCard.test.ts` / `ApprovalModal.test.ts`의 provider label HTML 비해석 회귀 테스트, agent-runtime surface에 `{@html` 없음.
+> - [x] 모든 결정에 audit entry가 1건 기록되는가(user/auto/cleanup 모두). adapter-side cleanup/auto 경로는 `approval_resolved.decidedBy`를 통해 store audit까지 보존되는가. 증거: `agent-runtime-store.svelte.test.ts` NM-20b + adapter cleanup decidedBy, `codex-app-server-adapter.test.ts`, `claude-acp-adapter.test.ts`, `codex-wire-mapper.test.ts`.
+> - [x] audit entry에 명령 전문·credential·파일 내용이 섞이지 않는가. 증거: `agent-runtime-store.svelte.test.ts` NM-20c.
 
 ### 3.5 Cancel/exit 시 pending cleanup (DoS/deadlock 방어)
 
 approval deadlock은 명시적 위험으로 분류돼 있다([`13`](13-risks-open-questions.md) "Approval deadlock"). cleanup 불변식의 권위는 04 §4.2/§5이며, 두 protocol의 MUST와 정확히 대응한다(ref-acp §3.8 "pending된 모든 `session/request_permission`에 `cancelled`로 MUST 응답", ref-codex §4 `serverRequest/resolved`). 보안 운영 체크리스트로 재정리:
 
 > **구현 시 점검 (§3.5 cleanup 불변식)**
-> - [ ] `cancelTurn` 또는 `turn_completed{status:"cancelled"}` 수신 시, 해당 turn의 모든 pending approval에 `{outcome:"cancelled"}`를 **wire로** 보내고 pending table에서 제거하는가(04 §4.2 규칙 1).
-> - [ ] `process_exited` 수신 시 모든 pending approval/request를 닫는가(04 §5, `decidedBy:"cleanup"` audit 기록).
-> - [ ] Codex `serverRequest/resolved{threadId, requestId}` 수신 시 해당 `requestId`만 닫는가(사용자 응답 불필요, 04 §4.2 규칙 3).
-> - [ ] UI/탭이 닫히거나 webview가 reload돼도 backend의 pending이 끊긴 채 남지 않는가(process가 살아있으면 shutdown으로 정리, 07 §Process lifecycle).
-> - [ ] cleanup으로 닫힌 approval이 이후 도착하는 사용자 응답으로 **이중 응답**되지 않는가(닫힌 requestId 재응답 거부).
+> - [x] `cancelTurn` 또는 `turn_completed{status:"cancelled"}` 수신 시, 해당 turn의 모든 pending approval에 `{outcome:"cancelled"}`를 **wire로** 보내고 pending table에서 제거하는가(04 §4.2 규칙 1). 증거: `codex-app-server-adapter.test.ts` / `claude-acp-adapter.test.ts` cancel cleanup, `pending-approval-table.test.ts` NM-16.
+> - [x] `process_exited` 수신 시 모든 pending approval/request를 닫는가(04 §5, `decidedBy:"cleanup"` audit 기록). 증거: `codex-app-server-adapter.test.ts` / `claude-acp-adapter.test.ts` process exit, `pending-approval-table.test.ts` NM-18, `agent-runtime-store.svelte.test.ts` NM-20b.
+> - [x] Codex `serverRequest/resolved{threadId, requestId}` 수신 시 해당 `requestId`만 닫는가(사용자 응답 불필요, 04 §4.2 규칙 3). 증거: `codex-app-server-adapter.test.ts` New-F1 `serverRequest/resolved` race, `pending-approval-table.test.ts` NM-19.
+> - [x] UI/탭이 닫히거나 webview가 reload돼도 backend의 pending이 끊긴 채 남지 않는가(process가 살아있으면 shutdown으로 정리, 07 §Process lifecycle). 증거: `AgentTranscriptSurface.svelte`가 `onDestroy`와 `pagehide`/`beforeunload` 모두에서 같은 idempotent `disposeSurfaceRuntime()`을 호출하고, `agent-runtime-controller.test.ts` Finding 3은 dispose가 unsubscribe 전에 `port.shutdown()`을 await해 shutdown-time cleanup event가 store에 도달함을 검증한다. `AgentTranscriptSurface.test.ts` 09 §3.5는 pagehide/webview reload에서 runtime shutdown이 정확히 1회 호출됨을 검증한다. adapter-side pending cleanup은 `codex-app-server-adapter.test.ts` / `claude-acp-adapter.test.ts` shutdown S3 테스트와 Rust RS-13..15c가 보강한다.
+> - [x] cleanup으로 닫힌 approval이 이후 도착하는 사용자 응답으로 **이중 응답**되지 않는가(닫힌 requestId 재응답 거부). 증거: `agent-runtime-controller.test.ts` SEC-APPROVAL, `codex-app-server-adapter.test.ts` / `claude-acp-adapter.test.ts` shutdown·exit 멱등 및 in-flight race tests.
 
 ---
 
@@ -175,48 +175,49 @@ renderer는 신뢰 경계 밖(TB-1)이므로 frontend 검증만으로는 부족�
 - **Layer 1 (frontend adapter)**: Codex/Claude adapter가 `AgentRuntimeStartParams`(15 §8.1)를 **provider별로 고정된 형태**로만 생성한다. 사용자 입력은 model/cwd/옵션에만 영향을 주고 executable은 만들지 않으며 core argv는 코드 상수에서 온다.
 - **Layer 2 (Rust handler, 권위)**: `agent_runtime_start`(15 §8.2)가 `params.provider`(`codex`|`claude`) enum에 따라 backend-resolved executable/`args`/`env`를 allowlist로 재검증한다. 통과 못 하면 `Result<_, String>` Err로 거부(`research/codebase-backend.md` §2.1 에러 컨벤션).
 
-### 4.3 provider별 allowlist 사양 (권고 — 일부 결정 필요)
+### 4.3 provider별 allowlist 사양 (정본)
 
 | provider | 허용 executable (절대경로/backend-resolved) | 허용 core `args` 형태 (정확 일치) | 근거 |
 |---|---|---|---|
-| `claude` | node 절대경로(`CLAUDE_RUNTIME_NODE` 등으로 핀, backend resolve 또는 사전 등록 절대경로) | `args.length == 1` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `…/claude-agent-acp/dist/index.js` 패턴). 임의 `.js`/임의 바이너리 거부 | ref-claude-agent-acp §1, §5; 07 §8.1; 06 §2.2 |
+| `claude` | node 절대경로(`CLAUDE_RUNTIME_NODE` 등으로 핀, backend resolve 또는 사전 등록 절대경로) | `args.length == 2` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `…/claude-agent-acp/dist/index.js` 패턴), `args[1]`이 고정 `--hide-claude-auth`. 임의 `.js`/임의 바이너리/임의 argv 거부 | ref-claude-agent-acp §1, §5; 07 §8.1; 06 §2.2 |
 | `codex` | `codex` 바이너리 절대경로(backend resolve 또는 사전 등록 절대경로) | `args`가 정확히 `["app-server","--stdio"]`. experimental flag는 §0 experimental 경고 게이트 뒤에서만 | ref-codex §1.1 (app-server 기본 stdio); 07 §8.1 |
 
 allowlist 검증 규칙(Rust handler — 정본 07 §8.1, basename-only 금지):
 
-1. **executable 절대경로 검증 (basename-only 금지)**: executable은 renderer가 넘기지 않고 backend가 `provider`로 resolve한다. resolve 결과는 (a) backend가 resolve한 신뢰 절대경로이거나 (b) 사전 등록된 절대경로 화이트리스트에 속해야 한다. **basename 일치만으로 통과시키지 않는다** — basename이 `codex`/`node`인 임의 경로(`/tmp/codex` 등)는 거부. PATH lookup으로 임의 바이너리를 찾지 않는다(nvm 등 비표준 node는 절대경로 핀, ref-claude-agent-acp §5). resolve owner/cache/entry 탐색은 OQ-36 결정 후 구현한다.
-2. **args 정확 검증 (provider별 exact match)**: Codex는 `args`가 정확히 `["app-server","--stdio"]`일 것. Claude는 `args.length == 1` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴)일 것. 임의 `.js`/임의 바이너리는 거부한다. shell 메타문자 검사는 **방어용으로 유지**하되(`wsl.exe -e`가 shell을 거치지 않더라도, `research/codebase-backend.md` §2.2 "executable + argv 배열" 규칙), 일차 방어선은 위 정확 일치다(free shell string 합성 금지).
+1. **executable 절대경로 검증 (basename-only 금지)**: executable은 renderer가 넘기지 않고 backend가 `provider`로 resolve한다. resolve 결과는 (a) backend가 resolve한 신뢰 절대경로이거나 (b) 사전 등록된 절대경로 화이트리스트에 속해야 한다. **basename 일치만으로 통과시키지 않는다** — basename이 `codex`/`node`인 임의 경로(`/tmp/codex` 등)는 거부. PATH lookup으로 임의 바이너리를 찾지 않는다(nvm 등 비표준 node는 절대경로 핀, ref-claude-agent-acp §5). resolve owner/cache/entry 탐색은 OQ-36 정본처럼 `agent_runtime/resolver.rs`가 담당한다.
+2. **args 정확 검증 (provider별 exact match)**: Codex는 `args`가 정확히 `["app-server","--stdio"]`일 것. Claude는 `args.length == 2` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴), `args[1]`이 고정 `--hide-claude-auth`일 것. 임의 `.js`/임의 바이너리/임의 argv는 거부한다. shell 메타문자 검사는 **방어용으로 유지**하되(`wsl.exe -e`가 shell을 거치지 않더라도, `research/codebase-backend.md` §2.2 "executable + argv 배열" 규칙), 일차 방어선은 위 정확 일치다(free shell string 합성 금지).
 3. **`npx` 등 비결정 launch 거부(claude)**: 검증된 `adapterEntryPath` 외의 진입(특히 `npx`)은 비결정성/네트워크 fetch 때문에 runtime launch에서 거부한다(ref-claude-agent-acp §1 표 "npx 비권장").
-4. **env key allowlist (§4.4)**: env key는 `^[A-Za-z_][A-Za-z0-9_]*$` 형식 + provider별 허용 key 집합을 모두 통과한 키만 child env에 합성하고, 값은 non-secret(§5.3). 그 외 key는 drop.
+4. **env key allowlist (§4.4)**: env key는 `^[A-Za-z_][A-Za-z0-9_]*$` 형식 + provider별 허용 key 집합을 모두 통과한 키만 child env에 합성하고, 값은 non-secret(§5.3). 그 외 key는 `Err(String)`으로 거부한다.
 
-> **결정 필요(13)**: OQ-36에서 backend resolver owner/cache/entry 탐색 방식을 확정하고, OQ-38에서 provider별 non-secret env key allowlist를 확정한다. WSL 경로/node 위치가 배포 대상마다 달라(ref-claude-agent-acp §5 "unverified for target") 절대경로를 settings로 받더라도 **형태 검증과 신뢰 결정은 Rust가** 해야 한다. → [`13`](13-risks-open-questions.md).
+> **확정값(13 OQ-36/OQ-38)**: backend resolver owner/cache/entry 탐색 방식은 `agent_runtime/resolver.rs`가 담당하고, provider별 non-secret env key allowlist도 OQ-38에서 확정됐다. WSL 경로/node 위치가 배포 대상마다 달라(ref-claude-agent-acp §5 "unverified for target") 절대경로를 settings로 받더라도 **형태 검증과 신뢰 결정은 Rust가** 해야 한다. 구현은 `src-tauri/src/features/agent_runtime/allowlist.rs`와 RS-8..RS-12b 테스트가 정본이다.
 
 ### 4.4 env 변수 allowlist
 
 provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_SANDBOX`가 root에서 `bypassPermissions`를 허용 — ref-claude-agent-acp §1 표). 따라서 child process env는 **OQ-38에서 확정한 provider별 allowlist**로 구성한다.
 
-- **claude 허용 키**: OQ-38에서 non-secret 최소 집합으로 확정한다. `ANTHROPIC_API_KEY`/gateway header/session cookie 같은 secret은 이 argv env allowlist에 넣지 않는다. **`IS_SANDBOX`는 v1에서 주입하지 않는다**(root bypass 게이트 — §8.3, 결정 필요).
-- **codex 허용 키**: OQ-38에서 codex가 요구하는 non-secret 최소 집합으로 확정한다. API/account secret은 argv env가 아니라 `Command::env()`+`WSLENV` 별도 경로만 허용한다.
-- **env key 형식 + allowlist 검증**: 기존 PTY와 동일하게 key 형식을 `^[A-Za-z_][A-Za-z0-9_]*$`로 검증하고(`assertValidEnvKey`, `research/codebase-backend.md` §6), **그 위에 provider별 허용 key 집합(위 claude/codex 목록)으로 한 번 더 제한**한다. 형식만 맞고 allowlist에 없는 key는 drop한다. adapter도 backend도 검증한다(07 §8.1).
+- **공통 허용 키**: `RUST_LOG`, `RUST_BACKTRACE`, `NO_COLOR`.
+- **claude 추가 허용 키**: `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_EXECUTABLE`, `NODE_OPTIONS`. `ANTHROPIC_API_KEY`/gateway header/session cookie 같은 secret은 이 argv env allowlist에 넣지 않는다. **`IS_SANDBOX`는 v1에서 주입하지 않는다**(root bypass 게이트 — §8.3 잔여 정책).
+- **codex 추가 허용 키**: `CODEX_DISABLE_UPDATE_CHECK`. API/account secret은 argv env가 아니라 `Command::env()`+`WSLENV` 별도 경로만 허용한다.
+- **env key 형식 + allowlist 검증**: 기존 PTY와 동일하게 key 형식을 `^[A-Za-z_][A-Za-z0-9_]*$`로 검증하고(`assertValidEnvKey`, `research/codebase-backend.md` §6), **그 위에 provider별 허용 key 집합(위 claude/codex 목록)으로 한 번 더 제한**한다. 형식만 맞고 allowlist에 없는 key는 `Err(String)`으로 거부한다. adapter도 backend도 검증한다(07 §8.1, 11 RS-12/12b).
 - **redaction과 연동**: env value는 §5 redaction 대상이며 로그/transcript/디스크에 평문으로 나타나면 안 된다.
 - **secret/non-secret 분리 (§5.3)**: 위 allowlist를 통과한 키 중 secret(API key/token/gateway header 등)은 launch argv로 child에 합성하지 않는다. argv 경유는 non-secret 키 전용이고, secret이 꼭 필요하면 `Command::env()`+`WSLENV` passthrough(07 §5.1 launch 정본)로만 주입한다 — OS 관측면 평문 노출 차단. v1 기본값은 secret env를 런타임으로 넘기지 않음(§5.3, §9 인증 기본 경로).
 
 > **구현 시 점검 (§4 — untrusted renderer 재검증, 07 §8.1 정본)**
-> - [ ] `agent_runtime_start` Rust handler가 executable을 renderer 입력이 아니라 **backend-resolved 절대경로(또는 사전 등록 화이트리스트)** 로 확정하고, **basename-only 비교를 쓰지 않는가**(`/tmp/codex`·`/dev/shm/node` 류 거부).
-> - [ ] Codex `args`가 정확히 `["app-server","--stdio"]`인지 검증하는가(임의 args 거부).
-> - [ ] Claude `args.length == 1` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴)인지 검증하는가(임의 `.js`/임의 바이너리 거부).
-> - [ ] env key가 `^[A-Za-z_][A-Za-z0-9_]*$` 형식 + **provider별 허용 key 집합**을 모두 통과하는가(형식만 맞고 allowlist 밖인 key는 drop).
-> - [ ] child를 shell 없이 executable+argv로 spawn하고, shell 메타문자 검사를 방어용으로 유지하는가(free shell string 합성 없음).
-> - [ ] `IS_SANDBOX` 등 권한 상승 env가 v1에서 차단되는가(§8.3 결정 따라).
-> - [ ] `npx` 등 비결정 launch가 거부되는가(ref-claude-agent-acp §1).
-> - [ ] 위 검증 중 하나라도 실패하면 `Err`로 거부하고, 거부 사유를 stderr/audit에 redacted로 남기는가.
-> - [ ] secret 키(API key/token 등)가 launch argv(`-e env KEY=VAL`)가 아닌 `Command::env()`+`WSLENV`로만 주입되는가(§5.3, 07 §5.1).
+> - [x] `agent_runtime_start` Rust handler가 executable을 renderer 입력이 아니라 **backend-resolved 절대경로(또는 사전 등록 화이트리스트)** 로 확정하고, **basename-only 비교를 쓰지 않는가**(`/tmp/codex`·`/dev/shm/node` 류 거부). 증거: `agent_runtime::tests` RS-8/9/10c/10d/10e/10f/10g, `allowlist::validate_and_extract`, `resolver.rs`.
+> - [x] Codex `args`가 정확히 `["app-server","--stdio"]`인지 검증하는가(임의 args 거부). 증거: `agent_runtime::tests` RS-8/8b.
+> - [x] Claude `args.length == 2` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴), `args[1]`이 고정 `--hide-claude-auth`인지 검증하는가(임의 `.js`/임의 바이너리/임의 argv 거부). 증거: `agent_runtime::tests` RS-9/9b/10e.
+> - [x] env key가 `^[A-Za-z_][A-Za-z0-9_]*$` 형식 + **provider별 허용 key 집합**을 모두 통과하는가(형식만 맞고 allowlist 밖인 key는 drop). 증거: `agent_runtime::tests` RS-12/12b.
+> - [x] child를 shell 없이 executable+argv로 spawn하고, shell 메타문자 검사를 방어용으로 유지하는가(free shell string 합성 없음). 증거: `process::build_wsl_command`, `agent_runtime::tests` RS-11/AC-10b.
+> - [x] `IS_SANDBOX` 등 권한 상승 env가 v1에서 차단되는가(§8.3 결정 따라). 증거: provider별 env allowlist 밖 key는 `Err`로 거부하는 `agent_runtime::tests` RS-12b.
+> - [x] `npx` 등 비결정 launch가 거부되는가(ref-claude-agent-acp §1). 증거: `AgentRuntimeStartParams`에 `command` 필드가 없고 backend가 provider별 executable을 resolve하며, 임의 Claude script/args는 `agent_runtime::tests` RS-9b와 RS-10e 경계에서 거부된다.
+> - [x] 위 검증 중 하나라도 실패하면 `Err`로 거부하고, 거부 사유를 stderr/audit에 redacted로 남기는가. `agent_runtime::validate_launch_for_start`는 allowlist 실패를 원래 `Err`로 반환하면서 `agent-runtime-audit.log`에 `launchRejected` JSONL entry를 남긴다. entry는 `event`/`atMs`/`transportKind`/redacted `provider`/redacted `reason`만 포함하고 renderer params 전체(`args`/`env`/`workDir`/`authToken`)는 직렬화하지 않는다. `start()` 경계의 `workDir` canonicalize, executable preflight, spawn 실패도 같은 audit 경로를 탄다. 증거: `agent_runtime::tests` RS-8b/9b/10c/11/12/12b/12c/12d, `agent_runtime/audit.rs`, `allowlist.rs`의 sanitised error 문자열.
+> - [x] secret 키(API key/token 등)가 launch argv(`-e env KEY=VAL`)가 아닌 `Command::env()`+`WSLENV`로만 주입되는가(§5.3, 07 §5.1). 증거: `agent_runtime::tests` AC-10b.
 >
 > **수용 기준 (11 테스트 연동, R4)**: 아래는 backend allowlist 단위 테스트로 검증해야 한다(07 §8.1 → 11).
-> - [ ] 승인된 backend-resolved 절대경로만 통과하고, basename은 같지만 경로가 다른 executable 후보(예: `/tmp/codex`)는 `Err`로 거부.
-> - [ ] Codex `args`가 정확히 `["app-server","--stdio"]`가 아니면 거부(추가/변경 인자 포함 시 `Err`).
-> - [ ] Claude `args[0]`이 검증된 `adapterEntryPath`가 아니면 거부(특히 `command=node`+`args=["/tmp/x.js"]` 거부).
-> - [ ] env key allowlist: 허용 key만 통과하고 형식 불일치/비허용 key는 drop 또는 `Err`.
+> - [x] 승인된 backend-resolved 절대경로만 통과하고, basename은 같지만 경로가 다른 executable 후보(예: `/tmp/codex`)는 `Err`로 거부. 증거: renderer `command` 입력 제거 + `agent_runtime::tests` RS-8/9/10c/10d/10e.
+> - [x] Codex `args`가 정확히 `["app-server","--stdio"]`가 아니면 거부(추가/변경 인자 포함 시 `Err`). 증거: `agent_runtime::tests` RS-8/8b.
+> - [x] Claude `args[0]`이 검증된 `adapterEntryPath`가 아니거나 `args[1]`이 고정 `--hide-claude-auth`가 아니면 거부(특히 `args=["/tmp/x.js"]`, `args=[adapterEntryPath]`, `args=[adapterEntryPath,"--x"]` 거부). 증거: `agent_runtime::tests` RS-9/9b/10e.
+> - [x] env key allowlist: 허용 key만 통과하고 형식 불일치/비허용 key는 drop 또는 `Err`. 증거: `agent_runtime::tests` RS-12/12b.
 
 ---
 
@@ -248,7 +249,7 @@ provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_
 
 > prefix 목록은 1차 소스에서 확인된 형태이고(`sk-`/`sk-ant-`/`AKIA`), 다른 provider/포맷(예: 향후 key 스킴)은 OQ-28 잔여 결정과 무관하게 패턴을 **추가**해 대응한다. 이 표는 "여기까지는 무조건 마스킹"의 하한이다.
 
-> **websocket `authToken` 누출 표면 차단**: `AgentRuntimeStartParams.websocket.authToken`(15 §8.1)은 websocket transport가 v1에서 **reject**됨(13 RD-2 — handler가 `Err("websocket transport not yet supported")` 반환)에도 불구하고 **public 계약(15 §8.1 variant)에 노출된 secret 필드**다. 따라서 token이 실제로 쓰이지 않아도 reject 직전 start 파라미터가 로깅·snapshot·error message로 새어나갈 수 있으므로, `authToken`을 위 secret scrub/redaction 집합(§5.1 bearer/auth token)에 포함한다. 방어 순서: 07 handler가 `transportKind:"websocket"`을 **로깅 전 즉시 reject**(07 §transport, reject-before-log)하고, reject 사유를 stderr/audit에 남길 때도 `authToken` 값은 마스킹한다(token이 redacted 로그에도 평문으로 남지 않음). variant 타입 자체는 future-sketch로 유지하되 token 필드는 본 redaction 집합으로 상시 방어한다(13 RD-2).
+> **websocket `authToken` 누출 표면 차단**: `AgentRuntimeStartParams.websocket.authToken`(15 §8.1)은 websocket transport가 v1에서 **reject**됨(13 RD-2/OQ-15 — handler가 `Err("only jsonrpc-stdio transport is supported in v1")` 반환)에도 불구하고 **public 계약(15 §8.1 variant)에 노출된 secret 필드**다. 따라서 token이 실제로 쓰이지 않아도 reject 직전 start 파라미터가 로깅·snapshot·error message로 새어나갈 수 있으므로, `authToken`을 위 secret scrub/redaction 집합(§5.1 bearer/auth token)에 포함한다. 방어 순서: 07 handler가 `transportKind:"websocket"`을 **로깅 전 즉시 reject**(07 §transport, reject-before-log)하고, reject 사유를 stderr/audit에 남길 때도 `authToken` 값은 마스킹한다(token이 redacted 로그에도 평문으로 남지 않음). variant 타입 자체는 future-sketch로 유지하되 token 필드는 본 redaction 집합으로 상시 방어한다(13 RD-2/OQ-15).
 
 ### 5.2 redaction 적용 지점
 
@@ -278,18 +279,18 @@ redaction은 로그·transcript·디스크 평문 노출을 막지만, **OS 관�
    - `WSLENV`(예: `WSLENV=ANTHROPIC_API_KEY/u`)로 WSL 측에 passthrough해 child가 환경변수로 상속받게 한다.
    - 이 메커니즘의 정확한 launch 구현은 07 §5.1 launch 정본에 통합돼 있다(argv는 non-secret, secret은 `Command::env()`+`WSLENV`). 본 절은 보안 요구만 명시하고 구현은 07을 인용한다.
 
-> **결정 필요(13, OQ-28 해소)**: secret env 주입(gateway 등)을 v1에 노출할지, env 키별로 어떤 키를 `WSLENV` passthrough 대상으로 둘지는 13 OQ-28에서 본 결정으로 해소됐다 — argv 비경유 원칙은 확정, 실제 gateway secret 주입 UI/설정 노출 여부만 잔여 결정. → [`13`](13-risks-open-questions.md).
+> **확정 / 후속 노출 범위(13 OQ-28 해소)**: OQ-28은 argv 비경유 보안 경계로 해소됐다. v1은 secret env 주입 UI/설정을 노출하지 않고 provider의 WSL 측 자체 인증에 의존한다. gateway 등으로 secret env 전달이 필요해지는 후속 scope에서만 허용 key와 UI/설정 노출 범위를 다시 정하되, 전달 경로는 `Command::env()` + `WSLENV`로 고정한다. → [`13`](13-risks-open-questions.md).
 
 > **구현 시 점검 (§5)**
-> - [ ] env value가 어떤 로그/이벤트/디스크에도 평문으로 흐르지 않는가(spawn 시점 포함).
-> - [ ] auth passthrough(`--cli auth login`) 출력이 transcript가 아닌 stderr 채널로만 가고, 그마저 redacted/collapsed인가.
-> - [ ] MCP server `env`(ref-acp §9)가 표시·로그에서 마스킹되는가.
-> - [ ] tool `rawInput`/`rawOutput`(15 §5)을 펼칠 때 credential 패턴이 마스킹되는가.
-> - [ ] redaction이 normalize **이전**(원본 보존 raw)이 아니라 표시/저장 **직전**에 적용돼, 라우팅에 필요한 id는 보존되는가.
-> - [ ] secret env(API key/token/gateway header/cookie)가 launch argv(`-e env KEY=VAL`)로 들어가지 않는가 — OS 관측면(`ps`/`/proc/<pid>/cmdline`/WSL process 목록) 노출 차단(§5.3).
-> - [ ] secret 주입이 필요하면 argv가 아니라 `Command::env()`+`WSLENV` passthrough(07 §5.1 launch 정본)로만 가는가.
-> - [ ] adapter가 `AgentRuntimeStartParams.env`(15 §8.1)에 secret을 싣지 않고 non-secret만 채우는가(§5.3 규약).
-> - [ ] `transportKind:"websocket"` start가 **token 로깅 없이** reject되는가 — 07 handler가 로깅 전 즉시 reject하고, reject 사유에 `authToken`(15 §8.1)이 평문으로 포함되지 않는가(13 RD-2, 11 수용 케이스 연동).
+> - [x] env value가 로그·디스크·public diagnostic event에 평문으로 흐르지 않고, adapter routing용 raw realtime bridge가 public diagnostic API에서 제외되는가(spawn 시점 포함). 확인된 경계: backend transport는 runtime launch env value를 redaction context로 보관하고, stderr diagnostic event, opt-in raw protocol debug log, diagnostic-only bounded replay log(`message_log`)에 쓰기 직전 값 기준으로 마스킹한다(`agent_runtime::tests` E2E-10 env-value redaction, `d_replaylog_redacts_runtime_env_values_without_redacting_realtime_event`, `transport::redact_with_values`). frontend 표시/저장 경계도 `stringifyRedactedRaw`/`redactDisplayText`와 raw-envelope placeholder로 검증됐다(`display-redaction.test.ts`, `ToolCallCard.test.ts`, `MessageList.test.ts`). 단 `1` 같은 짧은 non-secret env literal은 JSON-RPC id/count 등 정상 payload를 훼손할 수 있어 literal 치환에서 제외한다(`short_runtime_env_values_do_not_corrupt_unrelated_json_fields`). Realtime `agent-runtime-message` event는 adapter routing을 위해 무손실 통과(M-4)하지만 v1에서 in-process adapter 전용 bridge로 확정됐고, `createAgentTransportController`는 raw `message`를 구독하거나 외부 diagnostic handler로 노출하지 않는다(OQ-59). 더 엄격한 "모든 realtime event 무평문" 정책은 후속 제품/보안 요구가 생길 때 raw private channel + redacted public event 분리로 재설계한다.
+> - [x] auth passthrough(`--cli auth login`) 출력이 transcript가 아닌 stderr 채널로만 가고, 그마저 redacted/collapsed인가. v1은 auth passthrough를 광고하지 않는다: Claude ACP initialize는 `auth.terminal=false`, `_meta["terminal-auth"]=false`, `auth._meta.gateway=false`이고, Claude launch args는 `--hide-claude-auth`를 강제한다. 따라서 `--cli auth login` UI/terminal passthrough 경로 자체가 열리지 않는다. provider가 auth 관련 diagnostic을 stderr로 출력하더라도 backend `agent-runtime-stderr` emit 직전 `redact_with_values`를 거치며, `Authorization: Bearer ...`와 compact `Authorization:Bearer ...`/`Authorization=Bearer ...` 형태 모두 값 토큰을 마스킹한다. compact marker와 값이 stderr line 경계로 갈라져도 reader-local redaction state가 다음 line의 값 토큰을 마스킹한다. frontend stderr/command output 카드는 기본 collapsed + 표시 직전 redaction이다. 증거: `claude-acp-initialize.test.ts` OQ-43, `claude-acp-launch.test.ts`, `agent_runtime::tests` RS-9/9b 및 `transport::redact_tests::masks_compact_bearer_header_value`/`masks_compact_bearer_header_value_across_stderr_lines` 포함 stderr redaction tests, `CommandOutputCard.test.ts`.
+> - [x] MCP server `env`(ref-acp §9)가 표시·로그에서 마스킹되는가. 증거: frontend raw detail 표시 경계는 `stringifyRedactedRaw`가 `env` object key를 보존하되 값을 `[REDACTED]`로 치환하고(`display-redaction.test.ts`), backend opt-in raw protocol debug log도 JSON `env` object 값을 기록 직전 마스킹한다(`transport::redact_tests::masks_env_object_values_in_json`, `agent_runtime::tests::e2e10_raw_protocol_debug_log_redacts_mcp_env_values`).
+> - [x] tool `rawInput`/`rawOutput`(15 §5)을 펼칠 때 credential 패턴이 마스킹되는가. 증거: `ToolCallCard.test.ts`, `display-redaction.test.ts`.
+> - [x] redaction이 normalize **이전**(원본 보존 raw)이 아니라 표시/저장 **직전**에 적용돼, 라우팅에 필요한 id는 보존되는가. 증거: `agent-event-reducer.test.ts` NM-22 raw 보존 + `ToolCallCard.test.ts`/`MessageList.test.ts`/`display-redaction.test.ts` 표시 직전 redaction.
+> - [x] secret env(API key/token/gateway header/cookie)가 launch argv(`-e env KEY=VAL`)로 들어가지 않는가 — OS 관측면(`ps`/`/proc/<pid>/cmdline`/WSL process 목록) 노출 차단(§5.3). 증거: `agent_runtime::tests` AC-10b.
+> - [x] secret 주입이 필요하면 argv가 아니라 `Command::env()`+`WSLENV` passthrough(07 §5.1 launch 정본)로만 가는가. 증거: `process::build_wsl_command`, `agent_runtime::tests` AC-10b.
+> - [x] adapter가 `AgentRuntimeStartParams.env`(15 §8.1)에 secret을 싣지 않고 non-secret만 채우는가(§5.3 규약). 증거: `codex-launch.test.ts`, `claude-acp-launch.test.ts`.
+> - [x] `transportKind:"websocket"` start가 **token 로깅 없이** reject되는가 — 07 handler가 로깅 전 즉시 reject하고, reject 사유에 `authToken`(15 §8.1)이 평문으로 포함되지 않는가(13 RD-2, 11 수용 케이스 연동). 증거: `agent_runtime::tests` RS-12c/RS-18.
 
 ---
 
@@ -298,16 +299,16 @@ redaction은 로그·transcript·디스크 평문 노출을 막지만, **OS 관�
 [`13`](13-risks-open-questions.md) Resolved defaults가 권위: *"raw protocol log는 기본 비활성화하고 redacted debug mode만 둔다."* 운영 규칙:
 
 - **raw JSON-RPC 메시지 저장은 기본 OFF**. provider stdout/stdin 전문은 디스크에 남기지 않는다.
-- **debug raw log는 opt-in**이며, 켜도 §5 redaction을 거친 뒤 저장한다(평문 credential 금지). 설정 토글은 §4 settings 패턴(`research/codebase-frontend.md` §7.3, `research/codebase-backend.md` §4.3)을 따른다.
+- **debug raw log는 opt-in**이며, 켜도 §5 redaction을 거친 뒤 저장한다(평문 credential 금지). 저장 entry는 `runtimeId`/`direction`/redacted `line`을 기본으로 하고, inbound entry에는 reader-local 1-based `seq`를 포함해 arrival order 진단에 사용한다. 설정 토글은 §4 settings 패턴(`research/codebase-frontend.md` §7.3, `research/codebase-backend.md` §4.3)을 따른다.
 - **사용자에게 보이는 transcript**는 provider가 표시 목적으로 보낸 정규화 content(15 §4 `AgentContent`)와 CLCOMX가 만든 summary만 포함한다. raw protocol envelope는 표시하지 않는다.
 - **stderr diagnostic은 기본 collapsed**(`research/ux-reference.md` 진단 표시 패턴, 08). 펼치면 redacted 라인만 보인다.
 - **backend는 비치명적 오류를 `eprintln!`로 무시**하는 기존 컨벤션(`research/codebase-backend.md` §7)을 따르되, 그 출력에도 §5 redaction을 적용한다.
 
 > **구현 시 점검 (§6)**
-> - [ ] raw protocol 영속화가 기본 비활성이고, 활성화 토글이 명시적 opt-in인가.
-> - [ ] debug log 저장 경로가 §5 redaction을 통과한 뒤 기록되는가.
-> - [ ] transcript에 raw JSON-RPC envelope가 노출되지 않는가.
-> - [ ] stderr 카드가 기본 collapsed이고 redacted인가.
+> - [x] raw protocol 영속화가 기본 비활성이고, 활성화 토글이 명시적 opt-in인가. 증거: `agent_runtime::tests` E2E-10 raw protocol debug log default-off/opt-in tests.
+> - [x] debug log 저장 경로가 §5 redaction을 통과한 뒤 기록되고, inbound entry가 reader `seq`를 남기는가. 증거: `agent_runtime::tests` `e2e10_raw_protocol_debug_log_is_opt_in_and_redacted`, `e2e10_outbound_protocol_debug_log_is_opt_in_and_redacted`.
+> - [x] transcript에 raw JSON-RPC envelope가 노출되지 않는가. 원본 `ProviderRef.raw`/tool raw는 store에 보존하되, raw detail 표시 문자열 생성 시 JSON-RPC envelope shape(`jsonrpc`/`method`/`params`/`result`/`error`)를 placeholder로 치환한다. 증거: `display-redaction.test.ts` JSON-RPC envelope 비노출.
+> - [x] stderr 카드가 기본 collapsed이고 redacted인가. Backend stderr event는 emit 직전 redaction되고, execute command stderr buffer는 `CommandOutputCard`에서 기본 collapsed + 표시 직전 redaction으로 렌더된다. 증거: `agent_runtime::tests` RS-6/RS-7 + transport redaction tests, `agent-event-reducer.test.ts` NM-8b, `CommandOutputCard.test.ts`, `ToolCallCard.test.ts`.
 
 ---
 
@@ -320,10 +321,10 @@ redaction은 로그·transcript·디스크 평문 노출을 막지만, **OS 관�
 - 읽기 시 `scrub_workspace_resume_tokens`류 청소가 legacy/잔존 토큰을 한 번 더 제거하고 즉시 재기록하는 기존 패턴을 새 필드에도 적용한다(`research/codebase-backend.md` §4.2).
 
 > **구현 시 점검 (§7)**
-> - [ ] `sanitize_workspace_for_persist`가 `providerSessionId`/`providerThreadId`/`providerResumeToken`을 모두 제거하는가(15 §7.3).
-> - [ ] history upsert/read 경로가 새 resume 키류를 저장하지 않는가(`research/codebase-backend.md` §4.4).
-> - [ ] 디스크에 기록된 `workspace.json`을 직접 grep해 위 키가 평문으로 없는지 테스트가 있는가(11 수용 기준 연동).
-> - [ ] 메모리 상태(`AgentRuntimeState`)에만 resume 키가 살아있고, emit/snapshot(`AgentRuntimeSnapshot`, 15 §8.1)에는 포함되지 않는가.
+> - [x] `sanitize_workspace_for_persist`가 `providerSessionId`/`providerThreadId`/`providerResumeToken`을 모두 제거하는가(15 §7.3). 증거: Rust `workspace` tests의 `sanitize_workspace_for_persist_strips_runtime_and_resume_handles`.
+> - [x] history upsert/read 경로가 새 resume 키류를 저장하지 않는가(`research/codebase-backend.md` §4.4). 증거: `history` tests의 `upsert_tab_history_does_not_store_resume_tokens`, history record가 `runtimeKind` 외 direct provider id/resume 필드를 보유하지 않는 타입 구조.
+> - [x] 디스크에 기록된 `workspace.json`을 직접 grep해 위 키가 평문으로 없는지 테스트가 있는가(11 수용 기준 연동). 증거: Rust `workspace` tests의 `write_workspace_omits_agent_runtime_secrets_on_disk`.
+> - [x] 메모리 상태(`AgentRuntimeState`)에만 resume 키가 살아있고, emit/snapshot(`AgentRuntimeSnapshot`, 15 §8.1)에는 포함되지 않는가. 증거: `AgentRuntimeSnapshot` Rust/TS 타입은 provider session/thread/resume 필드를 포함하지 않고, 11 §8.5 FE-3/RS-25가 UI metadata strip과 snapshot scrub 경계를 검증한다.
 
 ---
 
@@ -345,11 +346,11 @@ ACP와 Codex app-server는 MCP/client tool 흐름을 가질 수 있다(ref-acp �
 
 | provider | 표시할 mode/policy | 값 (검증된 사실) | 출처 |
 |---|---|---|---|
-| **Codex** | `sandbox` (SandboxMode) | `read-only` / `workspace-write` / `danger-full-access` (kebab-case) | ref-codex §6.5 (`ThreadStartParams.sandbox`) |
+| **Codex** | `sandbox` (SandboxMode/SandboxPolicy) | `read-only` / `workspace-write` / `danger-full-access` / `external-sandbox` (badge 표시값은 kebab-case) | ref-codex §6.5 (`ThreadStartParams.sandbox`, `ThreadStartResponse.sandbox`) |
 | **Codex** | `approvalPolicy` (AskForApproval) | `untrusted` / `on-failure` / `on-request` / `never` / `granular`(experimental) | ref-codex §6 라인 434 |
 | **Codex** | `approvalsReviewer` | `user` / `auto_review` | ref-codex §6 라인 434 |
 | **Claude** | permission mode | `default` / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions` | ref-claude-agent-acp §3 |
-| **Claude** | ACP session mode | `SessionModeState.currentModeId` + `availableModes`(`buildAvailableModes`) | ref-acp §10, ref-claude-agent-acp §3 |
+| **Claude** | ACP session mode | `SessionModeState.currentModeId`(badge). `availableModes`는 mode 전환 후보 집합 | ref-acp §10, ref-claude-agent-acp §3 |
 
 - "approval mode = 언제 물을지, sandbox mode = 무엇을 읽/쓸지"라는 두 축을 UI에서 혼동 없이 표시한다(`research/ux-reference.md` 라인 321).
 - mode 전환 UI(Shift+Tab 순환 등)는 **provider가 노출하는 범위에서만** 제공한다 — provider 의존(`research/ux-reference.md` 라인 339). Claude는 `session/set_mode`(v1)/`session/set_config_option`로, mode 변경이 `current_mode_update`와 `config_option_update` 양쪽으로 통지될 수 있으므로 둘 다 처리한다(ref-claude-agent-acp §2 set_config_option, §3).
@@ -368,13 +369,13 @@ ACP와 Codex app-server는 MCP/client tool 흐름을 가질 수 있다(ref-acp �
 legacy PTY fallback은 provider terminal policy에 맡기되, CLCOMX UI는 direct runtime과 **같은 수준의 구조화 권한 보장을 제공하지 않는다**고 명시 표시한다. legacy 경로는 `terminal_output_delta`(15 §3)로만 다루고 transcript/approval 모델로 끌어올리지 않는다(04 §3.5).
 
 > **구현 시 점검 (§8)**
-> - [ ] client가 제공하는 모든 tool의 부수효과(write/exec/fetch)가 approval(15 §5)과 연결되는가.
-> - [ ] tool `content`(표시)와 `rawOutput`(raw)을 분리하고 raw를 redact하는가.
-> - [ ] Codex `sandbox`/`approvalPolicy`/`approvalsReviewer`를 session badge로 표시하는가(값은 §8.2 표).
-> - [ ] Claude permission mode/ACP session mode를 badge로 표시하고, `current_mode_update`+`config_option_update` 둘 다 반영하는가.
-> - [ ] bypass/full-access 진입에 고위험 경고가 붙는가.
-> - [ ] `IS_SANDBOX` 등 bypass 게이트 우회 env를 주입하지 않는가(§4.4).
-> - [ ] legacy PTY 세션에 "구조화 권한 보장 없음" 표시가 있는가.
+> - [x] client가 제공하는 모든 tool의 부수효과(write/exec/fetch)가 approval(15 §5)과 연결되는가. v1은 Claude ACP `DEFAULT_CLIENT_CAPABILITIES`에서 `fs.writeTextFile=false`, `terminal=false`, `auth.terminal=false`, `_meta.terminal_output=false`로 client 부수효과 tool을 광고하지 않고, Codex initialize도 `capabilities:null`로 experimental client tool 표면을 열지 않는다. Codex server→client request 중 지원 범위는 `item/commandExecution/requestApproval`/`item/fileChange/requestApproval` approval 경로뿐이며, `item/tool/call`·`applyPatchApproval`·`execCommandApproval` 같은 미지원 부수효과 request는 `method not found`(-32601)로 응답하고 approval UI/event를 만들지 않는다. 증거: `claude-acp-initialize.test.ts` OQ-43, `codex-app-server-adapter.test.ts` SEC-CLIENT-TOOLS/CX-12..15, `codex-wire-mapper.test.ts` CX-11/CX-15b.
+> - [x] tool `content`(표시)와 `rawOutput`(raw)을 분리하고 raw를 redact하는가. 증거: `ToolCallCard.svelte`가 일반 표시 content와 `rawInput`/`rawOutput` raw block을 분리하고 `stringifyRedactedRaw`를 거치며, `ToolCallCard.test.ts`/`display-redaction.test.ts`가 credential-like 값과 raw JSON-RPC envelope 비노출을 검증한다.
+> - [x] Codex `sandbox`/`approvalPolicy`/`approvalsReviewer`를 session badge로 표시하는가(값은 §8.2 표). 증거: `codex-app-server-adapter.test.ts`가 `thread/start`/`thread/resume` policy metadata 반환을 검증하고, `AgentTranscriptSurface.test.ts`가 Sandbox/Approval/Reviewer metadata badge 렌더링을 검증한다. `workspace::store::tests::sanitize_workspace_for_persist_strips_agent_runtime_secrets`는 이 non-secret metadata가 persistence scrub 후에도 보존됨을 검증한다.
+> - [x] Claude permission mode/ACP session mode를 badge로 표시하고, `current_mode_update`+`config_option_update` 둘 다 반영하는가. 증거: `claude-acp-adapter.test.ts`가 `session/new`, `current_mode_update`, `config_option_update` mode metadata를 검증하고, `AgentTranscriptSurface.test.ts`가 Permission Mode/Session Mode badge와 metadata persistence callback 갱신을 검증한다. `workspace::store::tests::sanitize_workspace_for_persist_strips_agent_runtime_secrets`는 이 non-secret metadata가 persistence scrub 후에도 보존됨을 검증한다.
+> - [x] bypass/full-access 진입에 고위험 경고가 붙는가. 증거: `AgentTranscriptSurface.test.ts`가 `danger-full-access`/`bypassPermissions` metadata badge에 `data-risk="high"`와 `High Risk` 라벨이 붙는지 검증한다. approval request 단계의 modal escalation은 `claude-acp-permission.test.ts` CL-23/current mode와 `codex-wire-mapper.test.ts` CX-11b/OQ-47 commandActions가 별도 검증한다.
+> - [x] `IS_SANDBOX` 등 bypass 게이트 우회 env를 주입하지 않는가(§4.4). 증거: `allowlist.rs`의 provider별 env allowlist에 `IS_SANDBOX`가 없고, `agent_runtime::tests` RS-12b/`rs12b_claude_specific_env_keys`가 allowlist 밖 key 거부를 검증한다.
+> - [x] legacy PTY 세션에 "구조화 권한 보장 없음" 표시가 있는가. 증거: `SessionShell.svelte`가 `runtimeKind` 미지정/`pty` host에만 `agentRuntime.fallback.legacyPermission*` notice를 표시하고 direct host에는 표시하지 않으며, `SessionShell.test.ts`가 두 분기를 검증한다.
 
 ---
 
@@ -385,16 +386,16 @@ legacy PTY fallback은 provider terminal policy에 맡기되, CLCOMX UI는 direc
 규칙:
 
 - agent provider는 표시하되(예: "Claude" / "Codex" provider 라벨), Claude Code/Anthropic **공식 앱처럼 오인될 수 있는 branding, 로고, ASCII art, visual copy를 사용하지 않는다**. UX 패턴은 참고하되 시각/브랜딩/카피는 복제하지 않는다(`research/ux-reference.md` 라인 11 명시).
-- Anthropic은 서드파티 제품에서 claude.ai 로그인/rate limit 제공을 일반적으로 허용하지 않으며 **API key 방식을 권장**한다(ref-claude-agent-acp §1 branding/auth note — 단 정확한 문구는 unverified, §아래 결정 필요). v1 기본 인증 경로를 API key/기존 `~/.claude` 자격으로 두고, 구독 로그인 흐름을 1차 기능으로 전면에 내세우지 않는다.
-- adapter `--hide-claude-auth` 플래그(ref-claude-agent-acp §1)는 claude 구독 로그인 method 노출을 줄이는 어댑터 옵션이다. 제품 오인/약관 우려를 줄이는 방향으로 활용을 고려한다(결정 필요).
+- Anthropic 공식 Agent SDK overview는 third-party product가 Claude app credentials/rate limits를 제공하는 것을 허용하지 않고 API key 사용을 권장한다. 또한 branding guidelines는 제품이 Anthropic이 만들었거나 후원/보증한 것처럼 암시하지 말라고 요구한다. v1 기본 인증 경로를 API key/기존 WSL 측 자격으로 두고, 구독 로그인 흐름을 1차 기능으로 전면에 내세우지 않는다.
+- adapter `--hide-claude-auth` 플래그(ref-claude-agent-acp §1)는 claude 구독 로그인 method 노출을 줄이는 어댑터 옵션이다. v1은 기본으로 이 플래그를 붙이고, backend allowlist도 `[adapterEntryPath, "--hide-claude-auth"]`만 통과시킨다. terminal/gateway interactive auth capability도 광고하지 않는다(OQ-43).
 
-> **결정 필요(13)**: Anthropic의 정확한 서드파티 인증/브랜딩 약관 문구는 1차 소스에서 미확정(ref-claude-agent-acp §6 unverified). 출시 전 overview 페이지/약관 재확인 필요. → [`13`](13-risks-open-questions.md).
+> **공식 근거(2026-06-28)**: https://code.claude.com/docs/en/agent-sdk/overview 의 "Authentication requirements" 및 "Branding guidelines". 출시/배포 전에는 같은 공식 문서를 다시 확인한다.
 
 > **구현 시 점검 (§9)**
-> - [ ] UI에 Anthropic/Claude Code 공식 로고·ASCII art·공식 카피를 복제하지 않는가.
-> - [ ] provider 라벨이 "공식 앱"이 아닌 "provider 선택"으로 읽히는가.
-> - [ ] 기본 인증 경로가 API key/기존 자격이고, 구독 로그인을 1차로 강요하지 않는가.
-> - [ ] `--hide-claude-auth` 사용 정책을 결정·문서화했는가.
+> - [x] UI에 Anthropic/Claude Code 공식 로고·ASCII art·공식 카피를 복제하지 않는가. built-in `AgentIcon` 설정은 Claude/Codex 공식 로고 asset(`light`/`dark`/`monochrome`)을 번들하지 않고 중립 fallback text(`Cl`/`Cx`)만 사용하며, `AgentIcon.svelte`도 asset이 없으면 fallback text만 렌더한다. UI copy의 `Claude Code` 명칭은 legacy PTY agent label과 Terminal settings의 Claude CLI 옵션 설명 같은 기술적 참조에 한정된다. direct runtime launcher/history는 `launcher.directRuntime.providerLabel`(`제공자: Claude`/`Provider: Claude`)을 사용해 공식 앱명처럼 표시하지 않는다. 증거: `agents/icons.ts`, `AgentIcon.svelte`, `registry.test.ts`, `SessionLauncher.test.ts`, UI copy `rg` 점검.
+> - [x] provider 라벨이 "공식 앱"이 아닌 "provider 선택"으로 읽히는가. 증거: direct runtime launcher 선택 버튼과 direct history/delete metadata는 `launcher.directRuntime.providerLabel`(`제공자: Claude`/`Provider: Claude`)을 사용하고, 기존 PTY agent label(`Claude Code`)을 direct provider 라벨로 재사용하지 않는다. `SessionLauncher.test.ts`가 direct history 및 direct toggle 선택 표시에서 `Claude Code` 미노출을 검증한다.
+> - [x] 기본 인증 경로가 API key/기존 자격이고, 구독 로그인을 1차로 강요하지 않는가. 증거: `DEFAULT_CLIENT_CAPABILITIES`가 `auth.terminal=false`, `_meta["terminal-auth"]=false`, `auth._meta.gateway=false`를 전송하고, `claude-acp-initialize.test.ts` OQ-43이 이를 고정한다.
+> - [x] `--hide-claude-auth` 사용 정책을 결정·문서화했는가. 증거: `buildClaudeAcpLaunchParams`가 `args:[adapterEntryPath,"--hide-claude-auth"]`를 생성하고, `allowlist.rs`가 같은 정확 argv만 허용한다. `claude-acp-launch.test.ts`와 `agent_runtime::tests` RS-9/9b가 이를 검증한다.
 
 ---
 

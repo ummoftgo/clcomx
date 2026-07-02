@@ -61,6 +61,12 @@ export type AgentSessionStatus =
   | "failed"
   | "exited";
 
+/** runtime/transport 에러의 stable code seed(OQ-60). provider별 세부 taxonomy는 후속 확장이다. */
+export type AgentRuntimeErrorCode =
+  | "framing_invalid_json"
+  | "framing_line_too_large"
+  | "framing_broken";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Normalized model — 이벤트 (AgentEvent)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -73,6 +79,10 @@ export type AgentEvent =
   | { type: "session_loaded"; ref: ProviderRef }
   /** 세션 상태 전이. reason은 provider 원본 사유(선택). */
   | { type: "session_status_changed"; ref: ProviderRef; status: AgentSessionStatus; reason?: string }
+  /** provider runtime metadata 일부 갱신. transcript가 아닌 session badge/persistence patch로만 쓴다. */
+  | { type: "runtime_metadata_changed"; ref: ProviderRef; metadata: AgentRuntimeMetadataUpdate }
+  /** provider가 제안한 세션 title 갱신. transcript가 아닌 앱 session title에만 반영한다. */
+  | { type: "session_title_changed"; ref: ProviderRef; title: string | null }
   /** 사용자 메시지. mode=replace(전체 교체) | append(청크 누적). */
   | { type: "user_message"; ref: ProviderRef; content: AgentContent[]; mode: "replace" | "append" }
   /**
@@ -91,7 +101,13 @@ export type AgentEvent =
    * agent 응답 스트리밍 delta(텍스트 조각). ref.itemId/messageId 기준 append.
    * channel: "response"(기본) | "thought". thought delta는 response와 별도 스트림으로 누적.
    */
-  | { type: "agent_message_delta"; ref: ProviderRef; delta: string; channel?: "response" | "thought" }
+  | {
+      type: "agent_message_delta";
+      ref: ProviderRef;
+      delta: string;
+      channel?: "response" | "thought";
+      segment?: AgentTextSegment;
+    }
   /** 실행 계획 전체 교체(ACP plan, Codex turn/plan/updated). */
   | { type: "plan_updated"; ref: ProviderRef; entries: AgentPlanEntry[] }
   /** tool call 신규 생성 또는 부분 갱신(id 기준 upsert). */
@@ -100,8 +116,8 @@ export type AgentEvent =
   | { type: "tool_call_content_delta"; ref: ProviderRef; content: AgentContent }
   /** 승인 요청(server→client request). request.id로 pending 관리. */
   | { type: "approval_requested"; ref: ProviderRef; request: ApprovalRequest }
-  /** 승인 해결(사용자 응답 또는 serverRequest/resolved로 닫힘). */
-  | { type: "approval_resolved"; ref: ProviderRef; decision: ApprovalDecision }
+  /** 승인 해결(사용자 응답 또는 cleanup/serverRequest로 닫힘). decidedBy 생략 시 user로 본다. */
+  | { type: "approval_resolved"; ref: ProviderRef; decision: ApprovalDecision; decidedBy?: ApprovalDecidedBy }
   /** legacy PTY 또는 embedded terminal byte stream. transcript가 아닌 terminal surface 전용. */
   | { type: "terminal_output_delta"; ref: ProviderRef; ptyId: number; seq: number; delta: string }
   /** 명령 실행 stdout/stderr 증분(thread 채널). */
@@ -114,8 +130,28 @@ export type AgentEvent =
   | { type: "process_exited"; ref: ProviderRef; code?: number; signal?: string }
   /** 사용 가능한 슬래시 커맨드 목록 갱신(ACP available_commands_update). 최신 목록 전체 교체. */
   | { type: "available_commands_updated"; ref: ProviderRef; commands: AgentCommand[] }
-  /** 에러. recoverable=재시도 가능 여부(Codex willRetry / ACP error 분류). */
-  | { type: "error"; ref: ProviderRef; message: string; recoverable: boolean };
+  /** 에러. recoverable=재시도 가능 여부(Codex willRetry / ACP error 분류). code는 transport가 분류 가능한 경우만 채운다. */
+  | {
+      type: "error";
+      ref: ProviderRef;
+      message: string;
+      recoverable: boolean;
+      code?: AgentRuntimeErrorCode;
+    };
+
+/** transcript가 아닌 세션 metadata badge/persistence patch. provider id·token 같은 비밀은 담지 않는다. */
+export interface AgentRuntimeMetadataUpdate {
+  /** provider sandbox/mode 표시용 metadata(09 §8.2). */
+  sandbox?: string;
+  /** provider approval policy 표시용 metadata(09 §8.2). */
+  approvalPolicy?: string;
+  /** provider approval reviewer 표시용 metadata(09 §8.2). */
+  approvalsReviewer?: string;
+  /** Claude SDK permissionMode 또는 동등 provider permission mode id. */
+  permissionMode?: string;
+  /** ACP session mode 또는 동등 provider session mode id. */
+  sessionMode?: string;
+}
 
 /** 슬래시 커맨드 1건(composer 팔레트 소스). provider가 알린 server-side 커맨드. */
 export interface AgentCommand {
@@ -133,12 +169,23 @@ export interface AgentCommand {
 
 /** transcript/tool card가 렌더링하는 공통 content 블록. discriminator = type. */
 export type AgentContent =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; segment?: AgentTextSegment }
   | { type: "image"; uri: string; mimeType?: string }
-  | { type: "resource"; uri: string; mimeType?: string; text?: string }
-  | { type: "terminal"; command?: string; output: string }
+  | { type: "resource"; uri: string; mimeType?: string; text?: string; resourceKind?: "file" | "skill" }
+  | { type: "terminal"; command?: string; output: string; stderr?: string }
   | { type: "diff"; path: string; patch: string }
   | { type: "json"; value: unknown };
+
+/**
+ * provider가 하나의 message item 안에서 병렬 text stream을 보낼 때 쓰는 segment 식별자.
+ * Codex reasoning delta의 `summaryIndex`/`contentIndex`를 normalized text block에 보존한다.
+ */
+export interface AgentTextSegment {
+  /** reasoning summary/content 배열 중 어느 축인지. */
+  kind: "summary" | "content";
+  /** 같은 kind 안의 0-based index. */
+  index: number;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Normalized model — 하위 타입
@@ -188,6 +235,9 @@ export interface ApprovalOption {
   label: string;
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" | "other";
 }
+
+/** approval 결정을 누가 내렸는가. user=사용자 선택, auto=자동 승인, cleanup=cancel/shutdown/exit 정리. */
+export type ApprovalDecidedBy = "user" | "auto" | "cleanup";
 
 /** 승인 결정 결과. failed는 client 내부 에러용(wire로 안 보냄). */
 export interface ApprovalDecision {

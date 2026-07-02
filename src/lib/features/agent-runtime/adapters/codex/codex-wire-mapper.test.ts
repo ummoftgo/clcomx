@@ -11,6 +11,7 @@ import {
   makeTextUserInput,
   codexApprovalSeverity,
   getUnknownNotificationCount,
+  getUnknownNotificationRawPayloads,
   resetUnknownNotificationCount,
 } from "./codex-wire-mapper";
 
@@ -93,7 +94,7 @@ describe("thread/turn lifecycle (CX-1/CX-3/CX-4)", () => {
   });
 });
 
-describe("delta → completed reconcile (CX-5)", () => {
+describe("delta → completed reconcile (CX-5/CX-6)", () => {
   it("item/started(empty) → delta×2 → item/completed(text) authoritative replace", () => {
     const r = new CodexRouting();
     const tid = "th";
@@ -116,6 +117,37 @@ describe("delta → completed reconcile (CX-5)", () => {
       mode: "replace",
       content: [{ type: "text", text: "Looks good" }],
     });
+  });
+
+  it("CX-6: item/completed(plan) is authoritative plan_updated; plan delta remains suppressed", () => {
+    const r = new CodexRouting();
+    expect(
+      mapCodexNotification(
+        "item/plan/delta",
+        { threadId: "th", turnId: "t1", itemId: "pl", delta: "old incremental" },
+        r,
+      ),
+    ).toEqual([]);
+
+    const completed = mapCodexNotification(
+      "item/completed",
+      { threadId: "th", turnId: "t1", item: { type: "plan", id: "pl", text: "final plan" } },
+      r,
+    );
+
+    expect(completed).toEqual([
+      {
+        type: "plan_updated",
+        ref: {
+          provider: "codex",
+          threadId: "th",
+          turnId: "t1",
+          itemId: "pl",
+          raw: { type: "plan", id: "pl", text: "final plan" },
+        },
+        entries: [{ id: "pl", content: "final plan", status: "completed" }],
+      },
+    ]);
   });
 });
 
@@ -146,6 +178,19 @@ describe("command output routing (CX-8/CX-10)", () => {
       r,
     );
     expect(events[0]).toMatchObject({ type: "command_output_delta", stream: "stdout", delta: "hello" });
+  });
+
+  it("CX-9: standalone command/exec outputDelta remains unsupported and raw-counted", () => {
+    const r = new CodexRouting();
+    const before = getUnknownNotificationCount();
+    const params = { processId: "p1", stream: "stderr", deltaBase64: "ZXJy", capReached: false };
+
+    expect(mapCodexNotification("command/exec/outputDelta", params, r)).toEqual([]);
+    expect(getUnknownNotificationCount()).toBe(before + 1);
+    expect(getUnknownNotificationRawPayloads()).toContainEqual({
+      method: "command/exec/outputDelta",
+      params,
+    });
   });
 
   it("CX-10: commandExecution completed declined → tool_call_updated{failed}", () => {
@@ -184,6 +229,34 @@ describe("command output routing (CX-8/CX-10)", () => {
     };
     const events = mapCodexNotification("item/started", { threadId: "th", turnId: "t1", item }, r);
     expect(events[0]).toMatchObject({ type: "tool_call_updated", update: { id: "c1", kind: "execute", status: "in_progress", title: "ls" } });
+  });
+
+  it("commandExecution with locations → tool_call_updated preserves file locations", () => {
+    const r = new CodexRouting();
+    const item = {
+      type: "commandExecution",
+      id: "c1",
+      command: "sed -n '12p' src/lib/example.ts",
+      cwd: "/work",
+      processId: null,
+      source: "agent",
+      status: "completed",
+      commandActions: [],
+      aggregatedOutput: "line 12",
+      exitCode: 0,
+      durationMs: 1,
+      locations: [{ path: "src/lib/example.ts", line: 12, column: 4 }],
+    };
+    const events = mapCodexNotification("item/completed", { threadId: "th", turnId: "t1", item }, r);
+    expect(events[0]).toMatchObject({
+      type: "tool_call_updated",
+      update: {
+        id: "c1",
+        kind: "execute",
+        status: "completed",
+        locations: [{ path: "src/lib/example.ts", line: 12, column: 4 }],
+      },
+    });
   });
 });
 
@@ -236,16 +309,58 @@ describe("reasoning (thought channel)", () => {
     expect(events[0]).toMatchObject({ type: "agent_message_delta", channel: "thought", delta: "thinking" });
   });
 
-  it("reasoning completed → agent_message{thought, [...summary,...content].join} (OQ-46)", () => {
+  it("reasoning delta preserves contentIndex and summaryIndex segment metadata", () => {
     const r = new CodexRouting();
-    const item = { type: "reasoning", id: "rs", summary: ["s1"], content: ["c1", "c2"] };
+    const content = mapCodexNotification(
+      "item/reasoning/textDelta",
+      { threadId: "th", turnId: "t1", itemId: "rs", delta: "c1", contentIndex: 1 },
+      r,
+    );
+    const summary = mapCodexNotification(
+      "item/reasoning/summaryTextDelta",
+      { threadId: "th", turnId: "t1", itemId: "rs", delta: "s0", summaryIndex: 0 },
+      r,
+    );
+
+    expect(content[0]).toMatchObject({
+      type: "agent_message_delta",
+      channel: "thought",
+      segment: { kind: "content", index: 1 },
+    });
+    expect(summary[0]).toMatchObject({
+      type: "agent_message_delta",
+      channel: "thought",
+      segment: { kind: "summary", index: 0 },
+    });
+  });
+
+  it("reasoning completed → summary is the authoritative thought text (OQ-46)", () => {
+    const r = new CodexRouting();
+    const item = { type: "reasoning", id: "rs", summary: ["s1", "s2"], content: ["c1", "c2"] };
     const events = mapCodexNotification("item/completed", { threadId: "th", turnId: "t1", item }, r);
     expect(events[0]).toMatchObject({
       type: "agent_message",
       channel: "thought",
       mode: "replace",
-      content: [{ type: "text", text: "s1\nc1\nc2" }],
+      content: [{ type: "text", text: "s1\ns2" }],
     });
+  });
+
+  it("reasoning completed falls back to content only when summary is absent", () => {
+    const r = new CodexRouting();
+    const summaryOnly = mapCodexNotification(
+      "item/completed",
+      { threadId: "th", turnId: "t1", item: { type: "reasoning", id: "rs-s", summary: ["s"], content: [] } },
+      r,
+    );
+    const contentOnly = mapCodexNotification(
+      "item/completed",
+      { threadId: "th", turnId: "t1", item: { type: "reasoning", id: "rs-c", summary: [], content: ["c"] } },
+      r,
+    );
+
+    expect(summaryOnly[0]).toMatchObject({ content: [{ type: "text", text: "s" }] });
+    expect(contentOnly[0]).toMatchObject({ content: [{ type: "text", text: "c" }] });
   });
 
   it("reasoning started → empty thought message", () => {
@@ -305,6 +420,18 @@ describe("interleaved triple-key separation (CX-16)", () => {
     expect((a[0] as { ref: object }).ref).toMatchObject({ threadId: "A", turnId: "t1", itemId: "iA" });
     expect((b[0] as { ref: object }).ref).toMatchObject({ threadId: "B", turnId: "t2", itemId: "iB" });
   });
+
+  it("CX-17: same thread t1 completed then t2 started keeps turns separate", () => {
+    const r = new CodexRouting();
+    mapCodexNotification("turn/started", { threadId: "th", turn: { id: "t1" } }, r);
+    const completed = mapCodexNotification("turn/completed", { threadId: "th", turn: { id: "t1", status: "completed" } }, r);
+    const next = mapCodexNotification("turn/started", { threadId: "th", turn: { id: "t2" } }, r);
+
+    expect(completed[0]).toMatchObject({ type: "turn_completed", ref: { threadId: "th", turnId: "t1" } });
+    expect(next[0]).toMatchObject({ type: "session_status_changed", ref: { threadId: "th", turnId: "t2" }, status: "running" });
+    expect(r.isTurnClosed("th", "t1")).toBe(true);
+    expect(r.activeTurnOf("th")).toBe("t2");
+  });
 });
 
 describe("approval mapping (CX-11/CX-15/CX-15b/CX-15c)", () => {
@@ -327,11 +454,66 @@ describe("approval mapping (CX-11/CX-15/CX-15b/CX-15c)", () => {
     expect(r.hasPendingApproval("7")).toBe(true);
   });
 
-  it("escalation: command approval with proposedExecpolicyAmendment → severity escalation", () => {
+  it("escalation: command approval high-risk signals → severity escalation", () => {
     expect(codexApprovalSeverity("item/commandExecution/requestApproval", { proposedExecpolicyAmendment: {} })).toBe("escalation");
+    expect(codexApprovalSeverity("item/commandExecution/requestApproval", { proposedNetworkPolicyAmendments: [] })).toBe("escalation");
+    expect(codexApprovalSeverity("item/commandExecution/requestApproval", { networkApprovalContext: {} })).toBe("escalation");
+    expect(codexApprovalSeverity("item/commandExecution/requestApproval", { sandbox: "danger-full-access" })).toBe("escalation");
+    expect(codexApprovalSeverity("item/commandExecution/requestApproval", { sandboxRequested: "danger-full-access" })).toBe("escalation");
+    expect(codexApprovalSeverity("item/commandExecution/requestApproval", { approvalMode: "Agent (Full Access)" })).toBe("escalation");
     expect(codexApprovalSeverity("item/permissions/requestApproval", {})).toBe("escalation");
     expect(codexApprovalSeverity("item/fileChange/requestApproval", { grantRoot: "/" })).toBe("escalation");
+    expect(
+      codexApprovalSeverity("item/commandExecution/requestApproval", {
+        additionalPermissions: { network: { enabled: true }, fileSystem: null },
+      }),
+    ).toBe("escalation");
+    expect(
+      codexApprovalSeverity("item/commandExecution/requestApproval", {
+        additionalPermissions: {
+          network: null,
+          fileSystem: { read: null, write: ["/etc"], entries: [{ path: "/var", access: "write" }] },
+        },
+      }),
+    ).toBe("escalation");
+    expect(
+      codexApprovalSeverity("item/commandExecution/requestApproval", {
+        additionalPermissions: {
+          network: { enabled: false },
+          fileSystem: { read: ["/workspace"], write: null, entries: [{ path: "/workspace", access: "read" }] },
+        },
+      }),
+    ).toBe("normal");
     expect(codexApprovalSeverity("item/commandExecution/requestApproval", {})).toBe("normal");
+  });
+
+  it("OQ-47: generated commandActions stay normal, future side-effect commandActions escalate", () => {
+    expect(
+      codexApprovalSeverity("item/commandExecution/requestApproval", {
+        commandActions: [
+          { type: "read", command: "cat package.json", name: "package.json", path: "/repo/package.json" },
+          { type: "listFiles", command: "ls", path: "/repo" },
+          { type: "search", command: "rg direct-runtime", query: "direct-runtime", path: "/repo" },
+          { type: "unknown", command: "custom read-only helper" },
+        ],
+      }),
+    ).toBe("normal");
+
+    expect(
+      codexApprovalSeverity("item/commandExecution/requestApproval", {
+        commandActions: [{ type: "write", command: "tee /etc/app.conf", path: "/etc/app.conf" }],
+      }),
+    ).toBe("escalation");
+    expect(
+      codexApprovalSeverity("item/commandExecution/requestApproval", {
+        commandActions: [{ type: "execute", command: "sudo service restart" }],
+      }),
+    ).toBe("escalation");
+    expect(
+      codexApprovalSeverity("item/commandExecution/requestApproval", {
+        commandActions: [{ type: "fetch", command: "curl https://example.com" }],
+      }),
+    ).toBe("escalation");
   });
 
   it("fileChange requestApproval → approval_requested with body=reason", () => {
@@ -355,7 +537,11 @@ describe("approval mapping (CX-11/CX-15/CX-15b/CX-15c)", () => {
       r,
     );
     expect(res.reply).toEqual({ kind: "auto-decline", id: 9 });
-    expect(res.events[0]).toMatchObject({ type: "approval_resolved", decision: { requestId: "9", outcome: "failed" } });
+    expect(res.events[0]).toMatchObject({
+      type: "approval_resolved",
+      decision: { requestId: "9", outcome: "failed" },
+      decidedBy: "auto",
+    });
   });
 
   it("CX-15: serverRequest/resolved closes pending approval → approval_resolved{cancelled}", () => {
@@ -369,6 +555,7 @@ describe("approval mapping (CX-11/CX-15/CX-15b/CX-15c)", () => {
       type: "approval_resolved",
       ref: { threadId: "th", turnId: "t1", itemId: "c1" },
       decision: { requestId: "7", outcome: "cancelled" },
+      decidedBy: "cleanup",
     });
     expect(r.hasPendingApproval("7")).toBe(false);
   });
@@ -385,6 +572,11 @@ describe("approval mapping (CX-11/CX-15/CX-15b/CX-15c)", () => {
     expect(res.events).toEqual([]);
     expect(res.reply).toEqual({ kind: "error", id: 42, method: "mcpServer/elicitation/request" });
     expect(getUnknownNotificationCount()).toBe(before + 1);
+    expect(getUnknownNotificationRawPayloads()).toContainEqual({
+      id: 42,
+      method: "mcpServer/elicitation/request",
+      params: { foo: 1 },
+    });
   });
 
   it("CX-15c: unsupported notification → [] + counter++, no outbound", () => {
@@ -392,6 +584,29 @@ describe("approval mapping (CX-11/CX-15/CX-15b/CX-15c)", () => {
     const before = getUnknownNotificationCount();
     expect(mapCodexNotification("thread/realtime/started", { foo: 1 }, r)).toEqual([]);
     expect(getUnknownNotificationCount()).toBe(before + 1);
+    expect(getUnknownNotificationRawPayloads()).toContainEqual({
+      method: "thread/realtime/started",
+      params: { foo: 1 },
+    });
+  });
+
+  it("CX-15d: unknown item variant → [] + raw diagnostics, no silent drop", () => {
+    const r = new CodexRouting();
+    const startedItem = { type: "futureWidget", id: "fw-start", payload: { mode: "preview" } };
+    const completedItem = { type: "futureWidget", id: "fw-done", payload: { mode: "final" } };
+
+    expect(mapCodexNotification("item/started", { threadId: "th", turnId: "t1", item: startedItem }, r)).toEqual([]);
+    expect(mapCodexNotification("item/completed", { threadId: "th", turnId: "t1", item: completedItem }, r)).toEqual([]);
+
+    expect(getUnknownNotificationCount()).toBe(2);
+    expect(getUnknownNotificationRawPayloads()).toContainEqual({
+      method: "item/started",
+      params: { threadId: "th", turnId: "t1", item: startedItem },
+    });
+    expect(getUnknownNotificationRawPayloads()).toContainEqual({
+      method: "item/completed",
+      params: { threadId: "th", turnId: "t1", item: completedItem },
+    });
   });
 
   it("item/plan/delta is suppressed (experimental, completed authoritative)", () => {
@@ -424,6 +639,25 @@ describe("outbound makeTextUserInput / mapAgentContentToUserInput (H4/OQ-33)", (
   it("resource → mention reference", () => {
     expect(mapAgentContentToUserInput([{ type: "resource", uri: "file:///doc.md", text: "doc" }])).toEqual([
       { type: "mention", name: "doc", path: "file:///doc.md" },
+    ]);
+  });
+
+  it("Codex skill resource → UserInput skill variant", () => {
+    expect(
+      mapAgentContentToUserInput([
+        {
+          type: "resource",
+          uri: "file:///home/tester/.codex/skills/review/SKILL.md",
+          text: "review",
+          resourceKind: "skill",
+        },
+      ]),
+    ).toEqual([
+      {
+        type: "skill",
+        name: "review",
+        path: "/home/tester/.codex/skills/review/SKILL.md",
+      },
     ]);
   });
 });

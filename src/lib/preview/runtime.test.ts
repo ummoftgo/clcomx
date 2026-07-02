@@ -470,6 +470,49 @@ describe("previewInvoke history commands", () => {
     });
   });
 
+  it("preserves direct runtime kind and keeps it distinct from PTY history", async () => {
+    applyPreviewPreset("workspace");
+
+    const pty = await previewInvoke<Array<{
+      agentId: string;
+      distro: string;
+      workDir: string;
+      title: string;
+      runtimeKind?: string;
+    }>>("record_tab_history", {
+      agentId: "claude",
+      distro: "Ubuntu-24.04",
+      workDir: "/home/user/work/project",
+      title: "PTY title",
+      runtimeKind: "pty",
+    });
+
+    expect(pty[0]).toMatchObject({
+      agentId: "claude",
+      title: "PTY title",
+    });
+    expect(pty[0]).not.toHaveProperty("runtimeKind");
+
+    const direct = await previewInvoke<typeof pty>("record_tab_history", {
+      agentId: "claude",
+      distro: "Ubuntu-24.04",
+      workDir: "/home/user/work/project",
+      title: "Direct title",
+      runtimeKind: "direct-claude",
+    });
+
+    expect(direct[0]).toMatchObject({
+      agentId: "claude",
+      title: "Direct title",
+      runtimeKind: "direct-claude",
+    });
+    expect(direct[1]).toMatchObject({
+      agentId: "claude",
+      title: "PTY title",
+    });
+    expect(direct[1]).not.toHaveProperty("runtimeKind");
+  });
+
   it("removes only exact history entry matches", async () => {
     applyPreviewPreset("workspace");
 

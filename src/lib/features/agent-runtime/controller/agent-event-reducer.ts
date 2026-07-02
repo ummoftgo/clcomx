@@ -10,7 +10,7 @@
  * store(`agent-runtime-store.svelte.ts`)가 reducer 결과를 받아 처리한다.
  */
 
-import type { AgentContent, AgentEvent, ProviderRef } from "../contracts/normalized";
+import type { AgentContent, AgentEvent, AgentTextSegment, ProviderRef } from "../contracts/normalized";
 import type {
   TranscriptItem,
   TranscriptModel,
@@ -141,7 +141,7 @@ function admitForPatch(model: TranscriptModel, turnKey: string): boolean {
   if (turn.residency === "sealed-retained") {
     // 늦은 same-turn event: unseal → patch → (외부 트리거로) reseal. telemetry 1 증가.
     turn.residency = "unsealed";
-    turn.terminated = false; // patch 동안 다시 진행 상태로 본다
+    // 종료 신호는 이미 받은 turn이므로 late patch 중에도 유지해야 추가 completed 없이 reseal된다.
     turn.resealCount += 1;
   }
   return true;
@@ -151,16 +151,140 @@ function admitForPatch(model: TranscriptModel, turnKey: string): boolean {
 // content 누적 헬퍼
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** text content append(같은 message 본문에 텍스트 조각 누적). */
-function appendText(content: AgentContent[], delta: string): AgentContent[] {
+/** 두 text segment 식별자가 같은 logical stream인지 비교한다. */
+function sameTextSegment(a: AgentTextSegment | undefined, b: AgentTextSegment | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.kind === b.kind && a.index === b.index;
+}
+
+/** reasoning segment 표시 순서: summary[] 다음 content[], 각 배열은 index 오름차순. */
+function segmentOrder(segment: AgentTextSegment | undefined): number {
+  if (segment === undefined) return Number.MAX_SAFE_INTEGER;
+  return (segment.kind === "summary" ? 0 : 1) * 1_000_000 + segment.index;
+}
+
+/** text content append(같은 message 본문에 텍스트 조각 누적). segment가 있으면 해당 stream에만 붙인다. */
+function appendText(
+  content: AgentContent[],
+  delta: string,
+  segment?: AgentTextSegment,
+): AgentContent[] {
   const next = [...content];
+  if (segment !== undefined) {
+    const idx = next.findIndex(
+      (c) => c.type === "text" && sameTextSegment(c.segment, segment),
+    );
+    if (idx >= 0) {
+      const current = next[idx];
+      if (current.type === "text") {
+        next[idx] = { ...current, text: current.text + delta };
+      }
+    } else {
+      next.push({ type: "text", text: delta, segment });
+    }
+    return next.sort((a, b) => {
+      const ak = a.type === "text" ? segmentOrder(a.segment) : Number.MAX_SAFE_INTEGER;
+      const bk = b.type === "text" ? segmentOrder(b.segment) : Number.MAX_SAFE_INTEGER;
+      return ak - bk;
+    });
+  }
+
   const last = next[next.length - 1];
-  if (last && last.type === "text") {
+  if (last && last.type === "text" && last.segment === undefined) {
     next[next.length - 1] = { type: "text", text: last.text + delta };
   } else {
     next.push({ type: "text", text: delta });
   }
   return next;
+}
+
+/** UTF-8 기준 byte 길이를 계산한다. TextEncoder가 없으면 보수적으로 UTF-16 길이를 쓴다. */
+function utf8ByteLength(text: string): number {
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(text).length;
+  }
+  return text.length * 2;
+}
+
+/** JSON 직렬화 가능한 값의 근사 byte 크기를 계산한다. 순환 구조는 raw 보존값으로만 센다. */
+function jsonByteLength(value: unknown): number {
+  try {
+    return utf8ByteLength(JSON.stringify(value) ?? "");
+  } catch {
+    return 0;
+  }
+}
+
+/** transcript content 1개의 렌더/보관 byte 근사값. */
+function contentByteLength(content: AgentContent): number {
+  switch (content.type) {
+    case "text":
+      return utf8ByteLength(content.text);
+    case "image":
+      return utf8ByteLength(content.uri) + utf8ByteLength(content.mimeType ?? "");
+    case "resource":
+      return (
+        utf8ByteLength(content.uri) +
+        utf8ByteLength(content.mimeType ?? "") +
+        utf8ByteLength(content.text ?? "")
+      );
+    case "terminal":
+      return (
+        utf8ByteLength(content.command ?? "") +
+        utf8ByteLength(content.output) +
+        utf8ByteLength(content.stderr ?? "")
+      );
+    case "diff":
+      return utf8ByteLength(content.path) + utf8ByteLength(content.patch);
+    case "json":
+      return jsonByteLength(content.value);
+  }
+}
+
+/** item body가 hot window에서 차지하는 근사 byte 크기. */
+function itemByteLength(item: TranscriptItem | undefined): number {
+  if (!item) return 0;
+  switch (item.type) {
+    case "message":
+      return item.content.reduce((sum, content) => sum + contentByteLength(content), 0);
+    case "plan":
+      return item.entries.reduce(
+        (sum, entry) =>
+          sum +
+          utf8ByteLength(entry.id ?? "") +
+          utf8ByteLength(entry.content) +
+          utf8ByteLength(entry.status) +
+          utf8ByteLength(entry.priority ?? ""),
+        0,
+      );
+    case "tool_call": {
+      const update = item.update;
+      return (
+        utf8ByteLength(update.id) +
+        utf8ByteLength(update.title ?? "") +
+        utf8ByteLength(update.kind) +
+        utf8ByteLength(update.status) +
+        (update.content ?? []).reduce((sum, content) => sum + contentByteLength(content), 0) +
+        jsonByteLength(update.locations ?? []) +
+        jsonByteLength(update.rawInput) +
+        jsonByteLength(update.rawOutput)
+      );
+    }
+    case "file_change":
+      return (
+        utf8ByteLength(item.change.path) +
+        utf8ByteLength(item.change.operation) +
+        utf8ByteLength(item.change.oldPath ?? "") +
+        utf8ByteLength(item.change.diff ?? "")
+      );
+    case "notice":
+      return utf8ByteLength(item.messageKey) + jsonByteLength(item.raw);
+  }
+}
+
+/** sealed turn 하나의 body byte 근사값. */
+function turnBodyByteLength(model: TranscriptModel, turn: TranscriptTurnState): number {
+  return turn.itemIds.reduce((sum, itemId) => sum + itemByteLength(model.itemsById.get(itemId)), 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -260,7 +384,7 @@ function applyMessageDelta(
     type: "message",
     id,
     role,
-    content: appendText(prevContent, ev.delta),
+    content: appendText(prevContent, ev.delta, ev.segment),
     streaming: true,
     collapsed: channel === "thought" ? true : undefined,
     ref: ev.ref,
@@ -337,10 +461,17 @@ function applyCommandOutputDelta(
   // execute kind stdout/stderr 전용(04 §3.2.3). stream별로 terminal content에 누적.
   const next = [...prevContent];
   const last = next[next.length - 1];
+  const appendStdout = ev.stream === "stdout";
   if (last && last.type === "terminal") {
-    next[next.length - 1] = { type: "terminal", command: last.command, output: last.output + ev.delta };
+    next[next.length - 1] = appendStdout
+      ? { ...last, output: last.output + ev.delta }
+      : { ...last, stderr: (last.stderr ?? "") + ev.delta };
   } else {
-    next.push({ type: "terminal", output: ev.delta });
+    next.push(
+      appendStdout
+        ? { type: "terminal", output: ev.delta }
+        : { type: "terminal", output: "", stderr: ev.delta },
+    );
   }
   attachItem(model, turnKey, {
     ...existing,
@@ -370,33 +501,69 @@ function applyFileChange(
   attachItem(model, turnKey, { type: "file_change", id, change: ev.change });
 }
 
+/** 취소된 turn의 열린 tool call을 client 합성 cancelled 상태로 닫는다(NM-17). */
+function cancelOpenToolCallsInTurn(model: TranscriptModel, turnKey: string): void {
+  const turn = model.turnsById.get(turnKey);
+  if (!turn) return;
+  for (const itemId of turn.itemIds) {
+    const item = model.itemsById.get(itemId);
+    if (
+      item?.type !== "tool_call" ||
+      (item.update.status !== "pending" && item.update.status !== "in_progress")
+    ) {
+      continue;
+    }
+    model.itemsById.set(itemId, {
+      ...item,
+      update: { ...item.update, status: "cancelled" },
+    });
+    bump(model, itemId);
+    turn.openItemCount = Math.max(0, turn.openItemCount - 1);
+  }
+}
+
+/** 취소 보강이 실제 tool call body patch를 만드는지 확인한다. */
+function hasOpenToolCallsInTurn(model: TranscriptModel, turnKey: string): boolean {
+  const turn = model.turnsById.get(turnKey);
+  if (!turn) return false;
+  return turn.itemIds.some((itemId) => {
+    const item = model.itemsById.get(itemId);
+    return (
+      item?.type === "tool_call" &&
+      (item.update.status === "pending" || item.update.status === "in_progress")
+    );
+  });
+}
+
+/** turn_completed가 생성할 notice message key를 계산한다. 없으면 body patch가 아니다. */
+function turnCompletedNoticeKey(ev: Extract<AgentEvent, { type: "turn_completed" }>): string | undefined {
+  if (ev.status === "failed") return "agentRuntime.errors.turnFailed";
+  const stopReason = extractStopReason(ev.ref.raw);
+  if (stopReason === "refusal") return "agentRuntime.errors.refusal";
+  if (stopReason === "max_tokens") return "agentRuntime.errors.maxTokens";
+  if (stopReason === "max_turn_requests") return "agentRuntime.errors.maxTurnRequests";
+  return undefined;
+}
+
 function applyTurnCompleted(
   model: TranscriptModel,
   ev: Extract<AgentEvent, { type: "turn_completed" }>,
 ): void {
   const turnKey = turnKeyOf(ev.ref);
   const turn = model.turnsById.get(turnKey);
-  if (turn && turn.residency === "evicted-tombstone") {
-    model.tombstones.droppedLateEventCount += 1;
-    return;
-  }
+  const noticeId = `notice:turn_completed:${turnKey}`;
+  const noticeKey = turnCompletedNoticeKey(ev);
+  const hasNoticePatch = noticeKey !== undefined && !model.itemsById.has(noticeId);
+  const hasCancelPatch = ev.status === "cancelled" && hasOpenToolCallsInTurn(model, turnKey);
+  if (turn?.residency === "sealed-retained" && !hasNoticePatch && !hasCancelPatch) return;
+  if (!admitForPatch(model, turnKey)) return;
   const t = ensureTurn(model, turnKey);
   t.terminated = true; // seal 조건 (a) 종료신호
+  if (ev.status === "cancelled") cancelOpenToolCallsInTurn(model, turnKey);
 
   // notice 생성(04 §3.6 규칙 1): failed 또는 보존된 max_*/refusal stopReason.
-  if (ev.status === "failed") {
-    appendNotice(model, turnKey, `notice:turn_completed:${turnKey}`, "warning", "agentRuntime.errors.turnFailed", ev.ref.raw);
-  } else {
-    const stopReason = extractStopReason(ev.ref.raw);
-    if (stopReason === "refusal" || stopReason === "max_tokens" || stopReason === "max_turn_requests") {
-      const messageKey =
-        stopReason === "refusal"
-          ? "agentRuntime.errors.refusal"
-          : stopReason === "max_tokens"
-            ? "agentRuntime.errors.maxTokens"
-            : "agentRuntime.errors.maxTurnRequests";
-      appendNotice(model, turnKey, `notice:turn_completed:${turnKey}`, "warning", messageKey, ev.ref.raw);
-    }
+  if (noticeKey !== undefined) {
+    appendNotice(model, turnKey, noticeId, "warning", noticeKey, ev.ref.raw);
   }
 }
 
@@ -418,10 +585,18 @@ function applyProcessExited(
   if (!abnormal) return;
   const sessionKey = ev.ref.sessionId ?? "_";
   const turnKey = turnKeyOf(ev.ref);
+  const turn = model.turnsById.get(turnKey);
+  const noticeId = `notice:process_exited:${sessionKey}`;
+  if (turn?.residency === "evicted-tombstone") {
+    model.tombstones.droppedLateEventCount += 1;
+    return;
+  }
+  if (model.itemsById.has(noticeId)) return;
+  if (!admitForPatch(model, turnKey)) return;
   appendNotice(
     model,
     turnKey,
-    `notice:process_exited:${sessionKey}`,
+    noticeId,
     "error",
     "agentRuntime.errors.processExited",
     ev.ref.raw,
@@ -434,10 +609,18 @@ function applyError(
 ): void {
   // error notice(04 §3.6 규칙 3). dedup 키 = 라우팅 키 + message 해시(폭주 반복 1건으로 접음).
   const turnKey = turnKeyOf(ev.ref);
+  const turn = model.turnsById.get(turnKey);
   const noticeId = `notice:error:${turnKey}:${hashString(ev.message)}`;
+  if (turn?.residency === "evicted-tombstone") {
+    model.tombstones.droppedLateEventCount += 1;
+    return;
+  }
+  if (model.itemsById.has(noticeId)) return;
+  if (!admitForPatch(model, turnKey)) return;
   appendNotice(model, turnKey, noticeId, "error", "agentRuntime.errors.generic", {
     message: ev.message,
     recoverable: ev.recoverable,
+    code: ev.code,
     raw: ev.ref.raw,
   });
 }
@@ -508,6 +691,8 @@ export function applyEvent(prev: TranscriptModel, event: AgentEvent): Transcript
     case "session_started":
     case "session_loaded":
     case "session_status_changed":
+    case "runtime_metadata_changed":
+    case "session_title_changed":
     case "approval_requested":
     case "approval_resolved":
     case "terminal_output_delta":
@@ -573,16 +758,35 @@ export function evictOverflow(
   config: TranscriptResidencyConfig = DEFAULT_TRANSCRIPT_RESIDENCY_CONFIG,
 ): TranscriptModel {
   // 삽입 순서 = Map iteration 순서이므로 oldest sealed turn이 앞쪽에 온다.
-  const sealedKeys: string[] = [];
+  const sealed: Array<{ key: string; bytes: number }> = [];
   for (const [turnKey, turn] of prev.turnsById) {
-    if (turn.residency === "sealed-retained") sealedKeys.push(turnKey);
+    if (turn.residency === "sealed-retained") {
+      sealed.push({ key: turnKey, bytes: turnBodyByteLength(prev, turn) });
+    }
   }
-  const overflow = sealedKeys.length - config.HOT_WINDOW_SEALED_TURNS;
-  if (overflow <= 0) return prev;
+
+  const evictKeys = new Set<string>();
+  const countOverflow = sealed.length - config.HOT_WINDOW_SEALED_TURNS;
+  for (const entry of sealed.slice(0, Math.max(0, countOverflow))) {
+    evictKeys.add(entry.key);
+  }
+
+  // count cap 적용 뒤 남은 sealed body가 byte cap을 넘으면 oldest retained부터 추가 evict한다.
+  const hotWindowBytes = Math.max(0, config.HOT_WINDOW_BYTES);
+  let retainedBytes = sealed
+    .filter((entry) => !evictKeys.has(entry.key))
+    .reduce((sum, entry) => sum + entry.bytes, 0);
+  for (const entry of sealed) {
+    if (retainedBytes <= hotWindowBytes) break;
+    if (evictKeys.has(entry.key)) continue;
+    evictKeys.add(entry.key);
+    retainedBytes -= entry.bytes;
+  }
+
+  if (evictKeys.size === 0) return prev;
 
   const next = draft(prev);
-  const toEvict = sealedKeys.slice(0, overflow);
-  for (const turnKey of toEvict) {
+  for (const turnKey of evictKeys) {
     const turn = next.turnsById.get(turnKey);
     if (!turn) continue;
     // body·메타 pruning

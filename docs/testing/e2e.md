@@ -187,6 +187,11 @@ npm run test:e2e:wsl -- --project terminal-aux
 2. mirror 안의 `scripts/e2e-smoke-windows.ps1` 실행
 3. 실제 빌드/E2E는 Windows 로컬 경로에서 진행
 
+WSL shell의 `PATH`에 `powershell.exe`가 없으면 runner는
+`/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe`를 fallback으로 사용한다.
+
+전체 E2E 실행은 각 project가 고정 WebDriver port를 쓰므로 Windows runner가 project들을 순차 실행한다. 특정 project만 확인할 때는 `--project <name>`을 사용한다.
+
 ## PowerShell runner
 
 파일:
@@ -206,10 +211,10 @@ npm run test:e2e:wsl -- --project terminal-aux
 
 - `msedgedriver.exe`는 PATH 전역 설치를 가정하지 않는다.
 - runner가 다음 순서로 찾는다:
-  1. PATH
-  2. `.tools\windows\e2e\msedgedriver.exe`
-  3. 프로젝트 루트의 `msedgedriver.exe`
-- 개별 팩을 직접 실행할 때도 `e2e/helpers/tauri.ts`가 같은 탐색 규칙을 사용한다.
+  1. `.tools\windows\e2e\msedgedriver.exe`
+  2. 프로젝트 루트의 `msedgedriver.exe`
+  3. PATH
+- 개별 팩을 직접 실행할 때도 `e2e/helpers/tauri.ts`가 project-local `.tools\windows\e2e\msedgedriver.exe`를 프로젝트 루트 fallback보다 우선한다.
 
 ## 파일 구조
 

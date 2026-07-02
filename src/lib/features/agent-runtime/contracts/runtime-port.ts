@@ -7,6 +7,7 @@
  */
 
 import type { AgentEvent, AgentContent, ApprovalDecision, ProviderRef, AgentProvider } from "./normalized";
+import type { ComposerCapabilities } from "./transcript";
 import type { UnlistenFn } from "../../../tauri/event"; // src/lib/tauri/event.ts (프로젝트는 상대경로 컨벤션)
 
 /** 세션을 식별하는 CLCOMX 내부 핸들(=live-session-store의 session.id). provider id 아님. */
@@ -43,9 +44,49 @@ export interface SendPromptInput {
   content: AgentContent[];
 }
 
-/** 시작/재개 결과. provider 원본 id를 ref로 돌려준다. */
+/** composer resource search 입력. provider는 workDir root 안에서만 후보를 돌려준다. */
+export interface ResourceSearchInput {
+  query: string;
+  workDir: string;
+  limit?: number;
+}
+
+/** composer @mention 후보. */
+export interface ResourceSearchResult {
+  label: string;
+  uri: string;
+  detail?: string;
+  mimeType?: string;
+  /** provider 전송 시 의미를 보존해야 하는 resource 종류. 기본값은 file이다. */
+  resourceKind?: "file" | "skill";
+  /** provider 전송용 이름/본문. skill 후보는 Codex skill name을 싣는다. */
+  text?: string;
+}
+
+/** 시작/재개 결과. provider 원본 id와 재개 가능 메타를 돌려준다. */
 export interface SessionStartResult {
   ref: ProviderRef;
+  /** replay 없는 재개 가능 여부. provider가 capability를 알리지 않으면 생략한다. */
+  canResume?: boolean;
+  /** replay 포함 load 가능 여부. provider가 capability를 알리지 않으면 생략한다. */
+  canLoad?: boolean;
+  /** composer 입력 기능 게이트용 provider prompt capability(08 §6.4). */
+  composerCapabilities?: ComposerCapabilities;
+  /** 협상된 protocol 버전. */
+  protocolVersion?: string;
+  /** adapter/provider 바이너리 버전(확인 가능할 때만). */
+  adapterVersion?: string;
+  providerVersion?: string;
+  /** provider sandbox/mode 표시용 metadata(09 §8.2). */
+  sandbox?: string;
+  /** provider approval policy 표시용 metadata(09 §8.2). */
+  approvalPolicy?: string;
+  /** provider approval reviewer 표시용 metadata(09 §8.2). */
+  approvalsReviewer?: string;
+  /** Claude SDK permissionMode 또는 동등 provider permission mode id. */
+  permissionMode?: string;
+  /** ACP session mode 또는 동등 provider session mode id. */
+  sessionMode?: string;
 }
 
 /**
@@ -61,6 +102,9 @@ export interface AgentRuntimePort {
 
   /** 프롬프트 전송(1 turn 시작). turn 진행은 subscribeEvents로 관찰. */
   sendPrompt(sessionHandle: AgentSessionHandle, input: SendPromptInput): Promise<void>;
+
+  /** provider-backed resource/file search. 미지원 provider는 빈 배열을 돌려준다. */
+  searchResources?(sessionHandle: AgentSessionHandle, input: ResourceSearchInput): Promise<ResourceSearchResult[]>;
 
   /** 진행 중 turn 취소. turnId 생략 시 현재 active turn. */
   cancelTurn(sessionHandle: AgentSessionHandle, turnId?: string): Promise<void>;

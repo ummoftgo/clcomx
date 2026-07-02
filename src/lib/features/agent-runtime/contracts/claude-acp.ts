@@ -235,7 +235,7 @@ import type { UnlistenFn } from "../../../tauri/event";
 
 /** backend가 resolve해 돌려주는 launch 입력(§2.2). command(node)는 backend 비제어이므로 미포함(S1). */
 export interface ResolvedLaunch {
-  /** backend가 resolve/검증한 claude-agent-acp dist/index.js 절대경로(args[0]). */
+  /** backend가 resolve/검증한 claude-agent-acp dist/index.js 절대경로(launch args[0]). */
   adapterEntryPath: string;
   /** non-secret env 전용(C1). */
   env?: Record<string, string>;

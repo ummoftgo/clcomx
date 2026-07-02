@@ -180,8 +180,9 @@ Windows HKLM·HKCU 정책 env도 이 경로로 들어온다.
   실제 로그인은 `--cli ...` passthrough를 별도 터미널에서 돌려 수행한다.
 - **API key 경로**: `ANTHROPIC_API_KEY`(또는 Bedrock/Vertex/Foundry env)를 env로 주면 SDK가
   그 자격으로 동작한다. 이 경우 interactive login은 불필요.
-- SDK 문서 주의: Anthropic은 서드파티 제품에서 claude.ai 로그인/rate limit 제공을 일반적으로
-  허용하지 않으며 API key 방식을 권장한다(출처: Agent SDK overview, "branding/auth note").
+- SDK 문서 주의(2026-06-28 공식 overview 확인): Anthropic은 third-party product가 Claude app
+  credentials/rate limits를 제공하는 것을 허용하지 않고 API key 사용을 권장한다. branding guidelines는
+  제품이 Anthropic이 만들었거나 후원/보증한 것처럼 암시하지 말라고 요구한다.
 
 > **확인된 사실**: ACP lifecycle은 `initialize` → (필요 시 `authenticate`) → `session/new`
 > 또는 `session/load`(`loadSession: true`) → `session/prompt` → `session/update` 수신이다
@@ -247,8 +248,8 @@ agentCapabilities: {
 ### 어댑터가 바인딩하는 wire RPC method (verified)
 
 어댑터는 `connect()` 시점에 다음 ACP method를 바인딩한다(`src/acp-agent.ts` 4515–4533행). wire
-method 문자열은 `@agentclientprotocol/sdk@0.29.0`의 `dist/schema/schema.json`에 리터럴로 정의된 값과
-일치하며(아래 출처), 어댑터는 SDK의 `methods.agent.*` 상수로 바인딩한다.
+method 문자열은 `@agentclientprotocol/sdk@0.29.0`의 패키지 루트 `schema/schema.json`에 리터럴로
+정의된 값과 일치하며(아래 출처), 어댑터는 SDK의 `methods.agent.*` 상수로 바인딩한다.
 
 | wire method | kind | 방향 | 어댑터 핸들러 | verified |
 |---|---|---|---|---|
@@ -268,8 +269,10 @@ method 문자열은 `@agentclientprotocol/sdk@0.29.0`의 `dist/schema/schema.jso
 | `session/request_permission` | request | **agent→client** | `canUseTool` 매핑(§3) | 예 (schema.json) |
 | `session/update` | notification | **agent→client** | streaming(아래 variant 표) | 예 (schema.json) |
 
-> 출처: `@agentclientprotocol/sdk` 0.29.0 `dist/schema/schema.json`(wire 문자열) + `src/acp-agent.ts`
-> 4515–4533행(`.onRequest(methods.agent.session.setMode, ...)` 등 바인딩), ref `23626c9`.
+> 출처: `@agentclientprotocol/sdk` 0.29.0 패키지 루트 `schema/schema.json`(wire 문자열),
+> `dist/schema/types.gen.d.ts`(생성 TS 타입), `dist/acp.d.ts`(`methods.agent.*` export) +
+> `src/acp-agent.ts` 4515–4533행(`.onRequest(methods.agent.session.setMode, ...)` 등 바인딩),
+> ref `23626c9`.
 > (이전 판에서 `session/set_mode`·`available_commands_update`를 "추정"으로 표기했으나, sdk
 > 0.29.0 schema.json에 리터럴로 존재함이 확인되어 verified로 승격한다.)
 
@@ -298,13 +301,14 @@ CLCOMX가 실행하는 어댑터 `@agentclientprotocol/claude-agent-acp@0.51.0`�
 wire에 실제 등장할 수 있는 정본 variant 집합은 **이 13종**이다. 클라이언트 parser는 모르는 variant를
 graceful하게 무시할 수 있어야 한다.
 
-> **출처 분기 주의 (baseline 조사, 구현 전 OQ-41 재확인 필요)**: 같은 `protocolVersion = 1`인데도
-> agent-client-protocol 저장소 baseline 후보 **`schema-v1.16.0`의 `schema/v1/schema.json`**은 `SessionUpdate`
+> **출처 분기 주의 (2026-06-28 OQ-41 재확인)**: 같은 `protocolVersion = 1`인데도
+> agent-client-protocol 저장소 최신 public tag **`v1.1.0`의 `schema/v1/schema.json`**은 `SessionUpdate`
 > oneOf를 **11종**으로만 정의하며 `plan_update`/`plan_removed`가 **없다**. 즉 `plan_update`/`plan_removed`는
-> **sdk 0.29.0 schema 전용 추가분**이고 baseline 후보 protocol-repo schema-v1.16.0 v1 wire에는 존재하지 않는다
+> **sdk 0.29.0 schema 전용 추가분**이고 public protocol-repo `v1.1.0` v1 wire schema에는 존재하지 않는다
 > (같은 protocolVersion=1의 서로 다른 schema cut). `ref-acp-protocol.md §2`와 이 표는 동일한 13종
-> 정본 집합을 공유하며 출처 표기만 다르다. baseline 조사 근거:
-> `gh api repos/agentclientprotocol/agent-client-protocol/contents/schema/v1/schema.json?ref=schema-v1.16.0`(11종),
+> 정본 집합을 공유하며 출처 표기만 다르다. 확인 근거:
+> `gh api .../agent-client-protocol/tags` latest `v1.1.0`,
+> `gh api .../contents/schema/v1/schema.json?ref=v1.1.0`(11종),
 > npm tarball `@agentclientprotocol/sdk@0.29.0` `schema/schema.json`(13종).
 
 | SessionUpdate variant | 출처 | 어댑터 emit | 비고 |
@@ -315,8 +319,8 @@ graceful하게 무시할 수 있어야 한다.
 | `tool_call` | 양쪽 schema 공통 | 예 (1394·4264행) | tool 호출 시작 |
 | `tool_call_update` | 양쪽 schema 공통 | 예 (1447·2064·4218·4247·4342·4355행) | tool 진행/완료, terminal meta 동승 |
 | `plan` | 양쪽 schema 공통 | 예 (3154·3173·4174·4315행) | TODO/plan 리스트 |
-| `plan_update` | **sdk 0.29.0 schema 전용** (baseline 후보 schema-v1.16.0 v1엔 없음) | (미관측) | plan 증분 갱신 |
-| `plan_removed` | **sdk 0.29.0 schema 전용** (baseline 후보 schema-v1.16.0 v1엔 없음) | (미관측) | plan 제거 |
+| `plan_update` | **sdk 0.29.0 schema 전용** (public `v1.1.0` v1엔 없음) | (미관측) | plan 증분 갱신 |
+| `plan_removed` | **sdk 0.29.0 schema 전용** (public `v1.1.0` v1엔 없음) | (미관측) | plan 제거 |
 | `available_commands_update` | 양쪽 schema 공통 | 예 (1421·2739행) | `availableCommands` 키, `getAvailableSlashCommands` |
 | `current_mode_update` | 양쪽 schema 공통 | 예 (2359·2567·2857·3134행) | `currentModeId` 필드 |
 | `config_option_update` | 양쪽 schema 공통 | 예 (2758행) | `configOptions` 전체 배열 |
@@ -326,7 +330,7 @@ graceful하게 무시할 수 있어야 한다.
 > 출처: sdk 0.29.0 `schema/schema.json` `SessionUpdate` oneOf(13 variant) + `src/acp-agent.ts`
 > emit 지점(행번호), ref `23626c9`. "어댑터 emit (미관측)"은 schema에는 있으나 이 조사에서 어댑터
 > emit 코드를 확인하지 못한 variant — 클라이언트는 무시 가능해야 한다.
-> (참고: 이 표의 SDK schema 경로는 `dist/schema/schema.json`이 아니라 패키지 루트 `schema/schema.json`이다 — 재검증으로 정정.)
+> SDK JSON Schema 경로는 패키지 루트 `schema/schema.json`이고, 생성 TS 타입은 `dist/schema/types.gen.d.ts`다.
 
 #### 로컬 처리 slash command (verified)
 
@@ -479,26 +483,24 @@ name `"Don't Ask"`, description `"Don't prompt for permissions, deny if not pre-
 > 아래 항목은 검증 시점(ref `23626c9`, sdk `0.29.0`)에 1차 소스에서 직접 확인하지 못한 것만 남긴다.
 > wire method 문자열(`session/set_mode`·`session/set_config_option`·`available_commands_update` 등),
 > SessionUpdate variant 집합, `src/lib.ts` export 표면, alias/mode 집합은 §2–§3에서 verified로 승격됨.
+>
+> 2026-06-27 구현 재확인: npm tarball `@agentclientprotocol/claude-agent-acp@0.51.0`에는 `src/`가 포함되지 않고 `dist/` artifact와 source map만 포함된다(`package.json` `files:["dist/"]`). 따라서 OQ-45는 `dist/tools.js`/`dist/settings.js`로 확인했다. `toolInfoFromToolUse`는 `Write`/`Edit`를 `ToolCallContent{type:"diff", path, oldText, newText}`로 만들고, `toolUpdateFromDiffToolResponse`는 `structuredPatch[]`를 여러 diff content로 변환하며 `oldText`가 비면 `null`을 쓴다. `Bash`는 `clientCapabilities._meta["terminal_output"]===true`일 때 terminal content와 `_meta.terminal_info`/`terminal_output`/`terminal_exit`를 보내고, 미지원이면 console code block text content로 fallback한다. `SettingsManager.loadAllSettings()`는 `resolveSettings({cwd})` 결과에 `filterEscalatingDefaultMode(resolved)`를 적용한다.
+>
+> 2026-06-28 타입 원문 재확인: `@agentclientprotocol/sdk@0.29.0` 패키지에는 `schema/schema.json`과
+> `dist/schema/types.gen.d.ts`가 함께 포함되며, `dist/acp.d.ts`는 `./schema/types.gen.js`를
+> export한다. `types.gen.d.ts`에서 `RequestPermissionRequest`, `SessionUpdate` 13종,
+> `ClientCapabilities`, `LoadSessionRequest`, `CurrentModeUpdate`, `ConfigOptionUpdate`,
+> `ToolKind`, `ToolCallStatus`를 직접 확인했다. 따라서 CLCOMX의 `contracts/claude-acp.ts`
+> 부분 wire mirror는 SDK 0.29.0 생성 타입을 기준으로 하는 현재 구현 경계와 일치한다.
 
-- `@agentclientprotocol/sdk` 0.29.0의 `request_permission` / `session/update` / `ClientCapabilities`
-  **TypeScript 타입(.d.ts) 원문**은 직접 열람하지 않았다. wire method·discriminant·set_config_option
-  요청/응답 shape는 동일 패키지의 `dist/schema/schema.json`으로 확정했으나, 정확한 TS 타입 import는
-  구현 시 sdk `dist/schema/types.gen.d.ts`로 재확인 권장.
 - ACP wire `protocolVersion: 1` 외에 client가 더 높은 버전을 보낼 때의 negotiation 분기는 어댑터
   코드(`src/acp-agent.ts`)에 명시적 분기를 확인하지 못했다 — sdk `Connection` 레벨 처리로 추정.
-- `following`/`edit review`의 tool_call content/diff **세부 매핑**은 `src/tools.ts`
-  (`toolInfoFromToolUse`, `toolUpdateFromToolResult`, `planEntries`) 전문을 이 조사에서 읽지 않았다.
-  (export 존재는 `src/lib.ts`로 확인됨; 내부 content shape는 미확인.) 구현 시 `src/tools.ts` 확인 필요.
-- `SettingsManager`의 `filterEscalatingDefaultMode`가 repo-committed 소스의 escalating
-  `permissions.defaultMode`를 무시한다는 §3 마지막 항목의 동작은 `src/settings.ts`를 직접 열람해
-  확정하지 않았다(export 존재만 `src/lib.ts`로 확인). 구현 시 `src/settings.ts` 확인 필요.
-- Anthropic이 서드파티 제품에서 claude.ai 로그인/rate limit 제공을 일반적으로 허용하지 않는다는 §1
-  "branding/auth note"는 fetch한 permissions 페이지에서 정확한 문구를 찾지 못했다 — overview 페이지로
-  확인 필요(unverified wording).
+- Anthropic의 third-party auth/branding 문구는 2026-06-28 공식 Agent SDK overview에서 확인했다.
+  출시/배포 전에는 같은 공식 overview/terms를 다시 확인한다.
 - 로컬 `claude --version 2.1.187`, `node v24.14.0`, `which node` 경로는 조사 머신 값이며 CLCOMX
   배포 대상과 다를 수 있다. 어댑터가 실제 쓰는 바이너리는 SDK 번들
   (`@anthropic-ai/claude-agent-sdk-linux-*`)일 수 있어 버전이 다를 수 있다(unverified for target/runtime).
-- 0.50.0 vs 0.51.0의 정확한 diff(capability 변화 여부)는 CHANGELOG를 본 문서에서 인용하지 않았다.
+- 0.50.0 vs 0.51.0의 정확한 CHANGELOG diff는 v1 구현 gate에서 제외한다. CLCOMX v1은 exact `@agentclientprotocol/claude-agent-acp@0.51.0`과 그 transitive `@agentclientprotocol/sdk@0.29.0` package schema/dist를 기준으로 구현·테스트하며, 0.50.0 조사값은 더 이상 정본으로 쓰지 않는다(OQ-08). 향후 dependency refresh 때만 OQ-41 절차로 schema diff + fixture replay를 반복한다.
 
 ---
 

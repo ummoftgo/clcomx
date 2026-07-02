@@ -35,7 +35,9 @@ mod tests {
         open_empty_window_in_workspace, remove_window_in_workspace,
         set_session_resume_token_in_workspace, update_window_geometry_in_workspace,
     };
-    use crate::features::workspace::{WindowSnapshot, WorkspaceSnapshot, WorkspaceTabSnapshot};
+    use crate::features::workspace::{
+        AgentRuntimeMetadataRecord, WindowSnapshot, WorkspaceSnapshot, WorkspaceTabSnapshot,
+    };
 
     #[test]
     fn next_available_window_label_reuses_gaps() {
@@ -108,6 +110,59 @@ mod tests {
         assert_eq!(runtime.windows[0].width, 1200);
         assert_eq!(runtime.windows[0].height, 900);
         assert_eq!(runtime.windows[1].label, "window-1");
+    }
+
+    #[test]
+    fn merge_workspace_snapshot_preserves_direct_runtime_metadata() {
+        let mut runtime = WorkspaceSnapshot {
+            windows: vec![WindowSnapshot {
+                label: "main".into(),
+                name: "main".into(),
+                role: "main".into(),
+                tabs: vec![WorkspaceTabSnapshot {
+                    session_id: "session-a".into(),
+                    title: "existing".into(),
+                    ..Default::default()
+                }],
+                active_session_id: Some("session-a".into()),
+                width: 1200,
+                height: 900,
+                ..Default::default()
+            }],
+        };
+
+        merge_workspace_snapshot(
+            &mut runtime,
+            WorkspaceSnapshot {
+                windows: vec![WindowSnapshot {
+                    label: "main".into(),
+                    tabs: vec![WorkspaceTabSnapshot {
+                        session_id: "session-direct".into(),
+                        title: "Direct".into(),
+                        runtime_kind: "direct-codex".into(),
+                        agent_runtime: Some(AgentRuntimeMetadataRecord {
+                            session_runtime_kind: "direct-codex".into(),
+                            provider: "codex".into(),
+                            last_turn_id: Some("turn-7".into()),
+                            can_load: Some(true),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }],
+                    active_session_id: Some("session-direct".into()),
+                    ..Default::default()
+                }],
+            },
+        );
+
+        let tab = &runtime.windows[0].tabs[0];
+        assert_eq!(tab.session_id, "session-direct");
+        assert_eq!(tab.runtime_kind, "direct-codex");
+        let metadata = tab.agent_runtime.as_ref().expect("agent runtime metadata");
+        assert_eq!(metadata.session_runtime_kind, "direct-codex");
+        assert_eq!(metadata.provider, "codex");
+        assert_eq!(metadata.last_turn_id.as_deref(), Some("turn-7"));
+        assert_eq!(metadata.can_load, Some(true));
     }
 
     #[test]

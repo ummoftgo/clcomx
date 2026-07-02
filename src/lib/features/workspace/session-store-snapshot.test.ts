@@ -178,6 +178,7 @@ describe("session-store-snapshot", () => {
     });
 
     const tab = windowSnapshot.tabs[0];
+    expect(tab.ptyId).toBeNull();
     expect(tab.runtimeKind).toBe("direct-codex");
     expect(tab.agentRuntime).toMatchObject({
       sessionRuntimeKind: "direct-codex",
@@ -188,10 +189,73 @@ describe("session-store-snapshot", () => {
     });
 
     const restored = createRuntimeSession(tab);
+    expect(restored.ptyId).toBe(-1);
     expect(restored.runtimeKind).toBe("direct-codex");
     expect(restored.agentRuntime).toMatchObject({
       sessionRuntimeKind: "direct-codex",
       provider: "codex",
+    });
+  });
+
+  it("clears stale PTY ids when an existing session is updated to direct runtime", () => {
+    const existing = createRuntimeSession({
+      sessionId: "session-1",
+      agentId: "claude",
+      distro: "Ubuntu",
+      workDir: "/home/user/project",
+      title: "PTY",
+      pinned: false,
+      locked: false,
+      ptyId: 42,
+      auxPtyId: 9,
+      auxVisible: true,
+      auxHeightPercent: 30,
+    });
+
+    const result = applyWorkspaceWindowSnapshot({
+      sessions: [existing],
+      currentWindowLabel: "main",
+      windowSnapshot: {
+        label: "main",
+        name: "main",
+        role: "main",
+        activeSessionId: "session-1",
+        tabs: [
+          {
+            sessionId: "session-1",
+            agentId: "codex",
+            distro: "Ubuntu",
+            workDir: "/home/user/project",
+            title: "Direct",
+            pinned: false,
+            locked: false,
+            ptyId: null,
+            auxPtyId: null,
+            auxVisible: false,
+            auxHeightPercent: null,
+            runtimeKind: "direct-codex",
+            agentRuntime: {
+              sessionRuntimeKind: "direct-codex",
+              provider: "codex",
+              canLoad: true,
+              canResume: true,
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.sessions[0]).toBe(existing);
+    expect(existing).toMatchObject({
+      ptyId: -1,
+      auxPtyId: -1,
+      auxVisible: false,
+      auxHeightPercent: null,
+      runtimeKind: "direct-codex",
+      agentRuntime: {
+        sessionRuntimeKind: "direct-codex",
+        provider: "codex",
+      },
     });
   });
 });

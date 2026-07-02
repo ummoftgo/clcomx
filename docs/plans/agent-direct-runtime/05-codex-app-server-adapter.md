@@ -29,7 +29,7 @@ CLCOMX는 hexagonal 경계를 둔다([03](03-target-architecture.md) §Provider 
 **책임지지 않는 것 (다른 문서/레이어)**:
 
 - process spawn / stdio framing / stderr 캡처 / bounded queue: Rust backend(`agent_runtime_*` command, 15 §8 / [07](07-tauri-process-runtime.md)). 어댑터는 **raw JSON-RPC만** `agentRuntimeSend`로 내보내고 `agent-runtime-message`로 받는다(15 §8.3). protocol 의미 해석은 backend가 하지 않는다.
-- transcript store 적용(upsert 실제 mutation): `agent-runtime-controller` + `transcript-reducer`([`research/codebase-frontend.md`](research/codebase-frontend.md) §8). 어댑터는 `AgentEvent`를 emit만 하고 store를 직접 만지지 않는다.
+- transcript store 적용(upsert 실제 mutation): `agent-runtime-controller` + `agent-event-reducer.ts`([`08-ui-composition.md`](08-ui-composition.md) §5, [`12-implementation-workstreams.md`](12-implementation-workstreams.md) §0.1). 어댑터는 `AgentEvent`를 emit만 하고 store를 직접 만지지 않는다.
 - WSL path canonicalize / executable resolve / allowlist: backend command handler([07](07-tauri-process-runtime.md) §8.1, §WSL/Windows 경계). **S1 정본**: 어댑터는 실행 파일 `command`를 **만들지 않는다** — backend가 `provider`로 신뢰 절대경로를 resolve한다. 어댑터는 `args`(검증 대상)와 `env`(non-secret)만 채운다(§2.2).
 - UI 렌더(tool card/approval dialog): [08](08-ui-composition.md).
 
@@ -87,10 +87,10 @@ ref-codex §1.1(로컬 `codex app-server --help` 0.142.0 실행 결과)에 근�
 2. `codex exec` JSONL SDK 경로는 fixture 참고로만 쓰고 런타임 경로로 쓰지 않는다(ref-codex §10 마지막 항목 — SDK는 app-server JSON-RPC와 1:1이 아닐 수 있음).
 3. WSL 경계 유지: backend가 **로그인 셸 비경유(shell-less)** 정본으로 띄운다 — `wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <codexAbsPath> app-server --stdio`(executable=**backend가 resolve한 codex 신뢰 절대경로(S1)**, argv=`["app-server","--stdio"]`). 07 §5.1 launch 정본(`wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <executable> <argv...>`)과 동일 형태이며, non-secret env가 없으면 `env KEY=VAL` prefix 없이 `-e <codexAbsPath> …`로 직접 exec한다([07](07-tauri-process-runtime.md) §5.1, §8). 기존 PTY가 쓰던 `bash -li -c "<cmd>"` 형태(로그인 셸 경유)는 **쓰지 않는다** — rc 파일 stdout 출력이 JSON-RPC framing(purity)을 깨뜨릴 위험을 셸 비경유로 원천 차단한다(07 §5.1 OQ-28 해소 주석, 06 §2.3와 일치). **S1 정본**: executable은 renderer가 넘기지 않으며 backend가 `provider="codex"`로 신뢰 절대경로를 resolve해 R4 절대경로 allowlist로 재검증한다(07 §8.1 — basename 비교 폐지; 동명 `/tmp/codex` 거부). args는 backend가 정확히 `["app-server","--stdio"]`로 재검증한다(07 §8.1).
 
-**미확정 → [13](13-risks-open-questions.md)**:
+**v1 확정 / 후속 확장 → [13](13-risks-open-questions.md)**:
 
-- `ClientInfo` / `InitializeCapabilities`의 정확한 필드와 capability opt-in 키(experimental 노출 제어 방식)는 ref-codex §10에서 unverified로 남아 있다. v1은 `capabilities: null`(ref-codex §2.1 예시)로 보내고 experimental 표면을 opt-in하지 않는다.
-- `initialize`→`initialized` 핸드셰이크가 thread/start 전 **필수**인지는 ref-codex §10/§2.2에서 unverified(권장 순서일 뿐). v1은 안전하게 핸드셰이크를 항상 수행한다.
+- `ClientInfo` / `InitializeCapabilities` 필드는 `codex app-server generate-ts` 산출물(0.142.2)로 확인됐다(OQ-11 해소). v1은 최소 `clientInfo`와 `capabilities: null`(ref-codex §2.1 예시)을 보내고 experimental 표면을 opt-in하지 않는다. capability opt-in 확장은 후속 기능별로 별도 검증한다.
+- `initialize`→`initialized` strict 필수 여부는 ref-codex §10/§2.2 원 조사 당시 unverified였지만, H4/OQ-07 결론에 따라 v1은 방어적 기본값으로 thread/start 전 핸드셰이크를 항상 수행한다.
 
 ### 2.2 launch params 생성 (`codex-launch.ts`)
 
@@ -124,9 +124,9 @@ export function buildCodexStartParams(input: CodexLaunchInput): AgentRuntimeStar
 }
 ```
 
-> **S1 — `command` 미생성 (정본)**: codex 실행 파일은 backend가 `provider`로 resolve한 신뢰 절대경로를 사용한다(07 §8.1 `resolve_trusted_executable`/`validate_and_extract`: backend resolve 또는 사전 등록 절대경로 화이트리스트와 정확 일치). renderer가 `command`/`codexBin`을 넣을 경로 자체가 없어 동명 바이너리(`/tmp/codex`) 우회가 불가하다. resolve 주체·캐시 무효화·`codex` 탐색 방식은 [13](13-risks-open-questions.md) "command/entry resolve 주체"에 결정 필요로 등록.
+> **S1 — `command` 미생성 (정본)**: codex 실행 파일은 backend가 `provider`로 resolve한 신뢰 절대경로를 사용한다(07 §8.1 `resolve_trusted_executable`/`validate_and_extract`: backend resolve 또는 사전 등록 절대경로 화이트리스트와 정확 일치). renderer가 `command`/`codexBin`을 넣을 경로 자체가 없어 동명 바이너리(`/tmp/codex`) 우회가 불가하다. resolve 주체·캐시 무효화·`codex` 탐색 방식은 OQ-36에서 확정됐다: owner는 `agent_runtime/resolver.rs`, cache key는 `(provider,distro)`, TTL 없는 process-lifetime cache이며 `clear()`로 명시 무효화한다.
 > `args`에 `--experimental`을 넣지 않는다(ref-codex §1.1: 기동에 불필요). experimental 필드가 필요해지면 `initialize.capabilities`로 opt-in해야 하며 이는 v1 범위 밖([13](13-risks-open-questions.md)).
-> codex 절대경로/버전 확인은 backend resolve 시점·startup preflight에서 수행한다([11](11-testing-acceptance.md), [09](09-permissions-security.md)). 로컬 `codex --version`과 pinned ref 일치(`0.142.0`)는 ref-codex §0에 기록.
+> codex 절대경로/버전 확인은 backend resolve 시점·startup preflight에서 수행한다([11](11-testing-acceptance.md) RS-10f/10g, [09](09-permissions-security.md)). spawn 전 resolved executable `--version` probe가 실패하거나 빈 출력이면 start를 거부한다. 로컬 `codex --version`과 pinned ref 차이는 자동 거부가 아니라 schema diff/fixture replay 절차(OQ-41)로 판단한다.
 
 ### 2.3 핸드셰이크 시퀀스 (의사코드)
 
@@ -168,6 +168,12 @@ startSession(params):
 sendPrompt(sessionHandle, input: SendPromptInput):       // 15 §6
   threadId = routing.threadIdOf(sessionHandle)           // §6 역조회(C2); 미바인딩이면 throw(세션 미준비)
   codexInput = mapAgentContentToUserInput(input.content) // §5.3d outbound (AgentContent → UserInput[])
+  if codexInput.length == 0:
+    // CX-4c: 미지원 content만 남은 prompt는 빈 turn/start로 보내지 않는다.
+    emit AgentEvent(error, ref{provider:"codex", threadId},
+                    message="prompt content is not supported by this Codex session",
+                    recoverable=true)
+    return                                               // running 전이·activeTurn 생성 없음
   try:
     resp = await rpcRequest(runtimeId, "turn/start",
              { threadId, input: codexInput })            // ref-codex §6.5 TurnStartParams (안정 필드만)
@@ -186,7 +192,7 @@ sendPrompt(sessionHandle, input: SendPromptInput):       // 15 §6
 
 > **#3 — Codex sendPrompt는 로컬 user_message echo를 추가하지 않는다 (provider 비대칭)**: ACP 어댑터(06 §3.6)는 라이브 prompt를 wire echo하지 않으므로 `sendPrompt`가 **로컬 optimistic `user_message` AgentEvent**(합성 messageId `<sessionId>:t<n>:u`, content=원본 `AgentContent[]`, running 전)를 emit해 입력을 즉시 transcript에 노출한다(04 §3.1, 06 §3.6). **Codex는 이 로컬 echo를 추가하지 않는다** — Codex는 `userMessage` thread item을 `item/started`·`item/completed`로 **wire echo**하고 `codex-wire-mapper`가 이를 `user_message`로 매핑하므로(§5.3 `mapItemStarted`/`mapItemCompleted`의 `userMessage` case, 이미 구현), 여기에 로컬 echo를 더하면 합성 messageId(local) ↔ wire itemId(`item.id`) 불일치로 **동일 입력이 이중 렌더**된다. 따라서 user_message echo는 **ACP만 로컬**, Codex는 wire 권위라는 provider 비대칭이며(04 §3.1, OQ-57), 위 `sendPrompt` 의사코드는 `turn/start` 송신만 하고 `user_message` emit을 의도적으로 두지 않는다. 합성 messageId 충돌·비텍스트 echo 정확도 잔여는 [13](13-risks-open-questions.md) OQ-57.
 
-`turn/start` params는 **안정 필드만** 채운다(ref-codex §6.5): `threadId`, `input`. `model`/`effort`/`sandboxPolicy`/`approvalPolicy` 등 override는 settings 연동 시 추가하되 experimental 필드(`environments`/`permissions`/`collaborationMode` 등)는 넣지 않는다(ref-codex §6.5 주석, §1.4). approval 정책 키는 `approvalPolicy`(타입 `AskForApproval`, kebab-case: `untrusted`/`on-failure`/`on-request`/`never`)이며, sandbox 키는 `sandboxPolicy`(타입 `SandboxPolicy`)임에 주의(ref-codex §6.5 주석). v1 기본값/노출 여부는 [09](09-permissions-security.md)와 [13](13-risks-open-questions.md)에서 확정(결정 필요).
+`turn/start` params는 **안정 필드만** 채운다(ref-codex §6.5): `threadId`, `input`. v1은 `model`/`effort`/`sandboxPolicy`/`approvalPolicy` override를 보내지 않고 provider/server default를 따른다(OQ-20 해소). experimental 필드(`environments`/`permissions`/`collaborationMode` 등)도 넣지 않는다(ref-codex §6.5 주석, §1.4). approval 정책 키는 `approvalPolicy`(타입 `AskForApproval`, kebab-case: `untrusted`/`on-failure`/`on-request`/`never`)이며, sandbox 키는 `sandboxPolicy`(타입 `SandboxPolicy`)임에 주의한다. settings/UI에서 model·effort·sandbox·approval override를 노출하는 것은 후속 기능이며, 그때 [09](09-permissions-security.md)의 policy와 함께 이 절을 갱신한다.
 
 ### 2.5 resume / load (`resumeSession`)
 
@@ -217,7 +223,7 @@ resumeSession(params: ResumeSessionParams):              // 15 §6
   return { ref: { provider:"codex", threadId } }
 ```
 
-> `ThreadResumeParams`/`ThreadReadResponse`의 정확한 필드는 ref-codex §3.1에 method 카탈로그로만 있다. v1은 `threadId`(persist된 `providerThreadId`, 15 §7.1)와 `includeTurns`만 사용하고 잔여 필드는 미설정(unverified는 [13](13-risks-open-questions.md)). resume 키 영속화·scrub은 [10](10-persistence-migration.md) §저장 모델, 15 §7.3.
+> 구현은 generated `ThreadReadResponse{thread}`와 `ThreadReadParams{threadId, includeTurns?}`를 기준으로 한다. `codex-cli 0.142.2` app-server 실측에서 `includeTurns:false`는 `turns:[]`, `includeTurns:true`는 전체 thread snapshot을 반환한다(OQ-54 해소). v1은 `threadId`(persist된 `providerThreadId`, 15 §7.1)와 `includeTurns:true`만 사용하고 잔여 resume 필드는 미설정이다. resume 키 영속화·scrub은 [10](10-persistence-migration.md) §저장 모델, 15 §7.3.
 
 ---
 
@@ -314,8 +320,8 @@ onRuntimeEvent(payload: AgentRuntimeEvent):
     case "message":  handleMessage(payload.message)
     case "stderr":   (diagnostic only; transcript 비표시 — 07 §Framing)
     case "exit":     handleExit(payload.code, payload.signal) // §9
-    case "error":    emit AgentEvent(error, recoverable=payload.recoverable) // §8
-    case "backpressure": emit AgentEvent(error, recoverable=true, "backpressure") // §8
+    case "error":    emit AgentEvent(error, ref=currentRuntimeRef(), recoverable=payload.recoverable) // §8
+    case "backpressure": emit AgentEvent(error, ref=currentRuntimeRef(), recoverable=true, "backpressure") // §8
 
 handleMessage(msg: JsonRpcMessage):
   if "result" in msg or "error" in msg:                      // JSONRPCResponse / JSONRPCError (ref-codex §1.2)
@@ -475,14 +481,18 @@ mapCodexNotification(method, p, routing):
      return []
 
   // reasoning(thought) v1 정책(D11): thought 채널 delta로 흘린다(15 §3 channel 필드).
-  // 04 §3.2.2/§3.2.5: thought 채널 delta는 messageId/contentIndex별 append,
+  // 04 §3.2.2/§3.2.5: thought 채널 delta는 segment(summaryIndex/contentIndex)별 append,
   //   completed reasoning item이 thought 채널의 권위(reconcile).
   case "item/reasoning/textDelta":   // ref-codex §5.2, 04 §3.2.5 (contentIndex 누적)
   case "item/reasoning/summaryTextDelta":
+     segment = method === "item/reasoning/summaryTextDelta"
+       ? { kind:"summary", index:p.summaryIndex }
+       : { kind:"content", index:p.contentIndex }
      return [{ type:"agent_message_delta",
                ref: refOf({threadId:p.threadId, turnId:p.turnId, itemId:p.itemId}),
                channel:"thought",                          // 15 §3 (D11)
-               delta: p.delta }]
+               delta: p.delta,
+               segment }]
 
   case "serverRequest/resolved":                           // ref-codex §4.4
      // 04 §4.2 규칙3: 해당 requestId의 pending approval을 cancelled로 닫음(사용자 응답 불필요).
@@ -490,9 +500,11 @@ mapCodexNotification(method, p, routing):
      //   hasPendingApproval가 false라 [] 반환 → 중복 emit/이중 응답 없음(04 §4.2).
      reqId = String(p.requestId)
      if routing.hasPendingApproval(reqId):
-        routing.resolveApproval(reqId)
+        pending = routing.resolveApproval(reqId)
         return [{ type:"approval_resolved",
-                  ref: refOf({threadId:p.threadId}, {requestId:reqId}),
+                  // serverRequest/resolved에는 turnId가 없을 수 있으므로 pending table의 ref를 복원한다.
+                  ref: refOf({threadId:pending.threadId, turnId:pending.turnId, itemId:pending.itemId},
+                             {requestId:reqId}),
                   decision: { requestId:reqId, outcome:"cancelled" } }]
      return []
 
@@ -553,12 +565,12 @@ mapItemCompleted(item, threadId, turnId):
        return [{ type:"user_message", ref, content: item.content.map(mapUserInput), mode:"replace" }]
     case "reasoning":
        // D11: completed reasoning item이 thought 채널의 권위 → replace로 reconcile(04 §3.2.2/§3.2.5)
-       // ⚠️ OQ-46: reasoning item은 `text`가 없다 — ref-codex §6.3은 `summary: string[]`,
-       //   `content: string[]`만 정의(agentMessage의 `text`와 다름). 권위 필드(summary vs content)가
-       //   미확정이므로 보수적 기본값으로 둘 다 표시(join). wire 실측에서 단일/우선 필드 확정(13 OQ-46).
+       // OQ-46 해소: reasoning item은 `text`가 없고 ref-codex §6.3은 `summary: string[]`,
+       //   `content: string[]`만 정의한다(agentMessage의 `text`와 다름). app-server snapshot 실측에서
+       //   completed reasoning은 `summary[]`가 권위였으므로 summary를 사용하고, summary 부재 시에만 content fallback.
        return [{ type:"agent_message", ref, channel:"thought",
                  content: [{ type:"text",
-                             text: [...(item.summary ?? []), ...(item.content ?? [])].join("\n") }],
+                             text: (item.summary?.length ? item.summary : (item.content ?? [])).join("\n") }],
                  mode:"replace" }]
     default:
        return []
@@ -588,7 +600,7 @@ joinTextElements(elements: TextElement[]):  // ref-codex §6.4 TextElement[]
 
 **5.3d outbound: `AgentContent[]` → `UserInput[]`** (`sendPrompt`에서 호출, §2.4):
 
-5.3a가 **inbound**(Codex `UserInput` → `AgentContent`, item 재생용)라면, 이 절은 **outbound** 정본이다 — composer가 만든 `AgentContent[]`(15 §4)를 `turn/start`의 `input: UserInput[]`(ref-codex §6.5)로 변환한다. 5.3a와 반대 방향이며 **순수 함수**다(side-effect 없음). adapter capability(ref-codex §1.4 `initialize.capabilities`) 미opt-in 상황에서 미지원 content는 **드롭하지 않고** `[]` 자리에서 raw 보존 + debug 로깅으로 처리한다(15 §0.2).
+5.3a가 **inbound**(Codex `UserInput` → `AgentContent`, item 재생용)라면, 이 절은 **outbound** 정본이다 — composer가 만든 `AgentContent[]`(15 §4)를 `turn/start`의 `input: UserInput[]`(ref-codex §6.5)로 변환한다. 5.3a와 반대 방향이며 **순수 함수**다(side-effect 없음). adapter capability(ref-codex §1.4 `initialize.capabilities`) 미opt-in 상황에서 미지원 content는 provider input에서는 제외하되, adapter가 mapper 결과 `[]`를 감지해 빈 `turn/start{input:[]}`를 보내지 않고 recoverable error event로 낮춘다(CX-4c, 11 §3.1). 원본 content 보존/표시는 transcript echo·debug log 경계에서 다루고, wire에는 지원되는 `UserInput`만 싣는다.
 
 ```ts
 // adapters/codex/codex-wire-mapper.ts (또는 codex-launch.ts와 공유)
@@ -598,10 +610,11 @@ import type { AgentContent } from "../../contracts/normalized";
 /**
  * composer content(15 §4) → Codex turn/start input(ref-codex §6.5/§6.4).
  * - text  → UserInput text item
- * - image → capability 확인 후 image input; 미지원이면 drop + raw 보존
- * - resource → reference 매핑(아래 의사코드)
- * - 그 외(terminal/diff/json 등 composer 비입력 variant) → drop + raw 보존(로깅).
+ * - image → capability 확인 후 image input; 미지원이면 provider input에서 제외
+ * - resource → skill resource는 UserInput skill, 그 외 resource는 reference mention(아래 의사코드)
+ * - 그 외(terminal/diff/json 등 composer 비입력 variant) → provider input에서 제외(로깅).
  * caps: initialize 응답/capability opt-in 상태(ref-codex §1.4). 없으면 보수적(image 미전송).
+ * 반환 배열이 비면 caller(sendPrompt)가 recoverable error를 emit하고 turn/start를 보내지 않는다(CX-4c).
  */
 export function mapAgentContentToUserInput(content: AgentContent[], caps?: CodexInputCaps): UserInput[];
 ```
@@ -612,14 +625,8 @@ mapAgentContentToUserInput(content, caps):
   for c in content:
     switch c.type:
     case "text":
-       // ⚠️ D-USERINPUT(13 OQ-33 hard gate): outbound text variant 필드가 wire 실측으로
-       //   확정되기 전까지 makeTextUserInput은 **기본 구현을 두지 않는다**(throw/stub, 아래 정의).
-       //   가능성 A: { type:"text", text: c.text } — ref-codex §6.5 TurnStartParams 예시는 평문 text만 보임.
-       //   가능성 B: { type:"text", text: c.text, text_elements: toTextElements(c.text) }
-       //     — ref-codex §6.4 inbound item은 text_elements(snake_case, TextElement[], 필수)다.
-       //   B가 정답이면 A로 보낸 turn/start는 server schema 검증에서 거부된다(ref-codex §6.4 text_elements required).
-       //   잘못 단정하면 turn 자체가 실패하므로, 실측(13 OQ-33 hard gate) 전에는 stub으로 막는다.
-       out.push(makeTextUserInput(c.text))     // 아래 stub: OQ-33 확정 전 throw
+       // H4/OQ-33 해소: text variant는 text_elements 필수. plain text는 span 없음 → [].
+       out.push(makeTextUserInput(c.text))
        break
     case "image":
        if caps?.imageInput:                    // ref-codex §1.4 capability opt-in 확인
@@ -628,39 +635,39 @@ mapAgentContentToUserInput(content, caps):
                    ? { type:"localImage", path: stripFileScheme(c.uri) }   // ref-codex §6.4
                    : { type:"image", url: c.uri })                         // detail은 미설정(옵셔널)
        else:
-          logDropped("image", c)               // 미지원 → drop + raw 보존(15 §0.2, 드롭 아님)
+          logDropped("image", c)               // 미지원 → provider input 제외, 빈 배열이면 caller가 error 처리
        break
     case "resource":
-       // ref-codex §6.4: 전용 resource variant 없음 → mention(reference)으로 근사 매핑.
-       //   uri/text를 mention name/path로 싣고 원본은 raw 보존(정확 매핑은 결정 필요, 13 OQ-33).
-       out.push({ type:"mention", name: c.text ?? c.uri, path: c.uri })   // reference 매핑(근사)
+       if c.resourceKind == "skill":
+          // Codex skills/list 후보는 실제 UserInput skill로 보존한다.
+          out.push({ type:"skill", name: c.text, path: stripFileScheme(c.uri) })
+       else:
+          // 일반 file/resource는 mention(reference)으로 근사 매핑.
+          //   uri/text를 mention name/path로 싣고 원본은 raw 보존(text field hard gate와 별개).
+          out.push({ type:"mention", name: c.text ?? c.uri, path: c.uri }) // reference 매핑(근사)
        break
     default:
-       // terminal/diff/json 등 composer 입력이 아닌 variant: drop + raw 보존(로깅).
+       // terminal/diff/json 등 composer 입력이 아닌 variant: provider input 제외(로깅).
        logDropped(c.type, c)
   return out
 ```
 
-**`makeTextUserInput` — OQ-33 확정 전 기본 구현 금지(D-USERINPUT)**: 위 text case가 호출하는 `makeTextUserInput`은 OQ-33(outbound text variant) hard gate가 닫혀 있는 동안 **기본 구현을 두지 않는다**. 잘못된 형태(가능성 A인지 B인지)를 단정해 채우면 `turn/start`가 server schema 검증(ref-codex §6.4 `text_elements` required)에서 거부되어 turn 시작 자체가 실패한다. 따라서 실측(13 OQ-33 hard gate) 전에는 **throw/compile-time stub**으로 막아 잘못된 wire를 보내지 못하게 한다:
+> **빈 outbound 방어(CX-4c)**: `sendPrompt`는 `mapAgentContentToUserInput(...)` 결과가 `[]`이면 `turn/start`를 호출하지 않는다. 이 경우 `session_status_changed:running`을 만들지 않고, recoverable `error` event만 emit해 사용자에게 미지원 prompt였음을 알린다. 이는 ACP의 빈 `session/prompt` 방어(06/08)와 같은 전송 경계 정책이다.
+
+**`makeTextUserInput` — H4/OQ-33 해소 후 정본**: 위 text case가 호출하는 `makeTextUserInput`은 `codex app-server generate-ts` 산출물(0.142.2)의 `v2/UserInput.ts`를 따른다. `text` variant의 `text_elements`는 필수 필드이고 plain text에는 span이 없으므로 빈 배열을 보낸다. `text` only payload는 정본이 아니며 다시 도입하면 `turn/start` schema 검증에서 거부될 수 있다:
 
 ```ts
-// adapters/codex/codex-wire-mapper.ts — OQ-33 hard gate 전 stub(기본 구현 금지, D-USERINPUT)
+// adapters/codex/codex-wire-mapper.ts — H4/OQ-33 해소 후 정본
 /**
  * composer text → Codex turn/start의 UserInput text variant.
- * ⚠️ OQ-33(13) 미해소: outbound text 형태(A: {type:"text",text} / B: text_elements 동반)가
- *    wire 실측으로 확정되기 전까지 **구현 금지**. 잘못 단정하면 ref-codex §6.4 text_elements required로
- *    turn/start가 거부되어 turn이 실패한다. hard gate(13 OQ-33) 확정 후에만 채운다.
+ * H4: `text_elements`는 필수 필드이며, plain text는 span이 없으므로 빈 배열을 동반한다.
  */
-export function makeTextUserInput(_text: string): UserInput {
-  // OQ-33 wire 실측(generate-ts UserInput.ts + 실측 turn/start) 전 미구현.
-  //   gate 통과 후: 가능성 A({type:"text", text})를 우선 채우고, 실측에서 거부되면
-  //   가능성 B({type:"text", text, text_elements: toTextElements(text)})로 교체한다.
-  throw new Error("OQ-33 wire 실측 전 미구현: makeTextUserInput (13 OQ-33 hard gate)");
+export function makeTextUserInput(text: string): UserInput {
+  return { type: "text", text, text_elements: [] };
 }
 ```
 
-> **outbound text variant 필드 — 결정 필요(13 OQ-33 hard gate)**: ref-codex §6.5 `TurnStartParams` 예시는 outbound `input`에 `{type:"text", text}`(평문 text만)을 보이지만, §6.4 inbound `UserInput.text`는 `text_elements`(snake_case, `TextElement[]`, **필수**)다. 어느 쪽을 보내야 server schema가 통과하는지는 **양립 가능성이 있어 구현 전 확정**한다 — 가능성 A(text only) 우선, 실측에서 거부되면 가능성 B(text_elements 동반). **확정 전 `makeTextUserInput`은 stub(throw)로 두고 기본 구현을 채우지 않는다**(D-USERINPUT). `codex app-server generate-ts`(§11)의 `UserInput.ts`와 실측 wire로 확정하고 13에 verify-at-impl(hard gate)로 등록한다. 12 T3.1/T3.2(sendPrompt outbound) 선행 조건도 이 gate다.
-> image/resource 매핑의 capability opt-in 키와 resource→reference 정확 매핑도 동일 OQ로 묶는다(ref-codex §1.4·§6.4 unverified, [13](13-risks-open-questions.md) OQ-33).
+> **outbound text variant 필드 — 해소됨(H4/OQ-33)**: `codex app-server generate-ts` 산출물의 `UserInput.ts`에서 `text_elements`가 필수임을 확인했다. 따라서 `makeTextUserInput` stub gate는 해제됐고, text outbound는 `{ type:"text", text, text_elements: [] }`로 고정한다. image/resource 매핑은 이 text hard gate와 분리한다. image는 capability opt-in일 때만 `image`/`localImage`로 보내고, 일반 file/resource는 `mention` 근사 매핑으로 보낸다. 단 Codex `skills/list`에서 온 `resourceKind:"skill"` 후보는 `UserInput{type:"skill", name, path}`로 전송한다.
 
 **5.3b `commandExecution` → `ToolCallUpdate`** (15 §5, ref-codex §6.3/§8):
 
@@ -675,6 +682,7 @@ mapCommandExec(item):                     // ToolCallUpdate (15 §5)
     content: item.aggregatedOutput
              ? [{ type:"terminal", command:item.command, output:item.aggregatedOutput }]
              : undefined,                 // 15 §4 terminal content
+    locations: mapCodexLocations(item),    // generated baseline 밖 optional locations[]가 오면 FileLocation으로 보존(OQ-61)
     rawInput: { command:item.command, cwd:item.cwd, commandActions:item.commandActions },
     rawOutput: { exitCode:item.exitCode, durationMs:item.durationMs }, // 15 §0.2
   }
@@ -745,8 +753,8 @@ mapTokenUsage(tu):                         // ThreadTokenUsage (ref-codex §6.7)
 
 ACP 어댑터(06 §5)는 `available_commands_update`를 받아 신규 `available_commands_updated { ref; commands: AgentCommand[] }` AgentEvent(15 §3, 신규 타입 `AgentCommand { name; description?; inputHint? }`)를 emit하고, composer(08 §6.6)의 `/` 명령 팔레트가 그 provider availableCommands를 소비한다. **Codex app-server v2 thread 모델에는 이 ACP `availableCommands`에 등가인 provider-backed slash 명령 소스가 없다**(ref-codex §5·§6: thread/turn/item notification 카탈로그에 명령 목록 갱신 notification이 부재). 따라서:
 
-- **Codex 어댑터는 `available_commands_updated` AgentEvent를 emit하지 않는다.** mapper(§5.1)에 대응 notification case를 두지 않으며(부재 notification이라 §5.2 default로도 도달하지 않음), composer의 Codex 세션 `/` 팔레트는 **client-side 정적 항목만**(예: 로컬 `/resume` → `port.resumeSession`, 02 결정원장 #2) 표시한다.
-- **provider-backed 명령 목록은 v1 미지원이다.** Codex의 `skills/list`(있더라도)는 `@` skill **mention** 소스이지 `/` slash 명령 소스가 아니므로 slash 팔레트로 끌어오지 않는다(소스 혼동 금지). `@` file/resource mention과 `$` 보류는 06/08·OQ-56 정본을 따른다.
+- **Codex 어댑터는 `available_commands_updated` AgentEvent를 emit하지 않는다.** mapper(§5.1)에 대응 notification case를 두지 않으며(부재 notification이라 §5.2 default로도 도달하지 않음), composer의 Codex 세션 `/` 팔레트는 **client-side 정적 항목만**(예: 로컬 `/resume` 평문 prompt command, 08 §6.6) 표시한다.
+- **provider-backed 명령 목록은 v1 미지원이다.** Codex의 `skills/list`는 `@` skill **mention** 소스이지 `/` slash 명령 소스가 아니므로 slash 팔레트로 끌어오지 않는다(소스 혼동 금지). 현재 `AgentRuntimePort.searchResources`는 Codex `fuzzyFileSearch` file 후보와 `skills/list{cwds:[workDir]}` enabled skill 후보를 합쳐 `@` 팔레트에 공급한다. `$` 보류와 ACP richer resource source는 06/08·OQ-56 정본을 따른다.
 
 > **provider 비대칭(slash 소스)**: ACP는 provider-backed availableCommands(동적) + 로컬 `/resume`, Codex는 **로컬 정적만**(provider-backed 동적 명령 없음). 이 비대칭과 `$` 의미·소스, Codex slash 소스의 후속 발굴(향후 app-server가 명령 목록 notification을 추가할 경우)은 [13](13-risks-open-questions.md) OQ-56에 등록.
 
@@ -872,20 +880,32 @@ codexApprovalSeverity(method, p):     // → "normal" | "escalation" (15 §5 sev
   // (1) 권한/sandbox 상승 자체를 요구하는 server request → 고위험 집합(09 §8.3)
   if method === "item/permissions/requestApproval":         // ref-codex §4.3: sandbox/permission 상승 요청
      return "escalation"                                    // sandbox 우회/권한 상승(danger-full-access 계열)
-  // (2) command approval이 sandbox/network 정책 우회(amendment/managed-network)를 동반 → 고위험
+  // (2) approval payload에 full-access/sandbox 우회 모드 신호가 있으면 → 고위험
+  if method.endsWith("/requestApproval") &&
+     (p.sandbox == "danger-full-access"                    // raw/future compatibility
+      || p.sandboxRequested == "danger-full-access"
+      || p.sandboxMode == "danger-full-access"
+      || p.permissionMode == "Agent (Full Access)"
+      || p.approvalMode == "Agent (Full Access)"):
+     return "escalation"
+  // (3) command approval이 sandbox/network 정책 우회(amendment/managed-network)를 동반 → 고위험
   if method === "item/commandExecution/requestApproval" &&
      (p.proposedExecpolicyAmendment != null                // exec policy 우회 제안(ref-codex §4.1)
       || p.proposedNetworkPolicyAmendments != null          // network policy 우회 제안(ref-codex §4.1)
-      || p.networkApprovalContext != null):                 // managed-network 우회 prompt(ref-codex §4.1)
+      || p.networkApprovalContext != null                   // managed-network 우회 prompt(ref-codex §4.1)
+      || p.commandActions contains side-effect type          // raw/future: write/edit/delete/move/execute/fetch action type
+      || p.additionalPermissions.network.enabled == true    // raw/future: per-command network overlay
+      || p.additionalPermissions.fileSystem.write non-empty // raw/future: per-command filesystem write overlay
+      || p.additionalPermissions.fileSystem.entries contains access:"write"):
      return "escalation"
-  // (3) fileChange가 sandbox writable root 밖 쓰기를 요구(grantRoot) → 고위험
-  if method === "item/fileChange/requestApproval" && p.grantRoot === true:  // ref-codex §4.2 grantRoot
+  // (4) fileChange가 sandbox writable root 밖 쓰기를 요구(grantRoot) → 고위험
+  if method === "item/fileChange/requestApproval" && p.grantRoot != null:   // ref-codex §4.2 grantRoot(string|null)
      return "escalation"
   // 그 외 일반 command/fileChange approval → 기본 normal(inline 카드)
   return "normal"
 ```
 
-> 위 분류는 09 §8.3 "전부 normal이라 단정하지 않는다"(D-ESCALATION)를 wire 실측 신호로 구현한 것이다. `item/permissions/requestApproval`은 §7.1에서 v1 자동 decline(D12)되어 사용자에게 escalation 카드로 노출되지는 않으나, 그 신호 자체가 고위험 집합임을 분류기가 인지한다(노출 정책과 분류 정책은 분리). **감지 가능한 wire 신호가 불명확한 부분만 OQ-47 잔여로 남긴다** — 예: command approval의 experimental `additionalPermissions`/`availableDecisions`(ref-codex §4.1, gated)나 `commandActions` 내 위험 동작 분류는 wire 표현 미확정이라 OQ-47에 verify-at-impl로 남긴다.
+> 위 분류는 09 §8.3 "전부 normal이라 단정하지 않는다"(D-ESCALATION)를 wire 실측 신호로 구현한 것이다. `item/permissions/requestApproval`은 §7.1에서 v1 자동 decline(D12)되어 사용자에게 escalation 카드로 노출되지는 않으나, 그 신호 자체가 고위험 집합임을 분류기가 인지한다(노출 정책과 분류 정책은 분리). 현재 generated command/fileChange approval params에는 `sandbox` 필드가 없으므로, `sandbox`/`sandboxRequested`/`sandboxMode`/`permissionMode`/`approvalMode` 감지는 raw/future compatibility 방어선이다. raw/future `additionalPermissions`는 generated `AdditionalPermissionProfile` shape를 기준으로 network enable 또는 filesystem write 요청만 escalation으로 올리고, read-only filesystem overlay는 normal로 둔다. `commandActions`는 현재 generated `read`/`listFiles`/`search`/`unknown` 4종만 normal로 유지하되, raw/future payload가 `write`/`edit`/`delete`/`move`/`execute`/`fetch` 같은 부수효과 타입을 명시하면 escalation으로 올린다. **감지 가능한 wire 신호가 불명확한 부분만 OQ-47 잔여로 남긴다** — 예: `availableDecisions`는 현재 generated command approval params에 없어 후속 wire 확인 대상으로 남긴다.
 
 `ApprovalOption.kind`(15 §5) → Codex decision(ref-codex §4.1/§8.1):
 
@@ -896,9 +916,9 @@ codexApprovalSeverity(method, p):     // → "normal" | "escalation" (15 §5 sev
 | `reject_once` | `agentRuntime.approval.rejectOnce` | `decline` | ref-codex §8.1 |
 | `cancel` | `agentRuntime.approval.cancel` | `cancel` | ref-codex §8.1 |
 
-> v1은 단위 enum 4종(`accept`/`acceptForSession`/`decline`/`cancel`)만 전송한다(ref-codex §4.1 ⚠️, §8.1, §10). `acceptWithExecpolicyAmendment`/`applyNetworkPolicyAmendment`(데이터 variant)는 보내지 않는다. `reject_always`는 Codex에 정확한 등가물이 없어 `decline`으로 매핑(ref-codex §8.1, §10, [13](13-risks-open-questions.md)).
+> v1은 단위 enum 4종(`accept`/`acceptForSession`/`decline`/`cancel`)만 전송한다(ref-codex §4.1 ⚠️, §8.1, §10). `acceptWithExecpolicyAmendment`/`applyNetworkPolicyAmendment`(데이터 variant)는 보내지 않는다. `reject_always`는 Codex에 정확한 등가물이 없어 `decline`으로 매핑한다(OQ-14 해소; generated `CommandExecutionApprovalDecision`/`FileChangeApprovalDecision`에 영구 거부 값 없음). v1 Codex command/fileChange UI는 `reject_once`+`cancel`만 노출하지만, 공용 `ApprovalOption.kind` 입력 경계에서는 `reject_always`를 방어적으로 수용한다.
 >
-> **OQ-47 — approval severity 분류(D-ESCALATION 재정의)**: command/fileChange approval의 `ApprovalRequest.severity`(15 §5) **기본값은 `"normal"`**(inline 카드)이되, **09 §8.3 고위험 집합(sandbox 우회/`danger-full-access`/`Agent (Full Access)`)에 해당하는 approval은 v1부터 `severity:"escalation"`**(blocking modal)으로 분류한다(위 `codexApprovalSeverity`). 즉 **"v1은 전부 normal"이라고 단정하지 않는다**. Codex의 감지 가능한 고위험 wire 신호는 `item/permissions/requestApproval`(ref-codex §4.3), command approval의 `proposedExecpolicyAmendment`/`proposedNetworkPolicyAmendments`/`networkApprovalContext`(ref-codex §4.1), fileChange의 `grantRoot`(ref-codex §4.2)다. **감지 가능한 wire 신호가 불명확한 잔여 분류(experimental `additionalPermissions`/`commandActions` 위험도 등)만 OQ-47에 남긴다**([13](13-risks-open-questions.md) OQ-47; severity 정본은 09 §8.3·15 §5, UI 분기는 08 §4.4).
+> **OQ-47 — approval severity 분류(D-ESCALATION 재정의)**: command/fileChange approval의 `ApprovalRequest.severity`(15 §5) **기본값은 `"normal"`**(inline 카드)이되, **09 §8.3 고위험 집합(sandbox 우회/`danger-full-access`/`Agent (Full Access)`)에 해당하는 approval은 v1부터 `severity:"escalation"`**(blocking modal)으로 분류한다(위 `codexApprovalSeverity`). 즉 **"v1은 전부 normal"이라고 단정하지 않는다**. Codex의 v1 감지 신호는 `item/permissions/requestApproval`(ref-codex §4.3), command approval의 `proposedExecpolicyAmendment`/`proposedNetworkPolicyAmendments`/`networkApprovalContext`(ref-codex §4.1), raw/future `additionalPermissions` 중 network enable/fs write overlay, raw/future `commandActions`의 부수효과 action type, fileChange의 `grantRoot`(ref-codex §4.2), 그리고 raw/future compatibility용 `danger-full-access`/`Agent (Full Access)` 모드 필드다. **감지 가능한 wire 신호가 불명확한 잔여 분류(`availableDecisions` 등)만 OQ-47에 남긴다**([13](13-risks-open-questions.md) OQ-47; severity 정본은 09 §8.3·15 §5, UI 분기는 08 §4.4).
 
 ### 7.2 outbound: `respondApproval` → JSON-RPC response
 
@@ -942,7 +962,7 @@ sendUnsupportedServerRequest(originalRpcId, method, p):      // ref-codex §1.2/
 ```
 
 > response의 `id`는 server가 보낸 request의 `id`와 **정확히 동일 타입/값**이어야 한다(ref-codex §1.3). server request id가 number였으면 number로 되돌린다. 어댑터는 `requestId`를 string으로 정규화(15 §1)하지만 **원본 JSON-RPC id의 실제 타입(`string|number`)을 routing pending에 함께 보관**해 응답 시 복원한다(§6 `rpcId`).
-> **D12 v1 확정**: permissions approval(`item/permissions/requestApproval`, ref-codex §4.3)은 **자동 decline**한다(command/fileChange 승인만 1차 지원). `{permissions, scope}` 응답의 `GrantedPermissionProfile` 구성은 미확정이라 보수적으로 빈 권한으로 거절하고 원본 payload는 raw 보존한다([13](13-risks-open-questions.md) OQ). permission-profile escalation 정식 지원은 후속.
+> **D12 v1 확정**: permissions approval(`item/permissions/requestApproval`, ref-codex §4.3)은 **자동 decline**한다(command/fileChange 승인만 1차 지원). `{permissions:{}, scope:"turn"}`으로 보수적으로 빈 권한을 응답하고 원본 payload는 raw 보존한다(OQ-19 v1 해소). permission-profile escalation 정식 지원과 사용자 승인 UI는 후속.
 
 ### 7.3 cancel cleanup (불변식)
 
@@ -992,19 +1012,20 @@ ref-codex §5.3 ⚠️: thread 안 명령 출력과 standalone `command/exec` �
 | thread 내 | `item/commandExecution/outputDelta` | `{itemId, delta}` 평문 | 불필요 | `command_output_delta{stream:"stdout", delta}` (15 §3) |
 | standalone | `command/exec/outputDelta` | `{processId, stream:"stdout"\|"stderr", deltaBase64, capReached}` | **base64 디코드** | `command_output_delta{stream, delta=atob}` 또는 `terminal_output_delta` |
 
-v1은 **thread 채널만** 1차 지원한다(turn 안에서 agent가 실행하는 명령). standalone `command/exec`(thread 없이 sandbox 실행, ref-codex §3.3)는 v1 범위 밖([13](13-risks-open-questions.md)). thread 채널 delta는 stream 구분 정보가 없어 `stdout`으로 고정한다(ref-codex §5.2; stderr 구분은 unverified, [13](13-risks-open-questions.md)). 출력은 전체 terminal surface가 아니라 tool card 내부 terminal embed로 렌더한다([08](08-ui-composition.md), 15 §4 `{type:"terminal"}`). bounded buffer/full log 분리는 [08](08-ui-composition.md).
+v1은 **thread 채널만** 1차 지원한다(turn 안에서 agent가 실행하는 명령). standalone `command/exec`(thread 없이 sandbox 실행, ref-codex §3.3)는 v1 범위 밖([13](13-risks-open-questions.md) OQ-21). generated `CommandExecutionOutputDeltaNotification`에는 `stream` 필드가 없고 `{threadId, turnId, itemId, delta}`만 있으므로 thread 채널 delta는 `stdout`으로 고정한다(OQ-22 해소). 반대로 generated `CommandExecOutputDeltaNotification`에는 `stream`/`deltaBase64`가 있으나 standalone 채널이라 v1 mapper는 raw 보존+unknown counter 경계로만 처리한다(CX-9). 출력은 전체 terminal surface가 아니라 tool card 내부 terminal embed로 렌더한다([08](08-ui-composition.md), 15 §4 `{type:"terminal"}`). bounded buffer/full log 분리는 [08](08-ui-composition.md).
 
 ### 8.2 error / backpressure
 
 ```text
 // §3.2 onRuntimeEvent에서:
-case "error":         emit { type:"error", ref:{provider:"codex"}, message, recoverable }
-case "backpressure":  emit { type:"error", ref:{provider:"codex"},
+case "error":         emit { type:"error", ref:currentRuntimeRef(), message, recoverable }
+case "backpressure":  emit { type:"error", ref:currentRuntimeRef(),
                              message:i18n("agentRuntime.errors.backpressure"), recoverable:true }
 ```
 
 - Codex notification `error`(ref-codex §5.1, §6.9): `willRetry`→`recoverable`(04 §5). `error.codexErrorInfo`(`usageLimitExceeded`/`contextWindowExceeded` 등, ref-codex §6.9)는 `ref.raw`에 보존하고 UI 에러 코드 분류에 쓸 수 있다(15 §3 error, 04 §5).
 - backpressure(15 §8.3): pending approval을 자동 방치하지 않는다(기존 05 초안 유지). recoverable warning으로 표시([08](08-ui-composition.md), [13](13-risks-open-questions.md) approval deadlock).
+- `currentRuntimeRef()`는 thread/start 또는 resume 뒤에는 routing의 handle→threadId, threadId→sessionId를 사용해 `{provider:"codex", threadId, sessionId}`를 보존한다. 아직 thread가 확정되기 전 initialize/startup 오류는 `{provider:"codex"}` fallback을 쓴다(CX-18a, 11 §3.6).
 
 ---
 
@@ -1015,7 +1036,7 @@ handleExit(code?, signal?):                                // §3.2 "exit"
   // S3 정본(04 §5): process exit으로 인한 pending 종료는 shutdown과 공용 루틴·멱등 가드를 공유한다.
   //   process가 이미 죽었으므로 wire 응답 불가 → 내부 전용 outcome으로 닫는다(reason="exit").
   closePending(handle, "exit")                             // 아래 공용 루틴(rt.closed 가드로 정확히 한 번)
-  emitToListeners({ type:"process_exited", ref:{provider:"codex"}, code, signal })
+  emitToListeners({ type:"process_exited", ref:currentRuntimeRef(), code, signal })
 
 shutdown(handle):                                          // 15 §6
   // S3 정본(04 §5·14): agent_runtime_shutdown을 authoritative cleanup 경계로 본다.
@@ -1070,6 +1091,7 @@ closePending(handle, reason):                              // reason: "exit" | "
 - **initialize 실패**: `startSession`의 `rpcRequest("initialize")` reject → 세션 status `failed` emit, legacy PTY fallback 제안([08](08-ui-composition.md) §fallback, [13](13-risks-open-questions.md) experimental surface).
 - **schema mismatch**: 알 수 없는 notification은 드롭하지 않고 debug 로깅(§5.2 default). 치명적이지 않으면 runtime 유지. version drift는 [13](13-risks-open-questions.md) Protocol drift.
 - **app-server process exit**: 위 `handleExit`. active turn은 `turn_completed{cancelled}`로 닫지 않고 `process_exited`로 세션 `exited` 전이(04 §2.1 규칙7).
+- **session-level ref 보존**: thread/start 또는 resume이 완료된 뒤의 `error`/backpressure/`process_exited`는 `currentRuntimeRef()`로 알려진 `threadId`/`sessionId`를 보존한다. 이는 04 §3.6 notice dedup과 15 §1 ProviderRef 추적성의 입력이다. initialize 전 조기 실패처럼 아직 thread/session을 모르는 경우만 provider-only fallback을 허용한다(CX-18a/19a).
 
 ---
 
@@ -1088,8 +1110,9 @@ mapper/routing은 순수 함수/plain class라 vitest로 단독 테스트([`rese
 7. **serverRequest/resolved**(ref-codex §4.4): pending approval을 사용자 응답 없이 닫고 `approval_resolved{cancelled}`.
 8. **enum 변환**(§5.5): ThreadStatus/TurnStatus/CommandExecutionStatus/TurnPlanStepStatus 전 분기 매핑.
 9. **token usage 결합**(§5.6): `thread/tokenUsage/updated` 후 `turn/completed`에 `usage` 동승.
-10. **process exit**(04 §5): pending approval/RPC 모두 닫히고 `process_exited` emit. exit과 shutdown은 공용 `closePending` 루틴 + `rt.closed` 가드를 공유해 **정확히 한 번**만 닫는다(이중 종료/누락 없음).
+10. **process exit**(04 §5): pending approval/RPC 모두 닫히고 `process_exited` emit. exit과 shutdown은 공용 `closePending` 루틴 + `rt.closed` 가드를 공유해 **정확히 한 번**만 닫는다(이중 종료/누락 없음). 시작된 세션의 `process_exited.ref`에는 `threadId`/`sessionId`가 보존된다(CX-19a).
 11. **shutdown 경계**(S3, 04 §5·14): pending approval 있는 상태에서 `shutdown` → (a) `agent_runtime_shutdown` 호출 **전에** 각 pending approval에 **best-effort cancelled wire 응답**(`{id:rpcId, result:{decision:"cancel"}}`, ref-codex §4.1)이 송신된 뒤 `approval_resolved{cancelled}`로 닫히고 pending RPC가 reject된 뒤, (b) `deps.shutdown` await, (c) 그 다음 unlisten·세션 삭제 순서. wire 송신이 실패해도 내부 `approval_resolved{cancelled}` emit은 그대로 일어남(best-effort). shutdown 후 늦은 exit이 도착해도 `rt.closed` 가드로 pending이 **재차 닫히거나 누락되지 않음**(멱등). `reason="exit"` 경로는 wire 송신 없이 `failed`만 emit(process 사망, 04 §5).
+12. **runtime error ref 보존**(04 §3.6, 15 §1): 시작된 세션의 runtime `error`/backpressure는 `error.ref.threadId`/`sessionId`를 보존한다(CX-18a). notice dedup이 라우팅 키 + message hash에 기대므로 provider-only 축약을 금지한다.
 
 수용 기준: 위 10케이스 + `jsonrpc` 필드 미포함 검증(ref-codex §1.2) + raw 보존 검증(15 §0.2). [11](11-testing-acceptance.md)에 통합.
 
@@ -1097,14 +1120,14 @@ mapper/routing은 순수 함수/plain class라 vitest로 단독 테스트([`rese
 
 ## 11. 구현 전 체크리스트 (기존 05 초안 보존·갱신)
 
-- [ ] 로컬 `codex --version`이 ref pin(`0.142.0`)과 일치하는지 확인(ref-codex §0). 불일치 시 schema diff 검토([13](13-risks-open-questions.md) Protocol drift).
-- [ ] `codex app-server generate-ts --out <DIR>`로 protocol type 생성, 수동 string literal 구현 금지(ref-codex §1.1, drift 위험). 생성물은 `src/lib/features/agent-runtime/generated/codex-app-server/`(D4 정본 경로, 12 §0.1)에 두고 mapper(`adapters/codex/codex-wire-mapper.ts`)가 import.
-- [ ] `codex app-server --help`로 experimental flag 기동 불필요 재확인(ref-codex §1.1; 이미 검증, 환경 변동 시 재확인).
-- [ ] `ClientInfo`/`InitializeCapabilities` 실제 필드 확인 후 `capabilities:null` 유지 여부 결정(ref-codex §10, [13](13-risks-open-questions.md)).
-- [ ] `initialize`→`initialized` 필수 여부 server handler로 확인(ref-codex §10, [13](13-risks-open-questions.md)). 미확인 동안 항상 핸드셰이크 수행.
-- [ ] permissions approval: D12 v1 기본값 **자동 decline** 확정(§7.1/§7.2). `{permissions, scope}`의 `GrantedPermissionProfile` 정식 구성은 후속이며 구현 전 ref-codex §4.3/generate-ts로 실측([13](13-risks-open-questions.md) OQ).
-- [ ] standalone `command/exec` 채널·thread 채널 stream 구분 v1 범위 확정([13](13-risks-open-questions.md)).
-- [ ] auth token/websocket 사용 시 저장 위치·redaction 정책을 [09](09-permissions-security.md)에 반영.
+- [x] startup preflight에서 resolved executable `--version` probe가 성공하는지 확인한다(11 RS-10f/10g). strict ref pin 비교는 dependency refresh/OQ-41 절차에서 schema diff로 판단한다.
+- [x] `codex app-server generate-ts --out <DIR>`로 protocol type 생성, 수동 string literal 구현 금지(ref-codex §1.1, drift 위험). 생성물은 `src/lib/features/agent-runtime/generated/codex-app-server/`(D4 정본 경로, 12 §0.1)에 두고 mapper(`adapters/codex/codex-wire-mapper.ts`)가 import한다. 증거: `generated/codex-app-server/README.md`, `codex-wire-mapper.ts` generated type imports, 2026-06-28 fresh `generate-ts` diff가 README 외 무차이.
+- [x] `codex app-server --help`로 experimental flag 기동 불필요 재확인(ref-codex §1.1; 이미 검증, 환경 변동 시 재확인). 증거(2026-06-28): `codex app-server --help`는 subcommand로 `generate-ts`/`generate-json-schema`를 제공하고 `--listen` 기본값 `stdio://`를 표시한다. `app-server` 자체 실행에는 별도 `--experimental` 플래그가 필요하지 않으며, `generate-ts --experimental`은 생성 범위 확장 옵션으로만 존재한다.
+- [x] `ClientInfo`/`InitializeCapabilities` 실제 필드 확인 후 `capabilities:null` 유지 여부 결정(ref-codex §10, [13](13-risks-open-questions.md)). 증거: generated `ClientInfo.ts`는 `{name,title,version}`, `InitializeParams.ts`는 `capabilities: InitializeCapabilities | null`, `InitializeCapabilities.ts`는 opt-in 필드 집합이다. v1 adapter는 experimental surface를 열지 않기 위해 `capabilities:null`을 유지한다(`codex-app-server-adapter.ts`, `codex-app-server-adapter.test.ts`).
+- [x] `initialize`→`initialized` 필수 여부 server handler로 확인(ref-codex §10, [13](13-risks-open-questions.md)). H4/OQ-07 결론에 따라 strict 필수 여부와 무관하게 v1은 방어적 기본값으로 항상 핸드셰이크를 수행한다. 증거: `codex-app-server-adapter.ts` `handshake()`가 `initialize` 요청 후 params 없는 `initialized` notification을 보내고, `codex-app-server-adapter.test.ts`가 outbound 순서 `initialize` → `initialized` → `thread/start`를 검증한다.
+- [x] permissions approval: D12 v1 기본값 **자동 decline** 구현/검증 완료(§7.1/§7.2, OQ-19 v1 해소). 응답은 `{permissions:{}, scope:"turn"}`로 고정하고 원본 request는 `ProviderRef.raw`에 보존한다. `GrantedPermissionProfile`을 사용자 승인 UI로 구성하는 정식 지원은 후속 범위다.
+- [x] standalone `command/exec` 채널·thread 채널 stream 구분 v1 범위 확정([13](13-risks-open-questions.md)). v1은 thread 채널(`item/commandExecution/outputDelta`)만 지원하고 standalone `command/exec`는 미지원 후속 범위다. thread 채널 generated payload에는 stream 필드가 없으므로 stdout 고정이고, standalone generated payload의 `stream`은 v1 후속 채널에만 존재한다(OQ-22 해소). 증거: generated `CommandExecutionOutputDeltaNotification.ts`/`CommandExecOutputDeltaNotification.ts`, `codex-wire-mapper.test.ts` CX-8/CX-9.
+- [x] auth token/websocket 사용 시 저장 위치·redaction 정책을 [09](09-permissions-security.md)에 반영. v1 websocket transport는 reject-before-log이고 `authToken`은 scrub/redaction 집합에 포함한다. 증거: 09 §5.1/§5.2/§5.3, 07 RD-2, `agent_runtime::tests` RS-12c/RS-18.
 
 ---
 

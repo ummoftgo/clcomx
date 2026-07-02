@@ -102,7 +102,7 @@ export interface TranscriptTurnState {
  * reducer 시그니처 = `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel`.
  */
 export interface TranscriptModel {
-  /** 반응형 표면 — 순서·표시 대상(가상화 소싱). */
+  /** 반응형 표면 — 순서·표시 대상(v1 bounded list, DOM 가상화 후속 소싱). */
   visibleItemIds: string[];
   /** 반응형 표면 — itemId별 렌더 트리거 버전(streaming 시 bump). */
   itemVersions: Record<string, number>;
@@ -118,7 +118,7 @@ export interface TranscriptModel {
 // view state / composer capabilities
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** AgentRuntimeShell 세션 인스턴스 상태(룬 class, FE §1.3). */
+/** AgentTranscriptSurface 세션 인스턴스 상태(룬 class, FE §1.3). */
 export interface AgentRuntimeViewState {
   transcript: TranscriptModel;
   status: AgentSessionStatus;
@@ -148,6 +148,8 @@ export interface ComposerCapabilities {
 export interface TranscriptResidencyConfig {
   /** hot window에 body를 유지할 최근 sealed turn 수. */
   HOT_WINDOW_SEALED_TURNS: number;
+  /** hot window에 유지할 sealed turn body의 근사 byte 상한. */
+  HOT_WINDOW_BYTES: number;
   /** evicted-tombstone LRU 슬롯 수. */
   TOMBSTONE_LRU: number;
   /** seal 전 quiescence grace(ms). reducer는 동기 함수라 grace 경과는 외부가 트리거한다. */
@@ -160,6 +162,7 @@ export interface TranscriptResidencyConfig {
  */
 export const DEFAULT_TRANSCRIPT_RESIDENCY_CONFIG: TranscriptResidencyConfig = {
   HOT_WINDOW_SEALED_TURNS: 50,
+  HOT_WINDOW_BYTES: 8 * 1024 * 1024,
   TOMBSTONE_LRU: 200,
   SEAL_QUIESCENCE_GRACE_MS: 250,
 };

@@ -4,6 +4,7 @@ import type {
   AgentRuntimeMetadata,
   SessionRuntimeKind,
 } from "./features/agent-runtime/contracts/metadata";
+import type { AgentSessionStatus } from "./features/agent-runtime/contracts/normalized";
 
 export type SupportedLocale = "en" | "ko";
 export type LanguagePreference = "system" | SupportedLocale;
@@ -43,6 +44,8 @@ export interface SessionCore {
    * 비밀 필드(providerSessionId/providerThreadId/providerResumeToken)는 저장 직전 scrub(10 §6).
    */
   agentRuntime?: AgentRuntimeMetadata;
+  /** direct runtime의 live 상태. 탭 badge용 UI 상태이며 workspace snapshot에는 저장하지 않는다(OQ-06). */
+  agentRuntimeStatus?: AgentSessionStatus;
 }
 
 export interface SessionShellRuntimeState {
@@ -145,6 +148,8 @@ export interface TabHistoryEntry {
   workDir: string;
   title: string;
   resumeToken?: string | null;
+  /** 최근 항목 재실행 시 direct host를 복원하기 위한 비밀이 아닌 runtime 표식. */
+  runtimeKind?: SessionRuntimeKind;
   lastOpenedAt: string;
 }
 

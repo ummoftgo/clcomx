@@ -1,8 +1,9 @@
 <!--
   MessageList — transcript item을 순서대로 렌더(08 §3, §7.2).
 
-  visibleItemIds(반응형 표면, 순서·표시 대상)로 윈도잉하고 각 id의 body를 store.getItem(id)
-  (plain Map, 비반응형)에서 소싱한다. delta는 itemVersions bump으로 반응을 트리거하므로,
+  visibleItemIds(반응형 표면, 현재 mount 대상)와 각 id의 body를 store.getItem(id)
+  (plain Map, 비반응형)에서 소싱한다. v1은 residency eviction으로 bounded된 visible list를 그대로 렌더하고,
+  scroll-window DOM virtualization은 후속이다. delta는 itemVersions bump으로 반응을 트리거하므로,
   렌더 키에 itemVersions[id]를 섞어 streaming 시 점진 갱신이 반영되게 한다(08 §5).
 
   Stage 2: tool_call → ToolCallCard, file_change → FileDiffCard, inline approval(severity normal)을
@@ -14,7 +15,7 @@
   import { t } from "../../../i18n";
   import type { AgentRuntimeStore } from "../state/agent-runtime-store.svelte";
   import type { TranscriptItem } from "../contracts/transcript";
-  import type { ApprovalDecision, ApprovalRequest } from "../contracts/normalized";
+  import type { ApprovalDecision, ApprovalRequest, FileLocation } from "../contracts/normalized";
   import MessageBubble from "./MessageBubble.svelte";
   import PlanBlock from "./PlanBlock.svelte";
   import ToolCallCard from "./tool-cards/ToolCallCard.svelte";
@@ -26,9 +27,11 @@
     store: AgentRuntimeStore;
     /** inline approval 응답 콜백(controller.approve로 위임). 미지정 시 승인 UI 비활성. */
     onRespondApproval?: (decision: ApprovalDecision) => void;
+    /** tool location click을 상위 editor/file-open 경계로 위임한다(08 §4.3). */
+    onOpenLocation?: (location: FileLocation) => void;
   }
 
-  let { store, onRespondApproval }: Props = $props();
+  let { store, onRespondApproval, onOpenLocation }: Props = $props();
 
   // 표면에 노출된 pending inline approval(severity normal)을 requestId/toolCallId로 매핑한다.
   // tool 카드 하단에 해당 toolCallId의 approval만 인라인으로 끼우기 위함(08 §4.4).
@@ -103,6 +106,7 @@
               update={item.update}
               expanded={item.expanded}
               {fileChange}
+              {onOpenLocation}
             >
               {#snippet approval()}
                 <!-- data-approval-anchor: surface의 approval scrollIntoView 타겟(08 §4.4·§7.1). -->
@@ -120,6 +124,7 @@
               update={item.update}
               expanded={item.expanded}
               {fileChange}
+              {onOpenLocation}
             />
           {/if}
         {:else if item.type === "file_change"}

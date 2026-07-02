@@ -3,13 +3,11 @@
  *
  * 모든 approval 결정(user/auto/cleanup)이 닫힐 때 in-memory audit entry 1건을 남긴다.
  * **비밀(명령 전문/credential/파일 내용/raw label)은 절대 포함하지 않는다** — requestId/optionId/kind/outcome/
- * 시각/decidedBy 같은 메타만 담는다(NM-20c). 영속 로그는 OQ-51 미결이므로 v1 in-memory만.
+ * 시각/decidedBy 같은 메타만 담는다(NM-20c). OQ-51 결론에 따라 v1 기본은 in-memory만이며,
+ * redacted 영속 로그는 후속 enhancement에서 별도 결정한다.
  */
 
-import type { AgentProvider, ApprovalOption } from "../contracts/normalized";
-
-/** approval 결정을 누가 내렸는가. user=사용자 선택, auto=자동 승인, cleanup=cancel/shutdown/exit 정리. */
-export type ApprovalDecidedBy = "user" | "auto" | "cleanup";
+import type { AgentProvider, ApprovalDecidedBy, ApprovalOption } from "../contracts/normalized";
 
 /**
  * approval audit entry. 비밀 비포함(메타만). label/명령 전문/credential/파일 내용은 담지 않는다(09 §3.4).

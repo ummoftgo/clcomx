@@ -9,11 +9,11 @@
  */
 
 import type {
+  ApprovalDecidedBy,
   ApprovalDecision,
   ApprovalRequest,
   AgentProvider,
 } from "../contracts/normalized";
-import type { ApprovalDecidedBy } from "./approval-audit";
 
 /** 세션 핸들 + JSON-RPC request id 복합 키를 문자열로 직렬화한다(table key). */
 export function pendingKey(sessionHandle: string, requestId: string): string {

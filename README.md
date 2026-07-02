@@ -13,6 +13,13 @@ CLCOMX는 Windows + WSL 환경에서 CLI 에이전트를 더 편하게 쓰기 �
 
 Electron 대신 `Rust + Tauri v2 + Svelte 5`를 사용해 메모리 사용량과 네이티브 통합을 우선했습니다.
 
+## 고지 및 주의 사항
+
+- CLCOMX는 **비공식 개인 프로젝트**이며 Anthropic, OpenAI와 무관합니다. "Claude", "Claude Code", "Codex"는 각 사의 상표이며, CLCOMX는 각 사의 공식 CLI를 로컬에서 실행하는 프론트엔드일 뿐입니다.
+- CLCOMX는 인증 정보(OAuth 토큰, API key)를 직접 다루지 않습니다. 로그인은 각 공식 CLI(`claude`, `codex`)의 자체 인증 플로우를 그대로 사용하며, 자격증명은 해당 CLI가 관리하는 위치(`~/.claude` 등)에만 저장됩니다.
+- 각 CLI를 어떤 요금제(구독/API)로 사용할지는 사용자 본인의 계정과 약관에 따릅니다. **각 제공사의 이용 약관을 준수할 책임은 사용자에게 있습니다.**
+- Anthropic은 서드파티 도구·Agent SDK 경유 사용에 대한 정책을 조정 중입니다(2026-06 기준 과금 이원화 계획 보류). 정책 변경으로 특정 인증 방식이나 요금제 사용이 제한될 수 있으니 [Anthropic 공식 공지](https://code.claude.com/docs/en/agent-sdk/overview)를 확인하세요.
+
 ## 주요 특징
 
 - 멀티 에이전트

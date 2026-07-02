@@ -6,7 +6,7 @@
 >
 > **provider 매핑 정본**: Codex/ACP wire → normalized 변환표는 protocol ref 문서에 있다. 이 문서는 타입만 정의하고 매핑은 ref로 교차 참조한다.
 > - Codex: [`ref-codex-app-server-protocol.md`](ref-codex-app-server-protocol.md) §8 (매핑표), §6 (핵심 타입), §7 (reconcile 규칙). pinned ref `rust-v0.142.0`.
-> - ACP: [`ref-acp-protocol.md`](ref-acp-protocol.md) §13 (매핑표), §4–§6 (content/tool/permission). wire `protocolVersion = 1`; schema artifact는 T0.0/OQ-41에서 확정(`schema-v1.16.0`은 baseline 후보, 구현 핀 아님).
+> - ACP: [`ref-acp-protocol.md`](ref-acp-protocol.md) §13 (매핑표), §4–§6 (content/tool/permission). wire `protocolVersion = 1`; 현 구현 기준은 SDK `0.29.0` package schema/types + 부분 wire mirror(`schema-v1.16.0`은 baseline 후보, 구현 핀 아님).
 > - Claude ACP 구현체: [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md). pinned `@agentclientprotocol/claude-agent-acp@0.51.0` (commit `23626c9`).
 
 조사 시점: 2026-06-25. 코드 스냅샷 기준: commit `e7a5f9e`; 구현 전 현재 작업트리와 대조. 실제 코드 타입 컨벤션 출처: `src/lib/types.ts`, `src/lib/agents/types.ts`, `src/lib/pty.ts`.
@@ -115,6 +115,12 @@ export type AgentSessionStatus =
 모든 provider event는 adapter에서 이 union으로 변환되어 Event Router로 들어간다. 각 variant는 `ProviderRef ref`를 들고 다닌다(라우팅 키).
 
 ```ts
+/** runtime/transport 에러의 stable code seed(OQ-60). provider별 세부 taxonomy는 후속 확장이다. */
+export type AgentRuntimeErrorCode =
+  | "framing_invalid_json"
+  | "framing_line_too_large"
+  | "framing_broken";
+
 /** adapter가 provider wire를 변환해 내보내는 공통 이벤트. discriminator = type. */
 export type AgentEvent =
   /** 새 세션 시작. Codex thread/started, ACP session/new result. */
@@ -123,6 +129,10 @@ export type AgentEvent =
   | { type: "session_loaded"; ref: ProviderRef }
   /** 세션 상태 전이. reason은 provider 원본 사유(선택). */
   | { type: "session_status_changed"; ref: ProviderRef; status: AgentSessionStatus; reason?: string }
+  /** provider runtime metadata 일부 갱신. transcript가 아닌 session badge/persistence patch로만 쓴다. */
+  | { type: "runtime_metadata_changed"; ref: ProviderRef; metadata: AgentRuntimeMetadataUpdate }
+  /** provider가 제안한 세션 title 갱신. transcript가 아닌 앱 session title/persistence patch로만 쓴다. */
+  | { type: "session_title_changed"; ref: ProviderRef; title: string | null }
   /** 사용자 메시지. mode=replace(전체 교체) | append(청크 누적). */
   | { type: "user_message"; ref: ProviderRef; content: AgentContent[]; mode: "replace" | "append" }
   /**
@@ -140,8 +150,15 @@ export type AgentEvent =
   /**
    * agent 응답 스트리밍 delta(텍스트 조각). ref.itemId/messageId 기준 append.
    * channel: "response"(기본) | "thought". thought delta는 response와 별도 스트림으로 누적.
+   * segment는 Codex reasoning의 summaryIndex/contentIndex처럼 한 item 안의 병렬 text stream을 구분한다.
    */
-  | { type: "agent_message_delta"; ref: ProviderRef; delta: string; channel?: "response" | "thought" }
+  | {
+      type: "agent_message_delta";
+      ref: ProviderRef;
+      delta: string;
+      channel?: "response" | "thought";
+      segment?: AgentTextSegment;
+    }
   /** 실행 계획 전체 교체(ACP plan, Codex turn/plan/updated). */
   | { type: "plan_updated"; ref: ProviderRef; entries: AgentPlanEntry[] }
   /**
@@ -156,8 +173,8 @@ export type AgentEvent =
   | { type: "tool_call_content_delta"; ref: ProviderRef; content: AgentContent }
   /** 승인 요청(server→client request). request.id로 pending 관리. */
   | { type: "approval_requested"; ref: ProviderRef; request: ApprovalRequest }
-  /** 승인 해결(사용자 응답 또는 serverRequest/resolved로 닫힘). */
-  | { type: "approval_resolved"; ref: ProviderRef; decision: ApprovalDecision }
+  /** 승인 해결(사용자 응답 또는 cleanup/serverRequest로 닫힘). decidedBy 생략 시 user로 본다. */
+  | { type: "approval_resolved"; ref: ProviderRef; decision: ApprovalDecision; decidedBy?: ApprovalDecidedBy }
   /** legacy PTY 또는 embedded terminal byte stream. transcript가 아닌 terminal surface 전용. */
   | { type: "terminal_output_delta"; ref: ProviderRef; ptyId: number; seq: number; delta: string }
   /** 명령 실행 stdout/stderr 증분(thread 채널). */
@@ -168,36 +185,61 @@ export type AgentEvent =
   | { type: "turn_completed"; ref: ProviderRef; usage?: TokenUsage; status: "completed" | "failed" | "cancelled" }
   /** provider process 종료. */
   | { type: "process_exited"; ref: ProviderRef; code?: number; signal?: string }
-  /** 에러. recoverable=재시도 가능 여부(Codex willRetry / ACP error 분류). */
-  | { type: "error"; ref: ProviderRef; message: string; recoverable: boolean };
+  /** 에러. recoverable=재시도 가능 여부(Codex willRetry / ACP error 분류). code는 transport가 분류 가능한 경우만 채운다. */
+  | { type: "error"; ref: ProviderRef; message: string; recoverable: boolean; code?: AgentRuntimeErrorCode };
+
+/** transcript가 아닌 세션 metadata badge/persistence patch. provider id·token 같은 비밀은 담지 않는다. */
+export interface AgentRuntimeMetadataUpdate {
+  /** provider sandbox/mode 표시용 metadata(09 §8.2). */
+  sandbox?: string;
+  /** provider approval policy 표시용 metadata(09 §8.2). */
+  approvalPolicy?: string;
+  /** provider approval reviewer 표시용 metadata(09 §8.2). */
+  approvalsReviewer?: string;
+  /** Claude SDK permissionMode 또는 동등 provider permission mode id. */
+  permissionMode?: string;
+  /** ACP session mode 또는 동등 provider session mode id. */
+  sessionMode?: string;
+}
 ```
 
 매핑 정본: Codex notification/request → 위 variant는 ref-codex §8 표, ACP `session/update` variant → 위 variant는 ref-acp §13.2/§13.3/§13.4 표.
 
-> **reasoning/thinking (정본, 해소됨)**: ACP `agent_thought_chunk`(reasoning)와 Codex `reasoning` item은 전용 event variant를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel: "thought"`로 흘린다(미지정 시 `"response"`). thought 채널은 response와 **별도 스트림**으로 messageId/contentIndex별 누적하며, completed reasoning item이 thought 채널의 권위(reconcile)다. 누적 규칙·권위 규칙은 04 §3.2.2/§3.2.5 + §3 "이벤트", provider 매핑은 Codex ref-codex §6.3·05 §5.2, ACP ref-acp §13.2·06 §5. UI는 thought 채널을 접이식 'thinking' 블록(기본 collapsed)으로 렌더한다(08).
+> **reasoning/thinking (정본, 해소됨)**: ACP `agent_thought_chunk`(reasoning)와 Codex `reasoning` item은 전용 event variant를 만들지 않고 `agent_message`/`agent_message_delta`의 `channel: "thought"`로 흘린다(미지정 시 `"response"`). thought 채널은 response와 **별도 스트림**으로 누적하며, Codex는 `segment:{kind:"summary"|"content", index}`로 `summaryIndex`/`contentIndex`를 보존하고 ACP는 `messageId`로 청크를 그룹핑한다. completed reasoning item이 thought 채널의 권위(reconcile)다. 누적 규칙·권위 규칙은 04 §3.2.2/§3.2.5 + §3 "이벤트", provider 매핑은 Codex ref-codex §6.3·05 §5.2, ACP ref-acp §13.2·06 §5. UI는 thought 채널을 접이식 'thinking' 블록(기본 collapsed)으로 렌더한다(08).
 >
-> **audio gap (unverified, 결정 필요)**: ACP `audio` content에 대응하는 AgentContent variant가 없다 (ref-acp §13.2, §14). v1은 audio를 미지원으로 두고 `raw` 보존만 한다.
+> **audio gap (v1 확정)**: ACP `audio` content에 대응하는 전용 `AgentContent` variant는 없다(ref-acp §13.2, §14). v1은 audio 입력 capability를 비활성화하고, inbound audio block은 drop하지 않고 `{type:"json", value:<raw audio block>}`로 보존한다(13 OQ-04 해소).
 >
 > **transcript 메모리 관리 (신규 타입 없음 — 정책 위치 명시)**: 긴 세션에서 frontend in-memory transcript가 unbounded로 증가하는 문제의 해법(shallow 반응형 표면 + sealed-turn 윈도우 eviction + 3-상태 turn residency)은 **view-model/reducer 내부 정책**이며 **wire 계약을 바꾸지 않는다**. `AgentEvent`(§3)·Agent Runtime Port(§6)·Tauri command/event 계약(§8)은 **변경 없음**이다. seal/eviction은 reducer가 들고 다니는 view-model 상태일 뿐 adapter가 내보내는 event 형태에 영향을 주지 않는다. 따라서 본 문서(15)는 이와 관련해 **신규 타입을 정의하지 않는다**. `TranscriptModel`·`TranscriptTurnResidency`(view-model 타입) 정본은 [`08-ui-composition.md`](08-ui-composition.md) §5, seal 불변식·3-상태·late-event 규칙 정본은 [`04-normalized-agent-model.md`](04-normalized-agent-model.md) §3.7, 위험·윈도우/cap 수치는 [`13-risks-open-questions.md`](13-risks-open-questions.md) §1.12(S2)/OQ-52에 있다.
 >
-> **UI 토큰 소비 (정본 위치는 코드 tokens.ts — 신규 wire 타입 없음)**: transcript surface는 settings store를 직접 import하지 않고 앱이 `:root`에 주입하는 **정본 `--ui-*` CSS 토큰만 소비**한다(테마=`--ui-*` 색, UI 글꼴/크기/스케일=`--ui-font-stack`/`--ui-font-size-*`/`--ui-scale`; `applyRuntimeStyleLayer` 경유, `src/lib/ui/theme-bridge.ts`·`style-layers.ts`). 코드/명령출력 mono 폰트는 **신규 토큰 `UI_CSS_VARS.fontMonoStack = "--ui-font-mono-stack"`** 로 소비한다 — 이 토큰은 `settings.terminal.fontFamily`/`fontFamilyFallback`에서 `buildFontStack`으로 산출하며(Terminal.svelte `terminalFontFamily` 로직 재사용), 정본 토큰 정의 위치는 본 문서가 아니라 **코드 `tokens.ts`**(`UI_CSS_VARS` 표)다. transcript 측에서 하드코딩 rem·미정의 `--color-*`/`--font-mono` 사용은 금지. **agent-runtime 전용 신규 Settings 섹션은 신설하지 않고** 기존 `TerminalSettings`(mono 폰트 구동)/`InterfaceSettings`(테마·UI 글꼴/크기/스케일)를 재사용한다(13 OQ-55: v1=재사용; mono 전용 설정 분리는 보류). 이 결정은 **신규 wire 타입을 만들지 않는다**.
+> **UI 토큰 소비 (정본 위치는 코드 tokens.ts — 신규 wire 타입 없음)**: transcript surface는 settings store를 직접 import하지 않고 앱이 `:root`에 주입하는 **정본 `--ui-*` CSS 토큰만 소비**한다(테마=`--ui-*` 색, UI 글꼴/크기/스케일=`--ui-font-stack`/`--ui-font-size-*`/`--ui-scale`; `applyRuntimeStyleLayer` 경유, `src/lib/ui/theme-bridge.ts`·`style-layers.ts`). 코드/명령출력 mono 폰트는 **신규 토큰 `UI_CSS_VARS.fontMonoStack = "--ui-font-mono-stack"`** 로 소비한다 — 이 토큰은 `settings.terminal.fontFamily`/`fontFamilyFallback`에서 `buildFontStack`으로 산출하며(Terminal.svelte `terminalFontFamily` 로직 재사용), 정본 토큰 정의 위치는 본 문서가 아니라 **코드 `tokens.ts`**(`UI_CSS_VARS` 표)다. transcript 측에서 하드코딩 rem·미정의 `--color-*`/`--font-mono` 사용은 금지. **agent-runtime 전용 신규 Settings 섹션은 신설하지 않고** 기존 `TerminalSettings`(mono 폰트 구동)/`InterfaceSettings`(테마·UI 글꼴/크기/스케일)를 재사용한다(13 OQ-55 해소; mono 전용 설정 분리는 보류). 이 결정은 **신규 wire 타입을 만들지 않는다**.
 
 ---
 
 ## 4. Normalized model — Content block
 
 ```ts
+/**
+ * provider가 하나의 message item 안에서 병렬 text stream을 보낼 때 쓰는 segment 식별자.
+ * Codex reasoning delta의 `summaryIndex`/`contentIndex`를 normalized text block에 보존한다.
+ */
+export interface AgentTextSegment {
+  /** reasoning summary/content 배열 중 어느 축인지. */
+  kind: "summary" | "content";
+  /** 같은 kind 안의 0-based index. */
+  index: number;
+}
+
 /** transcript/tool card가 렌더링하는 공통 content 블록. discriminator = type. */
 export type AgentContent =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; segment?: AgentTextSegment }
   | { type: "image"; uri: string; mimeType?: string }
-  | { type: "resource"; uri: string; mimeType?: string; text?: string }
-  | { type: "terminal"; command?: string; output: string }
+  | { type: "resource"; uri: string; mimeType?: string; text?: string; resourceKind?: "file" | "skill" }
+  | { type: "terminal"; command?: string; output: string; stderr?: string }
   | { type: "diff"; path: string; patch: string }
   | { type: "json"; value: unknown };
 ```
 
-ACP `ContentBlock`(text/image/audio/resource_link/resource) → `AgentContent` 매핑은 ref-acp §13.2. 주의: ACP image는 base64 `data`라서 adapter가 data URI 또는 저장 후 `uri`를 만든다. ACP `Diff{oldText,newText}` → `{type:"diff", patch}`는 adapter가 patch를 생성한다. Codex `UserInput`/`FileUpdateChange` → 매핑은 ref-codex §6.4, §8.
+ACP `ContentBlock`(text/image/audio/resource_link/resource) → `AgentContent` 매핑은 ref-acp §13.2. 주의: ACP image는 base64 `data`라서 v1 adapter가 data URI(`data:<mime>;base64,...`)로 만든다. provider가 `uri`를 함께 주면 `uri`를 우선한다(13 OQ-12 해소). ACP `Diff{oldText,newText}` → `{type:"diff", patch}`는 adapter가 patch를 생성한다. Codex `UserInput`/`FileUpdateChange` → 매핑은 ref-codex §6.4, §8.
 
 ---
 
@@ -265,6 +307,9 @@ export interface ApprovalOption {
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" | "other";
 }
 
+/** approval 결정을 누가 내렸는가. user=사용자 선택, auto=자동 승인, cleanup=cancel/shutdown/exit 정리. */
+export type ApprovalDecidedBy = "user" | "auto" | "cleanup";
+
 /** 승인 결정 결과. failed는 client 내부 에러용(wire로 안 보냄). */
 export interface ApprovalDecision {
   requestId: string;
@@ -308,7 +353,7 @@ export interface TokenUsage {
 - `ApprovalDecision.outcome`: ACP wire는 `selected`/`cancelled`만(ref-acp §6). `failed`는 CLCOMX 내부 전용.
 - `AgentPlanEntry.status`: Codex `TurnPlanStepStatus`는 `inProgress`(camelCase) → `in_progress` (ref-codex §6.8). ACP `PlanEntryStatus`는 이미 snake_case (ref-acp §10).
 - `TokenUsage`: Codex `TokenUsageBreakdown`의 `inputTokens`/`cachedInputTokens`/`outputTokens`/`reasoningOutputTokens` 직접 매핑(`totalTokens`는 버림) (ref-codex §6.7). ACP `UsageUpdate{used,size}`는 Codex 토큰 축과 분리된 context window 축이므로 `used`→`contextUsed`, `size`→`contextSize`로 매핑한다(ref-acp §10, 06 §3.6, 08 contextUsage 게이지; **OQ-02 해소**). `cost` 등 잔여 필드는 raw 보존.
-- **`agent_message`/`agent_message_delta`의 `channel` 누적·권위 (reconcile)**: `channel` 미지정은 `"response"`로 간주한다. `"response"`와 `"thought"`는 **별도 스트림**으로, 같은 messageId/contentIndex 안에서 각 채널별로 독립 append한다(두 채널을 한 본문에 섞지 않는다). `"thought"` 채널은 streaming delta를 점진 렌더용으로만 쓰고, completed reasoning item(`agent_message{channel:"thought", mode:"replace"}`)이 **권위**다 — delta 누적과 일치를 가정하지 않는다(메시지 reconcile 규칙은 `"response"` 한정). 누적·권위 규칙 정본은 04 §3.2.2/§3.2.5, provider 매핑은 Codex 05 §5.2 / ACP 06 §5.
+- **`agent_message`/`agent_message_delta`의 `channel` 누적·권위 (reconcile)**: `channel` 미지정은 `"response"`로 간주한다. `"response"`와 `"thought"`는 **별도 스트림**이다(두 채널을 한 본문에 섞지 않는다). `"thought"` delta 중 Codex reasoning은 `segment`로 `summaryIndex`/`contentIndex`를 구분해 같은 segment에만 append하고, 표시 순서는 `summary[]` 다음 `content[]`, 각 배열 index 오름차순이다. ACP thought chunk는 `messageId`로 그룹핑 append한다. `"thought"` 채널은 streaming delta를 점진 렌더용으로만 쓰고, completed reasoning item(`agent_message{channel:"thought", mode:"replace"}`)이 **권위**다 — delta 누적과 일치를 가정하지 않는다(메시지 reconcile 규칙은 `"response"` 한정). 누적·권위 규칙 정본은 04 §3.2.2/§3.2.5, provider 매핑은 Codex 05 §5.2 / ACP 06 §5.
 
 ---
 
@@ -320,6 +365,7 @@ provider별 구현(Codex/Claude/Legacy adapter)을 숨기는 TS-facing interface
 
 ```ts
 import type { AgentEvent, AgentContent, ApprovalDecision, ProviderRef, AgentProvider } from "./normalized";
+import type { ComposerCapabilities } from "./transcript";
 import type { UnlistenFn } from "$lib/tauri/event"; // 실제 경로는 src/lib/tauri/event.ts
 
 /** 세션을 식별하는 CLCOMX 내부 핸들(=live-session-store의 session.id). provider id 아님. */
@@ -356,9 +402,49 @@ export interface SendPromptInput {
   content: AgentContent[];
 }
 
-/** 시작/재개 결과. provider 원본 id를 ref로 돌려준다. */
+/** composer resource search 입력. provider는 workDir root 안에서만 후보를 돌려준다. */
+export interface ResourceSearchInput {
+  query: string;
+  workDir: string;
+  limit?: number;
+}
+
+/** composer @mention 후보. */
+export interface ResourceSearchResult {
+  label: string;
+  uri: string;
+  detail?: string;
+  mimeType?: string;
+  /** provider 전송 시 의미를 보존해야 하는 resource 종류. 기본값은 file이다. */
+  resourceKind?: "file" | "skill";
+  /** provider 전송용 이름/본문. skill 후보는 Codex skill name을 싣는다. */
+  text?: string;
+}
+
+/** 시작/재개 결과. provider 원본 id와 재개 가능 메타를 돌려준다. */
 export interface SessionStartResult {
   ref: ProviderRef;
+  /** replay 없는 재개 가능 여부. provider가 capability를 알리지 않으면 생략한다. */
+  canResume?: boolean;
+  /** replay 포함 load 가능 여부. provider가 capability를 알리지 않으면 생략한다. */
+  canLoad?: boolean;
+  /** composer 입력 기능 게이트용 provider prompt capability(08 §6.4). */
+  composerCapabilities?: ComposerCapabilities;
+  /** 협상된 protocol 버전. */
+  protocolVersion?: string;
+  /** adapter/provider 바이너리 버전(확인 가능할 때만). */
+  adapterVersion?: string;
+  providerVersion?: string;
+  /** provider sandbox/mode 표시용 metadata(09 §8.2). */
+  sandbox?: string;
+  /** provider approval policy 표시용 metadata(09 §8.2). */
+  approvalPolicy?: string;
+  /** provider approval reviewer 표시용 metadata(09 §8.2). */
+  approvalsReviewer?: string;
+  /** Claude SDK permissionMode 또는 동등 provider permission mode id. */
+  permissionMode?: string;
+  /** ACP session mode 또는 동등 provider session mode id. */
+  sessionMode?: string;
 }
 
 /**
@@ -374,6 +460,9 @@ export interface AgentRuntimePort {
 
   /** 프롬프트 전송(1 turn 시작). turn 진행은 subscribeEvents로 관찰. */
   sendPrompt(sessionHandle: AgentSessionHandle, input: SendPromptInput): Promise<void>;
+
+  /** provider-backed resource/file search. 미지원 provider는 빈 배열을 돌려준다. */
+  searchResources?(sessionHandle: AgentSessionHandle, input: ResourceSearchInput): Promise<ResourceSearchResult[]>;
 
   /** 진행 중 turn 취소. turnId 생략 시 현재 active turn. */
   cancelTurn(sessionHandle: AgentSessionHandle, turnId?: string): Promise<void>;
@@ -392,7 +481,7 @@ export interface AgentRuntimePort {
 }
 ```
 
-> 메서드 시그니처는 `03-target-architecture.md` §Agent Runtime Port의 7개(startSession/resumeSession/sendPrompt/cancelTurn/respondApproval/subscribeEvents/shutdown)를 정본화한 것이다. `subscribeEvents`는 push 콜백 + `UnlistenFn` 형태로, frontend `listen` 래퍼 패턴(`research/codebase-frontend.md` §4.1)과 일치시켰다.
+> 메서드 시그니처는 `03-target-architecture.md` §Agent Runtime Port의 8개(startSession/resumeSession/sendPrompt/searchResources/cancelTurn/respondApproval/subscribeEvents/shutdown)를 정본화한 것이다. `subscribeEvents`는 push 콜백 + `UnlistenFn` 형태로, frontend `listen` 래퍼 패턴(`research/codebase-frontend.md` §4.1)과 일치시켰다. `searchResources`는 optional provider-backed composer 보조 표면이며, 미지원 provider는 빈 배열 또는 미구현 상태로 fallback을 허용한다.
 
 ---
 
@@ -423,6 +512,16 @@ export interface AgentRuntimeMetadata {
   /** adapter/provider 바이너리 버전(호환성 추적). */
   adapterVersion?: string;
   providerVersion?: string;
+  /** provider sandbox/mode 표시용 metadata(09 §8.2). */
+  sandbox?: string;
+  /** provider approval policy 표시용 metadata(09 §8.2). */
+  approvalPolicy?: string;
+  /** provider approval reviewer 표시용 metadata(09 §8.2). */
+  approvalsReviewer?: string;
+  /** Claude SDK permissionMode 또는 동등 provider permission mode id. */
+  permissionMode?: string;
+  /** ACP session mode 또는 동등 provider session mode id. */
+  sessionMode?: string;
   /** replay 없는 재개 가능 여부(ACP resume / Codex thread/resume). */
   canResume?: boolean;
   /** replay 가능 여부(ACP loadSession / Codex thread/read). */
@@ -450,6 +549,8 @@ export interface SessionCore {
   // ── 신규 ──
   /** 미지정(기존 세션)이면 "pty"로 normalize. */
   runtimeKind?: SessionRuntimeKind;
+  /** direct runtime live status. 탭 badge용 UI 상태이며 WorkspaceTabSnapshot에는 저장하지 않는다(OQ-06). */
+  agentRuntimeStatus?: AgentSessionStatus;
 }
 
 // WorkspaceTabSnapshot 확장 (Rust WorkspaceTabSnapshot와 미러). 모두 optional.
@@ -475,6 +576,23 @@ export interface WorkspaceTabSnapshot {
   runtimeKind?: SessionRuntimeKind;
   /** direct runtime metadata. resume 키류는 디스크 저장 시 scrub(§7.3). */
   agentRuntime?: AgentRuntimeMetadata;
+  /** agentRuntimeStatus는 live UI 상태라 포함하지 않는다(OQ-06). */
+}
+```
+
+최근 항목은 direct provider 식별자나 resume key를 저장하지 않는다. 다만 direct host 재선택과 UI 배지를 위해 비밀이 아닌 `runtimeKind`만 optional로 보존한다(10 §5.5).
+
+```ts
+// src/lib/types.ts — TabHistoryEntry 확장
+export interface TabHistoryEntry {
+  agentId: AgentId;
+  distro: string;
+  workDir: string;
+  title: string;
+  resumeToken?: string | null; // history 저장 계층에서 항상 null/None으로 scrub
+  /** "direct-codex" | "direct-claude"만 저장. 미지정/"pty"/기타 값은 legacy PTY. */
+  runtimeKind?: SessionRuntimeKind;
+  lastOpenedAt: string;
 }
 ```
 
@@ -511,13 +629,23 @@ pub struct AgentRuntimeMetadataRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals_reviewer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_resume: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_load: Option<bool>,
 }
 ```
 
-> **보안 경계 (정본)**: `provider_session_id`/`provider_thread_id`/`provider_resume_token`은 기존 `pty_id`/`resume_token`과 동일하게 **디스크 저장 직전 scrub**한다. `sanitize_workspace_for_persist`(store.rs)에 이 3필드 제거를 추가하고, history에는 저장하지 않는다 (`research/codebase-backend.md` §4.2, §4.4, §10 권고 7). 새 비밀을 평문 영속화하면 기존 보안 경계가 깨진다.
+> **보안 경계 (정본)**: `provider_session_id`/`provider_thread_id`/`provider_resume_token`은 기존 `pty_id`/`resume_token`과 동일하게 **디스크 저장 직전 scrub**한다. `sanitize_workspace_for_persist`(store.rs)에 이 3필드 제거를 추가하고, history에는 provider 식별자/재개 키를 저장하지 않는다(`runtimeKind`만 허용, 10 §5.5; `research/codebase-backend.md` §4.2, §4.4, §10 권고 7). 새 비밀을 평문 영속화하면 기존 보안 경계가 깨진다.
 
 ---
 
@@ -560,10 +688,13 @@ export interface JsonRpcError {
  * (`/tmp/codex`, `/tmp/node`) 우회를 원천 차단한다. adapter는 provider/distro/workDir/args/env만
  * 채우며, 이 중 `args`만 검증 대상이고 `env`는 non-secret 전용이다(07 §5.1·§8.1, secret 경계는 09).
  * - codex `args`: backend가 정확히 `["app-server","--stdio"]`로 검증(07 §8.1).
- * - claude `args`: `args.length == 1` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`
- *   절대경로(`claude-agent-acp` `dist/index.js`). adapterEntryPath는 renderer 자유 입력이 아니라
+ * - claude `args`: `args.length == 2` 이고 `args[0]`이 backend가 검증한 `adapterEntryPath`
+ *   절대경로(`claude-agent-acp` `dist/index.js`), `args[1]`이 고정 `--hide-claude-auth`.
+ *   adapterEntryPath는 renderer 자유 입력이 아니라
  *   backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록 절대경로)한다(06 §2.2, 07 §8.1).
- * - command resolve 주체·캐시 무효화·adapterEntryPath 탐색 방식은 결정 필요(13).
+ * - command resolve owner/cache/adapterEntryPath 탐색은 OQ-36 확정값을 따른다:
+ *   owner=`agent_runtime/resolver.rs`, cache key=(provider,distro), TTL 없는 process-lifetime cache,
+ *   `clear()` 명시 무효화, Claude adapter entry는 pinned `node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js`.
  */
 export type AgentRuntimeStartParams =
   | {
@@ -579,7 +710,7 @@ export type AgentRuntimeStartParams =
       provider: "claude";
       distro: string;
       workDir: string;
-      args: string[];   // backend 검증: [adapterEntryPath](절대경로, backend resolve)
+      args: string[];   // backend 검증: [adapterEntryPath, "--hide-claude-auth"](절대경로, backend resolve + 고정 auth 숨김 플래그)
       env?: Record<string, string>; // non-secret 전용
     }
   | {
@@ -613,7 +744,7 @@ export interface AgentRuntimeSnapshot {
 }
 ```
 
-> `transportKind`(process/transport 실행 방식)와 `SessionRuntimeKind`(persistence)는 **별개 축**이다 (`07-tauri-process-runtime.md` §). **command는 renderer가 넘기지 않는다(S1 정본)**: backend가 `provider`로 신뢰 절대경로를 resolve하므로, adapter는 `args`/`env`만 채운다. `args`는 adapter가 생성하되 Rust handler가 provider별로 **정확 일치 재검증**하고(codex `["app-server","--stdio"]`, claude `[adapterEntryPath]`), `env`는 non-secret 전용 + key allowlist로 재검증한다(임의 executable/shell string 차단; 07 §8.1, 신뢰 경계 정본 09). 이는 PTY 대비 의도적 강화 지점으로 현 코드에 선례가 없다 (`research/codebase-backend.md` §6, §10 권고 6).
+> `transportKind`(process/transport 실행 방식)와 `SessionRuntimeKind`(persistence)는 **별개 축**이다 (`07-tauri-process-runtime.md` §). **command는 renderer가 넘기지 않는다(S1 정본)**: backend가 `provider`로 신뢰 절대경로를 resolve하므로, adapter는 `args`/`env`만 채운다. `args`는 adapter가 생성하되 Rust handler가 provider별로 **정확 일치 재검증**하고(codex `["app-server","--stdio"]`, claude `[adapterEntryPath,"--hide-claude-auth"]`), `env`는 non-secret 전용 + key allowlist로 재검증한다(임의 executable/shell string 차단; 07 §8.1, 신뢰 경계 정본 09). 이는 PTY 대비 의도적 강화 지점으로 현 코드에 선례가 없다 (`research/codebase-backend.md` §6, §10 권고 6).
 
 ### 8.2 Command 시그니처 (TS ↔ Rust 미러)
 
@@ -624,6 +755,7 @@ export interface AgentRuntimeSnapshot {
 | `agentRuntimeCancel(runtimeId: RuntimeId, target: AgentRuntimeCancelTarget): Promise<void>` | `agent_runtime_cancel(state, runtime_id: u32, target: AgentRuntimeCancelTarget) -> Result<(), String>` | `void` |
 | `agentRuntimeShutdown(runtimeId: RuntimeId): Promise<void>` | `agent_runtime_shutdown(state, runtime_id: u32) -> Result<(), String>` | `void` |
 | `agentRuntimeGetSnapshot(runtimeId: RuntimeId): Promise<AgentRuntimeSnapshot>` | `agent_runtime_get_snapshot(state, runtime_id: u32) -> Result<AgentRuntimeSnapshot, String>` | `AgentRuntimeSnapshot` |
+| `agentRuntimeResolveAdapterEntry(provider: "claude", distro: string): Promise<string>` | `agent_runtime_resolve_adapter_entry(provider: String, distro: String) -> Result<String, String>` | trusted `adapterEntryPath` |
 
 ```ts
 // TS invoke 래퍼 (src/lib/tauri/core.ts의 invoke 경유)
@@ -643,6 +775,9 @@ export async function agentRuntimeShutdown(runtimeId: RuntimeId): Promise<void> 
 }
 export async function agentRuntimeGetSnapshot(runtimeId: RuntimeId): Promise<AgentRuntimeSnapshot> {
   return await invoke<AgentRuntimeSnapshot>("agent_runtime_get_snapshot", { runtimeId });
+}
+export async function agentRuntimeResolveAdapterEntry(provider: "claude", distro: string): Promise<string> {
+  return await invoke<string>("agent_runtime_resolve_adapter_entry", { provider, distro });
 }
 ```
 
@@ -755,7 +890,7 @@ pub struct AgentRuntimeSnapshot {
 
 > Rust 등록은 `commands/mod.rs`에 `pub mod agent_runtime;`, `lib.rs`에 `use` + `.manage(AgentRuntimeState::default())` + `generate_handler![]` 3곳을 손댄다 (`research/codebase-backend.md` §3.2). `AgentRuntimeState`는 PTY `PtyState`와 별도(`Mutex<HashMap<RuntimeId, AgentRuntime>>` + `next_id`)로 둔다(같은 문서 §10 권고 1).
 >
-> **S2 — enum variant 필드 camelCase (역직렬화 정합 정본)**: enum 레벨 `#[serde(rename_all = ...)]`은 **variant 이름만** 바꾸고 variant 내부 필드는 snake_case로 남는다. 따라서 variant 필드를 가진 enum 미러(`AgentRuntimeStartParams`의 `work_dir`/`auth_token`, `AgentRuntimeCancelTarget`의 `request_id`/`turn_id`, `AgentRuntimeEvent`의 `runtime_id`/`dropped_messages`, `JsonRpcMessage`)는 추가로 **`#[serde(rename_all_fields = "camelCase")]`**(또는 필드별 `#[serde(rename = "...")]`)를 붙여야 TS의 `workDir`/`requestId`/`runtimeId`/`droppedMessages` 등과 Tauri command/event payload가 1:1 역직렬화된다. 이게 없으면 역직렬화가 조용히 실패한다. `rename_all_fields`는 **serde >= 1.0.181**에서만 지원되므로 구현 전 `src-tauri/Cargo.toml`의 serde 버전을 확인한다(미만이면 필드별 `rename`으로 대체; 결정 필요 항목 [13](13-risks-open-questions.md) "serde 버전 확인"). **struct 미러**(`AgentRuntimeSnapshot`, `JsonRpcError`, `AgentRuntimeMetadataRecord`(§7.3))는 struct 레벨 `#[serde(rename_all = "camelCase")]`가 필드까지 적용되므로 추가 속성이 **불필요**하다(유지). round-trip(TS↔Rust) 테스트는 11이 필수화한다.
+> **S2 — enum variant 필드 camelCase (역직렬화 정합 정본)**: enum 레벨 `#[serde(rename_all = ...)]`은 **variant 이름만** 바꾸고 variant 내부 필드는 snake_case로 남는다. 따라서 variant 필드를 가진 enum 미러(`AgentRuntimeStartParams`의 `work_dir`/`auth_token`, `AgentRuntimeCancelTarget`의 `request_id`/`turn_id`, `AgentRuntimeEvent`의 `runtime_id`/`dropped_messages`, `JsonRpcMessage`)는 추가로 **`#[serde(rename_all_fields = "camelCase")]`**를 붙여야 TS의 `workDir`/`requestId`/`runtimeId`/`droppedMessages` 등과 Tauri command/event payload가 1:1 역직렬화된다. 이게 없으면 역직렬화가 조용히 실패한다. OQ-37은 해소되어 현재 `src-tauri/Cargo.lock` serde `1.0.228` ≥ `1.0.181`이므로 구현은 `rename_all_fields`를 사용한다. **struct 미러**(`AgentRuntimeSnapshot`, `JsonRpcError`, `AgentRuntimeMetadataRecord`(§7.3))는 struct 레벨 `#[serde(rename_all = "camelCase")]`가 필드까지 적용되므로 추가 속성이 **불필요**하다(유지). round-trip(TS↔Rust)은 11 RS-21..RS-25와 `agent_runtime::tests`가 검증한다.
 
 ### 8.3 Event 계약 (Rust emit → frontend listen)
 
@@ -766,7 +901,7 @@ event 이름은 kebab-case 문자열 리터럴, payload는 `#[serde(rename_all="
 | `agent-runtime-message` | JSON-RPC response/notification/request | `{ type:"message", runtimeId, message }` (Rust emit은 `message: serde_json::Value`, TS 수신은 `JsonRpcMessage` — §8.3 비대칭 주석) |
 | `agent-runtime-stderr` | stderr 로그 라인 | `{ type:"stderr", runtimeId, line }` |
 | `agent-runtime-exit` | process 종료 | `{ type:"exit", runtimeId, code?, signal? }` |
-| `agent-runtime-error` | framing/runtime 에러 | `{ type:"error", runtimeId, message, recoverable }` |
+| `agent-runtime-error` | framing/runtime 에러 | `{ type:"error", runtimeId, message, recoverable, code? }` |
 | `agent-runtime-backpressure` | bounded queue saturation | `{ type:"backpressure", runtimeId, droppedMessages }` |
 
 ```ts
@@ -775,7 +910,7 @@ export type AgentRuntimeEvent =
   | { type: "message"; runtimeId: RuntimeId; message: JsonRpcMessage }
   | { type: "stderr"; runtimeId: RuntimeId; line: string }
   | { type: "exit"; runtimeId: RuntimeId; code?: number; signal?: string }
-  | { type: "error"; runtimeId: RuntimeId; message: string; recoverable: boolean }
+  | { type: "error"; runtimeId: RuntimeId; message: string; recoverable: boolean; code?: AgentRuntimeErrorCode }
   | { type: "backpressure"; runtimeId: RuntimeId; droppedMessages: number };
 ```
 
@@ -792,14 +927,16 @@ pub enum AgentRuntimeEvent {
     Message { runtime_id: RuntimeId, message: serde_json::Value }, // → "runtimeId"; TS는 JsonRpcMessage로 수신(M-4 비대칭)
     Stderr { runtime_id: RuntimeId, line: String },
     Exit { runtime_id: RuntimeId, #[serde(skip_serializing_if = "Option::is_none")] code: Option<i32>, #[serde(skip_serializing_if = "Option::is_none")] signal: Option<String> },
-    Error { runtime_id: RuntimeId, message: String, recoverable: bool },
+    Error { runtime_id: RuntimeId, message: String, recoverable: bool, #[serde(skip_serializing_if = "Option::is_none")] code: Option<String> },
     Backpressure { runtime_id: RuntimeId, dropped_messages: u64 }, // → "droppedMessages"
 }
 ```
 
-> `agent-runtime-message`는 **raw JSON-RPC**를 그대로 올린다. provider wire → `AgentEvent`(§3) 변환은 frontend adapter(Codex/Claude)가 담당한다. backend는 framing/transport만 책임지고 protocol 의미를 해석하지 않는다 (`07-tauri-process-runtime.md` §Framing, `03-target-architecture.md` §Provider Adapter).
+> `agent-runtime-message`는 **raw JSON-RPC**를 그대로 올린다. provider wire → `AgentEvent`(§3) 변환은 frontend adapter(Codex/Claude)가 담당한다. backend는 framing/transport만 책임지고 protocol 의미를 해석하지 않는다 (`07-tauri-process-runtime.md` §Framing, `03-target-architecture.md` §Provider Adapter). 이 채널은 v1에서 **in-process adapter 전용 raw bridge**로 확정됐으며(OQ-59), 화면·저장·diagnostic에는 redacted projection만 노출한다. public helper `createAgentTransportController`도 raw `message`를 구독하지 않고 diagnostic channel만 노출한다. 더 엄격한 raw private channel + redacted public event 분리는 제품/보안에서 "모든 realtime event 무평문"을 별도 요구할 때의 후속 hardening이다.
 >
 > **M-4 — emit payload 비대칭 (정본)**: `Message` variant의 `message`는 **Rust 측 `serde_json::Value`** 로 두고 **TS 측은 `JsonRpcMessage`** 로 받는다. backend는 protocol 의미를 해석하지 않으므로(§0) `JsonRpcMessage` untagged enum이 어느 variant인지 판정하는 비용을 frontend로 미루고, Rust는 디코드한 `Value`를 그대로 무손실 통과시켜 round-trip 손실을 없앤다. untagged라 동일 JSON으로 직렬화/수신되므로 이 비대칭은 wire-compat하다(07 §4.2 권고와 일치). **send 방향**(`agent_runtime_send`의 `message: JsonRpcMessage`, §8.2)은 renderer가 구성한 메시지를 받으므로 `JsonRpcMessage`를 유지한다.
+>
+> **E-1 — event 이름 정본 (구현 고정)**: frontend event 이름은 `src/lib/features/agent-runtime/service/transport.ts`의 `AGENT_RUNTIME_EVENTS`와 ordered tuple `AGENT_RUNTIME_EVENT_NAMES`가 정본이다. Codex/Claude adapter 구독 루프는 이 tuple을 사용해 15 §8.3 이벤트 표와 코드 문자열 drift를 막는다. Production `runtime-port-factory` deps는 Tauri event channel과 payload `type`을 대조해 잘못된 channel에 실린 payload를 adapter로 넘기지 않는다. 새 event 채널을 추가하면 이 표·tuple·factory guard·11 테스트를 함께 갱신한다.
 >
 > **M-1 — seq 미도입 (정본)**: v1은 **event-level `seq`를 도입하지 않는다**(§3 AgentEvent union에 추가 안 함; `terminal_output_delta.seq`는 PTY byte-stream 전용으로 별개). per-(라우팅 키) receive-order가 v1 정렬 권위다(04 §3.4). late-attach 신뢰성을 위한 **backend transport message seq + snapshot/delta-since**(PTY와 동일 원리)는 **후속 enhancement**이며, 도입 시 message payload에 단조 증가 seq를 추가한다(`research/codebase-backend.md` §2.3, §10 권고 3, 13 OQ-17).
 
@@ -809,8 +946,8 @@ pub enum AgentRuntimeEvent {
 
 다른 문서/구현은 이 타입들을 **재정의하지 말고** 이 파일을 import/링크한다.
 
-- normalized: `AgentProvider`, `ProviderRef`, `AgentSessionStatus`, `AgentEvent`, `AgentContent`, `ToolCallUpdate`, `ApprovalRequest`, `ApprovalOption`, `ApprovalDecision`, `AgentPlanEntry`, `AgentCommand`, `FileLocation`, `FileChangeSummary`, `TokenUsage`
-- port: `AgentRuntimePort`, `AgentSessionHandle`, `StartSessionParams`, `ResumeSessionParams`, `SendPromptInput`, `SessionStartResult`
+- normalized: `AgentProvider`, `ProviderRef`, `AgentSessionStatus`, `AgentEvent`, `AgentContent`, `ToolCallUpdate`, `ApprovalRequest`, `ApprovalOption`, `ApprovalDecidedBy`, `ApprovalDecision`, `AgentPlanEntry`, `AgentCommand`, `FileLocation`, `FileChangeSummary`, `TokenUsage`
+- port: `AgentRuntimePort`, `AgentSessionHandle`, `StartSessionParams`, `ResumeSessionParams`, `SendPromptInput`, `ResourceSearchInput`, `ResourceSearchResult`, `SessionStartResult`
 - persistence: `SessionRuntimeKind`, `AgentRuntimeMetadata` (+ Rust `AgentRuntimeMetadataRecord`)
 - tauri: `RuntimeId`, `JsonRpcId`, `JsonRpcMessage`, `JsonRpcError`, `AgentRuntimeStartParams`, `AgentRuntimeCancelTarget`, `AgentRuntimeSnapshot`, `AgentRuntimeEvent`
 

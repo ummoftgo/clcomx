@@ -34,10 +34,12 @@ import {
   agentRuntimeCancel,
   agentRuntimeShutdown,
   agentRuntimeGetSnapshot,
+  agentRuntimeResolveAdapterEntry,
   createAgentTransportController,
   AGENT_RUNTIME_EVENTS,
   type AgentRuntimeStartParams,
 } from "./transport";
+import * as transportModule from "./transport";
 
 beforeEach(() => {
   mocks.invokeMock.mockReset();
@@ -103,24 +105,41 @@ describe("invoke 래퍼", () => {
     expect(snap.provider).toBe("codex");
     expect(snap.status).toBe("running");
   });
+
+  it("agentRuntimeResolveAdapterEntry는 provider/distro를 넘겨 entry path를 반환한다", async () => {
+    mocks.invokeMock.mockResolvedValueOnce("/opt/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js");
+    const entryPath = await agentRuntimeResolveAdapterEntry("claude", "Ubuntu-24.04");
+    expect(entryPath).toContain("claude-agent-acp/dist/index.js");
+    const [cmd, payload] = lastInvoke();
+    expect(cmd).toBe("agent_runtime_resolve_adapter_entry");
+    expect(payload).toEqual({ provider: "claude", distro: "Ubuntu-24.04" });
+  });
 });
 
 describe("createAgentTransportController", () => {
-  it("5개 event를 listen하고 runtimeId 일치 payload만 디스패치한다", async () => {
+  it("exports the ordered runtime event name list from the transport boundary", () => {
+    expect((transportModule as { AGENT_RUNTIME_EVENT_NAMES?: readonly string[] }).AGENT_RUNTIME_EVENT_NAMES).toEqual([
+      AGENT_RUNTIME_EVENTS.message,
+      AGENT_RUNTIME_EVENTS.stderr,
+      AGENT_RUNTIME_EVENTS.exit,
+      AGENT_RUNTIME_EVENTS.error,
+      AGENT_RUNTIME_EVENTS.backpressure,
+    ]);
+  });
+
+  it("diagnostic event만 listen하고 raw message bridge는 public controller에 노출하지 않는다", async () => {
     const received: string[] = [];
     const controller = createAgentTransportController(5, {
-      onMessage: (rid) => received.push(`message:${rid}`),
       onStderr: (rid, line) => received.push(`stderr:${rid}:${line}`),
       onExit: (rid, code) => received.push(`exit:${rid}:${code}`),
-      onError: (rid, _msg, recoverable) => received.push(`error:${rid}:${recoverable}`),
+      onError: (rid, _msg, recoverable, code) => received.push(`error:${rid}:${recoverable}:${code}`),
       onBackpressure: (rid, dropped) => received.push(`bp:${rid}:${dropped}`),
     });
     await controller.start();
 
-    expect(mocks.listenMock).toHaveBeenCalledTimes(5);
+    expect(mocks.listenMock).toHaveBeenCalledTimes(4);
     const events = mocks.listenRegistrations.map((r) => r.event);
     expect(events).toEqual([
-      AGENT_RUNTIME_EVENTS.message,
       AGENT_RUNTIME_EVENTS.stderr,
       AGENT_RUNTIME_EVENTS.exit,
       AGENT_RUNTIME_EVENTS.error,
@@ -133,12 +152,13 @@ describe("createAgentTransportController", () => {
       }
     }
 
-    // 일치 runtimeId(5) → 디스패치.
+    // raw message는 provider adapter 전용 bridge라 public controller가 구독하지 않는다(OQ-59).
     fire(AGENT_RUNTIME_EVENTS.message, {
       type: "message",
       runtimeId: 5,
       message: { id: 1, result: {} },
     });
+    // 일치 runtimeId(5) diagnostic event → 디스패치.
     fire(AGENT_RUNTIME_EVENTS.stderr, { type: "stderr", runtimeId: 5, line: "log" });
     fire(AGENT_RUNTIME_EVENTS.exit, { type: "exit", runtimeId: 5, code: 0 });
     fire(AGENT_RUNTIME_EVENTS.error, {
@@ -146,6 +166,7 @@ describe("createAgentTransportController", () => {
       runtimeId: 5,
       message: "bad",
       recoverable: true,
+      code: "framing_broken",
     });
     fire(AGENT_RUNTIME_EVENTS.backpressure, {
       type: "backpressure",
@@ -160,26 +181,42 @@ describe("createAgentTransportController", () => {
       message: { id: 2, result: {} },
     });
 
-    expect(received).toEqual([
-      "message:5",
-      "stderr:5:log",
-      "exit:5:0",
-      "error:5:true",
-      "bp:5:256",
-    ]);
+    expect(received).toEqual(["stderr:5:log", "exit:5:0", "error:5:true:framing_broken", "bp:5:256"]);
   });
 
   it("dispose는 모든 unlisten을 호출한다", async () => {
     const controller = createAgentTransportController(1, {});
     await controller.start();
     await controller.dispose();
-    expect(mocks.unlistenMock).toHaveBeenCalledTimes(5);
+    expect(mocks.unlistenMock).toHaveBeenCalledTimes(4);
   });
 
   it("start를 중복 호출해도 구독은 한 번만 등록한다", async () => {
     const controller = createAgentTransportController(1, {});
     await controller.start();
     await controller.start();
-    expect(mocks.listenMock).toHaveBeenCalledTimes(5);
+    expect(mocks.listenMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("dispose가 start 중 listen 등록 완료보다 먼저 호출되면 늦게 도착한 구독도 해제한다", async () => {
+    const lateUnlisten = vi.fn();
+    const resolvers: Array<() => void> = [];
+    mocks.listenMock.mockImplementation(
+      async (event: string, handler: (e: { payload: unknown }) => void) => {
+        mocks.listenRegistrations.push({ event, handler });
+        await new Promise<void>((resolve) => resolvers.push(resolve));
+        return lateUnlisten;
+      },
+    );
+
+    const controller = createAgentTransportController(1, {});
+    const startPromise = controller.start();
+    expect(mocks.listenMock).toHaveBeenCalledTimes(4);
+
+    await controller.dispose();
+    for (const resolve of resolvers) resolve();
+    await startPromise;
+
+    expect(lateUnlisten).toHaveBeenCalledTimes(4);
   });
 });

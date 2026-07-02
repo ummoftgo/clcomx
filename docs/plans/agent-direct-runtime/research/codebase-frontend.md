@@ -254,7 +254,7 @@ App.svelte (window root)
 
 1. `en.ts`와 `ko.ts` **동시에** 같은 키 트리를 추가. 키는 nested 객체, 값은 `"문자열"` 또는 `{count}` interpolation. 복수형은 `key_one`/`key_other` 패턴(`settings.imageCache.deleted_one` 참조).
 2. 컴포넌트에서 `$t("namespace.path.to.key")` 또는 `$t("key", { values: { message } })`(`TerminalRuntimeSurface.svelte:105` 참조).
-3. **신규 runtime namespace는 `08-ui-composition.md`에서 이미 예약됨**: `agentRuntime.status.*`, `agentRuntime.approval.*`, `agentRuntime.toolKind.*`, `agentRuntime.errors.*`, `agentRuntime.fallback.*`. 본 조사에서 확인: 현재 `en.ts`/`ko.ts`에 `agentRuntime` 키는 **아직 없음**(추가 대상).
+3. **신규 runtime namespace는 `08-ui-composition.md`에서 예약됨**: `agentRuntime.status.*`, `agentRuntime.approval.*`, `agentRuntime.toolKind.*`, `agentRuntime.errors.*`, `agentRuntime.fallback.*`. 본 조사 ref에서는 `en.ts`/`ko.ts`에 `agentRuntime` 키가 아직 없었지만, 2026-06-29 현재 구현에는 해당 namespace가 추가되어 있고 `key-parity.test.ts`가 핵심 키 구조를 고정한다.
 4. 설정 섹션 텍스트도 i18n 키로(아래 7절).
 
 ---
@@ -385,7 +385,7 @@ src/lib/features/agent-runtime/
 
 ## 11. 위험과 미확인 사항
 
-- **(미확인)** 신규 Rust command/event 이름·payload(transport) — 본 frontend 조사 범위 밖. `05-codex-app-server-adapter.md`, `06-claude-acp-adapter.md`, `07-tauri-process-runtime.md`에 의존. 4.2의 transport 래퍼는 그 결정 이후 확정.
+- **(조사 당시 미확인 / 현재 구현됨)** 신규 Rust command/event 이름·payload(transport)는 본 frontend 조사 ref 밖이었다. 2026-06-29 현재는 `src-tauri/src/commands/agent_runtime.rs`와 `src/lib/features/agent-runtime/service/transport.ts`가 command/event 경계를 구현하며, 정본은 `05-codex-app-server-adapter.md`, `06-claude-acp-adapter.md`, `07-tauri-process-runtime.md`, `15-data-contracts.md`다.
 - **(확인됨, 2026-06-25 문서 정리)** persistence 마이그레이션의 frontend 저장/복원 위치: `session-store-snapshot.ts::createWorkspaceTabSnapshot`가 저장 snapshot을 만들고, `live-session-workspace-sync.ts::createSessionCore`/`createRuntimeSession`/`applyWorkspaceWindowSnapshot`가 복원·기존 세션 갱신을 담당한다. `runtimeKind`/`agentRuntime` 필드 추가 시 이 함수들을 함께 수정한다.
 - **(위험)** `App.svelte`의 `SessionShellComponent` 룬은 **윈도우당 단일 컴포넌트**를 가정. terminal/agent 혼재를 옵션 B로 처리하면 OK지만, 옵션 C로 가면 구조 변경이 크다.
 - **(위험)** `onPtyId`/`onAuxStateChange`/`onExit`/`onResumeFallback` 콜백 흐름(`session-lifecycle-controller`, `session-runtime.ts`)은 전부 PTY 전제. direct runtime은 ptyId가 없어 이 흐름을 우회하거나 no-op 처리해야 하며, workspace autosave `$effect`(`App.svelte:353`)가 추적하는 필드 목록도 영향. transcript 세션의 "ptyId 부재"가 persist/복원 로직에서 죽은 세션으로 오인되지 않도록 검증 필요.

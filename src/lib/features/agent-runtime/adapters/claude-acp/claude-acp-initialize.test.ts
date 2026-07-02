@@ -3,7 +3,12 @@
  * protocolVersion=1, capability 위치 비대칭(loadSession 직속 bool vs sessionCapabilities.resume 중첩).
  */
 import { describe, expect, it } from "vitest";
-import { buildInitializeRequest, InitializeProtocolError, parseInitializeResponse } from "./claude-acp-initialize";
+import {
+  buildInitializeRequest,
+  DEFAULT_CLIENT_CAPABILITIES,
+  InitializeProtocolError,
+  parseInitializeResponse,
+} from "./claude-acp-initialize";
 
 describe("buildInitializeRequest (CL-1)", () => {
   it("CL-1: {jsonrpc:2.0, protocolVersion:1, clientCapabilities, clientInfo} 전송", () => {
@@ -16,7 +21,22 @@ describe("buildInitializeRequest (CL-1)", () => {
     expect(msg.method).toBe("initialize");
     expect(msg.params.protocolVersion).toBe(1);
     expect(msg.params.clientInfo).toEqual({ name: "clcomx", version: "0.9.0" });
-    expect(msg.params.clientCapabilities).toMatchObject({ fs: { readTextFile: false, writeTextFile: false }, terminal: false });
+    expect(msg.params.clientCapabilities).toEqual(DEFAULT_CLIENT_CAPABILITIES);
+  });
+
+  it("OQ-43: fs/terminal/auth/elicitation/Claude meta capability를 보수적으로 미광고", () => {
+    expect(DEFAULT_CLIENT_CAPABILITIES).toEqual({
+      fs: { readTextFile: false, writeTextFile: false },
+      terminal: false,
+      auth: { terminal: false, _meta: { gateway: false } },
+      elicitation: { form: null, url: null },
+      _meta: { terminal_output: false, "terminal-auth": false },
+    });
+
+    const msg = buildInitializeRequest({ id: "init-1", appVersion: "0.9.0" }) as {
+      params: { clientCapabilities: unknown };
+    };
+    expect(msg.params.clientCapabilities).toEqual(DEFAULT_CLIENT_CAPABILITIES);
   });
 });
 

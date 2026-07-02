@@ -43,6 +43,7 @@ direct runtime 세션 1개당 `AgentRuntimeMetadata`에 저장하는 항목(전�
 - `lastTurnId` — 마지막 완료 turn(진단/표시용).
 - `providerResumeToken` — provider별 resume 토큰(**scrub 대상**, §6).
 - `protocolVersion` / `adapterVersion` / `providerVersion` — 호환성 추적(§7).
+- `sandbox` / `approvalPolicy` / `approvalsReviewer` / `permissionMode` / `sessionMode` — 권한·모드 badge 표시용 non-secret metadata(09 §8.2).
 - `canResume` / `canLoad` — 복원 전략 선택 입력(§4).
 
 transcript 본문(메시지/tool call/diff)은 1차 범위에서 **저장하지 않는다**. 복원은 §4의 replay로 한다.
@@ -55,10 +56,11 @@ transcript 본문(메시지/tool call/diff)은 1차 범위에서 **저장하지 
 
 [`15`](15-data-contracts.md) §7.2가 정본이다. 구현 체크리스트:
 
-- [ ] `SessionCore`에 `runtimeKind?: SessionRuntimeKind` 추가(optional).
-- [ ] `WorkspaceTabSnapshot`에 `runtimeKind?: SessionRuntimeKind`, `agentRuntime?: AgentRuntimeMetadata` 추가(둘 다 optional).
-- [ ] `SessionRuntimeKind`/`AgentRuntimeMetadata` 타입을 새 파일(권장: `src/lib/features/agent-runtime/contracts/persistence.ts`)에서 정의하거나 `types.ts`에 두되, **15 §7.1과 한 글자도 다르지 않게** 미러. (15가 정본이므로 충돌 시 15를 따른다.)
-- [ ] `DEFAULT_SETTINGS`/세션 생성 기본값에 영향 없음(전부 optional). (`research/codebase-frontend.md` §10 체크리스트 1)
+- [x] `SessionCore`에 `runtimeKind?: SessionRuntimeKind` 추가(optional).
+- [x] `SessionCore`에 `agentRuntimeStatus?: AgentSessionStatus` 추가. 이 값은 OQ-06 탭 badge용 live UI 상태이며 `WorkspaceTabSnapshot`에는 직렬화하지 않는다.
+- [x] `WorkspaceTabSnapshot`에 `runtimeKind?: SessionRuntimeKind`, `agentRuntime?: AgentRuntimeMetadata` 추가(둘 다 optional).
+- [x] `SessionRuntimeKind`/`AgentRuntimeMetadata` 타입을 `src/lib/features/agent-runtime/contracts/metadata.ts`에 정의하고 `types.ts`에서 import한다. 15 §7.1과 미러.
+- [x] `DEFAULT_SETTINGS`/세션 생성 기본값에 영향 없음(전부 optional). (`research/codebase-frontend.md` §10 체크리스트 1)
 
 ### 3.2 frontend 저장 마스킹 (`src/lib/workspace.ts`)
 
@@ -66,20 +68,20 @@ transcript 본문(메시지/tool call/diff)은 1차 범위에서 **저장하지 
 
 저장 시 frontend `sanitizeWorkspaceSnapshotForSave`가 이미 `ptyId`/`resumeToken`을 null 마스킹한다 (`research/codebase-frontend.md` §4.3). direct runtime metadata도 동일 함수에서 보조적으로 마스킹한다(최종 scrub은 backend `sanitize_workspace_for_persist`, §6):
 
-- [ ] frontend `sanitizeWorkspaceSnapshotForSave`에 `agentRuntime` 내부 3필드(`providerSessionId`, `providerThreadId`, `providerResumeToken`)를 `undefined`로 마스킹하는 분기 추가(보조 방어선). `runtimeKind`/`provider`/버전 필드는 비밀이 아니므로 유지.
-- [ ] 저장 경로 `src/lib/features/workspace/session-store-snapshot.ts::createWorkspaceTabSnapshot`이 `runtimeKind`/`agentRuntime`을 `WorkspaceTabSnapshot`에 직렬화하도록 확장.
-- [ ] 복원 경로 `src/lib/features/session/service/live-session-workspace-sync.ts::createSessionCore`/`createRuntimeSession` 및 기존 세션 갱신 분기 `applyWorkspaceWindowSnapshot`이 새 필드를 세션 객체로 hydrate하도록 확장. 이 파일 본문은 2026-06-25 문서 정리에서 확인했으며, 더 이상 research 미확인 항목이 아니다([`13`](13-risks-open-questions.md) OQ-18 참조).
+- [x] frontend `sanitizeWorkspaceSnapshotForSave`에 `agentRuntime` 내부 3필드(`providerSessionId`, `providerThreadId`, `providerResumeToken`)를 `undefined`로 마스킹하는 분기 추가(보조 방어선). `runtimeKind`/`provider`/버전 필드는 비밀이 아니므로 유지.
+- [x] 저장 경로 `src/lib/features/workspace/session-store-snapshot.ts::createWorkspaceTabSnapshot`이 `runtimeKind`/`agentRuntime`을 `WorkspaceTabSnapshot`에 직렬화하도록 확장.
+- [x] 복원 경로 `src/lib/features/session/service/live-session-workspace-sync.ts::createSessionCore`/`createRuntimeSession` 및 기존 세션 갱신 분기 `applyWorkspaceWindowSnapshot`이 새 필드를 세션 객체로 hydrate하도록 확장. 이 파일 본문은 2026-06-25 문서 정리에서 확인했으며, 더 이상 research 미확인 항목이 아니다([`13`](13-risks-open-questions.md) OQ-18 참조).
 
 ### 3.3 Rust 측 (`features/workspace/types.rs` + `store.rs`)
 
 [`15`](15-data-contracts.md) §7.3이 정본(`AgentRuntimeMetadataRecord`, `runtime_kind`, `agent_runtime`). 구현 체크리스트:
 
-- [ ] `WorkspaceTabSnapshot`에 `runtime_kind: String`(`#[serde(default = "default_runtime_kind")]`, 기본 `"pty"`)과 `agent_runtime: Option<AgentRuntimeMetadataRecord>`(`#[serde(default, skip_serializing_if = "Option::is_none")]`) 추가.
-- [ ] `default_runtime_kind()` 헬퍼 추가(`default_view_mode`/`default_workspace_agent_id` 패턴, `research/codebase-backend.md` §4.2).
-- [ ] `AgentRuntimeMetadataRecord` struct를 15 §7.3대로 추가(`#[serde(rename_all = "camelCase")]`, `Default` derive).
-- [ ] **호환성 검증 (RED→GREEN)**: 기존 `runtime_kind`/`agent_runtime` 없는 `workspace.json`을 deserialize했을 때 `runtime_kind == "pty"`, `agent_runtime == None`이 나오는 round-trip 단위 테스트(§8, [`11`](11-testing-acceptance.md) Tauri tests).
+- [x] `WorkspaceTabSnapshot`에 `runtime_kind: String`(`#[serde(default = "default_runtime_kind")]`, 기본 `"pty"`)과 `agent_runtime: Option<AgentRuntimeMetadataRecord>`(`#[serde(default, skip_serializing_if = "Option::is_none")]`) 추가.
+- [x] `default_runtime_kind()` 헬퍼 추가(`default_view_mode`/`default_workspace_agent_id` 패턴, `research/codebase-backend.md` §4.2).
+- [x] `AgentRuntimeMetadataRecord` struct를 15 §7.3대로 추가(`#[serde(rename_all = "camelCase")]`, `Default` derive).
+- [x] **호환성 검증 (RED→GREEN)**: 기존 `runtime_kind`/`agent_runtime` 없는 `workspace.json`을 deserialize했을 때 `runtime_kind == "pty"`, `agent_runtime == None`이 나오는 round-trip 단위 테스트(§8, [`11`](11-testing-acceptance.md) Tauri tests).
 
-> `WorkspaceTabSnapshot` 필드 추가 시 `merge_workspace_snapshot`(`service/window_ops.rs`)와 frontend `WorkspaceSnapshot` 타입 동기화가 필요하다. frontend 저장/복원 함수 위치는 위 §3.2에서 확인 완료했으며, Rust merge 범위는 [`13`](13-risks-open-questions.md) OQ-18의 구현 전 확인 항목으로 유지한다.
+> `WorkspaceTabSnapshot` 필드 추가 시 필요했던 `merge_workspace_snapshot`(`service/window_ops.rs`)와 frontend `WorkspaceSnapshot` 타입 동기화는 해소됐다(OQ-18). frontend 저장/복원/기존 세션 갱신 경로는 위 §3.2가 맡고, Rust `merge_workspace_snapshot`는 incoming `WorkspaceTabSnapshot`의 `runtime_kind`/`agent_runtime`을 보존하는 회귀 테스트로 고정한다.
 
 ---
 
@@ -128,14 +130,14 @@ transcript 본문(메시지/tool call/diff)은 1차 범위에서 **저장하지 
 ### 4.3 late-attach (process 생존)
 
 - frontend transcript store가 비어 있고 process가 살아 있으면: backend `agent_runtime_get_snapshot`([`15`](15-data-contracts.md) §8.2)으로 `pendingRequestIds` 등 runtime 상태를 받고, message snapshot/delta-since(후속 seq 메커니즘)로 transcript를 재구성한다. **provider에게 replay를 요청하지 않는다**(이미 backend가 message를 보존).
-- seq 메커니즘이 아직 없는 1차 단계에서는 late-attach 시 store를 재구성할 수 없으므로, **1차 범위에서 transcript surface는 process 생존 중 unmount되지 않도록** 유지(기존 `SessionViewport`의 `display:none` 패턴 그대로, `research/codebase-frontend.md` §1·§10). 이 제약은 [`13`](13-risks-open-questions.md)에 등록.
+- seq 메커니즘이 아직 없는 1차 단계에서는 late-attach 시 store를 재구성할 수 없으므로, **v1은 transcript surface를 process 생존 중 unmount하지 않는 방식**으로 회피한다. `SessionViewport`는 keyed session shell을 유지하고 `visible` prop만 바꾸며, `AgentTranscriptSurface`는 `visible=false`를 `.hidden` CSS로만 처리한다. 이 OQ-17 전제는 `SessionViewport.test.ts` FE-21과 `AgentTranscriptSurface.test.ts` OQ-17로 고정됐다. 반대로 실제 탭 close/component unmount는 `AgentTranscriptSurface.test.ts` 10 §4.3 회귀 테스트가 direct runtime `shutdown`을 정확히 한 번 호출함을 검증한다. message seq + snapshot/delta-since 기반 late-attach 재구성은 후속이다.
 
 ### 4.4 복원 불가 시 처리 (fallback)
 
 cold restore에서 재개 키가 없거나(scrub됨), provider가 resume/load를 모두 미지원(`canResume==false && canLoad==false`)이거나, replay/resume 호출이 에러로 실패하면:
 
-1. transcript는 빈 새 세션으로 시작하되, **세션 탭은 유지**한다(사용자 작업 컨텍스트 보존). 헤더에 "이전 대화를 복원할 수 없습니다" 류 locale 메시지 표시([`11`](11-testing-acceptance.md) Frontend tests "metadata 저장/복원 표시", i18n key).
-2. direct runtime spawn 자체가 실패하면 §4.6 fallback 선택지를 제시.
+1. transcript는 빈 새 세션으로 시작하되, **세션 탭은 유지**한다(사용자 작업 컨텍스트 보존). 헤더에 "이전 대화를 복원할 수 없습니다" 류 locale 메시지 표시([`11`](11-testing-acceptance.md) FE-24b/FE-24c, i18n key). `AgentTranscriptSurface`는 provider id가 scrub된 경우 `resumeSession`을 건너뛰고, provider `resumeSession`/load 호출이 실패한 경우 실패 controller를 정리한 뒤 새 `startSession`으로 낮춘다.
+2. 새 direct runtime spawn 자체가 실패하면 §4.6 fallback 선택지를 제시.
 
 ### 4.5 scrub와 cold restore의 상호작용 (중요한 함의)
 
@@ -143,7 +145,7 @@ cold restore에서 재개 키가 없거나(scrub됨), provider가 resume/load를
 
 - **메모리 내 세션(앱 실행 중)**: `WorkspaceState`의 메모리 snapshot에는 scrub 전 값이 살아 있으므로(디스크 저장 직전에만 scrub, `research/codebase-backend.md` §4.2), 같은 실행 동안의 탭 이동/창 이동/late-attach는 정상 복원된다.
 - **앱 재시작 후 cold restore**: 디스크에 재개 키가 없으므로 §4.2 트리는 사실상 "재개 불가" 경로로 빠진다 → §4.4. 즉 **1차 범위에서 앱 재시작 후 과거 direct 대화 복원은 기본적으로 불가**하며, 이는 PTY resume token이 재시작 후에도 복원 안 되는 현 동작과 일관적이다(PTY도 scrub).
-- 결정 필요: 앱 재시작 후 direct 대화 복원을 원하면 재개 키를 (a) OS secret store에 저장하거나 (b) provider 자체 session store에 의존(provider가 sessionId만으로 최신 세션을 찾을 수 있는지)해야 한다. 1차 범위 밖. [`13`](13-risks-open-questions.md)에 `결정 필요: direct 세션 cross-restart 복원`으로 등록.
+- v1 결정: 앱 재시작 후 direct 대화 복원은 **지원하지 않는다**([`13`](13-risks-open-questions.md) OQ-16 해소). 재개 키를 디스크에 저장하지 않는 scrub 경계를 우선하며, scrub된 cold restore metadata는 §4.4 복원 불가 notice + 새 direct start로 처리한다. 앱 재시작 후 direct 복원을 원하면 재개 키를 (a) OS secret store에 저장하거나 (b) provider 자체 session store에 의존(provider가 sessionId만으로 최신 세션을 찾을 수 있는지)하는 별도 후속 scope로 설계해야 한다.
 
 ### 4.6 direct runtime 실패 시 fallback 선택지
 
@@ -166,7 +168,7 @@ direct runtime spawn/initialize 실패(바이너리 없음, 버전 불일치, al
 **동작**:
 
 - tombstone 구간에 "이전 기록 불러오기" affordance를 노출한다([`08`](08-ui-composition.md) §7.2). 사용자가 누르면:
-  - `canLoad == true`이면 provider replay(ACP `session/load`, Codex `thread/read(includeTurns)`)를 **별도 scratch 세션**으로 1회 돌려 해당 구간을 조회하고, **live store에 병합하지 않는다**. 조회 결과는 격리된 read-only 뷰로만 보여주고(현재 streaming 중인 live transcript와 충돌·간섭 없음), 뷰를 닫으면 scratch 세션을 폐기한다([`12`](12-implementation-workstreams.md) T5.6).
+  - `canLoad == true`이면 provider replay(ACP `session/load`, Codex `thread/read(includeTurns)`)를 **별도 scratch 세션**으로 1회 돌려 해당 구간을 조회하고, **live store에 병합하지 않는다**. 조회 결과는 격리된 read-only 뷰로만 보여주고(현재 streaming 중인 live transcript와 충돌·간섭 없음), 조회 성공/실패 뒤 scratch 세션을 폐기한다. 뷰 닫기·unmount는 중복 폐기를 막는 보조 cleanup이다([`12`](12-implementation-workstreams.md) T5.6).
   - `canLoad == false`이면 replay 자체가 불가하므로 "이전 기록을 불러올 수 없습니다" 류 locale notice를 표시하고 끝낸다(scratch 세션 미생성).
 
 **명확한 경계 (혼동 주의)**: 이 경로는
@@ -177,7 +179,7 @@ direct runtime spawn/initialize 실패(바이너리 없음, 버전 불일치, al
 
 즉 본 절은 **read-only history inspection** 전용이며, §4.2/§4.3의 복원·late-attach 경로와 저장 모델을 일절 바꾸지 않는다.
 
-**미확정**: Codex `thread/read`의 `includeTurns`가 gap-only(요청 구간만) 응답인지 전체 thread snapshot인지에 따라 격리 replay가 조회해야 할 범위가 달라진다 → [`13`](13-risks-open-questions.md) OQ-54(구현 직전 wire 실측). seal/eviction·late-event·tombstone 불변식의 정본은 [`04`](04-normalized-agent-model.md) §3.7, view-model(`TranscriptTurnResidency`/`TranscriptModel`)의 정본은 [`08`](08-ui-composition.md) §5, 격리 replay 뷰 구현은 [`12`](12-implementation-workstreams.md) T5.6이다.
+**Codex replay 범위(확정)**: `codex-cli 0.142.2` app-server 실측에서 `thread/read{includeTurns:true}`는 전체 thread snapshot을 반환한다([`13`](13-risks-open-questions.md) OQ-54 해소). 따라서 Codex tombstone inspection은 gap-only 조회가 아니라 full snapshot scratch replay이며, provider port 수집과 scratch reduce에 `DEFAULT_REPLAY_EVENT_LIMIT` 상한을 적용하고 상한 초과 시 read-only 패널에 partial notice를 표시한다. seal/eviction·late-event·tombstone 불변식의 정본은 [`04`](04-normalized-agent-model.md) §3.7, view-model(`TranscriptTurnResidency`/`TranscriptModel`)의 정본은 [`08`](08-ui-composition.md) §5, 격리 replay 뷰 구현은 [`12`](12-implementation-workstreams.md) T5.6이다.
 
 > 시퀀스 다이어그램은 신규로 추가하지 않는다([`14`](14-sequence-and-state.md)). 본 경로는 live AgentEvent 흐름이 아니라 사용자가 명시적으로 여는 read-only inspection(별도 scratch 세션, live 미병합)이므로 14의 live 시퀀스에 편입되지 않는다.
 
@@ -191,14 +193,14 @@ direct runtime spawn/initialize 실패(바이너리 없음, 버전 불일치, al
 2. **legacy resume token은 그대로 PTY token**: 기존 `resume_token`(alias `claudeResumeId`/`claude_resume_id`, `research/codebase-backend.md` §4.2)은 legacy PTY resume token으로 계속 해석한다. direct runtime resume 키와 혼동하지 않는다(별도 `agentRuntime.providerResumeToken`).
 3. **자동 변환 안 함**: 기존 PTY 세션을 열 때 direct runtime으로 자동 승격하지 않는다. 사용자가 launcher에서 direct runtime을 명시 선택해 **새 세션**을 만들 때부터 `runtimeKind = "direct-*"` + `agentRuntime`를 채운다(`session-factory.buildSession`, `research/codebase-frontend.md` §10 체크리스트 2).
 4. **다운그레이드 안전**: 사용자가 구버전 앱으로 롤백하면 구버전은 `runtimeKind`/`agentRuntime`를 모르는 필드로 무시하고(serde default), direct 세션을 PTY로 열려고 시도할 수 있다 → 이는 §4.6 fallback과 동일하게 처리되거나(구버전엔 fallback UI 없음) 빈 PTY 세션이 된다. 데이터 손상은 없다(파일은 여전히 valid JSON).
-5. **history 모듈**: `TabHistoryEntry`(`features/history/mod.rs`)에는 **direct 식별자를 저장하지 않는다**. history는 `resume_token`을 항상 `None`으로 강제하는 정책이므로(`research/codebase-backend.md` §4.4), direct 재개 키도 동일하게 history에 넣지 않는다. history에는 기존대로 `agent_id`/`distro`/`work_dir`/`title`만 의미를 갖는다(필요 시 `agent_id`로 provider 구분).
+5. **history 모듈**: `TabHistoryEntry`(`features/history/mod.rs`)에는 **direct provider 식별자**(`providerSessionId`/`providerThreadId`/`providerResumeToken`)를 저장하지 않는다. history는 `resume_token`을 항상 `None`으로 강제하는 정책이므로(`research/codebase-backend.md` §4.4), direct 재개 키도 동일하게 history에 넣지 않는다. 단 `runtimeKind`는 비밀이 아닌 host 표식이므로 optional로 저장해 최근 항목에서 direct host를 다시 선택하고 direct 배지를 표시한다. dedupe key는 `agent_id`/`distro`/`work_dir`/정규화된 `runtimeKind`이며, `None`/`"pty"`는 legacy PTY로 합쳐진다. 따라서 같은 경로의 PTY/direct 항목은 서로 덮어쓰지 않는다. 최근 항목 재열기는 provider id가 없으므로 **새 direct start**이며, transcript resume/load 복원은 history 책임이 아니다.
 
 마이그레이션 단계별 체크리스트:
 
-- [ ] Rust: 기존 파일 deserialize → `runtime_kind` 기본 `"pty"` 확인 테스트.
-- [ ] TS: 복원 시 `runtimeKind` 미지정 → `"pty"` normalize 확인.
-- [ ] launcher: direct runtime 선택 → 새 세션에만 `runtimeKind` 설정(`session-factory.buildSession`).
-- [ ] 기존 PTY 세션 open 회귀 없음 확인([`11`](11-testing-acceptance.md) E2E "기존 PTY session open이 깨지지 않는지").
+- [x] Rust: 기존 파일 deserialize → `runtime_kind` 기본 `"pty"` 확인 테스트.
+- [x] TS: 복원 시 `runtimeKind` 미지정 → `"pty"` normalize 확인.
+- [x] launcher: direct runtime 선택 → 새 세션에만 `runtimeKind` 설정(`session-factory.buildSession`).
+- [x] 기존 PTY 세션 open 회귀 없음 확인([`11`](11-testing-acceptance.md) E2E "기존 PTY session open이 깨지지 않는지"). 증거: 2026-06-29 `npm run test:e2e:wsl -- --skip-build` 전체 순차 실행(9 projects / 25 tests)에서 `smoke` mock PTY session open과 `agent-runtime`의 direct 미선택 legacy PTY session spec 통과.
 
 ---
 
@@ -212,9 +214,9 @@ scrub 대상(디스크 저장 직전 제거): `providerSessionId`, `providerThre
 
 scrub 적용 지점(backend가 정본 경계, frontend는 보조):
 
-- [ ] **backend (정본)**: `features/workspace/store.rs`의 `sanitize_workspace_for_persist`(store.rs:140-149, `research/codebase-backend.md` §4.2)에 `agent_runtime` 내부 3필드 제거 추가 — 디스크 저장 직전의 최종 scrub. read 경로 `scrub_workspace_resume_tokens`(store.rs)에도 동일 청소를 더해 legacy 파일에 우연히 남은 값을 한 번 더 제거.
-- [ ] **frontend (보조)**: `src/lib/workspace.ts`의 `sanitizeWorkspaceSnapshotForSave`에 위 3필드 마스킹 추가(§3.2). 최종 보안 경계는 backend `sanitize_workspace_for_persist`가 보장하므로 이는 추가 방어선이다.
-- [ ] **history**: `features/history/mod.rs`는 direct 식별자를 애초에 저장하지 않음(§5.5). 추가 scrub 불필요하되, `TabHistoryEntry`에 새 필드를 넣지 않는 것을 테스트로 고정.
+- [x] **backend (정본)**: `features/workspace/store.rs`의 `sanitize_workspace_for_persist`(store.rs:140-149, `research/codebase-backend.md` §4.2)에 `agent_runtime` 내부 3필드 제거 추가 — 디스크 저장 직전의 최종 scrub. read 경로 `scrub_workspace_resume_tokens`(store.rs)에도 동일 청소를 더해 legacy 파일에 우연히 남은 값을 한 번 더 제거.
+- [x] **frontend (보조)**: `src/lib/workspace.ts`의 `sanitizeWorkspaceSnapshotForSave`에 위 3필드 마스킹 추가(§3.2). 최종 보안 경계는 backend `sanitize_workspace_for_persist`가 보장하므로 이는 추가 방어선이다.
+- [x] **history**: `features/history/mod.rs`는 direct provider 식별자/재개 키를 애초에 저장하지 않음(§5.5). 추가 scrub 불필요하되, `resume_token`은 계속 `None`으로 강제하고 `runtimeKind`는 `"direct-codex"|"direct-claude"`만 보존, `"pty"`/미지정/기타 값은 legacy PTY(`None`)로 정규화하는 것을 테스트로 고정. Frontend `recordTabHistoryEntry`도 Tauri payload에서 `resumeToken:null`을 강제하며, launcher는 stale direct history entry에 `resumeToken`이 남아 있어도 token row를 표시하지 않는다.
 
 scrub 비대상(평문 저장 OK): `runtimeKind`, `provider`, `lastTurnId`, `protocolVersion`, `adapterVersion`, `providerVersion`, `canResume`, `canLoad`. 비밀이 아니며 호환성/표시/복원전략 선택에 필요하다.
 
@@ -241,6 +243,7 @@ scrub 비대상(평문 저장 OK): `runtimeKind`, `provider`, `lastTurnId`, `pro
 | 기존 `workspace.json` round-trip | Tauri tests | `runtime_kind`/`agent_runtime` 없는 파일 → 기본 `"pty"`/`None`. forward/backward 호환. |
 | 새 metadata round-trip | Tauri tests | `runtimeKind`/`agentRuntime` 저장 후 재로드 시 비-scrub 필드 보존. |
 | scrub 단위 테스트 | Tauri / Frontend tests | 디스크 JSON에 3개 비밀 필드 부재. |
+| scrub된 direct cold restore | E2E | `providerThreadId`/`providerSessionId` 없는 persisted direct `workspace.json` → fresh direct session + 복원 불가 notice. |
 | 기존 PTY session open 회귀 | E2E | "기존 PTY session open이 깨지지 않는지" |
 | direct 실패 → PTY fallback | E2E | "direct runtime 실패 후 legacy PTY fallback 선택" |
 | metadata 복원 표시 | Frontend tests | "direct runtime metadata 저장/복원 표시" |
@@ -271,7 +274,7 @@ scrub 비대상(평문 저장 OK): `runtimeKind`, `provider`, `lastTurnId`, `pro
 | seal/eviction·late-event·tombstone 불변식(§4.7 근거) | [`04-normalized-agent-model.md`](04-normalized-agent-model.md) | §3.7 |
 | transcript view-model 정본(`TranscriptTurnResidency`/`TranscriptModel`)·scrollback affordance | [`08-ui-composition.md`](08-ui-composition.md) | §5, §7.2 |
 | 격리 read-only replay 뷰 구현(§4.7) | [`12-implementation-workstreams.md`](12-implementation-workstreams.md) | T5.6 |
-| `thread/read(includeTurns)` gap-only vs snapshot 실측 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | OQ-54 |
+| `thread/read(includeTurns)` full snapshot 실측 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | OQ-54 |
 | 영속화 코드 현실(scrub·default·merge) | [`research/codebase-backend.md`](research/codebase-backend.md) | §4, §10 |
 | frontend 타입·workspace.ts·통합 체크리스트 | [`research/codebase-frontend.md`](research/codebase-frontend.md) | §4.3, §8, §10 |
 | 보안·redaction·debug 정책 | [`09-permissions-security.md`](09-permissions-security.md) | 전체 |

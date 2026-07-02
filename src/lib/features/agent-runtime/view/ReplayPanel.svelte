@@ -3,7 +3,7 @@
 
   정본: 10 §4.7, 08 §7.2. evicted-tombstone 구간을 사용자가 명시적으로 열 때만 동작하는 read-only
   조회 패널이다. `runtime-replay.ts`의 ReplayLoader로 격리 scratch 세션을 1회 조회해 **별도 scratch
-  TranscriptModel**(live 미병합)을 렌더한다. 닫으면 loader.dispose로 scratch를 폐기한다.
+  TranscriptModel**(live 미병합)을 렌더한다. 조회가 끝나면 loader.dispose로 scratch를 폐기한다.
 
   **read-only 보장**: sendPrompt/respondApproval/composer를 노출하지 않는다(running 세션 비충돌).
   canLoad가 아니면 "사용 불가" notice만 표시한다. 문자열은 i18n 키만 쓴다.
@@ -35,6 +35,8 @@
   let loading = $state(true);
   let scratch = $state<TranscriptModel | null>(null);
   let unavailable = $state(false);
+  let truncated = $state(false);
+  let disposed = false;
 
   // 진입 시 1회 조회(canLoad면 read-only 격리 조회, 아니면 "사용 불가").
   $effect(() => {
@@ -44,11 +46,20 @@
       loading = false;
       return;
     }
-    void loadReplayTranscript(loader).then((result) => {
-      if (cancelled) return;
-      scratch = result.transcript;
-      loading = false;
-    });
+    void loadReplayTranscript(loader)
+      .then((result) => {
+        if (cancelled) return;
+        scratch = result.transcript;
+        truncated = result.truncated;
+        loading = false;
+        disposeScratch();
+      })
+      .catch(() => {
+        if (cancelled) return;
+        unavailable = true;
+        loading = false;
+        disposeScratch();
+      });
     return () => {
       cancelled = true;
     };
@@ -62,15 +73,22 @@
       .filter((it): it is TranscriptItem => it !== undefined);
   });
 
-  /** 닫기 → loader.dispose(scratch 폐기) 후 onClose. */
-  function close(): void {
+  /** scratch 세션 폐기를 한 번만 수행해 close 후 unmount의 중복 shutdown을 막는다. */
+  function disposeScratch(): void {
+    if (disposed) return;
+    disposed = true;
     void loader.dispose();
+  }
+
+  /** 닫기 → 남은 scratch를 보조 폐기 후 onClose. */
+  function close(): void {
+    disposeScratch();
     onClose();
   }
 
   // 컴포넌트 unmount 시에도 scratch 세션을 폐기한다(누수 방지).
   onDestroy(() => {
-    void loader.dispose();
+    disposeScratch();
   });
 </script>
 
@@ -88,6 +106,9 @@
   </div>
 
   <div class="replay-notice">{$t("agentRuntime.replay.readOnlyNotice")}</div>
+  {#if truncated}
+    <div class="replay-notice replay-notice-warning">{$t("agentRuntime.replay.truncated")}</div>
+  {/if}
 
   <div class="replay-body">
     {#if loading}
@@ -164,6 +185,9 @@
     font-size: var(--ui-font-size-xs);
     opacity: 0.6;
     border-bottom: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.15));
+  }
+  .replay-notice-warning {
+    opacity: 0.75;
   }
   .replay-body {
     display: flex;

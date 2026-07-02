@@ -7,7 +7,7 @@ export interface SessionTabWindowMenuItem {
 
 export type SessionTabViewModel = Pick<
   Session,
-  "agentId" | "id" | "locked" | "pinned" | "title"
+  "agentId" | "agentRuntimeStatus" | "id" | "locked" | "pinned" | "title"
 >;
 
 export interface TabBarProps {

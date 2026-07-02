@@ -35,7 +35,7 @@ CLCOMX의 현재 에이전트 화면은 `claude`와 `codex`를 터미널 프로�
 
 ### 현재 작업 경로 확인 규칙
 
-문서에 남은 절대경로는 조사 당시 환경의 예시일 수 있다. 구현 에이전트는 파일을 만들거나 명령을 실행하기 전에 반드시 `pwd`와 `git rev-parse --show-toplevel`을 실행해 현재 저장소 루트를 확인하고, 12의 모든 경로를 그 루트 기준 상대경로로 해석한다. 이 문서 정리 시점(2026-06-25)에 확인한 루트는 `/home/xenia/work/claudemx`, 브랜치는 `codex/direct-agent-runtime-docs`다. 실제 코드와 충돌하면 항상 현재 작업트리의 `src/`·`src-tauri/`가 우선한다.
+문서에 남은 절대경로는 조사 당시 환경의 예시일 수 있다. 구현 에이전트는 파일을 만들거나 명령을 실행하기 전에 반드시 `pwd`와 `git rev-parse --show-toplevel`을 실행해 현재 저장소 루트를 확인하고, 12의 모든 경로를 그 루트 기준 상대경로로 해석한다. 이 문서 정리 시점(2026-06-25)에 확인한 루트는 `/home/xenia/work/claudemx`, 당시 문서 브랜치는 `codex/direct-agent-runtime-docs`였고 구현 브랜치는 OQ-41 기록처럼 `feat/agent-runtime-impl`이다. 실제 코드와 충돌하면 항상 현재 작업트리의 `src/`·`src-tauri/`가 우선한다.
 
 ## 문서 순서와 읽기 가이드
 
@@ -48,7 +48,7 @@ CLCOMX의 현재 에이전트 화면은 `claude`와 `codex`를 터미널 프로�
 
 ### 배경·조사
 
-- **[01-source-map.md](01-source-map.md)**: 조사한 공식/오픈소스 자료, 버전 baseline(Codex `rust-v0.142.0`, ACP schema baseline 후보 `schema-v1.16.0` — 구현 핀은 T0.0/OQ-41에서 확정, `claude-agent-acp@0.51.0`), 제외 기준, 구현 전 재확인 체크리스트.
+- **[01-source-map.md](01-source-map.md)**: 조사한 공식/오픈소스 자료, 버전 baseline(Codex `rust-v0.142.0`, ACP schema baseline 후보 `schema-v1.16.0`은 구현 핀 아님, 현 구현 핀은 `claude-agent-acp@0.51.0` → SDK `0.29.0` package schema/types), 제외 기준, dependency refresh 재확인 체크리스트.
 - **[02-current-state.md](02-current-state.md)**: 현재 PTY/xterm 중심 실행 흐름과 그 한계.
 
 ### 설계 코어
@@ -86,7 +86,7 @@ CLCOMX의 현재 에이전트 화면은 `claude`와 `codex`를 터미널 프로�
 ### 프로토콜 레퍼런스 (wire 정본)
 
 - **[ref-codex-app-server-protocol.md](ref-codex-app-server-protocol.md)**: Codex app-server protocol wire 레퍼런스(메서드·notification·타입·reconcile·매핑표). pinned `rust-v0.142.0`.
-- **[ref-acp-protocol.md](ref-acp-protocol.md)**: Agent Client Protocol wire 레퍼런스(content/tool/permission, session/update, 매핑표). wire target `protocolVersion=1`; schema artifact는 T0.0/OQ-41에서 확정(`schema-v1.16.0`은 baseline 후보).
+- **[ref-acp-protocol.md](ref-acp-protocol.md)**: Agent Client Protocol wire 레퍼런스(content/tool/permission, session/update, 매핑표). wire target `protocolVersion=1`; 현 구현 기준은 SDK `0.29.0` package schema/types + 부분 wire mirror이고 `schema-v1.16.0`은 baseline 후보.
 - **[ref-claude-agent-acp.md](ref-claude-agent-acp.md)**: `@agentclientprotocol/claude-agent-acp` + Claude Agent SDK 외부 사실(capability·launch·auth). pinned `@0.51.0`.
 
 ### 코드 현실·참고 (research)

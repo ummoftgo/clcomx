@@ -106,6 +106,21 @@ describe("tab-close-orchestration-controller", () => {
     expect(closeTab).not.toHaveBeenCalled();
   });
 
+  it("opens the close-confirm dialog for direct runtime sessions without PTY", () => {
+    const { state, closeTab, controller } = createRuntime(new Map([
+      ["session-1", createSession({ ptyId: -1, runtimeKind: "direct-codex" })],
+    ]));
+
+    expect(controller.requestCloseTab("session-1")).toBe("close-confirm");
+
+    expect(state).toMatchObject({
+      pendingCloseSessionId: "session-1",
+      showCloseTabDialog: true,
+      showDirtyTabDialog: false,
+    });
+    expect(closeTab).not.toHaveBeenCalled();
+  });
+
   it("closes immediately when the session has no running PTY", async () => {
     const { state, closeTab, controller } = createRuntime(new Map([
       ["session-1", createSession({ ptyId: -1 })],
@@ -159,6 +174,29 @@ describe("tab-close-orchestration-controller", () => {
 
   it("advances a dirty live session into the close-confirm dialog", () => {
     const { state, closeTab, controller } = createRuntime();
+    state.pendingCloseSessionId = "session-1";
+    state.showDirtyTabDialog = true;
+
+    expect(controller.continueCloseTabAfterDirtyWarning()).toBe("close-confirm");
+    expect(state).toMatchObject({
+      pendingCloseSessionId: "session-1",
+      showCloseTabDialog: true,
+      showDirtyTabDialog: false,
+    });
+    expect(closeTab).not.toHaveBeenCalled();
+  });
+
+  it("advances a dirty direct runtime session into the close-confirm dialog", () => {
+    const { state, closeTab, controller } = createRuntime(new Map([
+      [
+        "session-1",
+        createSession({
+          ptyId: -1,
+          runtimeKind: "direct-claude",
+          dirtyPaths: ["dirty.txt"],
+        }),
+      ],
+    ]));
     state.pendingCloseSessionId = "session-1";
     state.showDirtyTabDialog = true;
 

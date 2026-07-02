@@ -57,6 +57,7 @@ echo "[WSL] Syncing project to mirror: $MIRROR_DIR"
 
 rsync -a --delete \
   --exclude '.git/' \
+  --exclude '.tools/' \
   --exclude 'node_modules/' \
   --exclude 'dist/' \
   --exclude '.svelte-kit/' \

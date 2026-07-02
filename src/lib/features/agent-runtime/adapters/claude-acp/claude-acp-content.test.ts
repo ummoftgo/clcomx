@@ -26,7 +26,7 @@ describe("mapContentBlock (ACP → AgentContent)", () => {
     expect((c as { uri: string }).uri).toBe("file:///a.png");
   });
 
-  it("audio → json raw 보존(crash 없음, TODO(13))", () => {
+  it("audio → json raw 보존(crash 없음, v1 미지원)", () => {
     const c = mapContentBlock({ type: "audio", data: "AAA", mimeType: "audio/wav" });
     expect(c.type).toBe("json");
     expect((c as { value: { type: string } }).value.type).toBe("audio");

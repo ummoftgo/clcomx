@@ -225,6 +225,33 @@ describe("session-lifecycle-controller", () => {
     expect(deps.closeSession).toHaveBeenCalledWith("session-1");
   });
 
+  it("records direct runtime kind when closing a direct tab", async () => {
+    const sessions = new Map<string, Session>([
+      [
+        "session-1",
+        createSession({
+          ptyId: -1,
+          runtimeKind: "direct-codex",
+          resumeToken: null,
+        }),
+      ],
+    ]);
+    const deps = createDeps(sessions);
+    const controller = createSessionLifecycleController(deps);
+
+    await controller.handleCloseTab("session-1");
+
+    expect(deps.recordTabHistory).toHaveBeenCalledWith(
+      "claude",
+      "Ubuntu",
+      "/workspace/demo",
+      "Demo",
+      null,
+      "direct-codex",
+    );
+    expect(deps.closeSession).toHaveBeenCalledWith("session-1");
+  });
+
   it("releases app-close exit suppression after app-close capture fails", async () => {
     const sessions = new Map<string, Session>([
       ["session-1", createSession({ ptyId: 42 })],

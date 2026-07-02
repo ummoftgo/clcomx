@@ -1,5 +1,5 @@
 use super::types::DetectedEditor;
-use crate::app_env::is_test_mode;
+use crate::app_env::{is_test_mode, is_test_mode_editor_real_launch_enabled};
 #[cfg(windows)]
 use crate::features::editors::CREATE_NO_WINDOW;
 use std::env;
@@ -465,7 +465,7 @@ fn where_first(_names: &[&str]) -> Option<PathBuf> {
 }
 
 pub(super) fn detect_editor_binary(editor_id: &str) -> Option<PathBuf> {
-    if is_test_mode() {
+    if is_test_mode() && !is_test_mode_editor_real_launch_enabled() {
         return Some(PathBuf::from(format!(r"C:\Mock\{}.exe", editor_id)));
     }
 

@@ -39,3 +39,15 @@ export function buildSetConfigOption(
     params: { sessionId, configId, value },
   };
 }
+
+/** ACP SessionConfigOption 배열에서 Claude mode selector의 currentValue를 추출한다. */
+export function extractModeConfigValue(configOptions: unknown[] | null | undefined): string | undefined {
+  if (!Array.isArray(configOptions)) return undefined;
+  for (const option of configOptions) {
+    if (!option || typeof option !== "object") continue;
+    const record = option as Record<string, unknown>;
+    if (record.id !== "mode") continue;
+    return typeof record.currentValue === "string" ? record.currentValue : undefined;
+  }
+  return undefined;
+}

@@ -11,6 +11,7 @@ export function createSessionHostProps(props: SessionShellProps): SessionHostPro
     workDir: session.workDir,
     ptyId: session.ptyId,
     runtimeKind: session.runtimeKind,
+    agentRuntime: session.agentRuntime,
     storedAuxPtyId: session.auxPtyId,
     storedAuxVisible: session.auxVisible,
     storedAuxHeightPercent: session.auxHeightPercent,
@@ -35,6 +36,15 @@ export function createSessionHostProps(props: SessionShellProps): SessionHostPro
       : undefined,
     onResumeFallback: props.onSessionResumeFallback
       ? () => props.onSessionResumeFallback?.(session.id)
+      : undefined,
+    onAgentRuntimeMetadataChange: props.onSessionAgentRuntimeMetadataChange
+      ? (metadata) => props.onSessionAgentRuntimeMetadataChange?.(session.id, metadata)
+      : undefined,
+    onAgentRuntimeStatusChange: props.onSessionAgentRuntimeStatusChange
+      ? (status) => props.onSessionAgentRuntimeStatusChange?.(session.id, status)
+      : undefined,
+    onSessionTitleChange: props.onSessionTitleChange
+      ? (title) => props.onSessionTitleChange?.(session.id, title)
       : undefined,
   };
 }

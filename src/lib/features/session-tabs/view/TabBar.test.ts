@@ -228,6 +228,37 @@ describe("TabBar", () => {
     expect(betaTab).toHaveClass("active");
   });
 
+  it("OQ-06: renders direct runtime status badges from the tab view model", () => {
+    renderRawTabBar({
+      sessions: [
+        {
+          agentId: "codex",
+          id: "session-a",
+          locked: false,
+          pinned: false,
+          title: "Alpha",
+          agentRuntimeStatus: "running",
+        },
+        {
+          agentId: "claude",
+          id: "session-b",
+          locked: false,
+          pinned: false,
+          title: "Beta",
+          agentRuntimeStatus: "requires_action",
+        },
+      ],
+      activeSessionId: "session-a",
+    });
+
+    expect(
+      within(screen.getByTestId(tabTestId("session-a"))).getByLabelText("작업 중…"),
+    ).toHaveAttribute("data-runtime-status", "running");
+    expect(
+      within(screen.getByTestId(tabTestId("session-b"))).getByLabelText("승인 대기 중"),
+    ).toHaveAttribute("data-runtime-status", "requires_action");
+  });
+
   it("activates the pointed tab and requests terminal focus on pointer up", async () => {
     const onRequestSessionFocus = vi.fn();
 

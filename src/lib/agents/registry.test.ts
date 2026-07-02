@@ -40,6 +40,17 @@ describe("agent registry", () => {
     expect(agent.buildStartCommand()).toBe("'codex'");
     expect(agent.buildResumeCommand("session-123")).toBe("'codex' 'resume' 'session-123'");
   });
+
+  it("keeps built-in icon metadata free of official product logo assets", () => {
+    for (const agentId of ["claude", "codex"]) {
+      const icon = getAgentDefinition(agentId).icon;
+
+      expect(icon.light).toBeUndefined();
+      expect(icon.dark).toBeUndefined();
+      expect(icon.monochrome).toBeUndefined();
+      expect(icon.licenseNote ?? "").not.toMatch(/official .*asset/i);
+    }
+  });
 });
 
 describe("agent direct runtime capability", () => {

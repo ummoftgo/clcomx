@@ -175,6 +175,16 @@ describe("InternalEditor", () => {
     expect(props.onSaveRequest).toHaveBeenCalledWith("/home/user/work/project/src/App.svelte");
   });
 
+  it("exposes active path and location attributes for E2E assertions", () => {
+    const props = createProps();
+    render(InternalEditor, props);
+
+    const shell = screen.getByTestId(TEST_IDS.internalEditorShell);
+    expect(shell).toHaveAttribute("data-active-path", "/home/user/work/project/src/App.svelte");
+    expect(shell).toHaveAttribute("data-active-line", "12");
+    expect(shell).toHaveAttribute("data-active-column", "3");
+  });
+
   it("enables save only when the active tab is dirty", async () => {
     const props = createProps({
       activePath: "/home/user/work/project/src/routes.ts",

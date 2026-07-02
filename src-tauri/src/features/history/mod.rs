@@ -18,6 +18,8 @@ pub struct TabHistoryEntry {
     pub title: String,
     #[serde(default, alias = "claudeResumeId", alias = "claude_resume_id")]
     pub resume_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_kind: Option<String>,
     pub last_opened_at: String,
 }
 
@@ -46,6 +48,7 @@ pub(crate) fn record_tab_history_with_limit(
     work_dir: String,
     title: String,
     resume_token: Option<String>,
+    runtime_kind: Option<String>,
 ) -> Result<Vec<TabHistoryEntry>, String> {
     let mut entries = read_tab_history().unwrap_or_default();
     upsert_tab_history_entry(
@@ -55,6 +58,7 @@ pub(crate) fn record_tab_history_with_limit(
         work_dir,
         title,
         resume_token,
+        runtime_kind,
     );
     trim_tab_history_entries(&mut entries, limit);
     write_tab_history(&entries)?;
@@ -95,6 +99,15 @@ fn normalize_agent_id(value: &str) -> String {
     }
 }
 
+/// history에는 direct host 표식만 남기고 PTY/알 수 없는 값은 legacy 형식으로 접는다.
+fn normalize_history_runtime_kind(value: Option<&str>) -> Option<String> {
+    match value {
+        Some("direct-codex") => Some("direct-codex".into()),
+        Some("direct-claude") => Some("direct-claude".into()),
+        _ => None,
+    }
+}
+
 fn read_tab_history() -> Result<Vec<TabHistoryEntry>, String> {
     let path = tab_history_path()?;
     if !path.exists() {
@@ -107,6 +120,7 @@ fn read_tab_history() -> Result<Vec<TabHistoryEntry>, String> {
         .map_err(|e| format!("Invalid tab_history.json: {}", e))?;
     for entry in &mut history.items {
         entry.resume_token = None;
+        entry.runtime_kind = normalize_history_runtime_kind(entry.runtime_kind.as_deref());
     }
 
     Ok(history.items)
@@ -118,6 +132,7 @@ fn sanitize_tab_history_entries(entries: &[TabHistoryEntry]) -> Vec<TabHistoryEn
         .cloned()
         .map(|mut entry| {
             entry.resume_token = None;
+            entry.runtime_kind = normalize_history_runtime_kind(entry.runtime_kind.as_deref());
             entry
         })
         .collect()
@@ -149,6 +164,8 @@ fn tab_history_entries_match(left: &TabHistoryEntry, right: &TabHistoryEntry) ->
         && left.distro == right.distro
         && left.work_dir == right.work_dir
         && left.title == right.title
+        && normalize_history_runtime_kind(left.runtime_kind.as_deref())
+            == normalize_history_runtime_kind(right.runtime_kind.as_deref())
         && left.last_opened_at == right.last_opened_at
 }
 
@@ -174,12 +191,16 @@ fn upsert_tab_history_entry(
     work_dir: String,
     title: String,
     _resume_token: Option<String>,
+    runtime_kind: Option<String>,
 ) {
     let normalized_agent_id = normalize_agent_id(&agent_id);
+    let normalized_runtime_kind = normalize_history_runtime_kind(runtime_kind.as_deref());
     entries.retain(|entry| {
         !(normalize_agent_id(&entry.agent_id) == normalized_agent_id
             && entry.distro == distro
-            && entry.work_dir == work_dir)
+            && entry.work_dir == work_dir
+            && normalize_history_runtime_kind(entry.runtime_kind.as_deref())
+                == normalized_runtime_kind)
     });
 
     entries.insert(
@@ -190,6 +211,7 @@ fn upsert_tab_history_entry(
             work_dir,
             title,
             resume_token: None,
+            runtime_kind: normalized_runtime_kind,
             last_opened_at: now_timestamp(),
         },
     );
@@ -221,6 +243,7 @@ mod tests {
                 work_dir: "/a".into(),
                 title: "a".into(),
                 resume_token: None,
+                runtime_kind: None,
                 last_opened_at: "1".into(),
             },
             TabHistoryEntry {
@@ -229,6 +252,7 @@ mod tests {
                 work_dir: "/b".into(),
                 title: "b".into(),
                 resume_token: None,
+                runtime_kind: None,
                 last_opened_at: "2".into(),
             },
             TabHistoryEntry {
@@ -237,6 +261,7 @@ mod tests {
                 work_dir: "/c".into(),
                 title: "c".into(),
                 resume_token: None,
+                runtime_kind: None,
                 last_opened_at: "3".into(),
             },
         ];
@@ -258,6 +283,7 @@ mod tests {
                 work_dir: "/same".into(),
                 title: "same".into(),
                 resume_token: Some("resume-a".into()),
+                runtime_kind: None,
                 last_opened_at: "1".into(),
             },
             TabHistoryEntry {
@@ -266,6 +292,7 @@ mod tests {
                 work_dir: "/same".into(),
                 title: "same".into(),
                 resume_token: Some("resume-b".into()),
+                runtime_kind: None,
                 last_opened_at: "2".into(),
             },
             TabHistoryEntry {
@@ -274,6 +301,7 @@ mod tests {
                 work_dir: "/same".into(),
                 title: "same".into(),
                 resume_token: None,
+                runtime_kind: None,
                 last_opened_at: "3".into(),
             },
         ];
@@ -285,6 +313,7 @@ mod tests {
             "/same".into(),
             "same".into(),
             Some("resume-a".into()),
+            None,
         );
 
         assert_eq!(entries.len(), 1);
@@ -296,6 +325,7 @@ mod tests {
             EXAMPLE_DISTRO.into(),
             "/same".into(),
             "same".into(),
+            None,
             None,
         );
 
@@ -311,6 +341,7 @@ mod tests {
             work_dir: "/same".into(),
             title: "same".into(),
             resume_token: None,
+            runtime_kind: None,
             last_opened_at: "1".into(),
         }];
 
@@ -321,11 +352,54 @@ mod tests {
             "/same".into(),
             "same".into(),
             None,
+            None,
         );
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].agent_id, "codex");
         assert_eq!(entries[1].agent_id, "claude");
+    }
+
+    #[test]
+    fn upsert_tab_history_keeps_distinct_runtime_kinds_for_same_path() {
+        let mut entries = vec![TabHistoryEntry {
+            agent_id: "codex".into(),
+            distro: EXAMPLE_DISTRO.into(),
+            work_dir: "/same".into(),
+            title: "pty".into(),
+            resume_token: None,
+            runtime_kind: None,
+            last_opened_at: "1".into(),
+        }];
+
+        upsert_tab_history_entry(
+            &mut entries,
+            "codex".into(),
+            EXAMPLE_DISTRO.into(),
+            "/same".into(),
+            "direct".into(),
+            None,
+            Some("direct-codex".into()),
+        );
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].runtime_kind.as_deref(), Some("direct-codex"));
+        assert_eq!(entries[1].runtime_kind, None);
+
+        upsert_tab_history_entry(
+            &mut entries,
+            "codex".into(),
+            EXAMPLE_DISTRO.into(),
+            "/same".into(),
+            "direct renamed".into(),
+            None,
+            Some("direct-codex".into()),
+        );
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "direct renamed");
+        assert_eq!(entries[0].runtime_kind.as_deref(), Some("direct-codex"));
+        assert_eq!(entries[1].title, "pty");
     }
 
     #[test]
@@ -339,10 +413,29 @@ mod tests {
             "/same".into(),
             "same".into(),
             Some("resume-secret".into()),
+            None,
         );
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].resume_token, None);
+    }
+
+    #[test]
+    fn upsert_tab_history_normalizes_non_direct_runtime_kind() {
+        let mut entries = Vec::new();
+
+        upsert_tab_history_entry(
+            &mut entries,
+            "claude".into(),
+            EXAMPLE_DISTRO.into(),
+            "/same".into(),
+            "same".into(),
+            None,
+            Some("pty".into()),
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].runtime_kind, None);
     }
 
     #[test]
@@ -353,6 +446,7 @@ mod tests {
             work_dir: "/same".into(),
             title: "same".into(),
             resume_token: Some("resume-a".into()),
+            runtime_kind: None,
             last_opened_at: "2".into(),
         };
         let mut entries = vec![
@@ -362,6 +456,7 @@ mod tests {
                 work_dir: "/same".into(),
                 title: "same".into(),
                 resume_token: None,
+                runtime_kind: None,
                 last_opened_at: "1".into(),
             },
             target.clone(),
@@ -371,6 +466,7 @@ mod tests {
                 work_dir: "/same".into(),
                 title: "same".into(),
                 resume_token: Some("resume-b".into()),
+                runtime_kind: None,
                 last_opened_at: "3".into(),
             },
         ];
@@ -391,6 +487,7 @@ mod tests {
             work_dir: "/same".into(),
             title: "same".into(),
             resume_token: Some("resume-a".into()),
+            runtime_kind: None,
             last_opened_at: "2".into(),
         };
         let mut entries = vec![TabHistoryEntry {
@@ -399,6 +496,7 @@ mod tests {
             work_dir: "/same".into(),
             title: "same".into(),
             resume_token: Some("resume-a".into()),
+            runtime_kind: None,
             last_opened_at: "1".into(),
         }];
 

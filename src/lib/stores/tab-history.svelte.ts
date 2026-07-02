@@ -1,5 +1,6 @@
 import type { TabHistoryEntry } from "../types";
 import type { AgentId } from "../agents";
+import type { SessionRuntimeKind } from "../features/agent-runtime/contracts/metadata";
 import {
   recordTabHistoryEntry,
   removeTabHistoryEntry as removeTabHistoryEntryCommand,
@@ -22,9 +23,17 @@ export async function recordTabHistory(
   workDir: string,
   title: string,
   resumeToken?: string | null,
+  runtimeKind?: SessionRuntimeKind,
 ) {
   try {
-    const entries = await recordTabHistoryEntry(agentId, distro, workDir, title, resumeToken);
+    const entries = await recordTabHistoryEntry(
+      agentId,
+      distro,
+      workDir,
+      title,
+      resumeToken,
+      runtimeKind,
+    );
     tabHistory.splice(0, tabHistory.length, ...entries);
   } catch (error) {
     console.error("Failed to record tab history", error);

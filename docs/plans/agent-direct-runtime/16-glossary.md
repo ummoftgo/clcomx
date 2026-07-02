@@ -86,7 +86,7 @@ provider마다 같은 단어가 다른 것을 가리킨다. 아래는 **CLCOMX �
 
 | 용어 | 1–2줄 정의 | 정본 |
 |---|---|---|
-| **ACP (Agent Client Protocol)** | Claude adapter의 1차 protocol. JSON-RPC 2.0 정식(`jsonrpc:"2.0"`). wire `protocolVersion = 1`; schema artifact는 T0.0/OQ-41에서 확정한다(`schema-v1.16.0`은 baseline 후보). | [ref-acp-protocol.md](ref-acp-protocol.md) §1, [15](15-data-contracts.md) 머리말 |
+| **ACP (Agent Client Protocol)** | Claude adapter의 1차 protocol. JSON-RPC 2.0 정식(`jsonrpc:"2.0"`). wire `protocolVersion = 1`; 현 구현 기준은 SDK `0.29.0` package schema/types + 부분 wire mirror이며 `schema-v1.16.0`은 baseline 후보다. | [ref-acp-protocol.md](ref-acp-protocol.md) §1, [15](15-data-contracts.md) 머리말 |
 | **app-server (Codex app-server)** | Codex adapter의 1차 연결면. JSON-RPC 유사이나 `jsonrpc` 필드를 보내지도 기대하지도 않는다. pinned `rust-v0.142.0`. | [ref-codex-app-server-protocol.md](ref-codex-app-server-protocol.md) §1.2, [15](15-data-contracts.md) 머리말 |
 | **JSON-RPC** | request/notification/response/error 4종 메시지 규약. CLCOMX는 `JsonRpcMessage` union으로 양 provider를 표현(`jsonrpc` optional). | [15](15-data-contracts.md) §8.1 `JsonRpcMessage` |
 | **stdio** | stdin/stdout 파이프로 JSON-RPC를 주고받는 transport. v1 Codex/Claude 모두 stdio 우선. | [13](13-risks-open-questions.md) Resolved defaults, [15](15-data-contracts.md) §8.1 |

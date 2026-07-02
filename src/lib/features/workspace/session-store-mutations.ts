@@ -1,6 +1,8 @@
 export {
   moveSessionInList,
   removeSessionAndResolveActive,
+  setSessionAgentRuntimeInList,
+  setSessionAgentRuntimeStatusInList,
   setSessionActiveEditorPathInList,
   setSessionAuxStateInList,
   setSessionDirtyPathsInList,

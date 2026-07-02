@@ -51,6 +51,7 @@ export function createSessionLaunchRequestFromHistoryEntry(
     workDir: entry.workDir,
     title: entry.title,
     resumeToken: entry.resumeToken ?? null,
+    runtimeKind: entry.runtimeKind,
   });
 }
 

@@ -52,6 +52,7 @@ export const TEST_IDS = {
   internalEditorQuickOpenList: "internal-editor-quick-open-list",
   // Direct Agent Runtime (08 §9.4)
   agentRuntimeShell: "agent-runtime-shell",
+  agentRuntimeMetadata: "agent-runtime-metadata",
   agentTranscript: "agent-transcript",
   agentMessageList: "agent-message-list",
   agentMessageBubble: "agent-message-bubble",
@@ -62,6 +63,12 @@ export const TEST_IDS = {
   agentComposerSend: "agent-composer-send",
   agentComposerCommandPalette: "agent-composer-command-palette",
   agentComposerCommandOption: "agent-composer-command-option",
+  agentComposerImageButton: "agent-composer-image-button",
+  agentComposerImageInput: "agent-composer-image-input",
+  agentComposerImageAttachment: "agent-composer-image-attachment",
+  agentComposerResourceButton: "agent-composer-resource-button",
+  agentComposerResourcePalette: "agent-composer-resource-palette",
+  agentComposerResourceOption: "agent-composer-resource-option",
   // Stage 2: tool/command/diff 카드 + approval + replay (08 §4·§7, T5.3·T5.4·T5.6)
   agentToolCallCard: "agent-tool-call-card",
   agentToolCallToggle: "agent-tool-call-toggle",
@@ -76,6 +83,8 @@ export const TEST_IDS = {
   agentRuntimeFallbackPty: "agent-runtime-fallback-pty",
   agentRuntimeFallbackRetry: "agent-runtime-fallback-retry",
   agentRuntimeFallbackCancel: "agent-runtime-fallback-cancel",
+  agentRestoreUnavailableNotice: "agent-restore-unavailable-notice",
+  legacyPtyPermissionNotice: "legacy-pty-permission-notice",
   agentReplayPanel: "agent-replay-panel",
   agentReplayClose: "agent-replay-close",
 } as const;
@@ -135,6 +144,11 @@ export function editorPickerItemTestId(editorId: string) {
 /** transcript item별 testid(렌더 검증·가상화 디버깅용). */
 export function agentTranscriptItemTestId(itemId: string) {
   return `agent-transcript-item-${toTestIdSegment(itemId)}`;
+}
+
+/** tool location row별 testid(E2E location open 검증용). */
+export function agentToolLocationTestId(itemId: string, index: number) {
+  return `agent-tool-location-${toTestIdSegment(itemId)}-${index}`;
 }
 
 /** approval option 버튼별 testid(option id 보존, Stage 2 T5.4). */

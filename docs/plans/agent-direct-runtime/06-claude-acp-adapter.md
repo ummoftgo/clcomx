@@ -5,7 +5,7 @@
 > **권위 분리 (반드시 준수)**
 > - **타입 정본**: 모든 공통 타입(`AgentEvent`/`ProviderRef`/`ToolCallUpdate`/`Approval*`/`AgentRuntimeMetadata`/`JsonRpcMessage`/`AgentRuntimeStartParams` 등)은 [`15-data-contracts.md`](15-data-contracts.md)에 정의돼 있다. 이 문서는 그 타입을 **재정의하지 않고** §번호로 인용한다.
 > - **규칙 정본**: 상태 머신·upsert/append/replace·approval 생명주기·식별자 라우팅 규칙은 [`04-normalized-agent-model.md`](04-normalized-agent-model.md)에 있다. 이 문서는 그 규칙을 인용한다.
-> - **프로토콜 wire 사실**: [`ref-acp-protocol.md`](ref-acp-protocol.md)(ACP v1 wire, `protocolVersion = 1`; schema artifact는 T0.0/OQ-41에서 확정, `schema-v1.16.0`은 baseline 후보), [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md)(`@agentclientprotocol/claude-agent-acp@0.51.0`, commit `23626c9`).
+> - **프로토콜 wire 사실**: [`ref-acp-protocol.md`](ref-acp-protocol.md)(ACP v1 wire, `protocolVersion = 1`; 현 구현 기준은 SDK `0.29.0` package schema/types + 부분 wire mirror, `schema-v1.16.0`은 baseline 후보), [`ref-claude-agent-acp.md`](ref-claude-agent-acp.md)(`@agentclientprotocol/claude-agent-acp@0.51.0`, commit `23626c9`).
 > - **코드 현실**: [`research/codebase-frontend.md`](research/codebase-frontend.md), [`research/codebase-backend.md`](research/codebase-backend.md).
 >
 > 미확인/결정 필요 항목은 본문에서 `unverified`/`결정 필요`로 표기하고 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 연결한다.
@@ -57,8 +57,7 @@ src/lib/features/agent-runtime/
 ### 1.2 wire 타입 출처 (재정의 금지 vs 부분 정의 허용)
 
 - **CLCOMX 공통 타입**: 재정의 금지. 15에서 import.
-- **ACP wire 타입**: `@agentclientprotocol/sdk@0.29.0`이 `dist/schema/types.gen.d.ts`를 제공한다(ref-claude-agent-acp §2 "어댑터가 바인딩하는 wire RPC method"). 어댑터는 **가능하면 이 sdk 타입을 import**해 wire shape를 다룬다. sdk를 frontend 번들에 직접 의존시키기 부적절하면(번들 크기/ESM 이슈) `contracts/claude-acp.ts`에 **필요한 부분만** 좁게 정의한다 — 단 이는 wire shape의 *부분 미러*이지 CLCOMX 공통 타입이 아니다.
-  - sdk를 frontend 의존성으로 둘지, 부분 타입 미러로 갈지는 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md) OQ-42 "sdk 타입 의존 방식". 1차 권고: **부분 타입 미러**(frontend는 raw `JsonRpcMessage`만 다루므로 sdk 런타임 불필요. 어댑터 process는 backend가 spawn하는 별도 node process이고 frontend 번들과 무관). sdk 패키지는 `claude-agent-acp` 어댑터 process가 실행하는 node 의존성으로만 존재한다.
+- **ACP wire 타입(v1 확정, OQ-42 해소)**: frontend/direct adapter 코드는 `@agentclientprotocol/sdk`를 직접 import하지 않는다. `contracts/claude-acp.ts`에 어댑터가 직접 다루는 ACP subset만 **부분 wire mirror**로 좁게 정의하고, 공통 타입은 15에서 import한다. wire 권위는 ref-acp와 sdk `schema/schema.json`/생성 타입이며, `@agentclientprotocol/sdk`는 `@agentclientprotocol/claude-agent-acp`가 실행하는 adapter process 의존성으로만 존재한다. drift는 `claude-acp-*` mapper 테스트와 fixture replay로 잡는다.
 
 ---
 
@@ -72,13 +71,13 @@ backend가 받는 기동 파라미터는 정본 `AgentRuntimeStartParams`(15 §8
 
 ### 2.2 argv 결정 (WSL, absolute path 필수; executable은 backend resolve)
 
-> **S1 정본 (command 비제어)**: adapter는 실행 executable(`node` 절대경로)을 **생성하지 않는다**. backend가 provider=`claude`로 신뢰 `node` 절대경로를 resolve한다(R4, 07 §8.1). adapter가 제어하는 것은 `args`(= `[adapterEntryPath]`, 검증 대상)·`distro`·`workDir`·`env`(non-secret)뿐이다. `adapterEntryPath`도 renderer 자유 입력이 아니라 backend가 resolve/검증하는 절대경로다.
+> **S1 정본 (command 비제어)**: adapter는 실행 executable(`node` 절대경로)을 **생성하지 않는다**. backend가 provider=`claude`로 신뢰 `node` 절대경로를 resolve한다(R4, 07 §8.1). adapter가 제어하는 것은 `args`(= `[adapterEntryPath, "--hide-claude-auth"]`, 검증 대상)·`distro`·`workDir`·`env`(non-secret)뿐이다. `adapterEntryPath`도 renderer 자유 입력이 아니라 backend가 resolve/검증하는 절대경로다.
 
 ref-claude-agent-acp §1·§5에서 확정된 사실:
 
 - bin은 `dist/index.js` **하나뿐**이고 transport 선택용 CLI 플래그가 없다(stdio 기본). 어댑터가 argv로 해석하는 건 `--cli`, `--hide-claude-auth`뿐.
 - shebang은 `#!/usr/bin/env node`. nvm 등으로 node가 비표준 경로면 node 절대경로 실행이 안전하나, **이 node 절대경로 resolve는 renderer가 아니라 backend의 책임**이다(S1 정본, R4). adapter는 node 경로를 만들지 않는다(ref-claude-agent-acp §5, 07 §8.1).
-- **npx는 비권장**(첫 실행 fetch/resolve 지연·비결정성, ref-claude-agent-acp §1 실행 커맨드 표). 1차 backend allowlist(07 §8.1)는 **backend-resolve한 node(신뢰 절대경로) + 검증된 `adapterEntryPath`(절대경로)만 허용**하고 npx는 제외한다(D9). `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록 절대경로)해 검증하는 대상이다(아래 resolve note, 07 §8.1 `is_trusted_adapter_entry_path`). npx 허용은 후속(optional)로만 검토.
+- **npx는 비권장**(첫 실행 fetch/resolve 지연·비결정성, ref-claude-agent-acp §1 실행 커맨드 표). 1차 backend allowlist(07 §8.1)는 **backend-resolve한 node(신뢰 절대경로) + 검증된 `adapterEntryPath`(절대경로) + 고정 `--hide-claude-auth` 플래그만 허용**하고 npx는 제외한다(D9). `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록 절대경로)해 검증하는 대상이다(아래 resolve note, 07 §8.1 `is_trusted_adapter_entry_path`). npx 허용은 후속(optional)로만 검토.
 - claude native 바이너리는 SDK 번들 optional dependency. `--omit=optional` 설치 금지(ref-claude-agent-acp §1 "claude native binary 해석").
 
 `buildClaudeAcpLaunchParams`가 만드는 값(command 미생성 — backend resolve):
@@ -86,6 +85,8 @@ ref-claude-agent-acp §1·§5에서 확정된 사실:
 ```ts
 // src/lib/features/agent-runtime/adapters/claude-acp/claude-acp-launch.ts
 import type { AgentRuntimeStartParams } from "../../service/transport"; // 15 §8.1 정본 (command 필드 없음, S1)
+
+export const CLAUDE_ACP_HIDE_AUTH_ARG = "--hide-claude-auth";
 
 export interface ClaudeAcpLaunchConfig {
   distro: string;
@@ -116,9 +117,9 @@ export function buildClaudeAcpLaunchParams(cfg: ClaudeAcpLaunchConfig): AgentRun
     workDir: cfg.workDir,
     // S1 정본: command(node)를 **생성하지 않는다**. backend가 provider="claude"로 신뢰 node 절대경로를
     // resolve한다(R4, 07 §8.1 resolve_trusted_executable). 15 §8.1 AgentRuntimeStartParams에는 command 필드가
-    // 없다 — renderer 비제어. adapter가 제어하는 실행 대상은 args[0]=adapterEntryPath(검증된 절대경로)뿐이다.
-    // backend allowlist(07 §8.1)는 claude일 때 args.length==1 && args[0]==검증된 adapterEntryPath를 요구한다.
-    args: [cfg.adapterEntryPath],
+    // 없다 — renderer 비제어. adapter가 제어하는 실행 대상은 검증된 adapterEntryPath와 고정 auth 숨김 플래그뿐이다.
+    // backend allowlist(07 §8.1)는 이 두 argv만 정확히 허용한다.
+    args: [cfg.adapterEntryPath, CLAUDE_ACP_HIDE_AUTH_ARG],
     // C1 경계: env는 non-secret 전용이다(07 §5.1 `-e env KEY=VAL` argv 경로 = OS 관측면 노출).
     // ANTHROPIC_API_KEY 등 secret은 절대 싣지 않는다 — secret이 필요하면 backend가
     // Command::env()+WSLENV로 자식 프로세스 환경에 주입(argv 비경유, 07 §5.1 note, 09).
@@ -127,25 +128,25 @@ export function buildClaudeAcpLaunchParams(cfg: ClaudeAcpLaunchConfig): AgentRun
 }
 ```
 
-> **command 비제어 (S1 정본, 15 §8.1 동기화)**: 15 §8.1 `AgentRuntimeStartParams`의 `jsonrpc-stdio`+`provider:"claude"` variant에서 `command` 필드는 **제거**된다(renderer 비제어, TS+Rust 미러 동일). 따라서 `buildClaudeAcpLaunchParams`도 `command`/`nodePath`를 만들지 않는다. backend가 provider로 신뢰 node 절대경로를 resolve하고(07 §8.1 `resolve_trusted_executable`), `args[0]`(adapterEntryPath)는 backend가 resolve/검증한 절대경로와 정확 일치해야 한다. 동명 바이너리(`/tmp/node`) 및 임의 `.js` 우회는 거부된다(07 §8.1 3-claude).
+> **command 비제어 (S1 정본, 15 §8.1 동기화)**: 15 §8.1 `AgentRuntimeStartParams`의 `jsonrpc-stdio`+`provider:"claude"` variant에서 `command` 필드는 **제거**된다(renderer 비제어, TS+Rust 미러 동일). 따라서 `buildClaudeAcpLaunchParams`도 `command`/`nodePath`를 만들지 않는다. backend가 provider로 신뢰 node 절대경로를 resolve하고(07 §8.1 `resolve_trusted_executable`), `args[0]`(adapterEntryPath)는 backend가 resolve/검증한 절대경로와 정확 일치해야 하며 `args[1]`은 고정 `--hide-claude-auth`여야 한다. 동명 바이너리(`/tmp/node`) 및 임의 `.js`/임의 argv 우회는 거부된다(07 §8.1 3-claude).
 
 > **secret env 경계 (C1 정본, 07 §5.1 / 09 인용)**: `buildClaudeAcpLaunchParams`가 만드는 `env`(= `AgentRuntimeStartParams.env`, 15 §8.1)는 backend에서 `wsl.exe … -e env KEY=VAL …` argv로 흐른다(07 §5.1). argv는 OS 관측면(`ps`, `/proc/<pid>/cmdline`, WSL process 목록)에 평문으로 남으므로 **secret(API key/OAuth token/gateway header/session cookie)을 절대 싣지 않는다** — §9 redaction으로도 막을 수 없다. 따라서 이 env는 **non-secret 전용**이다. secret 전달은 §3.3의 정본 경로(v1은 claude WSL 자체 인증 의존, gateway 등으로 꼭 필요하면 backend `std::process::Command::env()`+`WSLENV` passthrough = argv 비경유)를 따른다. 15 §8.1 타입 자체는 재정의하지 않으며 신뢰 경계 정본은 [`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §5.1·[`09-permissions-security.md`](09-permissions-security.md)다.
 >
-> **node/entry 경로 resolve (S1 정본: backend resolve; 세부 방식은 결정 필요)**: `node` 절대경로와 `dist/index.js`(`adapterEntryPath`) 절대경로는 **모두 backend가 resolve/검증하는 대상이며 renderer/adapter가 생성하지 않는다**(S1, R4, 07 §8.1). adapter는 backend가 resolve해 `deps.resolveLaunch`(§4.1)로 돌려준 `adapterEntryPath`만 `args[0]`에 싣는다. backend resolve 후보:
+> **node/entry 경로 resolve (S1 정본: backend resolve, OQ-36 해소)**: `node` 절대경로와 `dist/index.js`(`adapterEntryPath`) 절대경로는 **모두 backend가 resolve/검증하는 대상이며 renderer/adapter가 생성하지 않는다**(S1, R4, 07 §8.1). adapter는 backend가 resolve해 `deps.resolveLaunch`(§4.1)로 돌려준 `adapterEntryPath`만 `args[0]`에 싣는다. backend resolve 후보:
 > 1. CLCOMX가 자체 번들한 `node_modules`를 WSL에서 접근 가능한 경로(예: 앱 리소스를 WSL mount 경로로)로 두고 절대경로 고정.
 > 2. WSL 안 user 글로벌 설치(`npm i -g @agentclientprotocol/claude-agent-acp`)를 `which`로 resolve.
 > 3. backend가 `wsl.exe -d <distro> -e bash -lc "command -v node"` / `node -e "console.log(require.resolve(...))"`로 1회 resolve 후 캐시.
-> WSL과 Windows는 홈/노드 설치가 다르므로 어느 쪽 node·패키지를 쓰는지 명확히 해야 한다(ref-claude-agent-acp §5 "node 위치", "자격증명 경로"). 1차 구현 권고: **방식 3(backend resolve) + 캐시**, 실패 시 명확한 setup 에러. resolve 주체·캐시 무효화·adapterEntryPath 탐색 방식은 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md)("command/entry resolve 주체"). 어느 방식이든 결과 절대경로를 backend가 `resolve_trusted_executable`(node)·`is_trusted_adapter_entry_path`(entry)로 재검증한다(07 §8.1).
+> WSL과 Windows는 홈/노드 설치가 다르므로 어느 쪽 node·패키지를 쓰는지 명확히 해야 한다(ref-claude-agent-acp §5 "node 위치", "자격증명 경로"). 1차 구현은 **방식 3(backend resolve) + 캐시**를 따른다. owner는 `agent_runtime/resolver.rs`, cache key는 `(provider,distro)`, TTL 없는 process-lifetime cache이며 `clear()`로 명시 무효화한다(OQ-36). Claude executable은 WSL 내부 `command -v node`, adapter entry는 pinned `node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js` 레이아웃만 신뢰하고, 실패 시 명확한 setup 에러를 반환한다. 어느 방식이든 결과 절대경로를 backend가 `resolve_trusted_executable`(node)·`resolve_trusted_adapter_entry`(entry)로 재검증한다(07 §8.1).
 
 ### 2.3 backend가 조립하는 실제 WSL 커맨드
 
 backend(`features/agent_runtime/process.rs`)는 PTY와 동일한 WSL 경계를 유지하되 PTY가 아니라 piped stdio로 띄운다([`research/codebase-backend.md`](research/codebase-backend.md) §5.1, §9). 정본 커맨드 형태는 **로그인 셸 비경유 직접 실행**이다([`07-tauri-process-runtime.md`](07-tauri-process-runtime.md) §5.1 backend 정본):
 
 ```
-wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY1=V1 KEY2=V2 <backend-resolved node 절대경로> <adapterEntryPath> <argv...>
+wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY1=V1 KEY2=V2 <backend-resolved node 절대경로> <adapterEntryPath> --hide-claude-auth
 ```
 
-> executable(`node` 절대경로)은 adapter가 넘기지 않고 **backend가 provider로 resolve한 신뢰 절대경로**다(S1, 07 §8.1). adapter가 제어하는 argv는 `[adapterEntryPath]`(검증된 절대경로)뿐이다.
+> executable(`node` 절대경로)은 adapter가 넘기지 않고 **backend가 provider로 resolve한 신뢰 절대경로**다(S1, 07 §8.1). adapter가 제어하는 argv는 `[adapterEntryPath, "--hide-claude-auth"]`(검증된 절대경로 + 고정 auth 숨김 플래그)뿐이다.
 
 - `--cd <wslWorkDir>`로 cwd를 설정한다(셸 `cd` 불필요, OQ-27 해소).
 - `env KEY=VAL ...`는 WSL 실제 `env(1)` 바이너리로, 셸 메타문자 해석 없이 환경변수를 그대로 주입한다(OQ-28 해소). node/argv는 그 뒤에 직접 온다.
@@ -156,9 +157,9 @@ wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY1=V1 KEY2=V2 <backend-resolved n
 
 | 실패 | 신호 | 어댑터 처리 |
 |---|---|---|
-| node 없음/버전 < 22 | backend `agent-runtime-exit`(즉시 비정상 종료) 또는 stderr | `error{recoverable:false}` + setup 안내 + PTY fallback 제안(§10) |
-| entry 경로 못 찾음 | spawn 실패 → `agent-runtime-error` | 동상 |
-| optional dep 누락(native binary 없음) | initialize는 되나 prompt 시 SDK 에러(stderr/`error` notification) | `error` + 재설치 안내(ref-claude-agent-acp §1) |
+| node 없음/버전 probe 실패 | backend start preflight `Err(String)` | `error{recoverable:false}` + setup 안내 + PTY fallback 제안(§10) |
+| entry 경로 못 찾음 | backend resolve/start preflight `Err(String)` | 동상 |
+| optional dep 누락(native binary 없음) | backend Claude native preflight `Err(String)` — `node <adapterEntryPath> --cli --version` probe 실패 | `error` + 재설치 안내(ref-claude-agent-acp §1), spawn으로 진행하지 않음 |
 | 자격증명 없음 | initialize 응답의 `authMethods` 비어있지 않음 / prompt 시 `-32000` | §3.3 인증 흐름 |
 
 ---
@@ -241,11 +242,12 @@ resolveRpc(msg: JsonRpcMessage /* {id, result|error} */):
 | capability | 1차 값 | 근거/효과 |
 |---|---|---|
 | `protocolVersion` | `1` | ref-acp §0, ref-claude-agent-acp §4. 어댑터는 항상 `1` 회신(ref-claude-agent-acp §2). 불일치 시 protocol error(§9). |
-| `clientCapabilities.fs.readTextFile` / `writeTextFile` | `false`(1차) | true면 어댑터가 `fs/read_text_file`/`fs/write_text_file`로 client가 IO를 대행(ref-acp §7). 1차는 어댑터 SDK 자체 IO에 맡기고 client fs 미광고. (`결정 필요`: editor 통합 시 true 검토 → 13 OQ-43 "client capability 1차 값") |
+| `clientCapabilities.fs.readTextFile` / `writeTextFile` | `false`(v1 확정) | true면 어댑터가 `fs/read_text_file`/`fs/write_text_file`로 client가 IO를 대행(ref-acp §7). v1은 어댑터 SDK 자체 IO에 맡기고 client fs 미광고. editor 통합 시 후속으로 true 검토. |
 | `clientCapabilities.terminal` | `false`(1차) | true면 `terminal/*`로 명령 실행 terminal을 client가 호스팅(ref-acp §8). 1차는 tool_call content(terminal embed)를 어댑터가 채우게 두고 client terminal 미광고. (후속: command output을 CLCOMX terminal surface로 끌어올릴 때 true) |
 | `clientCapabilities._meta["terminal_output"]` | `false`(1차) | 어댑터의 terminal_info/terminal_output/terminal_exit meta 게이트(ref-claude-agent-acp §2). 1차 미광고. |
-| `clientCapabilities.auth.terminal` / `_meta["terminal-auth"]` | §3.3 결정 | 광고 시 어댑터가 terminal auth method 제시(ref-claude-agent-acp §1 인증 표). |
-| `clientCapabilities.elicitation.form` / `.url` | `false`(1차) | true면 `AskUserQuestion`이 form elicitation으로 surface(ref-claude-agent-acp §3 request_permission 1번). 1차 미광고 → `AskUserQuestion`이 어떻게 오는지 확인 필요(`결정 필요`, 13 OQ-43 "client capability 1차 값"). |
+| `clientCapabilities.auth.terminal` / `_meta["terminal-auth"]` | `false`(v1 확정) | 광고 시 어댑터가 terminal auth method를 제시할 수 있다(ref-claude-agent-acp §1 인증 표). v1은 WSL 측 자체 인증(`claude login`/config)에 의존하고 terminal auth 미광고. |
+| `clientCapabilities.auth._meta.gateway` | `false`(v1 확정) | gateway auth는 secret env 전달/보관 경계가 필요하므로 v1 미광고(C1, §3.3). |
+| `clientCapabilities.elicitation.form` / `.url` | `null`(v1 확정, 미광고) | true/object면 `AskUserQuestion`이 form/url elicitation으로 surface(ref-claude-agent-acp §3 request_permission 1번). v1은 UI/보안 범위 미정이라 미광고. |
 | `clientInfo` | `{name:"clcomx", version:<앱버전>}` | ref-acp §3.1. branding 주의(§9, 13). |
 
 ```ts
@@ -255,13 +257,15 @@ import type { JsonRpcMessage } from "../../service/transport"; // 15 §8.1
 export interface ClaudeAcpClientCapabilities {
   fs: { readTextFile: boolean; writeTextFile: boolean };
   terminal: boolean;
-  // elicitation / auth / _meta는 1차 값에 따라 선택 포함
+  auth?: { terminal: boolean; _meta?: Record<string, unknown> };
+  elicitation?: { form: null; url: null } | null;
+  _meta?: Record<string, unknown>; // terminal_output / terminal-auth 모두 false
 }
 
 export function buildInitializeRequest(opts: {
   id: string | number;
   appVersion: string;
-  capabilities: ClaudeAcpClientCapabilities;
+  capabilities?: ClaudeAcpClientCapabilities;
 }): JsonRpcMessage {
   return {
     jsonrpc: "2.0",
@@ -269,7 +273,7 @@ export function buildInitializeRequest(opts: {
     method: "initialize",
     params: {
       protocolVersion: 1,
-      clientCapabilities: opts.capabilities,
+      clientCapabilities: opts.capabilities ?? DEFAULT_CLIENT_CAPABILITIES,
       clientInfo: { name: "clcomx", version: opts.appVersion },
     },
   };
@@ -309,7 +313,7 @@ ref-claude-agent-acp §1 "인증 전제"가 권위다. **핵심: terminal 로그
 | **terminal 구독/Console 로그인** | client가 `auth.terminal`/`_meta["terminal-auth"]` 광고 | 어댑터가 terminal auth method 제시, 실제 로그인은 `--cli auth login --claudeai`/`--console` passthrough를 **별도 터미널**에서 실행(ref-claude-agent-acp §1 표). non-remote에서만 `claude-ai-login`/`console-login` 제시, remote(SSH 등)는 `claude-login`만(ref-claude-agent-acp §1 "remote 분기 주의"). |
 | **gateway** | client가 `auth._meta.gateway===true` 광고 | `authenticate` 요청에 `_meta.gateway.{baseUrl, headers}` 채워 보냄. gateway header 등 secret 값은 argv가 아니라 backend `Command::env()`+`WSLENV` secret 경로로 자식 환경에 주입한다(C1, 07 §5.1). 어댑터가 query 시 env 합성(ref-claude-agent-acp §1 authenticate 처리). |
 
-> **1차 인증 정책(정본)**: v1은 **WSL 측 자체 인증(`claude login`/config)에 의존**하고 secret env를 런타임으로 넘기지 않는다(C1 기본값, 07 §5.1). gateway 등으로 API key가 꼭 필요하면 launch argv(`-e env KEY=VAL`)가 아니라 backend `std::process::Command::env()`+`WSLENV` passthrough로만 secret을 자식 프로세스 환경에 주입한다(argv 비경유 → `ps`/`/proc/<pid>/cmdline` 평문 노출 방지). terminal/gateway interactive 인증은 후속으로 둔다 — terminal auth를 켜려면 CLCOMX가 PTY로 `claude /login`을 띄우는 별도 UX가 필요(WSL 경계). 이는 `결정 필요` → [`13-risks-open-questions.md`](13-risks-open-questions.md) OQ-43 "client capability 1차 값". WSL 환경에서 SSH env(`SSH_CONNECTION` 등)가 설정돼 있으면 어댑터가 remote로 오판해 `claude-login`만 제시할 수 있으니 launch env를 점검한다(ref-claude-agent-acp §1).
+> **1차 인증 정책(정본)**: v1은 **WSL 측 자체 인증(`claude login`/config)에 의존**하고 secret env를 런타임으로 넘기지 않는다(C1 기본값, 07 §5.1). gateway 등으로 API key가 꼭 필요하면 launch argv(`-e env KEY=VAL`)가 아니라 backend `std::process::Command::env()`+`WSLENV` passthrough로만 secret을 자식 프로세스 환경에 주입한다(argv 비경유 → `ps`/`/proc/<pid>/cmdline` 평문 노출 방지). OQ-43 결론에 따라 v1 `clientCapabilities`는 terminal/gateway auth를 광고하지 않는다. terminal auth를 켜려면 CLCOMX가 PTY로 `claude /login`을 띄우는 별도 UX가 필요하고, gateway auth를 켜려면 secret 전달·redaction·audit 경계를 먼저 설계해야 한다. WSL 환경에서 SSH env(`SSH_CONNECTION` 등)가 설정돼 있으면 어댑터가 remote로 오판해 `claude-login`만 제시할 수 있으니 launch env를 점검한다(ref-claude-agent-acp §1).
 
 ### 3.4 session/new
 
@@ -398,13 +402,14 @@ sendPrompt(sessionHandle, input: SendPromptInput):           // 15 §6
 
 전송 시: `status→running`(04 §2.1 규칙 2 + ref-acp §13.1 "session/prompt 전송 → running"). accepted 개념은 response가 아니라 turn 시작 시점이다(04 §2.1 + ref-acp §13.1).
 
-응답 `stopReason`(closed enum 5종, ref-acp §3.6 — default branch 불필요):
+응답 `stopReason`(closed enum 5종, ref-acp §3.6 — default branch 불필요. unknown/missing은 schema 위반으로 처리):
 
 | stopReason | CLCOMX 변환 | ref-acp §13.1 |
 |---|---|---|
 | `end_turn` / `max_tokens` / `max_turn_requests` | `turn_completed{status:"completed"}` + `session_status_changed: idle` | |
 | `cancelled` | `turn_completed{status:"cancelled"}` | cancel MUST 반환값 |
 | `refusal` | `turn_completed{status:"completed"}` + UI 거부 표시 | refusal은 CLCOMX status enum에 없음 → metadata 보존 |
+| unknown/missing | `turn_completed{status:"failed"}` + `error{recoverable:false}` | closed enum 위반. raw `stopReason`은 진단용으로 보존 |
 
 `usage_update`로 받은 마지막 `TokenUsage`를 `turn_completed.usage`에 동승할 수 있다(15 §3, §5). **ACP `UsageUpdate{used,size}` 매핑(OQ-02 해소)**: `used`→`TokenUsage.contextUsed`, `size`→`TokenUsage.contextSize`로 매핑한다(15 §5 신규 필드 `contextUsed`/`contextSize`, ref-acp §10). 이는 Codex 토큰 축(`inputTokens` 등)과 분리된 **context window 축**이므로 `inputTokens`에 섞지 않는다(15 §5 주의, 08 context gauge). `cost` 등 잔여 필드는 raw 보존. 이 매핑은 `mapSessionUpdate`의 `usage_update` 분기(§5.1)에서 `rt.lastUsage`에 누적해 `turn_completed.usage`로 동승한다.
 
@@ -552,13 +557,13 @@ async function cancelTurn(handle, turnId?) {
 
 **(c) 멱등·정확히 한 번**: exit(`agent-runtime-exit`)으로 인한 pending 종료와 shutdown으로 인한 pending 종료는 **멱등하며 정확히 한 번만** 수행된다. 어댑터는 `agent-runtime-exit` 수신 시 `emit { type:"process_exited", ref, code?, signal? }`하고 남은 pending approval/request를 닫되, 이미 (a)에서 닫힌 항목은 `closing`/closed 표시로 멱등 무시한다(04 §4.2 규칙 4, §5). exit이 shutdown보다 먼저 오든 나중에 오든 같은 pending을 두 번 닫지 않고, 어느 경로로도 빠뜨리지 않는다.
 
-> ACP는 `session/close`(`sessionCapabilities.close`)도 있다(ref-acp §2). 1차는 process shutdown으로 충분하나, 한 process에 여러 session을 둘 경우 session별 close가 필요할 수 있다(`결정 필요`, 13 OQ-44 "session/close 필요성").
+> **OQ-44 해소(v1)**: Claude ACP v1은 **process-per-session** 모델이다. `startSession`/`resumeSession`마다 별도 runtime process를 만들고 `shutdown`은 pending approval/RPC 정리 후 `deps.shutdownRuntime`만 호출한다. 따라서 v1은 `session/close` wire를 보내지 않는다. 한 process에서 여러 ACP session을 multiplex하는 구조를 도입할 때만 `sessionCapabilities.close`와 `session/close`/delete/list/fork capability 처리를 다시 설계한다.
 
 ---
 
 ## 5. session/update variant → AgentEvent 변환
 
-`mapSessionUpdate(rt, update): AgentEvent[]`가 핵심 변환 함수다. discriminant는 `update.sessionUpdate`(snake_case). 런타임 wire에 등장할 수 있는 **정본 variant 집합은 13종**(sdk 0.29.0 schema 기준)이다: `user_message_chunk`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `plan`, `plan_update`, `plan_removed`, `available_commands_update`, `current_mode_update`, `config_option_update`, `session_info_update`, `usage_update`. ref-acp §2(출처별 11/13 분기 — `plan_update`/`plan_removed`는 sdk 0.29.0 전용), ref-claude-agent-acp §2 표(동일 13종)가 권위이며, 매핑 정본은 ref-acp §13.2/§13.3/§13.4다. 작업 지시가 명시한 **8개 핵심 variant**를 우선 구현하고, 나머지(`plan_update`/`plan_removed`/`config_option_update`/`session_info_update`/`usage_update`)는 방어적으로 처리한다.
+`mapSessionUpdate(rt, update): AgentEvent[]`가 핵심 변환 함수다. discriminant는 `update.sessionUpdate`(snake_case). 런타임 wire에 등장할 수 있는 **정본 variant 집합은 13종**(sdk 0.29.0 schema 기준)이다: `user_message_chunk`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `plan`, `plan_update`, `plan_removed`, `available_commands_update`, `current_mode_update`, `config_option_update`, `session_info_update`, `usage_update`. ref-acp §2(출처별 11/13 분기 — `plan_update`/`plan_removed`는 sdk 0.29.0 전용), ref-claude-agent-acp §2 표(동일 13종)가 권위이며, 매핑 정본은 ref-acp §13.2/§13.3/§13.4다. 작업 지시가 명시한 **8개 핵심 variant**를 우선 구현하고, 나머지 보조 variant는 metadata/title/usage 상태 갱신 또는 raw 보존 no-op으로 방어 처리한다.
 
 > **불변식(04 §3.3)**: ACP는 **chunk=append, update=replace** 두 의미가 섞인다. `*_chunk`는 `messageId` 기준 append(값 바뀌면 새 메시지), `tool_call_update.content`/`locations`와 `plan`은 **전체 교체**(replace). adapter는 수신 순서를 보존한다(04 §3.4). 알 수 없는 `session/update` variant(=id 없는 **notification**)는 raw 보존 + counter로 가시화한 뒤 graceful하게 무시한다(응답 불필요, 04 §5, ref-claude-agent-acp §2, ref-acp §2). 단 **id가 있는 server→client REQUEST**는 무응답 폐기하면 안 된다 — 미지원 method라도 반드시 응답한다(§6.4, R5).
 
@@ -572,10 +577,10 @@ async function cancelTurn(handle, turnId?) {
 | `tool_call` | `ToolCall` | `tool_call_updated{update}`(신규 upsert) | toolCallId 기준 신규 생성(§5.4) |
 | `tool_call_update` | `ToolCallUpdate` | `tool_call_updated{update}`(부분 갱신) | toolCallId 기준 upsert. content/locations는 **replace**(§5.4) |
 | `plan` | `Plan` | `plan_updated{entries}` | 전체 교체(§5.5) |
-| `available_commands_update` | `AvailableCommandsUpdate{availableCommands}` | `available_commands_updated{ref, commands: AgentCommand[]}`(신규 event, #2·15) → command palette(§5.6) | 전체 교체 |
-| `current_mode_update` | `CurrentModeUpdate{currentModeId}` | (전용 event 없음) → mode 상태 갱신(§8) | 현재 mode 갱신 |
-| `config_option_update` | `ConfigOptionUpdate{configOptions}` | (전용 event 없음) → config 상태 갱신(§8) | 전체 set 교체 |
-| `session_info_update` | `SessionInfoUpdate{title?,updatedAt?}` | (전용 event 없음) → 세션 title 갱신 | null=clear |
+| `available_commands_update` | `AvailableCommandsUpdate{availableCommands}` | `available_commands_updated{ref, commands: AgentCommand[]}`(15 §3) → command palette(§5.6). command name은 trim + 선두 `/` 제거 | 전체 교체 |
+| `current_mode_update` | `CurrentModeUpdate{currentModeId}` | `runtime_metadata_changed{metadata:{sessionMode,permissionMode}}`(15 §3) + mode 상태 갱신(§8) | 현재 mode 갱신 |
+| `config_option_update` | `ConfigOptionUpdate{configOptions}` | `mode.currentValue`가 있으면 `runtime_metadata_changed{metadata:{sessionMode,permissionMode}}`(15 §3) + config 상태 갱신(§8) | 전체 set 교체 |
+| `session_info_update` | `SessionInfoUpdate{title?,updatedAt?}` | `session_title_changed{title}`(15 §3) → 앱 session title 갱신. `updatedAt`은 `ProviderRef.raw.updatedAt` 보존 | null=clear |
 | `usage_update` | `UsageUpdate{used,size,cost?}` | `used`→`TokenUsage.contextUsed`, `size`→`contextSize`(OQ-02 해소, 15 §5); `turn_completed.usage` 동승용 `rt.lastUsage` 보관(§3.6) | 최신값 보관 |
 | `plan_update`/`plan_removed` | — | 어댑터 미관측(ref-claude-agent-acp §2) → 방어적 무시 또는 raw | — |
 
@@ -668,7 +673,8 @@ slash command 목록(ref-acp §10 `AvailableCommand{name,description,input?}`). 
 function mapAvailableCommands(rt, update): AgentEvent {
   // update.availableCommands: AvailableCommand[] (ref-acp §10)
   const commands: AgentCommand[] = update.availableCommands.map((c) => ({  // 15 신규 타입
-    name: c.name,
+    // 15 AgentCommand.name 정본은 선두 "/" 없는 이름이다.
+    name: normalizeCommandName(c.name),
     description: c.description,
     // AvailableCommandInput은 anyOf — 현재 UnstructuredCommandInput(hint string)만 정의.
     // unstructured면 hint를 inputHint로 추출, 그 외/미지 variant는 방어적으로 무시(inputHint 생략, ref-acp §10 §566-569).
@@ -679,8 +685,9 @@ function mapAvailableCommands(rt, update): AgentEvent {
 ```
 
 - **전체 교체**: 매 update는 현재 가용 command 전체 set이다(증분 아님, ref-acp §10). store는 이 commands로 palette 상태를 교체한다.
+- command `name`은 15 정본에 맞춰 trim 후 선두 `/`를 제거한다. provider가 `/compact`처럼 slash 포함 이름을 보내도 내부 `AgentCommand.name`은 `compact`이며 composer는 표시/삽입 시 `//compact`를 만들지 않는다.
 - `AvailableCommandInput`은 anyOf로 확장 가능하다 — 현재 `UnstructuredCommandInput`(`{hint: string}`)만 정의돼 있으므로 **`hint`만 `inputHint`로 추출**하고, 알 수 없는 variant는 `inputHint` 없이 방어적으로 무시한다(ref-acp §10 §566-569, 04 §5 unknown-variant 방어).
-- **로컬 처리 slash command** `/context`·`/heapdump`·`/extra-usage`(ref-claude-agent-acp §2 `LOCAL_ONLY_COMMANDS`)는 별도 취급(모델 호출 없이 어댑터가 로컬 처리). composer의 로컬 `/resume`(→ `port.resumeSession`, §3.5)·`@` mention(embeddedContext capability 게이트, §7.1)·`$`(v1 보류) 정책은 08 §6.6/13 OQ-56 소관.
+- **로컬 처리 slash command** `/context`·`/heapdump`·`/extra-usage`(ref-claude-agent-acp §2 `LOCAL_ONLY_COMMANDS`)는 별도 취급(모델 호출 없이 어댑터가 로컬 처리). composer의 로컬 `/resume`은 v1에서 draft를 `/resume `로 채우는 평문 prompt command이며, `port.resumeSession` 직접 호출은 host mount lifecycle 경로(§3.5)로만 수행된다. `@` mention(resource link baseline + embeddedContext gate, §7.1)·`$`(v1 보류) 정책은 08 §6.6/13 OQ-56 소관.
 
 ---
 
@@ -819,10 +826,12 @@ CLCOMX composer는 `AgentContent[]`(15 §4)를 만들고 어댑터가 ACP `Conte
 |---|---|---|
 | `text` | `{type:"text", text}` | baseline(항상) |
 | `image{uri,mimeType}` | `{type:"image", data(base64), mimeType, uri?}` | `promptCapabilities.image`(0.51.0=true). 어댑터는 base64 `data` 필요 → uri에서 읽어 base64 인코딩(§7.3) |
-| `resource{uri,mimeType?,text?}` | `{type:"resource_link", name, uri}` 또는 `{type:"resource", resource:{uri,mimeType?,text?}}` | embedded context는 `promptCapabilities.embeddedContext`(0.51.0=true) |
+| `resource{uri,mimeType?}` | `{type:"resource_link", name, uri}` | baseline(항상). ref-acp §3.6 baseline은 `text`/`resource_link` |
+| `resource{uri,mimeType?,text}` | `{type:"resource", resource:{uri,mimeType?,text}}` | embedded content는 `promptCapabilities.embeddedContext`(0.51.0=true) |
 
 - 상대 경로는 UI 표시에만 쓰고 ACP wire에는 **absolute path 또는 file URI로 정규화**(§7.3, ref-acp §1 "모든 파일 경로 absolute MUST").
 - `image`는 capability와 adapter 지원 확인 후에만 활성화. capability false면 composer에서 첨부 비활성(`promptImage`, §3.2).
+- `embeddedContext=false`여도 text 없는 `resource`는 baseline `resource_link`로 보존한다. text 포함 resource만 embedded context로 간주해 capability false일 때 전송 전 gate한다.
 
 ### 7.2 ACP ContentBlock → AgentContent (`mapContentBlock`)
 
@@ -831,13 +840,13 @@ CLCOMX composer는 `AgentContent[]`(15 §4)를 만들고 어댑터가 ACP `Conte
 | ACP | AgentContent(15 §4) | 비고 |
 |---|---|---|
 | `text` | `{type:"text", text}` | |
-| `image{data,mimeType}` | `{type:"image", uri, mimeType}` | ACP는 base64 `data` → adapter가 data URI(`data:<mime>;base64,...`) 또는 저장 후 uri 생성(15 §4, ref-acp §13.2) |
-| `audio` | (모델에 없음, 15 §4) | **gap**: 미지원/raw 보존(결정 필요 → 13) |
+| `image{data,mimeType}` | `{type:"image", uri, mimeType}` | ACP는 base64 `data` → v1 adapter는 data URI(`data:<mime>;base64,...`)로 보존한다. provider `uri`가 있으면 그것을 우선한다(15 §4, ref-acp §13.2, 13 OQ-12 해소). |
+| `audio` | `{type:"json", value:<raw audio block>}` | v1 미지원이지만 drop하지 않고 raw JSON으로 보존(13 OQ-04 해소) |
 | `resource_link{name,uri,mimeType?}` | `{type:"resource", uri, mimeType?}` | |
 | `resource`(embedded text) | `{type:"resource", uri, mimeType?, text}` | |
 | `resource`(embedded blob) | `{type:"resource", uri, mimeType?}` | blob은 별도 보존(raw) |
-| ToolCallContent `diff{path,oldText,newText}` | `{type:"diff", path, patch}` | adapter가 oldText/newText로 unified patch 생성. oldText=null → 신규 파일(ref-acp §13.5) |
-| ToolCallContent `terminal` | `{type:"terminal", output}` | terminalId로 output 조회(client terminal capability 필요, 1차 미사용 §3.2) |
+| ToolCallContent `diff{path,oldText,newText}` | `{type:"diff", path, patch}` | adapter가 oldText/newText로 unified patch 생성. `oldText=null` → 신규 파일(ref-acp §13.5). `@agentclientprotocol/claude-agent-acp@0.51.0` `dist/tools.js`의 `Write`/`Edit`/`structuredPatch` 출력 shape와 정합(OQ-45 해소) |
+| ToolCallContent `terminal` | `{type:"terminal", output}` | v1은 `terminal_output` capability 미광고라 provider는 보통 console code block text fallback을 보낸다(OQ-43). capability를 켜면 `dist/tools.js`가 `_meta.terminal_info`/`terminal_output`/`terminal_exit`를 보낼 수 있으므로 별도 매핑이 필요 |
 
 ### 7.3 WSL/path 정규화 (absolute 필수)
 
@@ -872,7 +881,7 @@ function buildSetMode(id, sessionId, modeId): JsonRpcMessage {
 }
 ```
 
-> CLCOMX 모델에는 mode 전용 `AgentEvent`가 없다(ref-acp §13.1 "current_mode_update → 직접 매핑 event 없음, metadata 보존"). mode는 어댑터/store 내부 상태 + `AgentRuntimeMetadata`(또는 UI mode selector)로 surface한다. UI 노출은 [`08-ui-composition.md`](08-ui-composition.md) 소관.
+> CLCOMX transcript 모델에는 mode 전용 항목을 쌓지 않는다. 대신 `current_mode_update`와 `config_option_update`의 `mode` currentValue는 `runtime_metadata_changed` event로 `AgentRuntimeMetadata.permissionMode`/`sessionMode`에 반영한다(ref-acp §10·§13.1, ref-claude-agent-acp §2·§3). UI 노출은 [`08-ui-composition.md`](08-ui-composition.md) 소관.
 
 ### 8.2 set_config_option
 
@@ -934,7 +943,7 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 ### 11.1 단위 테스트 (순수 매핑)
 
 - `mapSessionUpdate`: 8개 핵심 variant 각각 fixture → 기대 `AgentEvent[]` 검증. messageId 그룹핑(바뀌면 새 메시지, §5.2), tool_call_update content **replace**(§5.4), plan 전체 교체(§5.5).
-- `mapSessionUpdate`(`available_commands_update`): `available_commands_updated{commands: AgentCommand[]}` emit 검증(#2, §5.6). `UnstructuredCommandInput.hint`만 `AgentCommand.inputHint`로 추출되고, 미지 `AvailableCommandInput` variant는 `inputHint` 없이 방어적 무시되는지(ref-acp §10 §566-569). 전체 set 교체.
+- `mapSessionUpdate`(`available_commands_update`): `available_commands_updated{commands: AgentCommand[]}` emit 검증(#2, §5.6). command `name`은 선두 `/` 없는 15 정본으로 정규화되고, `UnstructuredCommandInput.hint`만 `AgentCommand.inputHint`로 추출되며, 미지 `AvailableCommandInput` variant는 `inputHint` 없이 방어적 무시되는지(ref-acp §10 §566-569). 전체 set 교체.
 - `mapRequestPermission`/`buildPermissionResponse`: option kind 1:1, selected/cancelled wire shape(§6, ref-acp §6). **rpcId 타입 보존**: numeric id(예: `42`)로 온 request_permission에 대해 wire 응답 `id`가 `42`(number)로 유지되는지(String `"42"` 금지, R3). `ApprovalRequest.id`/`ProviderRef.requestId`는 `"42"`(문자열 키)인지. **`ApprovalRequest.severity` 분류**: 기본값이 `"normal"`(inline)이고, 09 §8.3 고위험 신호(`bypassPermissions` 진입/해당 모드 approval, `ExitPlanMode`의 `bypassPermissions` 옵션 노출 승인)에서는 `classifySeverity`가 `"escalation"`(modal)을 돌려주는지(§6.1, OQ-47, 08 §4.4 modal 분기 정합).
 - `mapContentBlock`/`toAcpPromptContent`: image base64↔uri, diff patch 생성, path absolute 정규화(§7).
 - `buildInitializeRequest`/`parseInitializeResponse`: protocolVersion=1 검증, capability 위치 비대칭(loadSession top-level vs resume in sessionCapabilities, §3.2).
@@ -966,19 +975,19 @@ co-located vitest + `vi.fn()` deps 모킹([`research/codebase-frontend.md`](rese
 
 ## 12. 미확인 / 결정 필요 (→ [13](13-risks-open-questions.md))
 
-본 문서에서 확정하지 못해 [`13-risks-open-questions.md`](13-risks-open-questions.md)로 라우팅하는 항목:
+본 문서에서 한때 미확인/결정 필요로 라우팅했던 항목의 현재 상태다. 해소된 항목은 구현 정본과 증거를 적고, 아직 남은 범위는 [`13-risks-open-questions.md`](13-risks-open-questions.md)의 해당 OQ를 따른다.
 
-1. **node/entry 경로 resolve 세부 방식**(§2.2): resolve **주체는 backend로 확정**(S1, R4 — renderer는 command 비제어, `adapterEntryPath`도 backend resolve/검증). 남은 결정은 backend resolve 방식(번들 vs WSL 글로벌 설치 vs `wsl.exe` 1회 resolve+캐시)·캐시 무효화·`adapterEntryPath` 탐색 방식이다. 1차 권고 backend resolve+캐시.
+1. ~~**node/entry 경로 resolve 세부 방식**(§2.2, 13 OQ-36)~~: **해소됨** — resolve 주체는 backend(`agent_runtime/resolver.rs`)이고, cache key는 `(provider,distro)`, 프로세스 수명 in-memory cache, TTL 없음, `clear()` 명시 무효화다. Claude executable은 WSL 내부 `command -v node`, adapter entry는 pinned `node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js` 레이아웃만 신뢰한다. 배포 대상의 node/claude/native binary 차이는 OQ-10에 남긴다.
 2. ~~**WSL launch 셸**(§2.3)~~: **해소됨** — 정본은 로그인 셸 비경유 `wsl.exe -d <distro> --cd <wslWorkDir> -e env ... <node> <entry>` 형태(D8, 07 §5.1). 셸 startup 출력이 없으므로 stdout framing 오염 우려 없음. OQ-27(cwd=--cd)·OQ-28(env=env 바이너리)도 함께 해소.
 3. **인증 1차 범위**(§3.3): v1은 **WSL 측 자체 인증(`claude login`/config) 의존 + secret env 미전달**이 정본이다(C1, 07 §5.1). gateway 등으로 API key가 꼭 필요하면 launch argv(`-e env`)가 아니라 backend `Command::env()`+`WSLENV` secret 경로로만 주입(argv 비경유). terminal/gateway interactive auth는 후속. WSL SSH env 오판 위험은 잔존.
-4. **client capability 1차 값**(§3.2): `fs`/`terminal`/`terminal_output`/`elicitation` 모두 false 시작 — `AskUserQuestion`/command terminal surface UX 영향.
+4. ~~**client capability 1차 값**(§3.2, 13 OQ-43)~~: **해소됨** — `fs`/`terminal`/`terminal_output`/`terminal-auth`/gateway auth/`elicitation` 모두 미광고로 시작한다. `AskUserQuestion`/command terminal surface는 후속 UX·보안 설계에서 capability를 켠다.
 5. ~~**agent_thought_chunk 정책**(§5.3)~~: **해소됨** — reasoning/thinking은 `agent_message`/`agent_message_delta`의 `channel:"thought"`로 누적, UI는 접이식 thinking 블록(기본 collapsed)으로 렌더(D11, 15 §3·04 §3.2.2/§3.2.5·13 OQ-01/RD-13).
-6. **audio content**(§7.2): 미지원/raw 보존(모델 gap, 15 §4).
-7. **sdk 타입 의존 방식**(§1.2, 13 OQ-42): frontend가 `@agentclientprotocol/sdk` 타입 의존 vs 부분 미러. 1차 권고 부분 미러.
-8. **session/close 필요성**(§4.4, 13 OQ-44): 멀티세션 시 session별 close.
+6. ~~**audio content**(§7.2, 13 OQ-04)~~: **해소됨** — v1 composer capability는 false지만 inbound audio는 `{type:"json"}` raw 블록으로 보존하고 text delta 경로로 새지 않는다.
+7. ~~**sdk 타입 의존 방식**(§1.2, 13 OQ-42)~~: **해소됨** — frontend/direct adapter는 sdk를 import하지 않고 `contracts/claude-acp.ts` 부분 wire mirror를 사용한다.
+8. ~~**session/close 필요성**(§4.4, 13 OQ-44)~~: **해소됨(v1)** — process-per-session이라 shutdown은 process shutdown만 사용하고 `session/close` wire를 보내지 않는다.
 8b. **approval severity escalation 매핑**(§6.1, 13 OQ-47): v1 기본 severity는 `"normal"`(inline)이되, 09 §8.3 고위험 집합(`bypassPermissions` 진입/해당 모드 approval, `ExitPlanMode`의 `bypassPermissions` 옵션 노출 승인)은 v1부터 `severity:"escalation"`(modal)이다(§6.1 `classifySeverity`). 감지 wire 신호가 불명확한 추가 escalation 신호(protected path 등) 확대만 후속(OQ-47 잔여) — **"v1 전부 normal"로 단정하지 않는다**. (OQ-02 ACP `usage_update`→`contextUsed`/`contextSize` 매핑은 §3.6/§5.1에서 **해소**, 15 §5.)
-9. **0.50.0↔0.51.0 capability diff**(ref-claude-agent-acp §6): CHANGELOG 미인용.
-10. **`src/tools.ts` tool content/diff 세부 매핑**·`SettingsManager.filterEscalatingDefaultMode` 동작(ref-claude-agent-acp §6 미확인, 13 OQ-45): 구현 시 1차 소스 재확인.
+9. ~~**0.50.0↔0.51.0 capability diff**(ref-claude-agent-acp §6)~~: **해소됨(OQ-08)** — v1은 0.50.0 조사값을 버리고 exact `@agentclientprotocol/claude-agent-acp@0.51.0` + transitive `@agentclientprotocol/sdk@0.29.0` package schema/dist를 구현 기준으로 삼는다. 0.51.0 initialize capability(`loadSession`, `sessionCapabilities.resume`, `promptCapabilities.image/embeddedContext`)는 응답 파싱 테스트와 fixture replay로 고정한다. 0.50.0 CHANGELOG 비교는 dependency refresh 때 OQ-41 절차로만 다시 본다.
+10. ~~**`src/tools.ts` tool content/diff 세부 매핑**·`SettingsManager.filterEscalatingDefaultMode` 동작(ref-claude-agent-acp §6, 13 OQ-45)~~: **해소됨** — npm tarball에는 `src/`가 없어 `dist/tools.js`/`dist/settings.js`로 확인했다. diff shape는 `ToolCallContent{type:"diff", path, oldText, newText}`, structuredPatch는 여러 diff content, settings는 `resolveSettings` 후 `filterEscalatingDefaultMode` 적용.
 
 ---
 

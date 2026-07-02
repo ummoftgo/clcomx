@@ -5,9 +5,14 @@
  * RPC request는 method별로 응답을 자동/수동 주입해 lifecycle을 진행한다.
  */
 import { describe, expect, it, vi } from "vitest";
-import { createClaudeAcpAdapter } from "./claude-acp-adapter";
+import {
+  createClaudeAcpAdapter,
+  getClaudeAcpUnknownNotificationCount,
+  getClaudeAcpUnknownNotificationRawPayloads,
+  resetClaudeAcpUnknownNotifications,
+} from "./claude-acp-adapter";
 import type { ClaudeAcpAdapterDeps } from "../../contracts/claude-acp";
-import type { AgentEvent } from "../../contracts/normalized";
+import type { AgentContent, AgentEvent } from "../../contracts/normalized";
 import type { AgentRuntimeEvent, JsonRpcMessage, RuntimeId } from "../../service/transport";
 
 /** 모킹 transport 하네스. */
@@ -66,12 +71,138 @@ function makeHarness() {
 }
 
 /** initialize + session/new 까지 진행해 ready 상태로 만든다. */
-async function startReady(h: ReturnType<typeof makeHarness>, adapter: ReturnType<typeof createClaudeAcpAdapter>, _events: AgentEvent[]) {
+async function startReady(
+  h: ReturnType<typeof makeHarness>,
+  adapter: ReturnType<typeof createClaudeAcpAdapter>,
+  _events: AgentEvent[],
+  agentCapabilities: Record<string, unknown> = { loadSession: true, sessionCapabilities: { resume: {} } },
+) {
   const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
-  await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+  await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities });
   await h.respondToLast("session/new", { sessionId: "sess-1" });
   return startPromise;
 }
+
+function modeConfig(currentValue: string) {
+  return {
+    id: "mode",
+    name: "Mode",
+    type: "select",
+    currentValue,
+    options: [
+      { id: "default", name: "Default" },
+      { id: "acceptEdits", name: "Accept edits" },
+      { id: "bypassPermissions", name: "Bypass permissions" },
+      { id: "plan", name: "Plan" },
+    ],
+  };
+}
+
+type RuntimeMetadataEvent = {
+  type: "runtime_metadata_changed";
+  metadata: {
+    sessionMode?: string;
+    permissionMode?: string;
+  };
+};
+
+function metadataEvents(events: AgentEvent[]): RuntimeMetadataEvent[] {
+  return events.filter((e) => (e as { type: string }).type === "runtime_metadata_changed") as unknown as RuntimeMetadataEvent[];
+}
+
+function lastMetadataEvent(events: AgentEvent[]): RuntimeMetadataEvent | undefined {
+  const matches = metadataEvents(events);
+  return matches[matches.length - 1];
+}
+
+describe("Claude ACP adapter — mode metadata (09 §8)", () => {
+  it("returns Claude session and permission mode metadata from session/new", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "plan", availableModes: [{ id: "plan", name: "Plan" }] },
+      configOptions: [modeConfig("plan")],
+    });
+
+    const result = await startPromise;
+    expect(result.sessionMode).toBe("plan");
+    expect(result.permissionMode).toBe("plan");
+  });
+
+  it("returns prompt composer capabilities from initialize", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({
+      sessionHandle: "A",
+      provider: "claude",
+      distro: "Ubuntu",
+      workDir: "/home/u/proj",
+    });
+
+    await h.respondToLast("initialize", {
+      protocolVersion: 1,
+      agentCapabilities: {
+        promptCapabilities: { image: true, embeddedContext: true },
+      },
+    });
+    await h.respondToLast("session/new", { sessionId: "sess-1" });
+
+    const result = await startPromise;
+    expect(result.composerCapabilities).toEqual({
+      image: true,
+      embeddedContext: true,
+      audio: false,
+    });
+  });
+
+  it("emits metadata updates for current_mode_update", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "sess-1",
+        update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" },
+      },
+    });
+
+    expect(lastMetadataEvent(events)?.metadata).toMatchObject({
+      sessionMode: "bypassPermissions",
+      permissionMode: "bypassPermissions",
+    });
+  });
+
+  it("emits metadata updates for config_option_update mode currentValue", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "sess-1",
+        update: { sessionUpdate: "config_option_update", configOptions: [modeConfig("acceptEdits")] },
+      },
+    });
+
+    expect(lastMetadataEvent(events)?.metadata).toMatchObject({
+      sessionMode: "acceptEdits",
+      permissionMode: "acceptEdits",
+    });
+  });
+});
 
 describe("Claude ACP adapter — lifecycle (CL-4/CL-7/CL-8)", () => {
   it("startSession → initialize → session/new → session_started + ready", async () => {
@@ -129,6 +260,167 @@ describe("Claude ACP adapter — lifecycle (CL-4/CL-7/CL-8)", () => {
     expect(events.some((e) => e.type === "session_status_changed" && e.status === "idle")).toBe(true);
   });
 
+  it("OQ-57: optimistic user echo preserves original non-text content and unique turn message ids", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, [], {
+      loadSession: true,
+      sessionCapabilities: { resume: {} },
+      promptCapabilities: { image: true, embeddedContext: true },
+    });
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    const originalContent: AgentContent[] = [
+      { type: "image", uri: "data:image/png;base64,QUJD", mimeType: "image/png" },
+      { type: "resource", uri: "file:///home/u/proj/a.txt", text: "body" },
+    ];
+    const firstPrompt = adapter.sendPrompt("A", { content: originalContent });
+    await Promise.resolve();
+    const firstEcho = events.find((e) => e.type === "user_message");
+    expect(firstEcho).toMatchObject({
+      type: "user_message",
+      ref: { turnId: "sess-1:t1", messageId: "sess-1:t1:u" },
+      content: originalContent,
+      mode: "replace",
+    });
+    await h.respondToLast("session/prompt", { stopReason: "end_turn" });
+    await firstPrompt;
+
+    const secondPrompt = adapter.sendPrompt("A", { content: [{ type: "text", text: "next" }] });
+    await Promise.resolve();
+    const userEchoes = events.filter((e) => e.type === "user_message");
+    expect(userEchoes).toHaveLength(2);
+    expect(userEchoes[1].ref.messageId).toBe("sess-1:t2:u");
+    expect(userEchoes[1].ref.messageId).not.toBe(userEchoes[0].ref.messageId);
+    await h.respondToLast("session/prompt", { stopReason: "end_turn" });
+    await secondPrompt;
+  });
+
+  it("gates image and resource prompt content with ACP promptCapabilities", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, [], {
+      loadSession: true,
+      sessionCapabilities: { resume: {} },
+      promptCapabilities: { image: false, embeddedContext: false },
+    });
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    const prompt = adapter.sendPrompt("A", {
+      content: [
+        { type: "text", text: "keep" },
+        { type: "image", uri: "data:image/png;base64,QUJD", mimeType: "image/png" },
+        { type: "resource", uri: "file:///home/u/proj/a.txt", text: "body" },
+      ],
+    });
+
+    const promptRequest = await h.waitForOutbound("session/prompt") as {
+      params: { prompt: unknown[] };
+    };
+    expect(promptRequest.params.prompt).toEqual([{ type: "text", text: "keep" }]);
+    const echo = events.find((e) => e.type === "user_message");
+    expect(echo).toMatchObject({
+      type: "user_message",
+      content: [{ type: "text", text: "keep" }],
+    });
+
+    await h.respondToLast("session/prompt", { stopReason: "end_turn" });
+    await prompt;
+  });
+
+  it("preserves link-only ACP resources without embeddedContext capability", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, [], {
+      loadSession: true,
+      sessionCapabilities: { resume: {} },
+      promptCapabilities: { image: false, embeddedContext: false },
+    });
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    const prompt = adapter.sendPrompt("A", {
+      content: [
+        { type: "resource", uri: "file:///home/u/proj/a.txt", mimeType: "text/plain" },
+        { type: "resource", uri: "file:///home/u/proj/b.txt", text: "embedded" },
+      ],
+    });
+
+    const promptRequest = await h.waitForOutbound("session/prompt") as {
+      params: { prompt: unknown[] };
+    };
+    expect(promptRequest.params.prompt).toEqual([
+      {
+        type: "resource_link",
+        name: "file:///home/u/proj/a.txt",
+        uri: "file:///home/u/proj/a.txt",
+        mimeType: "text/plain",
+      },
+    ]);
+    const echo = events.find((e) => e.type === "user_message");
+    expect(echo).toMatchObject({
+      type: "user_message",
+      content: [{ type: "resource", uri: "file:///home/u/proj/a.txt", mimeType: "text/plain" }],
+    });
+
+    await h.respondToLast("session/prompt", { stopReason: "end_turn" });
+    await prompt;
+  });
+
+  it("OQ-56: ACP provider-backed resource search is explicitly unsupported in v1", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    h.outbound.length = 0;
+
+    const results = await adapter.searchResources!("A", {
+      query: "app",
+      workDir: "/home/u/proj",
+      limit: 8,
+    });
+
+    expect(results).toEqual([]);
+    expect(h.outbound).toEqual([]);
+  });
+
+  it("does not send an empty ACP prompt when every content item is gated out", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, [], {
+      loadSession: true,
+      sessionCapabilities: { resume: {} },
+      promptCapabilities: { image: false, embeddedContext: false },
+    });
+    h.outbound.length = 0;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    const prompt = adapter.sendPrompt("A", {
+      content: [
+        { type: "image", uri: "data:image/png;base64,QUJD", mimeType: "image/png" },
+        { type: "resource", uri: "file:///home/u/proj/a.txt", text: "body" },
+      ],
+    });
+    await Promise.resolve();
+    const sentPrompt = h.outbound.some((m) => "method" in m && m.method === "session/prompt");
+    if (sentPrompt) {
+      await h.respondToLast("session/prompt", { stopReason: "end_turn" });
+      await prompt;
+    }
+
+    expect(sentPrompt).toBe(false);
+    expect(events.some((e) => e.type === "user_message")).toBe(false);
+    expect(events.some((e) => e.type === "session_status_changed" && e.status === "running")).toBe(false);
+    expect(events).toContainEqual({
+      type: "error",
+      ref: { provider: "claude", sessionId: "sess-1", turnId: undefined },
+      message: "prompt content is not supported by this ACP session",
+      recoverable: true,
+    });
+  });
+
   it("maps available_commands_update → available_commands_updated (name 필수, input.hint 추출, 미지 무시)", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
@@ -145,6 +437,7 @@ describe("Claude ACP adapter — lifecycle (CL-4/CL-7/CL-8)", () => {
           sessionUpdate: "available_commands_update",
           availableCommands: [
             { name: "compact", description: "Compact context", input: { hint: "<turns>" } },
+            { name: "/review", description: "Review changes" },
             { name: "plan" },
             { description: "no name — ignored" },
             { name: "" },
@@ -158,8 +451,37 @@ describe("Claude ACP adapter — lifecycle (CL-4/CL-7/CL-8)", () => {
     if (evt?.type !== "available_commands_updated") throw new Error("unreachable");
     expect(evt.commands).toEqual([
       { name: "compact", description: "Compact context", inputHint: "<turns>" },
+      { name: "review", description: "Review changes", inputHint: undefined },
       { name: "plan", description: undefined, inputHint: undefined },
     ]);
+  });
+
+  it("maps session_info_update title to a session title event", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "sess-1",
+        update: {
+          sessionUpdate: "session_info_update",
+          title: "Provider title",
+          updatedAt: "2026-06-28T00:00:00.000Z",
+        },
+      },
+    });
+
+    const evt = events.find((e) => (e as { type: string }).type === "session_title_changed");
+    expect(evt).toMatchObject({
+      type: "session_title_changed",
+      ref: { provider: "claude", sessionId: "sess-1", raw: { updatedAt: "2026-06-28T00:00:00.000Z" } },
+      title: "Provider title",
+    });
   });
 
   it("CL-9: stopReason=cancelled → turn_completed{cancelled}", async () => {
@@ -173,6 +495,87 @@ describe("Claude ACP adapter — lifecycle (CL-4/CL-7/CL-8)", () => {
     await h.respondToLast("session/prompt", { stopReason: "cancelled" });
     await p;
     expect(events.some((e) => e.type === "turn_completed" && e.status === "cancelled")).toBe(true);
+  });
+
+  it("CL-10: stopReason=refusal → completed + raw stopReason for UI notice", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+    const p = adapter.sendPrompt("A", { content: [{ type: "text", text: "x" }] });
+    await Promise.resolve();
+    await h.respondToLast("session/prompt", { stopReason: "refusal" });
+    await p;
+
+    const completed = events.find((e) => e.type === "turn_completed") as
+      | Extract<AgentEvent, { type: "turn_completed" }>
+      | undefined;
+    expect(completed).toMatchObject({
+      type: "turn_completed",
+      status: "completed",
+      ref: { raw: { stopReason: "refusal" } },
+    });
+    expect(
+      events.some(
+        (e) =>
+          e.type === "session_status_changed" &&
+          e.status === "idle" &&
+          e.reason === "refusal",
+      ),
+    ).toBe(true);
+  });
+
+  it("CL-11: stopReason=max_tokens → completed + raw stopReason", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+    const p = adapter.sendPrompt("A", { content: [{ type: "text", text: "x" }] });
+    await Promise.resolve();
+    await h.respondToLast("session/prompt", { stopReason: "max_tokens" });
+    await p;
+
+    const completed = events.find((e) => e.type === "turn_completed") as
+      | Extract<AgentEvent, { type: "turn_completed" }>
+      | undefined;
+    expect(completed).toMatchObject({
+      type: "turn_completed",
+      status: "completed",
+      ref: { raw: { stopReason: "max_tokens" } },
+    });
+  });
+
+  it("CL-11b: unknown stopReason → failed turn + unrecoverable protocol error", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+    const p = adapter.sendPrompt("A", { content: [{ type: "text", text: "x" }] });
+    await Promise.resolve();
+    await h.respondToLast("session/prompt", { stopReason: "unknown_stop" });
+    await p;
+
+    const completed = events.find((e) => e.type === "turn_completed") as
+      | Extract<AgentEvent, { type: "turn_completed" }>
+      | undefined;
+    expect(completed).toMatchObject({
+      type: "turn_completed",
+      status: "failed",
+      ref: { raw: { stopReason: "unknown_stop" } },
+    });
+
+    const protocolError = events.find((e) => e.type === "error") as
+      | Extract<AgentEvent, { type: "error" }>
+      | undefined;
+    expect(protocolError).toMatchObject({
+      type: "error",
+      recoverable: false,
+      ref: { raw: { stopReason: "unknown_stop" } },
+    });
+    expect(protocolError?.message).toContain("unknown_stop");
   });
 
   it("idle 중 늦게 도착한 update는 ref.turnId undefined", async () => {
@@ -248,6 +651,41 @@ describe("Claude ACP adapter — permission + cancel (CL-19/CL-22, 04 §4.2)", (
     expect(events.some((e) => e.type === "approval_resolved")).toBe(true);
   });
 
+  it("NM-20: respondApproval(failed)는 provider wire로 전송하지 않는다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    adapter.subscribeEvents("A", () => undefined);
+    h.inject({ jsonrpc: "2.0", id: 42, method: "session/request_permission", params: { sessionId: "sess-1", toolCall: { toolCallId: "tc1", title: "Edit" }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] } });
+    h.outbound.length = 0;
+
+    await adapter.respondApproval("A", { requestId: "42", outcome: "failed" });
+
+    expect(h.outbound).toEqual([]);
+  });
+
+  it("SEC-APPROVAL: unknown optionId is rejected before provider wire", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    adapter.subscribeEvents("A", () => undefined);
+    h.inject({ jsonrpc: "2.0", id: 42, method: "session/request_permission", params: { sessionId: "sess-1", toolCall: { toolCallId: "tc1", title: "Edit" }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] } });
+    h.outbound.length = 0;
+
+    await expect(
+      adapter.respondApproval("A", { requestId: "42", outcome: "selected", optionId: "not-shown" }),
+    ).rejects.toThrow("unknown approval optionId");
+
+    expect(h.outbound).toEqual([]);
+
+    await adapter.respondApproval("A", { requestId: "42", outcome: "selected", optionId: "allow" });
+    expect(h.outbound[0]).toEqual({
+      jsonrpc: "2.0",
+      id: 42,
+      result: { outcome: { outcome: "selected", optionId: "allow" } },
+    });
+  });
+
   it("CL-22: cancelTurn → pending approval cancelled wire 먼저, 그 다음 session/cancel (approval-first)", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
@@ -268,7 +706,8 @@ describe("Claude ACP adapter — permission + cancel (CL-19/CL-22, 04 §4.2)", (
     const cancelIdx = after.findIndex((m) => "method" in m && m.method === "session/cancel");
     const respIdx = after.findIndex((m) => "result" in m && (m as { id?: unknown }).id === 7);
     expect(respIdx).toBeLessThan(cancelIdx); // approval-first
-    expect(events.some((e) => e.type === "approval_resolved" && (e as { decision: { outcome: string } }).decision.outcome === "cancelled")).toBe(true);
+    const resolved = events.find((e) => e.type === "approval_resolved" && (e as { decision: { outcome: string } }).decision.outcome === "cancelled");
+    expect(resolved).toMatchObject({ decidedBy: "cleanup" });
 
     // prompt 응답 정리.
     await h.respondToLast("session/prompt", { stopReason: "cancelled" });
@@ -386,6 +825,24 @@ describe("Claude ACP adapter — unsupported request / framing (CL-24b/CL-25/CL-
     h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "plan_removed", id: "p1" } } });
     expect(h.outbound.length).toBe(before); // 응답 없음
   });
+
+  it("CL-27b: 미지원 notification raw payload를 adapter 진단 카운터에 보존한다", async () => {
+    resetClaudeAcpUnknownNotifications();
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    const before = h.outbound.length;
+
+    h.inject({ jsonrpc: "2.0", method: "window/show_message", params: { message: "hello" } });
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1" } });
+
+    expect(h.outbound.length).toBe(before);
+    expect(getClaudeAcpUnknownNotificationCount()).toBe(2);
+    expect(getClaudeAcpUnknownNotificationRawPayloads()).toEqual([
+      { method: "window/show_message", params: { message: "hello" } },
+      { method: "session/update", params: { sessionId: "sess-1" } },
+    ]);
+  });
 });
 
 describe("Claude ACP adapter — protocol error + shutdown (CL-3, S3)", () => {
@@ -401,20 +858,105 @@ describe("Claude ACP adapter — protocol error + shutdown (CL-3, S3)", () => {
     expect(events.some((e) => e.type === "session_status_changed" && e.status === "failed")).toBe(true);
   });
 
-  it("shutdown: pending approval cancelled wire 전송 → shutdownRuntime await → unlisten 순서", async () => {
+  it("shutdown: pending approval/RPC 정리 → shutdownRuntime await → unlisten, late exit 멱등", async () => {
+    const order: string[] = [];
     const h = makeHarness();
+    const realSend = h.deps.sendMessage;
+    h.deps.sendMessage = vi.fn(async (rid, message) => {
+      if ("result" in message && (message as { id?: unknown }).id === 5) {
+        order.push("approval-cancelled");
+      }
+      await realSend(rid, message);
+    });
+    let releaseShutdown: () => void = () => {};
+    const shutdownRuntime = vi.fn(async () => {
+      order.push("backend-shutdown");
+      await new Promise<void>((resolve) => {
+        releaseShutdown = resolve;
+      });
+    });
+    h.deps.shutdownRuntime = shutdownRuntime;
     const adapter = createClaudeAcpAdapter(h.deps);
     await startReady(h, adapter, []);
     const events: AgentEvent[] = [];
     adapter.subscribeEvents("A", (e) => events.push(e));
+    const promptPromise = adapter.sendPrompt("A", { content: [{ type: "text", text: "pending RPC" }] });
+    const promptRejected = expect(promptPromise).rejects.toThrow("runtime closed before session/prompt response");
+    await h.waitForOutbound("session/prompt");
     h.inject({ jsonrpc: "2.0", id: 5, method: "session/request_permission", params: { sessionId: "sess-1", toolCall: { toolCallId: "tc1", title: "x" }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] } });
 
-    await adapter.shutdown("A");
+    const shutdownPromise = adapter.shutdown("A");
+    await Promise.resolve();
     // pending approval cancelled wire가 shutdownRuntime 호출 전에 나갔는지.
     const cancelled = h.outbound.find((m) => "result" in m && (m as { id?: unknown }).id === 5) as { result: unknown };
     expect(cancelled.result).toEqual({ outcome: { outcome: "cancelled" } });
+    for (let i = 0; i < 10 && shutdownRuntime.mock.calls.length === 0; i += 1) {
+      await Promise.resolve();
+    }
+    expect(shutdownRuntime).toHaveBeenCalledWith(h.RUNTIME_ID);
+    expect(order).toEqual(["approval-cancelled", "backend-shutdown"]);
+    const resolved = events.filter((e) => e.type === "approval_resolved" && (e as { decision: { outcome: string } }).decision.outcome === "cancelled");
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({ decidedBy: "cleanup" });
+    await promptRejected;
+
+    // shutdown await 중 늦은 exit → process_exited는 1회만, pending은 재차 닫지 않음.
+    h.injectEvent({ type: "exit", runtimeId: h.RUNTIME_ID, code: 0 });
+    expect(events.filter((e) => e.type === "process_exited")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "approval_resolved")).toHaveLength(1);
+    releaseShutdown();
+    await shutdownPromise;
+
+    events.length = 0;
+    h.injectEvent({ type: "exit", runtimeId: h.RUNTIME_ID, code: 0 });
+    expect(events).toHaveLength(0);
+  });
+
+  it("S3: shutdown awaits async pending approval cancel response before backend shutdown", async () => {
+    const h = makeHarness();
+    const realSend = h.deps.sendMessage;
+    let releaseCancelResponse: () => void = () => {};
+    let cancelResponseStarted: () => void = () => {};
+    const cancelResponseStartedPromise = new Promise<void>((resolve) => {
+      cancelResponseStarted = resolve;
+    });
+    h.deps.sendMessage = vi.fn(async (rid, message) => {
+      if ("result" in message && (message as { id?: unknown }).id === 5) {
+        cancelResponseStarted();
+        await new Promise<void>((resolve) => {
+          releaseCancelResponse = resolve;
+        });
+      }
+      await realSend(rid, message);
+    });
+    const shutdownRuntime = vi.fn(async () => {});
+    h.deps.shutdownRuntime = shutdownRuntime;
+
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    adapter.subscribeEvents("A", () => undefined);
+    h.inject({ jsonrpc: "2.0", id: 5, method: "session/request_permission", params: { sessionId: "sess-1", toolCall: { toolCallId: "tc1", title: "x" }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] } });
+
+    const shutdownPromise = adapter.shutdown("A");
+    await cancelResponseStartedPromise;
+    const shutdownCallsBeforeCancelResponse = shutdownRuntime.mock.calls.length;
+    releaseCancelResponse();
+    await shutdownPromise;
+
+    expect(shutdownCallsBeforeCancelResponse).toBe(0);
+    expect(shutdownRuntime).toHaveBeenCalledWith(h.RUNTIME_ID);
+  });
+
+  it("OQ-44: process-per-session shutdown은 session/close wire를 보내지 않는다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    await startReady(h, adapter, []);
+    h.outbound.length = 0;
+
+    await adapter.shutdown("A");
+
     expect(h.deps.shutdownRuntime).toHaveBeenCalledWith(h.RUNTIME_ID);
-    expect(events.some((e) => e.type === "approval_resolved" && (e as { decision: { outcome: string } }).decision.outcome === "cancelled")).toBe(true);
+    expect(h.outbound.some((m) => "method" in m && m.method === "session/close")).toBe(false);
   });
 
   it("process exit → process_exited emit + pending 정리(멱등)", async () => {
@@ -427,6 +969,11 @@ describe("Claude ACP adapter — protocol error + shutdown (CL-3, S3)", () => {
     h.injectEvent({ type: "exit", runtimeId: h.RUNTIME_ID, code: 0 });
     expect(events.some((e) => e.type === "process_exited")).toBe(true);
     // exit 경로는 wire 송신 불가 → approval_resolved{failed} 내부 emit.
-    expect(events.some((e) => e.type === "approval_resolved" && (e as { decision: { outcome: string } }).decision.outcome === "failed")).toBe(true);
+    const resolved = events.find((e) => e.type === "approval_resolved" && (e as { decision: { outcome: string } }).decision.outcome === "failed");
+    expect(resolved).toMatchObject({ decidedBy: "cleanup" });
+
+    events.length = 0;
+    h.injectEvent({ type: "exit", runtimeId: h.RUNTIME_ID, code: 0 });
+    expect(events).toHaveLength(0);
   });
 });

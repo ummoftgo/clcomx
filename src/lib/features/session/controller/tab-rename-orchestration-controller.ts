@@ -1,12 +1,14 @@
 import type { AgentId } from "../../../agents";
 import type { Session } from "../../../types";
+import type { SessionRuntimeKind } from "../../agent-runtime/contracts/metadata";
+import { recordSessionHistory } from "../service/session-runtime";
 import { resolveRenamedSessionTitle } from "../service/session-tab-behavior";
 
 type RenameDialogKind = "tab" | "window" | null;
 
 type TabRenameSession = Pick<
   Session,
-  "agentId" | "distro" | "resumeToken" | "title" | "workDir"
+  "agentId" | "distro" | "resumeToken" | "title" | "workDir" | "runtimeKind"
 >;
 
 interface TabRenameOrchestrationControllerDependencies {
@@ -24,6 +26,7 @@ interface TabRenameOrchestrationControllerDependencies {
     workDir: string,
     title: string,
     resumeToken?: string | null,
+    runtimeKind?: SessionRuntimeKind,
   ) => Promise<void>;
 }
 
@@ -67,10 +70,9 @@ export function createTabRenameOrchestrationController(
 
     const nextTitle = resolveRenamedSessionTitle(session, deps.getRenameDialogValue());
     deps.setSessionTitle(sessionId, nextTitle);
-    void deps.recordTabHistory(
-      session.agentId,
-      session.distro,
-      session.workDir,
+    void recordSessionHistory(
+      deps.recordTabHistory,
+      session,
       nextTitle,
       session.resumeToken ?? null,
     );

@@ -8,6 +8,17 @@ describe("session-shell-adapter", () => {
     const onSessionAuxStateChange = vi.fn();
     const onSessionExit = vi.fn();
     const onSessionResumeFallback = vi.fn();
+    const onSessionAgentRuntimeMetadataChange = vi.fn();
+    const onSessionAgentRuntimeStatusChange = vi.fn();
+    const onSessionTitleChange = vi.fn();
+    const agentRuntime = {
+      sessionRuntimeKind: "direct-codex" as const,
+      provider: "codex" as const,
+      providerThreadId: "thread-1",
+      providerSessionId: "session-tree-1",
+      canResume: true,
+      canLoad: true,
+    };
 
     const hostProps = createSessionHostProps({
       session: {
@@ -24,6 +35,8 @@ describe("session-shell-adapter", () => {
         editorRootDir: "/workspace/src",
         openEditorTabs: [{ wslPath: "/workspace/src/a.ts", line: 3, column: 7 }],
         activeEditorPath: "/workspace/src/a.ts",
+        runtimeKind: "direct-codex",
+        agentRuntime,
       },
       visible: true,
       onSessionEditorStateChange,
@@ -31,6 +44,9 @@ describe("session-shell-adapter", () => {
       onSessionAuxStateChange,
       onSessionExit,
       onSessionResumeFallback,
+      onSessionAgentRuntimeMetadataChange,
+      onSessionAgentRuntimeStatusChange,
+      onSessionTitleChange,
     });
 
     expect(hostProps).toMatchObject({
@@ -40,6 +56,8 @@ describe("session-shell-adapter", () => {
       distro: "Ubuntu",
       workDir: "/workspace",
       ptyId: 12,
+      runtimeKind: "direct-codex",
+      agentRuntime,
       storedAuxPtyId: 34,
       storedAuxVisible: true,
       storedAuxHeightPercent: 28,
@@ -67,6 +85,12 @@ describe("session-shell-adapter", () => {
     });
     hostProps.onExit?.(99);
     hostProps.onResumeFallback?.();
+    hostProps.onAgentRuntimeMetadataChange?.({
+      ...agentRuntime,
+      providerThreadId: "thread-2",
+    });
+    hostProps.onAgentRuntimeStatusChange?.("running");
+    hostProps.onSessionTitleChange?.("Provider title");
 
     expect(onSessionEditorStateChange).toHaveBeenCalledWith("session-1", {
       viewMode: "terminal",
@@ -83,5 +107,11 @@ describe("session-shell-adapter", () => {
     });
     expect(onSessionExit).toHaveBeenCalledWith(99);
     expect(onSessionResumeFallback).toHaveBeenCalledWith("session-1");
+    expect(onSessionAgentRuntimeMetadataChange).toHaveBeenCalledWith("session-1", {
+      ...agentRuntime,
+      providerThreadId: "thread-2",
+    });
+    expect(onSessionAgentRuntimeStatusChange).toHaveBeenCalledWith("session-1", "running");
+    expect(onSessionTitleChange).toHaveBeenCalledWith("session-1", "Provider title");
   });
 });

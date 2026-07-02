@@ -10,6 +10,7 @@
 
 import { invoke } from "../../../tauri/core";
 import { listen, type UnlistenFn } from "../../../tauri/event";
+import type { AgentRuntimeErrorCode } from "../contracts/normalized";
 
 // ───────────────────────── wire 타입(15 §8.1) ─────────────────────────
 
@@ -38,7 +39,7 @@ export type JsonRpcMessage =
  * process/transport 기동 파라미터(15 §8.1). S1 정본: renderer는 executable command를 넘기지 않고
  * backend가 provider로 신뢰 절대경로를 resolve한다. adapter는 provider/distro/workDir/args/env만 채운다.
  * - codex `args`: backend가 정확히 `["app-server","--stdio"]`로 검증.
- * - claude `args`: `[adapterEntryPath]`(절대경로, backend resolve).
+ * - claude `args`: `[adapterEntryPath, "--hide-claude-auth"]`(절대경로, backend resolve + 고정 auth 숨김 플래그).
  * - `env`: non-secret 전용.
  */
 export type AgentRuntimeStartParams =
@@ -89,15 +90,22 @@ export interface AgentRuntimeSnapshot {
 /**
  * backend emit → frontend listen payload(15 §8.3).
  * M-4: message는 backend가 `serde_json::Value`로 무손실 통과시키고, TS는 `JsonRpcMessage`로 받는다.
+ * `message`는 provider adapter routing 전용 raw bridge다. 화면·저장·진단 노출은 redacted projection만 쓴다(OQ-59).
  */
 export type AgentRuntimeEvent =
   | { type: "message"; runtimeId: RuntimeId; message: JsonRpcMessage }
   | { type: "stderr"; runtimeId: RuntimeId; line: string }
   | { type: "exit"; runtimeId: RuntimeId; code?: number; signal?: string }
-  | { type: "error"; runtimeId: RuntimeId; message: string; recoverable: boolean }
+  | {
+      type: "error";
+      runtimeId: RuntimeId;
+      message: string;
+      recoverable: boolean;
+      code?: AgentRuntimeErrorCode;
+    }
   | { type: "backpressure"; runtimeId: RuntimeId; droppedMessages: number };
 
-/** event 이름 리터럴(kebab-case, 15 §8.3). */
+/** event 이름 리터럴(kebab-case, 15 §8.3). `message` 채널은 adapter 전용 raw bridge다(OQ-59). */
 export const AGENT_RUNTIME_EVENTS = {
   message: "agent-runtime-message",
   stderr: "agent-runtime-stderr",
@@ -105,6 +113,18 @@ export const AGENT_RUNTIME_EVENTS = {
   error: "agent-runtime-error",
   backpressure: "agent-runtime-backpressure",
 } as const;
+
+/** runtime event 구독 순서의 단일 정본. 새 채널 추가 시 이 tuple과 15 §8.3을 함께 갱신한다. */
+export const AGENT_RUNTIME_EVENT_NAMES = [
+  AGENT_RUNTIME_EVENTS.message,
+  AGENT_RUNTIME_EVENTS.stderr,
+  AGENT_RUNTIME_EVENTS.exit,
+  AGENT_RUNTIME_EVENTS.error,
+  AGENT_RUNTIME_EVENTS.backpressure,
+] as const;
+
+/** runtime event 이름 union. */
+export type AgentRuntimeEventName = (typeof AGENT_RUNTIME_EVENT_NAMES)[number];
 
 // ───────────────────────── invoke 래퍼(15 §8.2) ─────────────────────────
 
@@ -157,16 +177,20 @@ export async function agentRuntimeResolveAdapterEntry(
 
 /** runtime별 event 핸들러 묶음. 미지정 핸들러는 무시된다. */
 export interface AgentTransportHandlers {
-  onMessage?: (runtimeId: RuntimeId, message: JsonRpcMessage) => void;
   onStderr?: (runtimeId: RuntimeId, line: string) => void;
   onExit?: (runtimeId: RuntimeId, code?: number, signal?: string) => void;
-  onError?: (runtimeId: RuntimeId, message: string, recoverable: boolean) => void;
+  onError?: (
+    runtimeId: RuntimeId,
+    message: string,
+    recoverable: boolean,
+    code?: AgentRuntimeErrorCode,
+  ) => void;
   onBackpressure?: (runtimeId: RuntimeId, droppedMessages: number) => void;
 }
 
 /**
- * 한 runtime의 5개 event 채널을 구독하고, runtimeId로 필터링해 핸들러로 디스패치한다.
- * 반환된 dispose는 모든 구독을 해제한다(pty.ts 대응 패턴).
+ * 한 runtime의 diagnostic event 채널을 구독하고, runtimeId로 필터링해 핸들러로 디스패치한다.
+ * raw `agent-runtime-message`는 provider adapter 전용 bridge라 여기서 노출하지 않는다(OQ-59).
  */
 export interface AgentTransportController {
   /** 구독 시작(아직 미구독이면 listen 등록). */
@@ -176,8 +200,9 @@ export interface AgentTransportController {
 }
 
 /**
- * runtimeId에 바인딩된 transport controller를 만든다. 5개 event를 listen하고 payload.runtimeId가
+ * runtimeId에 바인딩된 transport controller를 만든다. diagnostic event를 listen하고 payload.runtimeId가
  * 일치하는 것만 핸들러로 전달한다(다른 runtime의 event는 무시).
+ * raw `message` 핸들러는 provider adapter 외부로 전달하지 않는다(OQ-59).
  */
 export function createAgentTransportController(
   runtimeId: RuntimeId,
@@ -185,18 +210,14 @@ export function createAgentTransportController(
 ): AgentTransportController {
   let unlisteners: UnlistenFn[] = [];
   let started = false;
+  let generation = 0;
 
   async function start(): Promise<void> {
     if (started) return;
     started = true;
-    // 각 event를 listen하고 runtimeId로 필터링. 핵심 분기: payload.runtimeId 미일치는 drop.
+    const startGeneration = generation;
+    // diagnostic event를 listen하고 runtimeId로 필터링. 핵심 분기: payload.runtimeId 미일치는 drop.
     const subs = await Promise.all([
-      listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENTS.message, (e) => {
-        const p = e.payload;
-        if (p.type === "message" && p.runtimeId === runtimeId) {
-          handlers.onMessage?.(p.runtimeId, p.message);
-        }
-      }),
       listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENTS.stderr, (e) => {
         const p = e.payload;
         if (p.type === "stderr" && p.runtimeId === runtimeId) {
@@ -212,7 +233,7 @@ export function createAgentTransportController(
       listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENTS.error, (e) => {
         const p = e.payload;
         if (p.type === "error" && p.runtimeId === runtimeId) {
-          handlers.onError?.(p.runtimeId, p.message, p.recoverable);
+          handlers.onError?.(p.runtimeId, p.message, p.recoverable, p.code);
         }
       }),
       listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENTS.backpressure, (e) => {
@@ -222,10 +243,21 @@ export function createAgentTransportController(
         }
       }),
     ]);
+    if (!started || startGeneration !== generation) {
+      for (const un of subs) {
+        try {
+          un();
+        } catch {
+          // dispose와 listen resolve가 교차할 수 있어 중복 해제 오류는 무시한다.
+        }
+      }
+      return;
+    }
     unlisteners = subs;
   }
 
   async function dispose(): Promise<void> {
+    generation += 1;
     const current = unlisteners;
     unlisteners = [];
     started = false;

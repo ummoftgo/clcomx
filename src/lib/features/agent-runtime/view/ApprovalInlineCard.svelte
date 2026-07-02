@@ -2,7 +2,7 @@
   ApprovalInlineCard — severity:"normal" 인라인 승인 카드(08 §4.4, T5.4).
 
   ToolCallCard 하단에 인라인으로 표시되는 비차단 승인 UI다. provider가 제시한 options를
-  **원본 순서·개수 그대로** 렌더하고(09 §2 표시-선택 일치), label은 i18n 키로 감싸 표시하되
+  **원본 순서·개수 그대로** 렌더하고(09 §2 표시-선택 일치), label은 표시 직전 redaction을 거치되
   optionId/kind는 원본을 보존한다. option 선택 시 `ApprovalDecision{outcome:"selected", optionId}`로,
   취소 시 `outcome:"cancelled"`로 onRespond를 호출한다. 응답 후에는 "처리 중" 상태로 잠근다.
   label은 webview text node로만 렌더한다(XSS 방어, 09 §3.1). 문자열은 i18n 키만 쓴다.
@@ -11,6 +11,7 @@
   import { t } from "../../../i18n";
   import { TEST_IDS, agentApprovalOptionTestId } from "../../../testids";
   import type { ApprovalDecision, ApprovalRequest } from "../contracts/normalized";
+  import { approvalDisplayText } from "./approval-display";
 
   interface Props {
     /** 승인 요청(options 원본 보존). */
@@ -23,6 +24,8 @@
 
   // 응답 후 재선택 방지(멱등) — 카드 잠금.
   let locked = $state(false);
+  const title = $derived(approvalDisplayText(request.title, $t));
+  const body = $derived(request.body ? approvalDisplayText(request.body, $t) : undefined);
 
   /** option 선택 → selected 결정으로 응답하고 카드를 잠근다. */
   function select(optionId: string): void {
@@ -44,11 +47,11 @@
   data-testid={TEST_IDS.agentApprovalInlineCard}
   data-request-id={request.id}
   role="group"
-  aria-label={request.title}
+  aria-label={title}
 >
-  <div class="approval-title">{request.title}</div>
-  {#if request.body}
-    <div class="approval-body">{request.body}</div>
+  <div class="approval-title">{title}</div>
+  {#if body}
+    <div class="approval-body">{body}</div>
   {/if}
 
   <div class="approval-options">
@@ -63,7 +66,7 @@
         disabled={locked}
         onclick={() => select(option.id)}
       >
-        <span class="option-label">{option.label}</span>
+        <span class="option-label">{approvalDisplayText(option.label, $t)}</span>
         {#if alwaysHint(option.kind)}
           <span class="option-hint">{alwaysHint(option.kind)}</span>
         {/if}

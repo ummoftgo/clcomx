@@ -64,12 +64,14 @@ src-tauri/src/
 ├── lib.rs                         # ← 3곳 수정 (§2.2)
 ├── commands/
 │   ├── mod.rs                     # ← "pub mod agent_runtime;" 1줄 추가
-│   └── agent_runtime.rs           # 얇은 #[tauri::command] 래퍼 5종 + re-export
+│   └── agent_runtime.rs           # 얇은 #[tauri::command] 래퍼 6종 + re-export
 └── features/
     └── agent_runtime/
         ├── mod.rs                 # AgentRuntimeState, AgentRuntime, core fn (spawn/send/cancel/shutdown/snapshot)
         ├── transport.rs           # newline-delimited JSON-RPC framer, reader/stderr thread, writer
-        ├── process.rs             # wsl.exe child spawn, graceful shutdown, allowlist, path canonicalize
+        ├── process.rs             # wsl.exe child spawn, graceful shutdown, path canonicalize
+        ├── allowlist.rs           # provider별 backend-resolved executable/args/env 검증
+        ├── resolver.rs            # 신뢰 절대경로 resolve + process-lifetime cache(OQ-36)
         ├── types.rs               # 15 §8 Rust struct 미러 (RuntimeId, JsonRpc*, AgentRuntime*, Event payload)
         └── tests.rs               # #[cfg(test)] mod tests; (framing/snapshot/mock 단위 테스트)
 ```
@@ -77,7 +79,9 @@ src-tauri/src/
 `features/agent_runtime/mod.rs` 상단:
 
 ```rust
+mod allowlist;
 mod process;
+pub(crate) mod resolver;
 mod transport;
 pub mod types;
 
@@ -87,7 +91,7 @@ mod tests;
 pub use types::*; // RuntimeId 등을 commands/agent_runtime.rs에서 재export
 ```
 
-> **공용 util 추출 (확인 필요, research §2.6·§11)**: `decode_utf8_stream_chunk`(`features/terminal/parsing.rs:101`)는 현재 `pub(super)`다. transport.rs가 재사용하려면 (a) `pub(crate)`로 가시성 상향 후 `features/terminal/parsing.rs`를 그대로 참조하거나, (b) `features/io_util.rs`로 추출한다. **권고: (a) 최소 변경**. 단 `features/terminal/tests.rs`가 `use super::parsing::...`로 의존하므로, 추출(b) 선택 시 terminal 테스트 import를 함께 갱신해야 한다. 결정은 [13](13-risks-open-questions.md) "decode_utf8_stream_chunk 공용화" 참조.
+> **공용 util 결정(해소됨, OQ-26/RS-3)**: `decode_utf8_stream_chunk`(`features/terminal/parsing.rs:101`)는 최소 변경인 `pub(crate)` 가시성 상향으로 공유한다. `agent_runtime/transport.rs`는 `crate::features::terminal::parsing::decode_utf8_stream_chunk`를 직접 import해 newline framer의 UTF-8 경계를 보존하며, 별도 `features/io_util.rs` 추출은 하지 않는다. 이 방식은 terminal 테스트 import 재작성 없이 agent runtime RS-3 경계 보존 테스트로 고정한다.
 
 ### 2.1 `commands/agent_runtime.rs` (얇은 wrapper)
 
@@ -99,7 +103,7 @@ pub use crate::features::agent_runtime::types::{
     AgentRuntimeCancelTarget, AgentRuntimeSnapshot, AgentRuntimeStartParams, JsonRpcMessage,
     RuntimeId,
 };
-use crate::features::agent_runtime::{self, AgentRuntimeState};
+use crate::features::agent_runtime::{self, resolver, AgentRuntimeState};
 use tauri::AppHandle;
 
 #[tauri::command]
@@ -145,9 +149,17 @@ pub fn agent_runtime_get_snapshot(
 ) -> Result<AgentRuntimeSnapshot, String> {
     agent_runtime::get_snapshot(state.inner(), runtime_id)
 }
+
+#[tauri::command]
+pub fn agent_runtime_resolve_adapter_entry(
+    provider: String,
+    distro: String,
+) -> Result<String, String> {
+    resolver::resolve_trusted_adapter_entry(&provider, &distro)
+}
 ```
 
-> command 인자명은 camelCase로 들어온다(`runtimeId`→`runtime_id`는 tauri가 자동 변환). PTY가 `state: tauri::State<'_, PtyState>` + `state.inner()`를 core fn에 넘기는 패턴과 동일(research §3.2). 한 command가 여러 State를 받을 수 있으므로(예: 종료 시 workspace resume token 갱신), 후속 단계에서 `WorkspaceState`를 추가 주입하는 것도 가능하다(research §3.2, `close_session` 선례).
+> command 인자명은 camelCase로 들어온다(`runtimeId`→`runtime_id`는 tauri가 자동 변환). PTY가 `state: tauri::State<'_, PtyState>` + `state.inner()`를 core fn에 넘기는 패턴과 동일(research §3.2). `agent_runtime_resolve_adapter_entry`는 Claude adapter가 `adapterEntryPath`를 renderer에서 만들지 않도록 backend resolve 값을 얻는 보조 command다. 실제 코드의 test-mode 분기(`is_test_mode()`)는 위 축약 예시에서 생략했다.
 
 ### 2.2 `lib.rs` 등록 (정확히 3곳)
 
@@ -156,8 +168,8 @@ research §3.2의 3곳 규칙:
 ```rust
 // 1) lib.rs 상단 use (commands/*에서 import; lib.rs:5-33 패턴)
 use commands::agent_runtime::{
-    agent_runtime_cancel, agent_runtime_get_snapshot, agent_runtime_send, agent_runtime_shutdown,
-    agent_runtime_start,
+    agent_runtime_cancel, agent_runtime_get_snapshot, agent_runtime_resolve_adapter_entry,
+    agent_runtime_send, agent_runtime_shutdown, agent_runtime_start,
 };
 use features::agent_runtime::AgentRuntimeState;
 
@@ -174,7 +186,8 @@ tauri::Builder::default()
         // ... 기존 ...
         pty_spawn, pty_write, pty_resize, pty_kill,
         agent_runtime_start, agent_runtime_send, agent_runtime_cancel,
-        agent_runtime_shutdown, agent_runtime_get_snapshot,   // ← 추가
+        agent_runtime_shutdown, agent_runtime_get_snapshot,
+        agent_runtime_resolve_adapter_entry,   // ← 추가
         // ...
     ])
 ```
@@ -182,11 +195,11 @@ tauri::Builder::default()
 그리고 `commands/mod.rs`에 `pub mod agent_runtime;` 1줄 추가 (mod.rs:1-9 나열 패턴).
 
 **체크리스트 (등록 완료 기준):**
-- [ ] `commands/mod.rs`에 `pub mod agent_runtime;`
-- [ ] `lib.rs`에 `use commands::agent_runtime::{...}` + `use features::agent_runtime::AgentRuntimeState;`
-- [ ] `lib.rs`에 `.manage(AgentRuntimeState::default())`
-- [ ] `lib.rs` `generate_handler![]`에 5개 함수명
-- [ ] `cargo check --manifest-path src-tauri/Cargo.toml` 통과
+- [x] `commands/mod.rs`에 `pub mod agent_runtime;`
+- [x] `lib.rs`에 `use commands::agent_runtime::{...}` + `use features::agent_runtime::AgentRuntimeState;`
+- [x] `lib.rs`에 `.manage(AgentRuntimeState::default())`
+- [x] `lib.rs` `generate_handler![]`에 6개 함수명(`start/send/cancel/shutdown/get_snapshot/resolve_adapter_entry`)
+- [x] `cargo check --manifest-path src-tauri/Cargo.toml` 통과(2026-06-27 확인)
 
 ---
 
@@ -236,7 +249,7 @@ struct AgentRuntime {
 /// v1은 이 기록으로 사용자-visible 복구를 보장하지 않는다(late-attach replay consumer는 후속, §4.5).
 struct RuntimeMessageRecord {
     seq: u64,
-    /// raw JSON-RPC line(개행 제거 후 1메시지). frontend가 파싱.
+    /// redacted JSON-RPC line(개행 제거 후 1메시지). realtime emit은 별도 raw value를 그대로 보낸다.
     line: String,
 }
 
@@ -420,19 +433,20 @@ stderr는 session diagnostic panel에서 opt-in으로만 표시한다(§11, [09]
 
 ### 4.4 framing 에러 분류 (정본)
 
-| 상황 | 분류 | emit | recoverable |
-|---|---|---|---|
-| 한 라인 invalid JSON (< 5 연속) | runtime error | `agent-runtime-error` | `true` |
-| 5회 연속 invalid JSON | framing 붕괴 | `agent-runtime-error` | `false` |
-| stdout에 raw 개행 포함된 message (pretty-print) | invalid framing | `agent-runtime-error` | `false` |
-| stdin write 실패(broken pipe) | transport error | `agent-runtime-error` | `false` (process 사망 추정) |
-| child wait → exit | 정상/비정상 종료 | `agent-runtime-exit` | — (별도 event) |
+| 상황 | 분류 | emit | recoverable | code |
+|---|---|---|---|---|
+| 한 라인 invalid JSON (< 5 연속) | runtime error | `agent-runtime-error` | `true` | `framing_invalid_json` |
+| 한 라인 4MiB cap 초과 (< 5 연속) | runtime error | `agent-runtime-error` | `true` | `framing_line_too_large` |
+| 5회 연속 invalid/cap 초과 line | framing 붕괴 | `agent-runtime-error` | `false` | `framing_broken` |
+| stdout에 raw 개행 포함된 message (pretty-print) | invalid framing | `agent-runtime-error` | `false` | `framing_broken` |
+| stdin write 실패(broken pipe) | transport error | `agent-runtime-error` | `false` (process 사망 추정) | 후속 taxonomy |
+| child wait → exit | 정상/비정상 종료 | `agent-runtime-exit` | — (별도 event) | — |
 
 `recoverable:false` 에러 후에는 frontend adapter가 세션을 `failed`로 전이(04 §2.1 규칙 6)하고 process shutdown을 호출할 수 있다. backend는 자동 kill하지 않는다(명시적 shutdown 대기).
 
 **latched-failed 규칙 (정본 — framing 붕괴 후 reader 상태)**: `recoverable:false`(framing 붕괴: 5회 연속 invalid 또는 embedded newline)를 **한 번 emit한 뒤에는 reader thread를 latched-failed 상태로 전환**한다. latch 진입 후 reader는 **이후 stdout 라인을 모두 drop(파싱·emit 안 함)하고 추가 framing 에러를 suppress**한다 — 즉 `recoverable:false`는 runtime당 정확히 한 번만 올라가고, 깨진 framing에서 쏟아지는 후속 invalid 라인이 frontend를 추가 에러로 도배하지 않는다. latch는 frontend의 **명시적 shutdown(§5.2)** 까지 유지되며(그 시점에 stdin EOF→kill→exit로 reader가 EOF로 종료), backend는 자동 kill하지 않는다. 이 latch가 없으면 backend는 라인을 계속 파싱·재시도하나 frontend는 이미 세션을 `failed`로 본 상태라 둘이 어긋난다 — latch로 "framing 붕괴 후 backend도 새 메시지를 올리지 않는다"는 불변식을 맞춘다.
 
-§4.2 의사코드와의 정합: `handle_line`/reader는 latch 플래그(예: `AtomicBool` `framing_failed` 또는 reader thread 로컬 `bool`)를 둔다. valid 라인에서 `invalid_streak=0`으로 리셋하는 것은 **latch 진입 전에만** 유효하고, latch 진입 후에는 valid/invalid 구분 없이 라인을 drop한다(리셋·재진입 없음). `recoverable:false`를 emit하는 분기(5연속 invalid 도달, embedded newline 감지)에서 이 latch 플래그를 set하고, 이후 `flush_complete_lines`/`handle_line` 진입부에서 latch가 set이면 즉시 return한다. 결정 필요 항목(latch 플래그를 reader-local로 둘지 `AgentRuntime` 공유 상태로 노출해 snapshot에 반영할지)은 [13](13-risks-open-questions.md) "framing 붕괴 latch 노출 범위" 참조.
+§4.2 의사코드와의 정합: `handle_line`/reader는 reader-local `FramingState`의 latch 플래그를 둔다(OQ-49 해소). valid 라인에서 `invalid_streak=0`으로 리셋하는 것은 **latch 진입 전에만** 유효하고, latch 진입 후에는 valid/invalid 구분 없이 라인을 drop한다(리셋·재진입 없음). `recoverable:false`를 emit하는 분기(5연속 invalid 도달, embedded newline 감지)에서 이 latch 플래그를 set하고, 이후 `flush_complete_lines`/`handle_line` 진입부에서 latch가 set이면 즉시 return한다. v1은 snapshot에 framing-failed 상태를 노출하지 않고, frontend는 1회 emit된 `recoverable:false`로만 인지한다.
 
 ### 4.5 message seq / snapshot / delta-since (late-attach, 후속 단계)
 
@@ -538,7 +552,7 @@ pub fn spawn_wsl_process(
 >   - `AgentRuntimeStartParams.env`(15 §8.1)는 이 결정에 따라 **non-secret 전용 규약**이다(15 §8.1 타입 자체는 재정의하지 않고 07/09를 인용; 신뢰 경계 정본은 [09](09-permissions-security.md)). 관련 OQ-28은 이 결정으로 해소된다([13](13-risks-open-questions.md)).
 > - **API key/token은 §11 redaction 대상이고 평문 영속화 금지**(10 §7.3 보안 경계). secret은 argv·로그·snapshot·persistence 어디에도 평문으로 남기지 않는다.
 >
-> 배포 대상 WSL 버전의 `--cd` 지원 여부 확인 및 미지원 시 provider flag fallback 경로는 [13](13-risks-open-questions.md) OQ-27 참조.
+> 배포 대상 WSL에서 `--cd` 미지원 예외가 발견되면 provider flag fallback 경로를 새 후속 scope로 열고 [13](13-risks-open-questions.md) OQ-27을 갱신한다.
 
 `start` core fn 흐름 (`agent_runtime_start`가 호출):
 
@@ -752,7 +766,7 @@ pub fn cancel(state: &AgentRuntimeState, _app: &AppHandle, runtime_id: RuntimeId
 }
 ```
 
-> **설계 결정 (확인 필요)**: `cancel(request|turn)`을 backend no-op으로 두면 command가 사실상 `process`만 의미 있다. 대안: `agent_runtime_cancel`을 v1에서 제거하고 `process` cancel은 `shutdown`이 흡수. **권고: command는 15 §8.2 계약대로 유지하되 backend는 process만 처리**(계약 안정성). 결정 필요 항목 [13](13-risks-open-questions.md) "agent_runtime_cancel 의미 범위".
+> **설계 결정(해소됨, OQ-23/OQ-30)**: `agent_runtime_cancel` command는 15 §8.2 계약대로 유지하되 backend는 `{type:"process"}`만 직접 처리한다. `request`/`turn` cancel은 protocol 의미이므로 frontend adapter가 `agent_runtime_send`로 provider wire(Codex `turn/interrupt`, Claude `session/cancel` 등)를 직접 전송하고, backend `cancel(request|turn)`은 no-op 또는 진단용 pending id 정리만 수행한다. 따라서 `agent_runtime_cancel`은 process shutdown API로 남고, turn/request cancel wire 변환 책임을 갖지 않는다.
 
 ### 6.4 pending request id 추적 (진단 전용, 선택)
 
@@ -804,11 +818,13 @@ reader thread가 `app.emit("agent-runtime-message", ...)`로 메시지를 올린
 fn record_and_emit_message(app: &AppHandle, runtime_id: RuntimeId, seq: u64,
                            line: String, value: serde_json::Value,
                            message_log: &Arc<Mutex<VecDeque<RuntimeMessageRecord>>>,
+                           redaction_values: &[String],
                            dropped: &Arc<AtomicU64>) {
-    // 1) late-attach log 기록 + bounded trim
+    // 1) diagnostic replay log는 저장 직전 redaction + bounded trim
+    let replay_line = redact_with_values(&line, redaction_values);
     {
         let mut log = message_log.lock().unwrap();
-        log.push_back(RuntimeMessageRecord { seq, line });
+        log.push_back(RuntimeMessageRecord { seq, line: replay_line });
         let mut total: usize = log.iter().map(|r| r.line.len()).sum();
         while total > MAX_MESSAGE_LOG_BYTES && log.len() > 1 {
             if let Some(old) = log.pop_front() {
@@ -821,7 +837,7 @@ fn record_and_emit_message(app: &AppHandle, runtime_id: RuntimeId, seq: u64,
             }
         }
     }
-    // 2) 실시간 emit (raw value 그대로 — §4.2 note)
+    // 2) 실시간 emit (adapter routing용 raw value 그대로 — M-4, OQ-59 해소 경계)
     let _ = app.emit("agent-runtime-message",
         AgentRuntimeMessageEmit { type_: "message", runtime_id, message: value });
 }
@@ -843,9 +859,9 @@ research §7·§11이 두 옵션(std::thread vs tokio)을 제시한다. **v1은 
 
 PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에 executable allowlist가 **없다**(research §6, §10 권고 6). direct runtime은 이를 의도적으로 강화한다: renderer를 untrusted로 간주하고, **renderer/adapter는 실행 파일 command를 아예 넘기지 않으며**, backend가 provider로 **신뢰 절대경로(executable)를 직접 resolve**한 뒤 **args(정확 일치)·env key(allowlist)**를 재검증한다(S1 정본; R4 정본; 15 §8.1 주석, 신뢰 경계 정본은 [09](09-permissions-security.md)). basename만 비교하던 1차 안은 폐지하고, command 자체를 renderer 비제어로 만든다 — 동명 바이너리(`/tmp/codex`, `/tmp/node` 등) 우회를 원천 차단한다.
 
-> **S1 정본 (renderer 비제어 command)**: `AgentRuntimeStartParams::JsonrpcStdio`에서 **`command` 필드는 제거**되었다(15 §8.1). adapter는 `provider`·`distro`·`work_dir`·`args`(검증 대상)·`env`(non-secret)만 넘긴다. backend는 `provider`로 신뢰 절대경로를 resolve한다: `codex` → resolve된 `codex` app-server 절대경로, `claude` → resolve된 `node` 절대경로. resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식은 [13](13-risks-open-questions.md) "command/entry resolve 주체" 결정 필요 항목이다.
+> **S1 정본 (renderer 비제어 command)**: `AgentRuntimeStartParams::JsonrpcStdio`에서 **`command` 필드는 제거**되었다(15 §8.1). adapter는 `provider`·`distro`·`work_dir`·`args`(검증 대상)·`env`(non-secret)만 넘긴다. backend는 `provider`로 신뢰 절대경로를 resolve한다: `codex` → resolve된 `codex` app-server 절대경로, `claude` → resolve된 `node` 절대경로. resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식은 OQ-36에서 확정됐다: owner는 `agent_runtime/resolver.rs`, cache key는 `(provider,distro)`, TTL 없는 process-lifetime in-memory cache이며 `clear()`로 명시 무효화한다.
 
-> **D-WSAUTH 정본 (`websocket` transport는 로깅·snapshot 노출 전에 reject)**: v1은 `jsonrpc-stdio`만 구현하고 `websocket`은 게이트한다([13](13-risks-open-questions.md) RD-2, v1 stdio-only). `AgentRuntimeStartParams`의 `websocket` variant(15 §8.1)는 `authToken?`을 public 계약에 노출하므로, **`transportKind == "websocket"`로 들어온 start params는 어떤 로깅·snapshot·audit·에러 메시지에도 실리기 전에 handler 진입부에서 즉시 `Err`로 거부**한다. 거부 경로는 (a) `validate_and_extract`가 `JsonrpcStdio`가 아닌 variant를 만나면 params를 디버그 출력하지 않고 `Err("only jsonrpc-stdio transport is supported in v1")`만 반환하고(아래 §8.1 의사코드: `else` 분기에서 params 전체를 `{:?}`로 찍지 않는다), (b) `authToken`을 §11 redaction/scrub 집합에 포함시켜(09 §5.1·§secret) 혹시라도 로그/snapshot 경로에 도달해도 평문 노출을 막는다. 즉 v1은 websocket을 §5 spawn 경로에 **진입시키지 않으며**, reject는 token 로깅 없이 일어난다. variant 타입 자체는 future-sketch로 유지한다(15 §8.1). 결정 필요 항목은 [13](13-risks-open-questions.md) RD-2·OQ-15 참조.
+> **D-WSAUTH 정본 (`websocket` transport는 로깅·snapshot 노출 전에 reject)**: v1은 `jsonrpc-stdio`만 구현하고 `websocket`은 게이트한다([13](13-risks-open-questions.md) RD-2/OQ-15, v1 stdio-only). `AgentRuntimeStartParams`의 `websocket` variant(15 §8.1)는 `authToken?`을 public 계약에 노출하므로, **`transportKind == "websocket"`로 들어온 start params는 어떤 로깅·snapshot·audit·에러 메시지에도 실리기 전에 handler 진입부에서 즉시 `Err`로 거부**한다. 거부 경로는 (a) `validate_and_extract`가 `JsonrpcStdio`가 아닌 variant를 만나면 params를 디버그 출력하지 않고 `Err("only jsonrpc-stdio transport is supported in v1")`만 반환하고(아래 §8.1 의사코드: `else` 분기에서 params 전체를 `{:?}`로 찍지 않는다), (b) `authToken`을 §11 redaction/scrub 집합에 포함시켜(09 §5.1·§secret) 혹시라도 로그/snapshot 경로에 도달해도 평문 노출을 막는다. 즉 v1은 websocket을 §5 spawn 경로에 **진입시키지 않으며**, reject는 token 로깅 없이 일어난다. variant 타입 자체는 future-sketch로 유지한다(15 §8.1). 해소 기록은 [13](13-risks-open-questions.md) RD-2·OQ-15와 11 RS-12c/RS-18을 참조한다.
 
 ### 8.1 검증 규칙
 
@@ -854,10 +870,10 @@ PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에
 1. **provider enum 검증**: `provider`는 `"codex"` 또는 `"claude"`만 허용. 그 외는 `Err`.
 2. **executable = backend가 provider로 resolve한 신뢰 절대경로 (S1; command 파라미터 비수신)**: backend는 **renderer가 넘긴 command를 받지 않는다**(필드 자체가 제거됨, 15 §8.1). 대신 `provider`로 executable을 직접 resolve한다 — (a) **backend가 resolve한 신뢰 절대경로**(예: `which codex` / `node` resolve 결과를 backend가 직접 구해 캐시; 06 §2.2 node/entry resolve 방식 3) 또는 (b) **사전 등록된 절대경로 화이트리스트**에서 가져온다. resolve 결과는 항상 절대경로(`/`로 시작)이며, 임의 디렉터리의 동명 바이너리(`/tmp/codex`, `/tmp/node` 등)는 renderer가 지정할 경로 자체가 없으므로 우회 불가다.
    - `codex` → backend가 신뢰 절대경로로 resolve한 `codex` app-server 바이너리. 셸 비경유 직접 실행 `wsl.exe -d <distro> --cd <wslWorkDir> -e env … <codexAbsPath> app-server --stdio`로 띄운다(05가 이 형태를 따른다, ref-codex §1.1: app-server 기본 stdio, 전역 experimental 플래그 불필요).
-   - `claude` → backend가 신뢰 절대경로로 resolve한 `node`. **1차 argv 검증의 핵심은 `args[0]` = backend가 검증한 `adapterEntryPath`(절대경로) 일치**다(아래 3-claude). `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 고정 npm 의존 위치(`claude-agent-acp` `dist/index.js`)에서 resolve하거나 사전 등록된 절대경로다. `npx`는 1차에서 제거하고 후속(optional)으로만 검토한다(06 §2.2 D9). 정확한 launch executable·entry resolve는 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·ref-acp §1·ref-claude-agent-acp §5가 권위.
+   - `claude` → backend가 신뢰 절대경로로 resolve한 `node`. **1차 argv 검증의 핵심은 `args[0]` = backend가 검증한 `adapterEntryPath`(절대경로) 일치 + `args[1]` = 고정 `--hide-claude-auth`**다(아래 3-claude). `adapterEntryPath`는 renderer 자유 입력이 아니라 backend가 고정 npm 의존 위치(`claude-agent-acp` `dist/index.js`)에서 resolve하거나 사전 등록된 절대경로다. `npx`는 1차에서 제거하고 후속(optional)으로만 검토한다(06 §2.2 D9). 정확한 launch executable·entry resolve는 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·ref-acp §1·ref-claude-agent-acp §5가 권위.
 3. **args 정확 검증 (provider별 exact match)**: shell 메타문자(`;`, `|`, `&`, `` ` ``, `$(`, `>`, `<`, 개행) 검사는 방어용으로 유지하되, 1차 게이트는 **provider별 정확 일치**다.
    - `codex` → `args`가 **정확히** `["app-server", "--stdio"]`일 것(ref-codex §1.1). 그 외 길이/값은 거부.
-   - `claude` → `args.length == 1` 이고 `args[0]`이 **backend가 검증한 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js` 패턴)**일 것. 임의 `.js`·임의 바이너리·복수 인자는 거부(06 §2.2: bin은 `dist/index.js` 하나, args = `[adapterEntryPath]`). **이 `adapterEntryPath` 절대경로 검증이 Claude의 1차 argv 검증이다** — executable(node)은 backend가 provider로 resolve한 신뢰 절대경로로 고정되고, `adapterEntryPath`도 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록)하므로, renderer는 실행 대상 어느 쪽도 제어하지 못한다. backend는 `args[0]`이 그 신뢰 출처와 정확히 일치하는지 재검증한다.
+   - `claude` → `args.length == 2` 이고 `args[0]`이 **backend가 검증한 `adapterEntryPath`(WSL 절대경로, `claude-agent-acp` `dist/index.js` 패턴)**, `args[1]`이 **고정 `--hide-claude-auth`**일 것. 임의 `.js`·임의 바이너리·임의 추가/누락 인자는 거부(06 §2.2: bin은 `dist/index.js` 하나, adapter argv는 `[adapterEntryPath, "--hide-claude-auth"]`). **이 `adapterEntryPath` 절대경로 + 고정 auth 숨김 플래그 검증이 Claude의 1차 argv 검증이다** — executable(node)은 backend가 provider로 resolve한 신뢰 절대경로로 고정되고, `adapterEntryPath`도 backend가 고정 npm 의존 위치에서 resolve(또는 사전 등록)하므로, renderer는 실행 대상 어느 쪽도 제어하지 못한다. backend는 두 argv가 그 신뢰 출처/고정값과 정확히 일치하는지 재검증한다.
 4. **executable·args 출처 (S1)**: executable은 renderer가 넘기지 않고 backend가 provider로 resolve한다(위 2). `args`는 adapter가 생성한 검증된 값만 허용하되 backend가 provider별 정확 일치로 재검증한다. frontend가 executable 경로 또는 임의 argv를 자유 입력으로 주입하는 경로를 차단(§0). renderer는 untrusted로 간주하며, backend는 resolve된 executable(절대경로)·args(정확 일치)·env key를 재검증한다(09 위협모델, 11 테스트).
 5. **env key allowlist + non-secret 값 (C1)**: `env` 각 key는 `^[A-Za-z_][A-Za-z0-9_]*$`(POSIX env 이름 규칙)를 만족하고 **OQ-38에서 확정한 provider별 허용 key 집합**에 속해야 한다. 값은 **non-secret 전용**(§5.1 `-e env KEY=VAL` argv 경로). secret(API key/token/gateway header/cookie)은 이 argv 경로로 넘기지 않으며, 필요 시 `Command::env()`+`WSLENV` passthrough로만 전달한다(§5.1 note). v1 기본값은 secret env 미전달(provider 자체 WSL 인증 의존). shell 메타문자 검사는 값에 대한 방어용으로 유지한다.
 
@@ -867,7 +883,7 @@ PTY는 frontend가 임의 shell 문자열을 `pty_spawn`에 넘기고 backend에
 //  - (b) 사전 등록된 절대경로 화이트리스트.
 // 반환값은 항상 절대경로(`/`로 시작)이며 신뢰 출처에서만 온다. renderer가 동명 바이너리
 // (/tmp/codex, /tmp/node)를 지정할 경로가 애초에 없다(command 파라미터 비수신).
-// resolve 주체·캐시 무효화는 13 "command/entry resolve 주체" 결정 필요.
+// OQ-36: owner는 agent_runtime/resolver.rs, cache key는 (provider,distro), clear()로 명시 무효화.
 fn resolve_trusted_executable(provider: &str) -> Result<String, String> {
     // codex  → resolve된 codex app-server 절대경로
     // claude → resolve된 node 절대경로
@@ -885,11 +901,21 @@ fn is_trusted_adapter_entry_path(entry: &str) -> bool {
 
 // Codex args 정본(ref-codex §1.1): 정확히 ["app-server", "--stdio"].
 const CODEX_REQUIRED_ARGS: &[&str] = &["app-server", "--stdio"];
+// Claude auth method 노출 축소용 고정 플래그(09 §9): 자유 argv가 아니라 정확 검증 대상.
+const CLAUDE_HIDE_AUTH_ARG: &str = "--hide-claude-auth";
 
 // provider별 env key allowlist. POSIX env 이름 규칙 + OQ-38에서 확정한 허용 key 집합.
-// OQ-38 확정 전 T2.4 구현 금지. 값은 non-secret 전용, secret은 별도 채널 §5.1.
-const CODEX_ALLOWED_ENV_KEYS: &[&str] = &[/* 05/09와 동기화: 비민감 플래그 key만 */];
-const CLAUDE_ALLOWED_ENV_KEYS: &[&str] = &[/* 06/09와 동기화: 비민감 플래그 key만 */];
+// 값은 non-secret 전용, secret은 별도 채널 §5.1.
+const COMMON_ALLOWED_ENV_KEYS: &[&str] = &["RUST_LOG", "RUST_BACKTRACE", "NO_COLOR"];
+const CODEX_ALLOWED_ENV_KEYS: &[&str] = &["RUST_LOG", "RUST_BACKTRACE", "NO_COLOR", "CODEX_DISABLE_UPDATE_CHECK"];
+const CLAUDE_ALLOWED_ENV_KEYS: &[&str] = &[
+    "RUST_LOG",
+    "RUST_BACKTRACE",
+    "NO_COLOR",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_EXECUTABLE",
+    "NODE_OPTIONS",
+];
 
 fn is_valid_env_key(key: &str) -> bool {
     // ^[A-Za-z_][A-Za-z0-9_]*$
@@ -936,9 +962,11 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
             }
         }
         "claude" => {
-            // 1차 argv 검증: args.length == 1 && args[0] == 검증된 adapterEntryPath(절대경로).
-            if args.len() != 1 {
-                return Err(format!("claude args must be exactly [adapterEntryPath], got {args:?}"));
+            // 1차 argv 검증: 검증된 adapterEntryPath + 고정 auth 숨김 플래그.
+            if args.len() != 2 || args[1] != CLAUDE_HIDE_AUTH_ARG {
+                return Err(format!(
+                    "claude args must be exactly [adapterEntryPath, {CLAUDE_HIDE_AUTH_ARG:?}], got {args:?}"
+                ));
             }
             let entry = &args[0];
             // adapterEntryPath는 WSL 절대경로 + claude-agent-acp dist/index.js 패턴.
@@ -983,7 +1011,7 @@ fn validate_and_extract(params: &AgentRuntimeStartParams)
 }
 ```
 
-> **executable/adapterEntryPath 신뢰 출처 (S1 정본)**: `resolve_trusted_executable`이 돌려주는 executable 절대경로와 `is_trusted_adapter_entry_path`가 비교하는 `adapterEntryPath`는 모두 **OQ-36에서 확정한 방식으로 backend가 resolve해 캐시한 값**(예: 06 §2.2 resolve 방식 3: `wsl.exe -e bash -lc "command -v node"` / `node -e require.resolve(...)` 1회 resolve 후 캐시) 또는 **사전 등록 절대경로 화이트리스트**에서 온다 — **renderer가 넘긴 command를 검증하는 게 아니라 backend가 직접 resolve**한다(command 필드 제거, 15 §8.1). 정확한 resolve 주체·캐시 무효화·`adapterEntryPath` 탐색 방식·distro 검증(`list_wsl_distros` wsl.rs:297 결과 집합) 여부와 `*_ALLOWED_ENV_KEYS` 정확 집합은 [`06-claude-acp-adapter.md`](06-claude-acp-adapter.md)·[`05-codex-app-server-adapter.md`](05-codex-app-server-adapter.md)·[`09-permissions-security.md`](09-permissions-security.md)와 동기화해야 한다(결정 필요 항목 [13](13-risks-open-questions.md) "command/entry resolve 주체", "distro allowlist 검증 여부", "provider env key allowlist 집합"). OQ-36/OQ-38 확정 전에는 T2.2/T2.4 구현을 시작하지 않는다.
+> **executable/adapterEntryPath 신뢰 출처 (S1 정본)**: `resolve_trusted_executable`이 돌려주는 executable 절대경로와 `is_trusted_adapter_entry_path`가 비교하는 `adapterEntryPath`는 모두 **OQ-36에서 확정한 방식으로 backend가 resolve해 캐시한 값**이다. owner는 `agent_runtime/resolver.rs`이고, `allowlist.rs`가 `resolve_trusted_executable(provider,distro)` / `resolve_trusted_adapter_entry(provider,distro)`를 호출한다. cache key는 `(provider,distro)`, TTL 없는 process-lifetime in-memory cache이며 `clear()`로 명시 무효화한다. Codex executable은 WSL 내부 `command -v codex`, Claude executable은 `command -v node`, Claude adapter entry는 pinned `node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js` 레이아웃만 신뢰한다. **renderer가 넘긴 command를 검증하는 게 아니라 backend가 직접 resolve**한다(command 필드 제거, 15 §8.1). spawn 직전에는 cached path와 별개로 resolved executable의 `--version` preflight를 실행하고, 실패·빈 출력·상대경로면 spawn하지 않는다(OQ-24, 11 RS-10f/10g). `distro`는 v1에서 non-empty만 검증하고 `list_wsl_distros` 집합 대조는 하지 않는다(OQ-31 해소). provider별 env key 집합은 OQ-38 정본을 따른다.
 
 ---
 
@@ -1012,7 +1040,7 @@ fn canonicalize_wsl_path(work_dir: &str) -> Result<String, String> {
 }
 ```
 
-> **정규화 한계 (확인 필요)**: Windows backend는 WSL fs를 직접 stat할 수 없으므로(혹은 `\\wsl$\` 경유 가능성), symlink resolve 같은 진짜 canonicalize는 불가. 문자열 레벨 정규화(`//`→`/`, trailing `/` 제거, `.`/`..` 해소)에 한정하고, 실제 디렉터리 존재 검증은 `WslShell::exec`로 `test -d` 확인하는 옵션이 있다(wsl.rs 선례). 결정 필요 항목 [13](13-risks-open-questions.md) "WSL path 존재 검증 여부". Windows UI에 보여주는 file path 변환은 기존 `src/lib/features/editor/navigation/wsl-path-utils.ts`를 그대로 재사용(research §5.2).
+> **정규화 한계 (OQ-31 해소)**: Windows backend는 WSL fs를 직접 stat하지 않으므로 symlink resolve 같은 진짜 canonicalize는 하지 않는다. v1은 문자열 레벨 정규화(`//`→`/`, trailing `/` 제거, `.`/`..` 해소)에 한정하고, 실제 디렉터리 존재 검증(`WslShell::exec` `test -d`)은 start 경로에 넣지 않는다. 잘못된 distro/path는 resolver/spawn 실패로 표면화한다. Windows UI에 보여주는 file path 변환은 기존 `src/lib/features/editor/navigation/wsl-path-utils.ts`를 그대로 재사용(research §5.2).
 
 ---
 
@@ -1025,7 +1053,7 @@ PTY는 `is_test_mode()`가 true면 `PtyRuntime::Mock`을 만들어 실제 WSL �
 `start_mock`은 실제 process 대신:
 - `AgentRuntime`를 만들되 `child=None`, `stdin`은 in-memory sink(또는 mock writer).
 - 별도 thread가 **provider별 가짜 JSON-RPC 응답 스트림**을 시간차로 `agent-runtime-message`로 emit한다(PTY `append_mock_output`의 delayed chunks 패턴, terminal/mod.rs:411-447).
-- mock 스트림은 fixture에서 읽는다: `agent_runtime_start` params의 mock 힌트(예: `options.mockScenario`) 또는 fixture 파일.
+- mock 스트림은 fixture 형식을 공유하되, 구현은 두 갈래다. deterministic handshake/lifecycle 블록은 adapter fixture `.jsonl`을 우선 재사용하고, prompt echo·approval처럼 입력값에 따라 응답이 달라지는 블록은 provider별 generator fallback이 같은 JSON-RPC line 형식으로 만든다.
 
 ```rust
 fn start_mock(state: &AgentRuntimeState, app: &AppHandle, params: AgentRuntimeStartParams)
@@ -1051,7 +1079,7 @@ fn start_mock(state: &AgentRuntimeState, app: &AppHandle, params: AgentRuntimeSt
 }
 ```
 
-`mock_jsonrpc_script`는 provider별로 `initialize` 응답 → `session/new` 응답 → `session/update` notification 몇 개 → `session/prompt` 응답을 흉내낸 라인 시퀀스를 돌려준다. 정확한 wire shape는 ref-codex/ref-acp fixture를 따른다(05/06 adapter 테스트가 같은 fixture 공유 권고).
+`mock_jsonrpc_response_script`는 provider별 client request 한 줄을 받아 즉시 emit할 response/request/notification과 delayed notification 묶음을 돌려준다. 현재 구현은 Codex `initialize`, Claude `initialize`/`session/new`/`session/load`를 fixture 우선으로 재생하고, Codex prompt/command approval 및 Claude prompt/`session/request_permission` 왕복은 입력값 기반 generator fallback으로 만든다. 정확한 wire shape는 ref-codex/ref-acp fixture를 따른다(05/06 adapter 테스트가 같은 fixture 공유 권고).
 
 ### 10.2 test fixture state 생성기
 
@@ -1085,7 +1113,8 @@ fn redact(s: &str) -> String {
 ```
 
 - **secret env 경계 (C1)**: `agent_runtime_start`의 `env`(15 §8.1)는 **non-secret 전용 규약**이다(§5.1·§8.1). secret(API key/OAuth token/gateway header/session cookie)은 argv(`-e env KEY=VAL`)로 넘기지 않고, 필요 시 `Command::env()`+`WSLENV` passthrough로만 전달한다(§5.1 note) — argv 경유 시 OS 관측면(`ps`/`/proc/<pid>/cmdline`/WSL process 목록)에 평문 노출되어 redaction으로 막을 수 없기 때문이다. v1 기본값은 secret env 미전달(provider 자체 WSL 인증 의존). secret은 로그·snapshot·persistence 어디에도 평문으로 남기지 않는다(10 §7.3 scrub 경계, 신뢰 경계 정본은 [09](09-permissions-security.md)).
-- raw protocol log 활성화 시에도 `redact`를 거친 라인만 파일에 쓴다. 저장 위치는 `app_env::state_path("agent-runtime-debug.log")`(research §4.1).
+- raw protocol log 활성화 시에도 `redact`를 거친 라인만 파일에 쓴다. 저장 위치는 `app_env::state_path("agent-runtime-debug.log")`(research §4.1). 파일은 JSONL이며 각 줄은 `runtimeId`, `direction`(`"in"` provider→client / `"out"` client→provider), `line`(redacted compact raw JSON)을 담고, inbound entry에는 reader-local 1-based `seq`를 함께 남긴다. 기본 off에서는 파일 자체를 만들지 않는다.
+- diagnostic-only `message_log`(§7.2)도 저장 직전 `redact_with_values`를 통과한 line만 보관한다. 단 `agent-runtime-message` realtime event는 adapter routing/normalization을 위해 M-4 raw value 무손실 계약을 유지하며, v1에서는 in-process adapter 전용 bridge로 취급한다(OQ-59 해소). `1` 같은 짧은 non-secret env literal은 JSON-RPC id/count 등 정상 payload를 훼손할 수 있으므로 runtime-env literal 치환에서 제외한다.
 
 정책 정본은 [09](09-permissions-security.md)다. 이 절은 backend 구현 hook만 명시한다.
 
@@ -1094,41 +1123,42 @@ fn redact(s: &str) -> String {
 ## 12. 구현 체크리스트 (다운스트림 에이전트용)
 
 **모듈 골격**
-- [ ] `features/agent_runtime/{mod,transport,process,types,tests}.rs` 생성, `mod.rs`에 서브모듈 선언.
-- [ ] `commands/agent_runtime.rs` 5개 wrapper 작성, `commands/mod.rs`에 `pub mod` 추가.
-- [ ] `lib.rs` 3곳(use / manage / generate_handler) 수정 (§2.2).
+- [x] `features/agent_runtime/{mod,transport,process,types,allowlist,resolver,tests}.rs` 생성, `mod.rs`에 서브모듈 선언.
+- [x] `commands/agent_runtime.rs` 6개 wrapper 작성, `commands/mod.rs`에 `pub mod` 추가.
+- [x] `lib.rs` 3곳(use / manage / generate_handler) 수정 (§2.2).
 
 **타입 (15 §8 미러)**
-- [ ] `types.rs`에 `RuntimeId`/`JsonRpcMessage`/`JsonRpcError`/`AgentRuntimeStartParams`/`AgentRuntimeCancelTarget`/`AgentRuntimeSnapshot`/`AgentRuntimeEvent` — 15 §8.2/§8.3 그대로, `#[serde(rename_all="camelCase")]`/`untagged`/`tag` 속성 일치.
-- [ ] emit message payload는 `message: serde_json::Value`로 두어 round-trip 손실 제거(§4.2 note).
+- [x] `types.rs`에 `RuntimeId`/`JsonRpcMessage`/`JsonRpcError`/`AgentRuntimeStartParams`/`AgentRuntimeCancelTarget`/`AgentRuntimeSnapshot`/`AgentRuntimeEvent` — 15 §8.2/§8.3 그대로, `#[serde(rename_all="camelCase")]`/`untagged`/`tag` 속성 일치.
+- [x] emit message payload는 `message: serde_json::Value`로 두어 round-trip 손실 제거(§4.2 note).
 
 **transport**
-- [ ] `decode_utf8_stream_chunk` 가시성 처리(§2 note) 후 newline framer 구현(§4.2).
-- [ ] stdout reader / stderr reader / child wait thread 3개 (§4.2, §4.3, §5.3).
-- [ ] invalid JSON / embedded newline 에러 분류 (§4.4).
-- [ ] framing 붕괴 latched-failed: `recoverable:false` 1회 emit 후 reader latch(이후 라인 drop, 추가 framing 에러 suppress), 명시적 shutdown까지 자동 kill 없음 (§4.4).
+- [x] `decode_utf8_stream_chunk` `pub(crate)` 처리(§2 note) 후 newline framer 구현(§4.2, OQ-26/RS-3).
+- [x] stdout reader / stderr reader / child wait thread 3개 (§4.2, §4.3, §5.3).
+- [x] invalid JSON / embedded newline 에러 분류(EOF-like incomplete JSON line은 즉시 fatal, RS-5b) (§4.4).
+- [x] framing 붕괴 latched-failed: `recoverable:false` emit 후 reader-local latch(이후 라인 drop, 추가 framing 에러 suppress), 명시적 shutdown까지 자동 kill 없음 (§4.4).
 
 **process**
-- [ ] `spawn_wsl_process`(`wsl.exe -d -e`, piped stdio, CREATE_NO_WINDOW) (§5.1).
-- [ ] launch 커맨드 정본(`wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <exe> <argv>`, 셸 비경유)(§5.1).
-- [ ] C1 secret env 경계: `-e env KEY=VAL` argv는 non-secret 전용. secret은 `Command::env()`+`WSLENV` passthrough(argv 금지), v1 기본은 secret env 미전달(§5.1·§8.1·§11).
-- [ ] graceful shutdown(stdin drop → grace poll → kill → child reap; reap 후 반환, teardown은 최종 exit 반영 후, exit/shutdown pending 종료 멱등·정확히 한 번) (§5.2, §5.3, 04 §5).
-- [ ] child wait/kill 동시성 정본 패턴: `ChildHandle`은 상태에 보관하지 않고(§3 `child` 필드 제거, `kill_handle: KillHandle`로 교체) wait 전용 thread로 move + 저장한 `KillHandle`(pid/handle)로 kill(§3·§5.2·§5.3, terminal/mod.rs 2-thread 선례).
+- [x] `spawn_wsl_process`(`wsl.exe -d -e`, piped stdio, CREATE_NO_WINDOW) (§5.1).
+- [x] launch 커맨드 정본(`wsl.exe -d <distro> --cd <wslWorkDir> -e env KEY=VAL … <exe> <argv>`, 셸 비경유)(§5.1).
+- [x] C1 secret env 경계: `-e env KEY=VAL` argv는 non-secret 전용. secret은 `Command::env()`+`WSLENV` passthrough(argv 금지), v1 기본은 secret env 미전달(§5.1·§8.1·§11).
+- [x] graceful shutdown(stdin drop → grace poll → kill → child reap; reap 후 반환, teardown은 최종 exit 반영 후, exit/shutdown pending 종료 멱등·정확히 한 번) (§5.2, §5.3, 04 §5).
+- [x] child wait/kill 동시성 정본 패턴: `ChildHandle`은 상태에 보관하지 않고(§3 `child` 필드 제거, `kill_handle: KillHandle`로 교체) wait 전용 thread로 move + 저장한 `KillHandle`(pid/handle)로 kill(§3·§5.2·§5.3, terminal/mod.rs 2-thread 선례).
 
 **보안·경계**
-- [ ] provider별 allowlist 검증(§8, S1/R4): executable=**backend가 provider로 resolve한 신뢰 절대경로**(command 파라미터 비수신, basename 비교 폐지), args 정확 일치(Codex `["app-server","--stdio"]`, Claude `[backend가 검증한 adapterEntryPath]` 절대경로), env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + provider 허용 key) + 값 non-secret.
-- [ ] D-WSAUTH: `transportKind:"websocket"` start params를 로깅·snapshot·spawn 진입 전에 reject(params 디버그 출력 없이 정적 에러), `authToken`을 redaction/scrub 집합에 포함(§8·§11, 09 §5.1·RD-2).
-- [ ] WSL absolute path canonicalize(§9).
-- [ ] redaction hook(§11), env 평문 미저장(10 §7.3).
+- [x] provider별 allowlist 검증(§8, S1/R4): executable=**backend가 provider로 resolve한 신뢰 절대경로**(command 파라미터 비수신, basename 비교 폐지), args 정확 일치(Codex `["app-server","--stdio"]`, Claude `[backend가 검증한 adapterEntryPath,"--hide-claude-auth"]`), env key allowlist(`^[A-Za-z_][A-Za-z0-9_]*$` + provider 허용 key) + 값 non-secret.
+- [x] D-WSAUTH: `transportKind:"websocket"` start params를 로깅·snapshot·spawn 진입 전에 reject(params 디버그 출력 없이 정적 에러), `authToken`을 redaction/scrub 집합에 포함(§8·§11, 09 §5.1·RD-2).
+- [x] WSL absolute path canonicalize(§9).
+- [x] redaction hook(§11), env 평문 미저장(10 §7.3).
 
 **backpressure / late-attach**
-- [ ] bounded message_log + trim + backpressure event(§7). v1 `message_log`는 **diagnostic-only bounded log**(사용자-visible 복구 보장 없음, D-REPLAYLOG §7.2).
+- [x] bounded message_log + trim + backpressure event(§7). v1 `message_log`는 **diagnostic-only bounded log**(사용자-visible 복구 보장 없음, D-REPLAYLOG §7.2).
 - [ ] (후속) message seq + delta-since 기반 late-attach replay consumer(§4.5) — v1 범위 밖.
 
 **test**
-- [ ] `is_test_mode()` mock 경로 + `mock_jsonrpc_script`(§10.1).
-- [ ] `#[cfg(test)] test_state_with_runtime` 생성기(§10.2).
-- [ ] tests.rs: framing(완성/미완성/UTF-8 경계/invalid JSON), framing 붕괴 후 latched-failed(§4.4: `recoverable:false` 1회·후속 라인 drop), shutdown grace, allowlist 거부, path 검증.
+- [x] `is_test_mode()` mock 경로 + `mock_jsonrpc_script`(§10.1).
+- [x] `#[cfg(test)] test_state_with_runtime` 생성기(§10.2).
+- [x] tests.rs: framing(완성/미완성/UTF-8 경계/invalid JSON/EOF-like fatal), shutdown grace, allowlist 거부, path 검증.
+- [x] AC-4b full reader emit 검증: `recoverable:false`는 runtime당 정확히 한 번이고, latch 후 후속 stdout 라인이 추가 error/message emit을 만들지 않는지 event-capture 기반으로 고정.
 
 ---
 
@@ -1137,13 +1167,13 @@ fn redact(s: &str) -> String {
 | # | 기준 | 검증 방법 |
 |---|---|---|
 | AC-1 | `cargo check`/`cargo test --manifest-path src-tauri/Cargo.toml` 통과 | `npm run test:rust` |
-| AC-2 | `agent_runtime_*` 5 command가 `generate_handler!`에 등록되어 invoke 가능 | E2E mock 시나리오에서 `invoke("agent_runtime_start", ...)` 성공 |
+| AC-2 | `agent_runtime_*` 6 command가 `generate_handler!`에 등록되어 invoke 가능(`start/send/cancel/shutdown/get_snapshot/resolve_adapter_entry`) | E2E mock 시나리오에서 `invoke("agent_runtime_start", ...)` 성공 + transport wrapper 테스트 |
 | AC-3 | newline framer가 multi-chunk·UTF-8 경계 분할 stdout에서 정확히 메시지 경계 복원 | tests.rs: 한 JSON을 byte 단위로 쪼개 reader에 주입, 1메시지로 복원 검증 |
-| AC-4 | invalid JSON 라인이 `agent-runtime-error{recoverable:true}` emit, 5연속 시 `false` | tests.rs |
-| AC-4b | `recoverable:false`(framing 붕괴) emit 후 latched-failed: `recoverable:false`는 runtime당 정확히 한 번만 emit되고, 이후 stdout 라인은 drop되어 추가 framing 에러를 올리지 않음(§4.4 latch). 명시적 shutdown까지 reader는 자동 kill하지 않음 | tests.rs: invalid 라인 다수를 주입해도 `recoverable:false` 1회·후속 라인 emit 0건 검증 |
+| AC-4 | invalid JSON 라인이 `agent-runtime-error{recoverable:true}` emit, 5연속 또는 EOF-like incomplete JSON line(raw newline/pretty-print 붕괴) 시 `false` | tests.rs |
+| AC-4b | `recoverable:false`(framing 붕괴) emit 후 latched-failed: `recoverable:false`는 runtime당 정확히 한 번만 emit되고, 이후 stdout 라인은 drop되어 추가 framing 에러를 올리지 않음(§4.4 latch). 명시적 shutdown까지 reader는 자동 kill하지 않음 | tests.rs: `RuntimeEventEmitter` 캡처로 fatal 1회·후속 message/error 0건 검증 |
 | AC-5 | `shutdown`이 stdin EOF → grace(2s) → kill → **child reap** 순으로 동작, 정상 종료 시 kill 미발생, reap 완료(`exited`) 후 반환·teardown(S3) | tests.rs(mock child) + 수동 확인 |
 | AC-6 | process exit 시 `agent-runtime-exit`가 **정확히 한 번** emit(exit/shutdown 동시 트리거에도 이중 emit 없음, S3), frontend가 pending을 멱등하게 한 번 정리 가능(04 §5) | E2E + tests.rs(compare_exchange exactly-once) |
-| AC-7 | allowlist 검증(S1/R4) 거부: command는 renderer가 넘길 수 없고 backend가 provider로 resolve(executable resolve 실패 시 Err), Claude `args=[/tmp/x.js]`(신뢰 adapterEntryPath 아님) 거부, Codex args≠`["app-server","--stdio"]` 거부, Claude args≠`[검증된 adapterEntryPath]` 거부, env key allowlist 위반·`^[A-Za-z_][A-Za-z0-9_]*$` 위반 거부, shell 메타문자 args/값 거부. backend resolve된 executable·정확 args·허용 env key만 통과 | tests.rs(§8) |
+| AC-7 | allowlist 검증(S1/R4) 거부: command는 renderer가 넘길 수 없고 backend가 provider로 resolve(executable resolve 실패 시 Err), Claude `args=[/tmp/x.js]`(신뢰 adapterEntryPath 아님) 거부, Codex args≠`["app-server","--stdio"]` 거부, Claude args≠`[검증된 adapterEntryPath,"--hide-claude-auth"]` 거부, env key allowlist 위반·`^[A-Za-z_][A-Za-z0-9_]*$` 위반 거부, shell 메타문자 args/값 거부. backend resolve된 executable·정확 args·허용 env key만 통과 | tests.rs(§8) |
 | AC-7b | `transportKind:"websocket"` start가 로깅·snapshot 노출 없이 reject되고(D-WSAUTH, RD-2), `authToken`이 에러 메시지·로그·snapshot에 평문으로 실리지 않음 | tests.rs(§8): websocket variant + `authToken` 주입 후 `start`가 Err 반환·에러 문자열에 token 부재, redact 단위 테스트(§11) |
 | AC-8 | Windows path·relative path workDir 거부, WSL absolute만 통과 | tests.rs(§9) |
 | AC-9 | `is_test_mode()`에서 실제 WSL 없이 mock JSON-RPC 스트림 emit | E2E mock 시나리오 |

@@ -136,7 +136,7 @@ describe("mapSessionUpdate — usage axis (OQ-02)", () => {
 });
 
 describe("mapSessionUpdate — defensive (CL-18/CL-27)", () => {
-  it("CL-18: audio content block → raw 보존, crash 없음 (TODO(13): audio policy)", () => {
+  it("CL-18: audio content block → json raw 보존, crash 없음", () => {
     const rt = newRt();
     const ev = mapSessionUpdate(rt, {
       sessionUpdate: "agent_message_chunk",
@@ -153,6 +153,10 @@ describe("mapSessionUpdate — defensive (CL-18/CL-27)", () => {
     expect(mapSessionUpdate(rt, { sessionUpdate: "plan_update", plan: {} } as AcpSessionUpdate)).toEqual([]);
     expect(mapSessionUpdate(rt, { sessionUpdate: "plan_removed", id: "p1" } as AcpSessionUpdate)).toEqual([]);
     expect(rt.unknownCounter).toBe(2);
+    expect(rt.unknownRaw).toEqual([
+      { sessionUpdate: "plan_update", plan: {} },
+      { sessionUpdate: "plan_removed", id: "p1" },
+    ]);
   });
 
   it("CL-27: 알 수 없는 variant → counter 증가, crash 없음", () => {
@@ -160,6 +164,7 @@ describe("mapSessionUpdate — defensive (CL-18/CL-27)", () => {
     const ev = mapSessionUpdate(rt, { sessionUpdate: "totally_unknown" } as unknown as AcpSessionUpdate);
     expect(ev).toEqual([]);
     expect(rt.unknownCounter).toBe(1);
+    expect(rt.unknownRaw).toEqual([{ sessionUpdate: "totally_unknown" }]);
   });
 
   it("current_mode_update → currentModeId 갱신(전용 event 없음)", () => {

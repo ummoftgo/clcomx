@@ -174,6 +174,9 @@
 <div
   class="internal-editor"
   data-testid={TEST_IDS.internalEditorShell}
+  data-active-path={activeTab?.wslPath ?? ""}
+  data-active-line={String(activeTab?.line ?? "")}
+  data-active-column={String(activeTab?.column ?? "")}
 >
   <div class="internal-editor__toolbar">
     <div class="internal-editor__meta">

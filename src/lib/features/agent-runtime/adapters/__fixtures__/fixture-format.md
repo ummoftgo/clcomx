@@ -20,7 +20,7 @@
 ## Codex / Claude 공용
 
 - Codex(`codex/...`) 와 Claude(`claude-acp/...`) 모두 이 포맷을 쓴다.
-- backend test-mode mock(T2.5 `is_test_mode()`)도 같은 `.jsonl`을 줄 단위로 로드해 재생한다(E2E mock과 fixture replay 단일 출처).
+- backend test-mode mock(T2.5 `is_test_mode()`)도 deterministic handshake/lifecycle 블록은 같은 `.jsonl`을 줄 단위로 로드해 우선 재생한다. prompt echo·approval처럼 입력값에 따라 달라지는 mock은 provider별 generator fallback을 쓰되, 이 포맷과 같은 JSON-RPC line shape을 유지한다.
 
 ## 예시
 

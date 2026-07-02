@@ -30,12 +30,14 @@ export interface SessionUpdateRuntime {
   currentModeId?: string;
   /** 미지원 variant 가시화 counter(04 §5). */
   unknownCounter: number;
+  /** 미지원 notification 원본 payload 보관(04 §5, 15 §0.2). */
+  unknownRaw?: unknown[];
 }
 
 /**
  * session/update의 update 페이로드를 AgentEvent[]로 변환(§5.1 변환표).
- * 13종 variant를 처리하되 8개 핵심은 event를 만들고, mode/config/session_info/available_commands는
- * 상태만 갱신(전용 event 없음), plan_update/plan_removed는 방어적 무시.
+ * 13종 variant를 처리하되 메시지·tool·plan·command·title은 event를 만들고,
+ * mode/config/usage는 adapter 상태로 보관한다. plan_update/plan_removed는 방어적 무시.
  */
 export function mapSessionUpdate(rt: SessionUpdateRuntime, update: AcpSessionUpdate): AgentEvent[] {
   switch (update.sessionUpdate) {
@@ -60,22 +62,30 @@ export function mapSessionUpdate(rt: SessionUpdateRuntime, update: AcpSessionUpd
       rt.currentModeId = update.currentModeId;
       return [];
     case "config_option_update":
-    case "session_info_update":
       // 전용 event 없음(ref-acp §13.2) → 1차는 상태 보관만(어댑터 메인이 처리). 여기선 no-op.
       return [];
+    case "session_info_update":
+      return mapSessionInfo(rt, update);
     case "available_commands_update":
       // 슬래시 커맨드 목록 → composer 팔레트 소스(available_commands_updated event).
       return [mapAvailableCommands(rt, update)];
     case "plan_update":
     case "plan_removed":
       // 어댑터 미관측(ref-claude-agent-acp §2) → 방어적 무시 + counter.
-      rt.unknownCounter += 1;
+      recordUnknownUpdate(rt, update);
       return [];
     default:
       // 알 수 없는 variant → raw 보존 + counter(04 §5). notification이므로 응답 불필요.
-      rt.unknownCounter += 1;
+      recordUnknownUpdate(rt, update);
       return [];
   }
+}
+
+/** 미지원 session/update payload를 raw 진단 표면에 남긴다. */
+function recordUnknownUpdate(rt: SessionUpdateRuntime, update: unknown): void {
+  rt.unknownCounter += 1;
+  if (!rt.unknownRaw) rt.unknownRaw = [];
+  rt.unknownRaw.push(update);
 }
 
 /** agent/user 메시지 chunk → delta(text) 또는 append message(비텍스트). messageId 그룹핑(§5.2). */
@@ -190,14 +200,16 @@ function mapAvailableCommands(
   for (const raw of update.availableCommands ?? []) {
     if (!raw || typeof raw !== "object") continue;
     const rec = raw as Record<string, unknown>;
-    if (typeof rec.name !== "string" || rec.name.length === 0) continue;
+    if (typeof rec.name !== "string") continue;
+    const name = normalizeCommandName(rec.name);
+    if (name.length === 0) continue;
     const description = typeof rec.description === "string" ? rec.description : undefined;
     const input = rec.input;
     const inputHint =
       input && typeof input === "object" && typeof (input as Record<string, unknown>).hint === "string"
         ? ((input as Record<string, unknown>).hint as string)
         : undefined;
-    commands.push({ name: rec.name, description, inputHint });
+    commands.push({ name, description, inputHint });
   }
   const ref: ProviderRef = {
     provider: "claude",
@@ -205,6 +217,27 @@ function mapAvailableCommands(
     turnId: rt.activeTurnId,
   };
   return { type: "available_commands_updated", ref, commands };
+}
+
+/** ACP command name을 내부 정본(선두 slash 없음)으로 맞춘다. */
+function normalizeCommandName(name: string): string {
+  return name.trim().replace(/^\/+/, "");
+}
+
+/** session_info_update.title → 앱 session title 갱신 event. */
+function mapSessionInfo(
+  rt: SessionUpdateRuntime,
+  update: { title?: string | null; updatedAt?: string | null },
+): AgentEvent[] {
+  if (!Object.prototype.hasOwnProperty.call(update, "title")) return [];
+  const ref: ProviderRef = {
+    provider: "claude",
+    sessionId: rt.providerSessionId,
+  };
+  if (update.updatedAt != null) {
+    ref.raw = { updatedAt: update.updatedAt };
+  }
+  return [{ type: "session_title_changed", ref, title: update.title ?? null }];
 }
 
 /**

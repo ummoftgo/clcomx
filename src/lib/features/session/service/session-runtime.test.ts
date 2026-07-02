@@ -3,6 +3,7 @@ import type { SessionCore } from "../../../types";
 import {
   applySessionAuxState,
   clearSessionResumeFallback,
+  recordSessionHistory,
   registerSessionPty,
   type SessionRuntimeDependencies,
 } from "./session-runtime";
@@ -64,6 +65,31 @@ describe("session-runtime", () => {
 
     expect(deps.reportError).toHaveBeenCalledWith("Failed to register session PTY", error);
     expect(deps.recordTabHistory).toHaveBeenCalled();
+  });
+
+  it("records direct runtime kind only when history needs it", () => {
+    const recordTabHistory = vi.fn();
+    const session = createSession();
+
+    recordSessionHistory(recordTabHistory, { ...session, runtimeKind: "direct-codex" });
+    expect(recordTabHistory).toHaveBeenCalledWith(
+      "claude",
+      "Ubuntu",
+      "/workspace/demo",
+      "Demo",
+      "resume-1",
+      "direct-codex",
+    );
+
+    recordTabHistory.mockClear();
+    recordSessionHistory(recordTabHistory, { ...session, runtimeKind: "pty" });
+    expect(recordTabHistory).toHaveBeenCalledWith(
+      "claude",
+      "Ubuntu",
+      "/workspace/demo",
+      "Demo",
+      "resume-1",
+    );
   });
 
   it("applies and persists auxiliary terminal state", async () => {

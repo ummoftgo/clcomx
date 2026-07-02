@@ -145,7 +145,7 @@ type ClientNotification = { "method": "initialized" };
 
 핸드셰이크 순서(권장): `initialize` request → `initialize` response 수신 → `initialized` notification 전송. 그 후 thread/turn 호출.
 
-> `ClientInfo` / `InitializeCapabilities`의 정확한 필드는 본 조사에서 개별 파일을 끝까지 읽지 않았다. `clientInfo`는 최소 `name`/`version` 형태로 보이지만 **unverified** — 구현 시 `schema/typescript/ClientInfo.ts`, `InitializeCapabilities.ts`를 확인할 것(openQuestions 참조).
+> 2026-06-28 H4/OQ-11 구현 재확인: fresh `codex app-server generate-ts` 산출물에서 `ClientInfo`는 `{name,title,version}`, `InitializeParams`는 `capabilities: InitializeCapabilities | null`, `InitializeCapabilities`는 opt-in 필드 집합임을 확인했다. v1 adapter는 experimental surface를 열지 않기 위해 `capabilities:null`을 유지하고, 최소 `clientInfo`(`name`/`version`)를 보낸다. `initialize` 응답 뒤 `initialized` notification은 H4/OQ-07 방어적 기본값으로 항상 전송한다.
 
 ---
 
@@ -604,14 +604,22 @@ S→C  {"method":"turn/completed","params":{"threadId":..,"turn":{"id":"<turnId>
 ```
 
 > 위 시퀀스는 본문 검증된 타입들로 재구성한 **예시**이며 실제 바이트 캡처는 아니다(unverified ordering 세부). 메서드명/필드명은 verified.
+>
+> 2026-06-30 추가 실측: 앱 수동 launch 없이 `codex app-server --stdio` probe로 tool-free simple turn 1회를 캡처했다. 이 캡처에서는 `turn/start` response가 `turn/started` notification보다 먼저 도착했고, `thread/tokenUsage/updated`는 `turn/completed`보다 먼저 도착했다(`seq=25` vs `seq=28`). `turn/completed` 뒤 1.5초 grace 동안 같은 `(threadId,turnId)` late 후보는 없었다. 단, 이 결과는 도구 실행·approval·diff·plan이 없는 단순 turn 하한이며, 섹션 9의 풍부한 예시 ordering 전체를 대체하지 않는다.
+>
+> 2026-06-30 추가 실측 2: 같은 방식의 `codex app-server --stdio` probe로 tool-bearing shell command turn 1회를 캡처했다. 이 캡처에서는 commandExecution `item/started`가 `seq=19`, `item/completed`가 `seq=20`, `thread/tokenUsage/updated`가 `seq=21`/`seq=30`, `thread/status/changed`가 `seq=32`, `turn/completed`가 `seq=33`이었다. `turn/completed` 뒤 2초 grace 동안 같은 `(threadId,turnId)` late 후보는 없었다. 이 probe 자체에서는 server-side approval request가 발생하지 않았고, approval request ordering은 아래 2026-07-01 실측 3에서 별도 확인했다.
+>
+> 2026-07-01 추가 실측 3: 같은 방식의 `codex app-server --stdio` probe로 read-only sandbox approval request turn 1회를 캡처했다. 이 캡처에서는 `item/commandExecution/requestApproval`이 `seq=20`으로 도착했고, client `{decision:"accept"}` 응답 뒤 `serverRequest/resolved{requestId:0}`가 `seq=21`, commandExecution `item/completed`가 `seq=23`, `thread/tokenUsage/updated`가 `seq=24`/`seq=34`, `thread/status/changed`가 `seq=36`, `turn/completed`가 `seq=37`이었다. `turn/completed` 뒤 2.5초 grace 동안 같은 `(threadId,turnId)` late 후보는 없었다. diff ordering은 아래 실측 4에서 별도 확인했고, plan 포함 turn ordering은 아직 실제 wire 캡처로 검증하지 않았다.
+>
+> 2026-07-01 추가 실측 4: 같은 방식의 `codex app-server --stdio` probe로 workspace-write fileChange diff turn 1회를 캡처했다. 이 캡처에서는 fileChange `item/started`가 `seq=66`, fileChange `item/completed`가 `seq=67`, `turn/diff/updated`가 `seq=68`/`seq=71`/`seq=82`, `thread/tokenUsage/updated`가 `seq=69`/`seq=80`, `thread/status/changed`가 `seq=83`, `turn/completed`가 `seq=84`였다. `turn/completed` 뒤 2.5초 grace 동안 같은 `(threadId,turnId)` late 후보는 없었다. 같은 prompt에서 plan을 요청했지만 `turn/plan/updated`/plan item은 발생하지 않았으므로 plan 포함 turn ordering은 아직 실제 wire 캡처로 검증하지 않았다.
 
 ---
 
 ## 10. 확인 못 한 부분 (unverified) / open questions
 
-- `ClientInfo`, `InitializeCapabilities`의 정확한 필드(특히 capability opt-in 키와 experimental 노출 제어 방식)는 개별 schema 파일을 끝까지 읽지 않음.
-- `initialize`→`initialized` 핸드셰이크가 **필수**인지(없이도 thread/start 가능한지)는 server 구현(app-server crate handler)을 읽어 확인 필요. 순서는 권장 추정.
-- 섹션 9의 메시지 **순서/타이밍**(예: `turn/start` response가 `turn/started` notification보다 먼저 오는지)은 타입에서 추론한 것으로 실제 wire 캡처로 검증하지 않음.
+- (해소됨, 2026-06-28 H4/OQ-11) `ClientInfo`, `InitializeParams`, `InitializeCapabilities`의 정확한 필드는 generated type으로 확인했다. v1은 `capabilities:null`을 유지한다.
+- (해소됨, H4/OQ-07) `initialize`→`initialized` strict 필수 여부와 무관하게 v1 adapter는 `initialize` 응답 후 params 없는 `initialized` notification을 항상 보낸다.
+- 섹션 9의 메시지 **순서/타이밍**은 부분 실측 상태다. 2026-06-30 `codex app-server --stdio` tool-free simple turn 1회에서는 `turn/start` response가 `turn/started` notification보다 먼저 왔고, `thread/tokenUsage/updated`와 `thread/status/changed`가 `turn/completed`보다 먼저 왔으며, completion 뒤 1.5초 동안 same-turn late 후보는 없었다. 같은 날 tool-bearing shell command turn 1회에서도 commandExecution item lifecycle과 token usage/status notification이 `turn/completed`보다 먼저 왔고, completion 뒤 2초 동안 same-turn late 후보는 없었다. 2026-07-01 read-only sandbox approval request turn 1회에서는 `item/commandExecution/requestApproval` → client approval response → `serverRequest/resolved` → command item completion → token usage/status notification → `turn/completed` 순으로 왔고, completion 뒤 2.5초 동안 same-turn late 후보는 없었다. 같은 날 workspace-write fileChange diff turn 1회에서는 fileChange item lifecycle → `turn/diff/updated` 3회 → token usage/status notification → `turn/completed` 순으로 왔고, completion 뒤 2.5초 동안 same-turn late 후보는 없었다. plan 포함 turn의 세부 ordering은 아직 실제 wire 캡처로 검증하지 않았다.
 - `reject_always`에 대응하는 Codex 영구 거부 decision의 정확한 등가물은 불명확(현재 decline로 매핑 권장).
 - `CommandExecutionApprovalDecision`의 데이터 variant(`acceptWithExecpolicyAmendment`, `applyNetworkPolicyAmendment`)는 Rust 상 외부 태그(externally-tagged) enum variant임이 확인됨 → `{ "acceptWithExecpolicyAmendment": { "execpolicyAmendment": ... } }` 형태로 직렬화. 다만 생성된 응답 JSON schema 리터럴 자체는 열지 않았으므로 정확한 내부 필드명은 schema 재확인 권장. CLCOMX는 단위 variant 4종만 전송 권장(변동 없음).
 - SDK(`sdk/typescript/src/thread.ts`, `events.ts`)는 `codex exec` 계열의 상위 래퍼로 보이며 app-server JSON-RPC와 1:1이 아닐 수 있음 — 본 문서는 app-server-protocol crate를 권위 소스로 사용했고 SDK는 교차검증에 쓰지 않음(파일 존재만 확인).

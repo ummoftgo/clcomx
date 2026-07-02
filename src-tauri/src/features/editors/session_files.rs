@@ -17,6 +17,7 @@ use super::types::{
     SessionFileListResponse, SessionFileMatch, SessionFileReadResponse, SessionFileSearchResponse,
     SessionFileWriteResponse,
 };
+use crate::app_env::is_test_mode;
 use crate::commands::workspace::{find_session_tab_snapshot, WorkspaceState, WorkspaceTabSnapshot};
 use crate::commands::wsl::{list_wsl_files, search_wsl_files, WslState};
 use std::fs;
@@ -180,6 +181,12 @@ pub(super) fn read_session_file_with_state(
 ) -> Result<SessionFileReadResponse, String> {
     let session_tab = session_tab_context(workspace_state, session_id)?;
     let normalized_path = ensure_session_file_allowed(wsl_path, &session_tab)?;
+    if is_test_mode() {
+        if let Some(response) = mock_test_mode_read_session_file(&normalized_path) {
+            return Ok(response);
+        }
+    }
+
     let (access_path, metadata) =
         resolve_existing_access_path(&normalized_path, &session_tab.distro)?;
     ensure_resolved_path_within_session_root(&session_tab, &normalized_path, &access_path)?;
@@ -195,6 +202,40 @@ pub(super) fn read_session_file_with_state(
         language_id: infer_language_id(&normalized_path),
         size_bytes,
         mtime_ms: metadata_mtime_ms(&metadata),
+    })
+}
+
+/// test-mode direct-runtime E2E가 실제 WSL 파일 없이 editor open을 검증할 수 있게 하는 fixture read.
+fn mock_test_mode_read_session_file(wsl_path: &str) -> Option<SessionFileReadResponse> {
+    if !wsl_path.ends_with("/src/lib/example.ts") {
+        return None;
+    }
+
+    let content = [
+        "export const heading = \"CLCOMX\";",
+        "",
+        "export function buildExample() {",
+        "  const first = 1;",
+        "  const second = 2;",
+        "  const third = first + second;",
+        "  const fourth = third + 1;",
+        "  const fifth = fourth + 1;",
+        "  const sixth = fifth + 1;",
+        "  const seventh = sixth + 1;",
+        "  const eighth = seventh + 1;",
+        "  export const example = eighth;",
+        "}",
+        "",
+    ]
+    .join("\n");
+    let size_bytes = content.len() as u64;
+
+    Some(SessionFileReadResponse {
+        wsl_path: wsl_path.to_string(),
+        content,
+        language_id: infer_language_id(wsl_path),
+        size_bytes,
+        mtime_ms: 0,
     })
 }
 

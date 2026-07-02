@@ -48,6 +48,54 @@ describe("MessageList", () => {
     expect(bubbles.some((b) => b.textContent?.includes("hello agent"))).toBe(true);
   });
 
+  it("redacts credential-like values in message bubbles", async () => {
+    const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
+    const { findByTestId } = render(MessageList, { props: { store } });
+
+    store.dispatch({
+      type: "user_message",
+      ref: codexRef({ itemId: "u-secret" }),
+      content: [
+        {
+          type: "text",
+          text: "use Bearer account-token-123 with AKIAIOSFODNN7EXAMPLE",
+        },
+      ],
+      mode: "replace",
+    });
+
+    const bubble = await findByTestId(TEST_IDS.agentMessageBubble);
+    expect(bubble.textContent).toContain("[REDACTED]");
+    expect(bubble.textContent).not.toContain("account-token-123");
+    expect(bubble.textContent).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  });
+
+  it("renders raw json message content without leaking credential-like values", async () => {
+    const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "claude" });
+    const { findByTestId } = render(MessageList, { props: { store } });
+
+    store.dispatch({
+      type: "agent_message",
+      ref: { provider: "claude", sessionId: "s1", turnId: "turn-1", messageId: "m-json" },
+      content: [
+        {
+          type: "json",
+          value: {
+            type: "audio",
+            mimeType: "audio/wav",
+            authorization: "Bearer audio-secret",
+          },
+        },
+      ],
+      mode: "replace",
+    });
+
+    const bubble = await findByTestId(TEST_IDS.agentMessageBubble);
+    expect(bubble.textContent).toContain("\"type\": \"audio\"");
+    expect(bubble.textContent).toContain("[REDACTED]");
+    expect(bubble.textContent).not.toContain("audio-secret");
+  });
+
   it("progressively renders agent message deltas (itemVersions bump)", async () => {
     const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
     const { findByTestId } = render(MessageList, { props: { store } });
@@ -71,6 +119,28 @@ describe("MessageList", () => {
     expect(bubble.textContent).toContain("partial");
   });
 
+  it("renders thought channel messages as a collapsed reasoning block with an ARIA toggle", async () => {
+    const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
+    const { findByTestId, queryByText, findByText } = render(MessageList, { props: { store } });
+
+    store.dispatch({
+      type: "agent_message_delta",
+      ref: codexRef({ itemId: "thought-1" }),
+      delta: "hidden reasoning",
+      channel: "thought",
+    });
+    await tick();
+
+    const toggle = await findByTestId(TEST_IDS.agentReasoningToggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(queryByText("hidden reasoning")).toBeNull();
+
+    await fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(await findByText("hidden reasoning")).toBeTruthy();
+  });
+
   it("renders a ToolCallCard for a tool_call item", async () => {
     const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
     const { findByTestId } = render(MessageList, { props: { store } });
@@ -89,6 +159,33 @@ describe("MessageList", () => {
 
     const card = await findByTestId(TEST_IDS.agentToolCallCard);
     expect(card.getAttribute("data-kind")).toBe("execute");
+  });
+
+  it("wires tool location clicks to the transcript location handler", async () => {
+    const onOpenLocation = vi.fn();
+    const location = { path: "src/app.ts", line: 7, column: 2 };
+    const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
+    const { getByRole, getByTestId } = render(MessageList, {
+      props: { store, onOpenLocation },
+    });
+
+    store.dispatch({
+      type: "tool_call_updated",
+      ref: codexRef({ toolCallId: "tc-location" }),
+      update: {
+        id: "tc-location",
+        kind: "read",
+        status: "completed",
+        title: "read match",
+        locations: [location],
+      },
+    });
+    await tick();
+
+    await fireEvent.click(getByTestId(TEST_IDS.agentToolCallToggle));
+    await fireEvent.click(getByRole("button", { name: "src/app.ts:7:2" }));
+
+    expect(onOpenLocation).toHaveBeenCalledWith(location);
   });
 
   it("renders an inline approval inside the matching tool card and wires the response", async () => {

@@ -90,13 +90,19 @@ export function disposeWindow(windowLabel: string): string[] {
   return disposed;
 }
 
-/** 단일 세션 정리(세션 종료/shutdown 완료 후). */
-export function unregisterSession(sessionHandle: string): void {
+/**
+ * 단일 세션 정리(세션 종료/shutdown 완료 후).
+ * expectedStore가 있으면 현재 registry entry가 그 store일 때만 정리한다. retry처럼 같은 sessionHandle이
+ * 새 controller/store로 재등록된 뒤 오래된 controller의 dispose가 늦게 도착해도 새 entry를 지우지 않는다.
+ */
+export function unregisterSession(sessionHandle: string, expectedStore?: AgentRuntimeStore): boolean {
   const entry = registry.get(sessionHandle);
-  if (!entry) return;
+  if (!entry) return false;
+  if (expectedStore && entry.store !== expectedStore) return false;
   entry.store.dispose();
   if (entry.runtimeId !== undefined) runtimeIdIndex.delete(entry.runtimeId);
   registry.delete(sessionHandle);
+  return true;
 }
 
 /** 테스트 격리용 — registry 전체 비우기(dispose 호출 없이). */

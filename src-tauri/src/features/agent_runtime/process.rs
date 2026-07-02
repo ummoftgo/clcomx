@@ -79,7 +79,14 @@ pub fn spawn_wsl_process(
     non_secret_env: &HashMap<String, String>,
     secret_env: &HashMap<String, String>,
 ) -> Result<(ChildHandle, ChildStdio), String> {
-    let mut cmd = build_wsl_command(distro, executable, argv, work_dir, non_secret_env, secret_env);
+    let mut cmd = build_wsl_command(
+        distro,
+        executable,
+        argv,
+        work_dir,
+        non_secret_env,
+        secret_env,
+    );
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

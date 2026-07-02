@@ -18,7 +18,7 @@ import type {
 /**
  * ACP ContentBlock → CLCOMX AgentContent(15 §4, ref-acp §13.2).
  * - image: base64 data → data URI(`data:<mime>;base64,...`, OQ-12).
- * - audio: 모델에 없음 → placeholder text + raw 보존(TODO(13) audio policy).
+ * - audio: 모델에 없음 → json raw 보존(v1 미지원, 13 OQ-04 해소).
  * - resource_link / resource(text|blob) → {type:"resource"}.
  */
 export function mapContentBlock(block: AcpContentBlock): AgentContent {
@@ -31,7 +31,7 @@ export function mapContentBlock(block: AcpContentBlock): AgentContent {
       return { type: "image", uri, mimeType: block.mimeType };
     }
     case "audio":
-      // gap: CLCOMX 모델에 audio 없음 → raw 보존(json). text 경로(delta)로 새지 않게 별도 type. TODO(13): audio policy.
+      // CLCOMX 모델에 audio 없음 → raw 보존(json). text delta 경로로 새지 않게 별도 type으로 둔다.
       return { type: "json", value: block };
     case "resource_link":
       return {

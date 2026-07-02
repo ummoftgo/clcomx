@@ -1,6 +1,6 @@
-# HANDOFF — Direct Agent Runtime 구현 진입 가이드
+# HANDOFF — Direct Agent Runtime 구현/검증 진입 가이드
 
-> 다운스트림 구현 에이전트를 위한 1페이지 진입점. 이 계획은 **코드 수정 없이 문서만 작성·검토한 설계 세션의 산출물**이다. 실제 코드 변경은 아직 없다. 구현은 당신(다운스트림 에이전트)이 시작한다.
+> Direct Agent Runtime 작업의 1페이지 진입점. 이 계획은 설계·조사 문서에서 출발했지만, 현재 브랜치에는 direct runtime 코드·테스트·문서 보강이 함께 존재한다. 새 작업자는 문서 정본과 현재 worktree를 모두 확인한 뒤 남은 OQ/verification slice를 이어간다.
 
 ## 한 문단 요약
 
@@ -28,7 +28,7 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
 | 문서 | 역할 |
 |---|---|
 | 00-index | 계획 목적·범위·완료 기준 |
-| 01-source-map | 조사 근거와 baseline 버전(Codex `rust-v0.142.0`, ACP schema baseline 후보 `schema-v1.16.0` — 구현 핀은 T0.0/OQ-41에서 확정, `@agentclientprotocol/claude-agent-acp@0.51.0` commit `23626c9`) |
+| 01-source-map | 조사 근거와 baseline 버전(Codex `rust-v0.142.0`, ACP `schema-v1.16.0`은 baseline 후보, 현 구현 핀은 `@agentclientprotocol/claude-agent-acp@0.51.0` → SDK `0.29.0` package schema/types) |
 | 02-current-state | 현재 PTY/xterm 구조 |
 | 03-target-architecture | 목표 아키텍처(Port/Adapter/Router/Store/Runtime) |
 | **04-normalized-agent-model** | **규칙 정본** — 상태 머신·upsert/append/replace/reconcile·approval 생명주기 |
@@ -52,7 +52,7 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
 
 ## 구현 시작 방법
 
-1. **[12](12-implementation-workstreams.md) Phase 0(준비)부터 순서대로 진행한다.** Phase 0 → 1(공통 모델·store) → 2(Tauri JSON-RPC runtime) → 3(Codex adapter) → 4(Claude adapter) → 5(UI) → 6(persistence) → 7(verification). 12 하단의 "병렬화 가능한 단위"를 보고 interface 합의 후 분기한다. 모듈 경로는 12 "구현 모듈 배치"에 명시돼 있다(`src/lib/features/agent-runtime/...`, `src-tauri/src/features/agent_runtime/`).
+1. **[12](12-implementation-workstreams.md) Phase 흐름을 작업 지도처럼 사용한다.** 새로 구현을 시작하는 경우에는 Phase 0 → 1(공통 모델·store) → 2(Tauri JSON-RPC runtime) → 3(Codex adapter) → 4(Claude adapter) → 5(UI) → 6(persistence) → 7(verification) 순서를 따른다. 현재 구현 브랜치에서 이어가는 경우에는 [impl-log.md](impl-log.md), [11](11-testing-acceptance.md) §8/§9, [13](13-risks-open-questions.md)을 먼저 확인하고 이미 완료된 Phase를 반복 구현하지 않는다. 모듈 경로는 12 "구현 모듈 배치"에 명시돼 있다(`src/lib/features/agent-runtime/...`, `src-tauri/src/features/agent_runtime/`).
 2. **정본 우선순위를 지킨다 — 절대 재정의·재발명 금지.**
    - **타입은 [15](15-data-contracts.md)가 정본.** `AgentEvent`/`ProviderRef`/`ToolCallUpdate`/`Approval*`/`AgentRuntimeMetadata`/`JsonRpcMessage`/`AgentRuntimeStartParams` 등은 15를 복사/import한다. 다른 문서에서 본 타입과 충돌하면 15가 이긴다([15](15-data-contracts.md) §9 type 인덱스).
    - **규칙은 [04](04-normalized-agent-model.md)가 정본.** 상태 전이·upsert/reconcile·approval cleanup 불변식은 04를 따른다.
@@ -62,9 +62,10 @@ CLCOMX는 현재 `claude`/`codex`를 PTY로 실행하고 xterm.js에 byte stream
 
 ## 시작 전 반드시 확인
 
-- **현재 작업 루트와 브랜치를 먼저 확인한다.** 문서에 남은 절대경로는 조사 당시 환경의 예시일 수 있다. 구현 전 `pwd`, `git rev-parse --show-toplevel`, `git status --short --branch`를 실행하고, 12의 모든 파일 경로는 확인된 저장소 루트 기준 상대경로로 해석한다. 이 문서 정리 시점(2026-06-25)에 확인한 루트는 `/home/xenia/work/claudemx`, 브랜치는 `codex/direct-agent-runtime-docs`다.
-- **unverified / 결정 필요 항목은 [13-risks-open-questions.md](13-risks-open-questions.md)를 먼저 확인한다.** 계획서 곳곳에 "unverified" 또는 "결정 필요"로 표시된 항목(예: `audio` content 대응, ACP `usage_update` vs `TokenUsage` 매핑, Codex `ClientInfo`/`InitializeCapabilities` 필드와 initialize 핸드셰이크 필수 여부, websocket transport 채택 여부)은 13 레지스트리에서 현재 결정 상태를 본 뒤 진행한다. 확정 전이면 13에 결정을 기록하고 움직인다. (참고: `agent_thought_chunk`/reasoning 표시는 `channel:"thought"`로, `claude-agent-acp` 버전은 `0.51.0`으로, ACP `session/update` variant 집합은 sdk 0.29.0 기준 13종으로 이미 해소됨.)
-- **버전 핀을 재확인한다.** Codex `rust-v0.142.0`, ACP wire `protocolVersion = 1` + schema baseline 후보 `schema-v1.16.0`(구현 핀 아님), `@agentclientprotocol/claude-agent-acp@0.51.0`(commit `23626c9`, sdk `0.29.0` 의존)은 조사 baseline이다. 구현 직전 실제 CLI/schema/package와 대조하고, 다르면 [01](01-source-map.md) "구현 전 재확인 체크"와 [13](13-risks-open-questions.md) OQ-41에 기록한 절차로 diff를 확인한다. T0.0 완료 전에는 스캐폴드/타입 생성/dependency 추가를 시작하지 않는다.
+- **현재 작업 루트와 브랜치를 먼저 확인한다.** 문서에 남은 절대경로는 조사 당시 환경의 예시일 수 있다. 작업 시작 시 `pwd`, `git rev-parse --show-toplevel`, `git status --short --branch`를 실행하고, 12의 모든 파일 경로는 확인된 저장소 루트 기준 상대경로로 해석한다. 이 문서 정리 시점(2026-06-25)에 확인한 루트는 `/home/xenia/work/claudemx`, 당시 브랜치는 `codex/direct-agent-runtime-docs`였고, 구현 브랜치는 OQ-41 기록처럼 `feat/agent-runtime-impl`이다.
+- **unverified / 결정 필요 항목은 [13-risks-open-questions.md](13-risks-open-questions.md)를 먼저 확인한다.** 계획서 곳곳에 "unverified" 또는 "결정 필요"로 표시된 항목은 13 레지스트리에서 현재 결정 상태를 본 뒤 진행한다. 확정 전이면 13에 결정을 기록하고 움직인다. 이미 해소된 예: `agent_thought_chunk`/reasoning 채널(OQ-01), `audio` raw 보존(OQ-04), ACP `usage_update` 매핑(OQ-02), Codex `ClientInfo`/`InitializeCapabilities`와 `initialize` 핸드셰이크(OQ-07/OQ-11), websocket transport v1 reject-before-log/authToken redaction gate(OQ-15), approval audit v1 in-memory 경계(OQ-51), transcript memory v1 기본 cap(OQ-52), Codex `thread/read(includeTurns)` full snapshot 범위와 replay partial notice 방어(OQ-54), Codex reasoning completed `summary[]` 권위 필드(OQ-46), workspace file + Codex `fuzzyFileSearch`/`skills/list` `@` mention과 resource action button, image attach/paste/drop/reference token 경로(OQ-56), realtime raw event v1 internal bridge + public diagnostic 미노출(OQ-59), tool location callback과 `SessionShell` internal/external editor 단위 흐름 및 E2E-11 internal/external default·picker command-payload spec 기반(OQ-61), post-start fatal runtime error notice/no-fallback v1 E2E 하한(OQ-60), `claude-agent-acp` `0.51.0` + sdk `0.29.0` 13종 `session/update` 기준(OQ-08/OQ-32), Claude node/native startup preflight 하한 및 현재 로컬 WSL target node/native resolve 확인(OQ-10). 아직 열린 예: 릴리스/설치 배포 matrix의 node/claude/SDK 버전·OS/WSL 조합 재확인(OQ-10), same-turn late notification wire 실측(OQ-53), OQ-52의 대용량 세션 운영 튜닝, ACP resource source·provider-backed richer image source·`$` composer 후속(OQ-56), DOM 가상화 튜닝(OQ-58), post-start fatal recovery UX와 full typed failure-code taxonomy(OQ-60), 실제 external editor focus·line reveal 검증(OQ-61).
+- **OQ-56 ACP resource source 경계(2026-06-30)**: 현재 핀 `@agentclientprotocol/sdk@0.29.0`/`@agentclientprotocol/claude-agent-acp@0.51.0`에는 prompt content `resource_link`/embedded `resource`와 `embeddedContext` capability만 있고 resource search/list request가 없다. `AgentRuntimePort.searchResources`의 Claude ACP 구현은 빈 결과를 반환해 workspace fallback을 쓰는 것이 v1 경계이며, "ACP resource source" 후속은 protocol/package에 해당 RPC가 추가되거나 별도 client-side source 정책을 정할 때만 다시 연다.
+- **버전 핀을 재확인한다.** Codex `rust-v0.142.0`, ACP wire `protocolVersion = 1` + schema baseline 후보 `schema-v1.16.0`(구현 핀 아님), `@agentclientprotocol/claude-agent-acp@0.51.0`(commit `23626c9`, sdk `0.29.0` 의존)은 조사 baseline이다. 초기 구현의 T0.0/OQ-41 preflight는 완료됐고, 현재 구현 기준은 [01](01-source-map.md) §4와 [13](13-risks-open-questions.md) OQ-41/RD-7에 기록돼 있다. 향후 dependency refresh, schema 재생성, target 환경 재검증 때만 같은 절차로 fresh CLI/schema/package diff와 fixture replay를 확인한다.
 
 ## Build / Run gate (AGENTS.md 준수)
 
@@ -74,6 +75,6 @@ CLCOMX `AGENTS.md`의 Build/Run gate를 지킨다.
 - app launch는 구현 슬라이스가 정리된 뒤 **한 번만** 수행한다([12](12-implementation-workstreams.md) Phase 7). Windows/WSL E2E smoke는 direct runtime과 legacy PTY 양쪽에서 돌린다.
 - 빌드 명령이 끝까지 완료됐고 launch가 그 슬라이스의 최종 산출물에 해당하는지 보고 전 확인한다.
 
-## 이 세션 산출물에 대한 명시
+## 문서와 구현 상태에 대한 명시
 
-이 문서 집합(00–17, adr-001, ref-*, research/*, HANDOFF)은 **설계·조사·문서화만 수행한 세션의 결과물**이다. `src/`/`src-tauri/` 코드는 변경되지 않았다. 다운스트림 구현 에이전트는 이 문서만으로 구현을 시작할 수 있어야 하며, 모호한 지점은 추측 대신 정본(15/04/ref)·레지스트리(13)를 참조한다.
+이 문서 집합(00–17, adr-*, ref-*, research/*, HANDOFF)은 최초 설계·조사 산출물에서 출발했지만, 현재는 구현 진행 중의 계획/결정/검증 로그로 함께 쓰인다. 실제 코드 상태는 현재 worktree가 권위이고, 구현·검증 증거는 [impl-log.md](impl-log.md)에 누적한다. 모호한 지점은 추측 대신 정본(15/04/ref)·레지스트리(13)·현재 코드/테스트를 함께 확인한다.

@@ -11,12 +11,13 @@
 import { listen, type UnlistenFn } from "../../../tauri/event";
 import type { AgentRuntimePort } from "../contracts/runtime-port";
 import type { SessionRuntimeKind } from "../contracts/metadata";
-import type { AgentRuntimeEvent, RuntimeId } from "./transport";
+import type { AgentRuntimeEvent, AgentRuntimeEventName, RuntimeId } from "./transport";
 import {
   agentRuntimeSend,
   agentRuntimeCancel,
   agentRuntimeShutdown,
   AGENT_RUNTIME_EVENTS,
+  AGENT_RUNTIME_EVENT_NAMES,
 } from "./transport";
 import {
   createCodexAppServerAdapter,
@@ -43,6 +44,26 @@ function makeIdGen(): () => number {
 }
 
 /**
+ * Tauri event 채널과 payload type이 일치하는지 확인한다.
+ * @param name listen 중인 `agent-runtime-*` event 이름.
+ * @param payload backend emit payload.
+ */
+function eventMatchesChannel(name: AgentRuntimeEventName, payload: AgentRuntimeEvent): boolean {
+  switch (name) {
+    case AGENT_RUNTIME_EVENTS.message:
+      return payload.type === "message";
+    case AGENT_RUNTIME_EVENTS.stderr:
+      return payload.type === "stderr";
+    case AGENT_RUNTIME_EVENTS.exit:
+      return payload.type === "exit";
+    case AGENT_RUNTIME_EVENTS.error:
+      return payload.type === "error";
+    case AGENT_RUNTIME_EVENTS.backpressure:
+      return payload.type === "backpressure";
+  }
+}
+
+/**
  * 모든 agent-runtime-* event 채널을 listen하고, payload.runtimeId로 필터해 핸들러로 넘기는
  * subscribeRuntime(Claude deps 형태)을 만든다. 동기 반환 UnlistenFn은 listen 등록 완료를 기다리지 않고
  * 모아둔 뒤 일괄 해제한다.
@@ -54,10 +75,10 @@ function makeSubscribeRuntime() {
   ): UnlistenFn => {
     const unlistens: UnlistenFn[] = [];
     let disposed = false;
-    for (const name of Object.values(AGENT_RUNTIME_EVENTS)) {
+    for (const name of AGENT_RUNTIME_EVENT_NAMES) {
       void listen<AgentRuntimeEvent>(name, (e) => {
         const p = e.payload;
-        if (p.runtimeId === runtimeId) handler(p);
+        if (p.runtimeId === runtimeId && eventMatchesChannel(name, p)) handler(p);
       }).then((un) => {
         if (disposed) un();
         else unlistens.push(un);
@@ -79,9 +100,12 @@ function makeSubscribeRuntime() {
 /** Codex deps의 listenRuntime(단일 event 채널 listen, 어댑터가 runtimeId 필터). */
 function makeListenRuntime() {
   return (
-    event: string,
+    event: AgentRuntimeEventName,
     h: (e: { payload: AgentRuntimeEvent }) => void,
-  ): Promise<UnlistenFn> => listen<AgentRuntimeEvent>(event, h);
+  ): Promise<UnlistenFn> =>
+    listen<AgentRuntimeEvent>(event, (e) => {
+      if (eventMatchesChannel(event, e.payload)) h(e);
+    });
 }
 
 /**

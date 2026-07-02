@@ -1,5 +1,9 @@
 import type { Session } from "../../../types";
-import { resolveCloseTabRequest, type CloseTabRequest } from "../service/session-tab-behavior";
+import {
+  hasLiveSessionRuntime,
+  resolveCloseTabRequest,
+  type CloseTabRequest,
+} from "../service/session-tab-behavior";
 
 interface TabCloseOrchestrationControllerDependencies {
   getSession: (sessionId: string) => Session | null;
@@ -82,7 +86,7 @@ export function createTabCloseOrchestrationController(
       return "blocked" as const;
     }
 
-    if (session.ptyId >= 0) {
+    if (hasLiveSessionRuntime(session)) {
       openCloseTabDialog(deps, sessionId);
       return "close-confirm" as const;
     }

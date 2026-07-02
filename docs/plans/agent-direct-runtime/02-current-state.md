@@ -302,9 +302,9 @@ direct runtime은 기존 `spawnPty`를 대체하지 않고 **새 runtime family*
 **direct runtime이 붙는 자리(integration points)** — [`research/codebase-backend.md`](research/codebase-backend.md) §9의 "연동 지점"과 [`research/codebase-frontend.md`](research/codebase-frontend.md) §10 체크리스트 인용:
 
 - backend: `commands/mod.rs`에 `pub mod agent_runtime;`, `lib.rs`에 `use` + `.manage(AgentRuntimeState::default())` + `generate_handler![]` 등록(3곳). 신설 모듈은 `features/agent_runtime/{mod,transport,process,tests}.rs` + `commands/agent_runtime.rs`([`research/codebase-backend.md`](research/codebase-backend.md) §9 표).
-- frontend host 분기: **옵션 B(권장)** — `SessionShell.svelte`(10줄 thin wrapper)에서 `session.runtimeKind`로 `<Terminal>` vs `<AgentRuntimeShell>` 분기. `SessionViewportProps`/`App.svelte`/`session-shell-loader` 변경 0([`research/codebase-frontend.md`](research/codebase-frontend.md) §9 옵션 B).
+- frontend host 분기: **옵션 B(구현됨)** — `SessionShell.svelte`에서 `session.runtimeKind`로 legacy `<Terminal>` vs direct `<AgentTranscriptSurface>`를 분기한다. `SessionViewportProps`/`App.svelte`/`session-shell-loader` 변경 없이 host props adapter(`createSessionHostProps`)에서 공통 props를 만든다([`research/codebase-frontend.md`](research/codebase-frontend.md) §9 옵션 B).
 - 타입/persistence: `SessionCore`/`WorkspaceTabSnapshot`에 `runtimeKind` optional 추가([15](15-data-contracts.md) §7.2), `session-factory.buildSession`·`createSessionHostProps` 전파.
-- callback 흐름: direct runtime은 ptyId가 없으므로 `onPtyId`/`onAuxStateChange`/`onResumeFallback` 흐름을 우회/대체해야 한다([`research/codebase-frontend.md`](research/codebase-frontend.md) §11 위험) — workspace autosave `$effect`가 transcript 세션을 죽은 세션으로 오인하지 않도록 검증 필요([13](13-risks-open-questions.md)).
+- callback 흐름: direct runtime은 ptyId가 없으므로 PTY 전제 콜백(`onPtyId`/`onAuxStateChange`/`onExit`/`onResumeFallback`)을 direct host에서 호출하지 않는다([`research/codebase-frontend.md`](research/codebase-frontend.md) §11 위험). close 정책은 `hasLiveSessionRuntime`이 `runtimeKind.startsWith("direct-")`를 live runtime으로 취급해 direct `ptyId=-1` 세션을 죽은 세션으로 오인하지 않도록 보강됐다.
 
 ---
 

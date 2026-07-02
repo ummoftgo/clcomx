@@ -41,4 +41,24 @@ describe("CommandOutputCard", () => {
     await fireEvent.click(getByText("stderr"));
     expect(getByText("warning: deprecated")).toBeTruthy();
   });
+
+  it("redacts credential-like values in stdout and expanded stderr", async () => {
+    const { getByTestId, getByText, queryByText } = render(CommandOutputCard, {
+      props: {
+        command: "build",
+        stdout: "using sk-live-secret\n",
+        stderr: "Authorization: Bearer account-token-123\n",
+      },
+    });
+
+    const stdout = getByTestId(TEST_IDS.agentCommandOutput);
+    expect(stdout.textContent).toContain("[REDACTED]");
+    expect(stdout.textContent).not.toContain("sk-live-secret");
+    expect(queryByText(/account-token-123/)).toBeNull();
+
+    await fireEvent.click(getByText("stderr"));
+    const card = getByTestId(TEST_IDS.agentCommandOutputCard);
+    expect(card.textContent).toContain("[REDACTED]");
+    expect(card.textContent).not.toContain("account-token-123");
+  });
 });

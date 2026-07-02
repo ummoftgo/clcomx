@@ -81,4 +81,17 @@ describe("session-factory", () => {
       resumeToken: "resume-2",
     });
   });
+
+  it("preserves direct runtime kind from history entries", () => {
+    const request = createSessionLaunchRequestFromHistoryEntry({
+      agentId: "codex",
+      distro: "Ubuntu-22.04",
+      workDir: "/tmp/demo",
+      title: "Demo",
+      lastOpenedAt: "123",
+      runtimeKind: "direct-codex",
+    });
+
+    expect(request.runtimeKind).toBe("direct-codex");
+  });
 });

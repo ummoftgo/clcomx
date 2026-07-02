@@ -19,6 +19,7 @@
     "test:e2e:windows-tabs": "node ./scripts/run-e2e-project.mjs windows-tabs",
     "test:e2e:workspace-restore": "node ./scripts/run-e2e-project.mjs workspace-restore",
     "test:e2e:image-paste": "node ./scripts/run-e2e-project.mjs image-paste",
+    "test:e2e:agent-runtime": "node ./scripts/run-e2e-project.mjs agent-runtime",
     "test:e2e:terminal-input": "node ./scripts/run-e2e-project.mjs terminal-input",
     "test:e2e:terminal-links": "node ./scripts/run-e2e-project.mjs terminal-links",
     "test:e2e:terminal-aux": "node ./scripts/run-e2e-project.mjs terminal-aux",

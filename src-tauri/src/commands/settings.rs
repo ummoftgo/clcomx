@@ -40,6 +40,7 @@ pub fn record_tab_history(
     work_dir: String,
     title: String,
     resume_token: Option<String>,
+    runtime_kind: Option<String>,
 ) -> Result<Vec<TabHistoryEntry>, String> {
     let settings = load_settings_or_default();
     record_tab_history_with_limit(
@@ -49,6 +50,7 @@ pub fn record_tab_history(
         work_dir,
         title,
         resume_token,
+        runtime_kind,
     )
 }
 

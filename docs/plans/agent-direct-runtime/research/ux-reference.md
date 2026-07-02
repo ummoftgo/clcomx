@@ -16,8 +16,8 @@
 
 | 자료 | URL | 버전/ref (확인일 2026-06-25) | 비고 |
 |---|---|---|---|
-| ACP 문서 | https://agentclientprotocol.com/protocol/overview | 문서 site, schema baseline 후보 `schema-v1.16.0` (2026-06-24 조사값, 구현 핀 아님) | CLCOMX Claude adapter의 1차 protocol. 실제 schema artifact는 T0.0/OQ-41에서 확정 |
-| ACP releases | https://github.com/agentclientprotocol/agent-client-protocol/releases | 작성 당시 조사값: `schema-v1.16.0`, `schema-v1.15.0`, `schema-v1.14.0`; 구현 전 public releases 재확인 필수 | schema 태그는 문서 protocol version과 별개 축 (doc 01/OQ-41 주의) |
+| ACP 문서 | https://agentclientprotocol.com/protocol/overview | 문서 site, schema baseline 후보 `schema-v1.16.0` (2026-06-24 조사값, 구현 핀 아님) | CLCOMX Claude adapter의 1차 protocol. 현 구현 기준은 OQ-41에서 확정한 SDK `0.29.0` package schema/types |
+| ACP releases | https://github.com/agentclientprotocol/agent-client-protocol/releases | 작성 당시 조사값: `schema-v1.16.0`, `schema-v1.15.0`, `schema-v1.14.0`; 2026-06-28 public 확인값은 `v1.1.0` | schema 태그는 문서 protocol version과 별개 축 (doc 01/OQ-41 주의) |
 | ACP tool calls | https://agentclientprotocol.com/protocol/tool-calls | site | tool call kind/status/content/permission |
 | ACP content | https://agentclientprotocol.com/protocol/content | site | content block 5종 |
 | ACP terminals | https://agentclientprotocol.com/protocol/terminals | site | command output embed |
@@ -33,9 +33,9 @@
 | Claude Code fullscreen | https://code.claude.com/docs/en/fullscreen | docs site | alt-screen transcript viewer |
 | Claude Code permission modes | https://code.claude.com/docs/en/permission-modes | docs site | default/acceptEdits/plan/auto/dontAsk/bypassPermissions |
 
-로컬 환경 확인값(2026-06-25): `codex-cli 0.142.0`, `2.1.187 (Claude Code)`, `@agentclientprotocol/claude-agent-acp@0.51.0`(npm latest). doc 01 source-map은 `claude-agent-acp` v0.50.0 기준이므로 구현 시 버전 차이를 재확인한다.
+로컬 환경 확인값(2026-06-25): `codex-cli 0.142.0`, `2.1.187 (Claude Code)`, `@agentclientprotocol/claude-agent-acp@0.51.0`(npm latest). 이후 2026-06-28 OQ-41 재확인에서 현재 구현 기준은 Codex generated type `0.142.2`, `@agentclientprotocol/claude-agent-acp@0.51.0`, transitive `@agentclientprotocol/sdk@0.29.0` package schema/types + CLCOMX 부분 wire mirror로 고정됐다(01 §4, 13 OQ-41).
 
-> 주의: ACP 문서 fetch는 요약 모델을 거쳤다. 아래에 인용한 enum/field 이름은 원문 표기를 그대로 옮겼으나, **구현 직전에 `schema/v1`의 실제 JSON Schema와 대조**해야 한다(doc 01 "구현 전 재확인 체크" 참조).
+> 주의: ACP 문서 fetch는 요약 모델을 거쳤다. 아래에 인용한 enum/field 이름은 원문 표기를 그대로 옮겼으나, 구현 기준은 2026-06-28에 `@agentclientprotocol/sdk@0.29.0` package schema/types와 부분 wire mirror로 재확인했다. 향후 dependency refresh 때만 doc 01 "구현 전 재확인 체크"와 OQ-41 절차를 반복한다.
 
 ---
 
@@ -263,7 +263,7 @@ doc 08 Tool Card 절을 다음 표로 구체화한다. `kind` 값은 ACP/doc 04 
 - 토큰 사용량: doc 04 `TokenUsage`(`inputTokens`/`cachedInputTokens`/`outputTokens`/`reasoningOutputTokens`)는 Codex 축이고, ACP `usage_update`는 `used`/`size`(+cost) 축이다. **두 축은 다르다.** UI는 다음을 표시할 수 있게 둔다 — **권장 매핑**:
   - "context 사용량 게이지" = ACP `used`/`size`(Zed의 token-near-profile 표시와 동치). Codex에는 직접 대응 필드가 없을 수 있어 turn usage 합산으로 근사.
   - "turn별 토큰" = Codex `TokenUsage`. ACP에는 input/output 세분이 없을 수 있으므로 optional.
-  - doc 04에 `usage_update` 대응 필드(`contextUsed`/`contextSize`/`cost`)를 추가할지 **open question** — 현재 doc 04 `TokenUsage`에는 없음.
+  - **해소됨(OQ-02)**: 15 §5 `TokenUsage`에 `contextUsed?`/`contextSize?`가 추가됐고, ACP `usage_update{used,size}`는 06 §3.6에서 각각 이 두 필드로 매핑한다. `cost` 등 잔여 필드는 raw 보존이며 Codex input/output 축에 섞지 않는다.
 - session/thread 목록: Zed 패턴(sidebar, 프로젝트별 그룹, switcher, archive)을 doc 08의 미정 영역으로 추가 권장. CLCOMX는 탭/세션 모델이 이미 있으므로 turn status badge + 토큰 게이지를 우선 적용.
 
 ---
@@ -367,7 +367,7 @@ doc 08 Tool Card 절을 다음 표로 구체화한다. `kind` 값은 ACP/doc 04 
 
 doc 08 Composer 절을 다음으로 구체화:
 
-- **multiline 입력**: CLCOMX는 Tauri WebView이므로 터미널 키 제약이 없다. `Shift+Enter`=개행, `Enter`=전송을 기본으로(웹 관례). `Enter`=전송 / `Cmd/Ctrl+Enter`=전송 등 정책은 기존 CLCOMX 컨벤션에 맞춤 — **CLCOMX 결정 필요**.
+- **multiline 입력(해소됨, OQ-05)**: CLCOMX는 Tauri WebView이므로 터미널 키 제약이 없다. v1 키 바인딩은 `Enter`=전송, `Shift+Enter`=개행으로 확정됐다. slash command palette가 열려 있을 때만 `Enter`/`Tab`은 command 선택으로 소비되고 전송하지 않는다.
 - **image 첨부**: doc 08 "image paste attachment". paste/drag 모두 지원. ACP는 `image` prompt capability + base64 `data` 필요(§3) → adapter가 capability 확인 후에만 활성화(doc 06 "image: capability 확인 후 활성화"). Claude `[Image #N]` chip처럼 **위치 참조형 chip** 권장.
 - **file/resource mention**: doc 08 "file/resource mention". `@`-mention(Zed/Claude/Codex 공통 관례) 채택 권장. ACP wire는 absolute path/file URI로 정규화(doc 06 "상대 경로는 표시용, wire는 absolute"). mention 대상은 provider capability(`promptCapabilities.embeddedContext` 등)와 일치시킴.
 - **send/cancel/중단**: doc 08 "send/cancel button". 생성 중이면 send 버튼을 **stop 버튼으로 전환**(Zed/Claude 패턴). stop → ACP `session/cancel`(doc 06)/Codex turn cancel(doc 05). doc 04 "turn cancel 시 pending approval cancelled" 불변식 적용.
@@ -419,12 +419,12 @@ doc 08 Composer 절을 다음으로 구체화:
 
 ---
 
-## 12. 미해결/재확인 필요 (open questions)
+## 12. 초기 미해결/재확인 기록 (현재 상태는 13 참조)
 
-1. **doc 04 `TokenUsage` vs ACP `usage_update`** — context gauge(`used`/`size`/`cost`)를 표현하려면 doc 04에 필드 추가가 필요한가? 현재 `TokenUsage`는 Codex 축(input/output/cached/reasoning)만 있다. (결정필요)
-2. **`agent_thought_chunk` / `user_message_chunk` 정확한 discriminator** — fetch 요약에서 누락. T0.0/OQ-41에서 확정한 `schema/v1` JSON Schema로 확정 필요(doc 01 재확인 체크; `schema-v1.16.0`은 baseline 후보).
+1. **doc 04 `TokenUsage` vs ACP `usage_update`** — **해소됨(OQ-02)**. `TokenUsage.contextUsed`/`contextSize`를 추가했고 ACP `used`/`size`를 이 축으로 매핑한다. `cost` 등 잔여는 raw 보존.
+2. **`agent_thought_chunk` / `user_message_chunk` 정확한 discriminator** — fetch 요약에서 누락됐던 항목. 현재는 SDK `0.29.0` package schema/types와 `contracts/claude-acp.ts` 부분 mirror에서 확인됨(`schema-v1.16.0`은 baseline 후보).
 3. **ACP diff content 필드(`oldText`/`newText`) vs doc 04 `diff`(`patch`)** — adapter에서 patch 변환 규칙 확정 필요.
 4. **`audio` content** — v1 미지원 결정 시 강등/표시 정책 확정(§3.2).
-5. **send/개행 키 바인딩** — Enter=전송 vs Shift+Enter=전송. 기존 CLCOMX UX 컨벤션과 통일 필요(§9.2).
+5. **send/개행 키 바인딩** — **해소됨(OQ-05)**. v1은 `Enter`=전송, `Shift+Enter`=개행이며 slash command palette가 열려 있을 때만 `Enter`/`Tab`이 선택 동작으로 소비된다.
 6. **session/thread 목록 UI** — Zed식 sidebar/switcher를 도입할지, 기존 CLCOMX 탭 모델에 turn status badge만 얹을지(§6.2).
-7. **claude-agent-acp 버전** — 로컬 npm latest는 0.51.0, doc 01은 0.50.0. T0.0/OQ-41에서 확정한 ACP schema artifact와 호환 protocol version을 어댑터 의존성 고정 시 재확인(doc 01).
+7. **claude-agent-acp 버전** — 초기 조사 당시 0.50.0/0.51.0 혼선이 있었지만, 현재 구현 핀은 exact `@agentclientprotocol/claude-agent-acp@0.51.0` + transitive SDK `0.29.0`이다. 향후 dependency refresh 때만 schema diff + fixture replay로 재검토한다.

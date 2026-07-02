@@ -4,7 +4,10 @@ import { initializeI18n } from "../../../i18n";
 import type { Session, TabHistoryEntry } from "../../../types";
 import SessionViewport from "./SessionViewport.svelte";
 import SessionLauncherProbe from "./test-fixtures/SessionLauncherProbe.svelte";
-import SessionShellProbe from "./test-fixtures/SessionShellProbe.svelte";
+import SessionShellProbe, {
+  lifecycleLog,
+  resetLifecycleLog,
+} from "./test-fixtures/SessionShellProbe.svelte";
 
 const BASE_SESSION: Session = {
   id: "session-a",
@@ -36,6 +39,50 @@ const HISTORY_ENTRY: TabHistoryEntry = {
 };
 
 describe("SessionViewport", () => {
+  it("keeps mounted session shells when only activeSessionId changes (FE-21)", async () => {
+    initializeI18n("ko", "ko-KR");
+    resetLifecycleLog();
+    const sessions = [
+      BASE_SESSION,
+      {
+        ...BASE_SESSION,
+        id: "session-b",
+        title: "project-b",
+        workDir: "/workspace/b",
+        ptyId: 22,
+      },
+    ];
+    const props = {
+      sessions,
+      activeSessionId: "session-a",
+      historyEntries: [],
+      SessionLauncherComponent: SessionLauncherProbe,
+      SessionShellComponent: SessionShellProbe,
+      onOpenHistory: vi.fn(),
+      onConfirmSession: vi.fn(),
+      onSessionEditorStateChange: vi.fn(),
+      onSessionPtyId: vi.fn(),
+      onSessionAuxStateChange: vi.fn(),
+      onSessionExit: vi.fn(),
+      onSessionResumeFallback: vi.fn(),
+    };
+
+    const view = render(SessionViewport, props);
+
+    expect(lifecycleLog).toEqual(["mount:session-a", "mount:session-b"]);
+    expect(screen.getByTestId("session-shell-probe-session-a")).toHaveAttribute("data-visible", "true");
+    expect(screen.getByTestId("session-shell-probe-session-b")).toHaveAttribute("data-visible", "false");
+
+    await view.rerender({
+      ...props,
+      activeSessionId: "session-b",
+    });
+
+    expect(lifecycleLog).toEqual(["mount:session-a", "mount:session-b"]);
+    expect(screen.getByTestId("session-shell-probe-session-a")).toHaveAttribute("data-visible", "false");
+    expect(screen.getByTestId("session-shell-probe-session-b")).toHaveAttribute("data-visible", "true");
+  });
+
   it("passes session-scoped callbacks through the session shell component", async () => {
     initializeI18n("ko", "ko-KR");
     const onSessionEditorStateChange = vi.fn();
@@ -43,6 +90,8 @@ describe("SessionViewport", () => {
     const onSessionAuxStateChange = vi.fn();
     const onSessionExit = vi.fn();
     const onSessionResumeFallback = vi.fn();
+    const onSessionAgentRuntimeStatusChange = vi.fn();
+    const onSessionTitleChange = vi.fn();
 
     render(SessionViewport, {
       sessions: [
@@ -66,6 +115,8 @@ describe("SessionViewport", () => {
       onSessionAuxStateChange,
       onSessionExit,
       onSessionResumeFallback,
+      onSessionAgentRuntimeStatusChange,
+      onSessionTitleChange,
     });
 
     const first = screen.getByTestId("session-shell-probe-session-a");
@@ -108,6 +159,10 @@ describe("SessionViewport", () => {
     expect(onSessionExit).toHaveBeenNthCalledWith(2, 91);
     expect(onSessionResumeFallback).toHaveBeenNthCalledWith(1, "session-a");
     expect(onSessionResumeFallback).toHaveBeenNthCalledWith(2, "session-b");
+    expect(onSessionAgentRuntimeStatusChange).toHaveBeenNthCalledWith(1, "session-a", "running");
+    expect(onSessionAgentRuntimeStatusChange).toHaveBeenNthCalledWith(2, "session-b", "running");
+    expect(onSessionTitleChange).toHaveBeenNthCalledWith(1, "session-a", "Provider session-a");
+    expect(onSessionTitleChange).toHaveBeenNthCalledWith(2, "session-b", "Provider session-b");
   });
 
   it("renders the injected launcher component for the empty session state", async () => {

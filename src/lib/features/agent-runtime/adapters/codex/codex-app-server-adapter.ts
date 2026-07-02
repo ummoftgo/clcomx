@@ -13,16 +13,19 @@
 import type {
   AgentRuntimePort,
   AgentSessionHandle,
+  ResourceSearchInput,
+  ResourceSearchResult,
   StartSessionParams,
   ResumeSessionParams,
   SendPromptInput,
   SessionStartResult,
 } from "../../contracts/runtime-port";
-import type { AgentEvent, ApprovalDecision } from "../../contracts/normalized";
+import type { AgentEvent, ApprovalDecision, ProviderRef } from "../../contracts/normalized";
 import type { UnlistenFn } from "../../../../tauri/event";
 import type {
   RuntimeId,
   AgentRuntimeEvent,
+  AgentRuntimeEventName,
   JsonRpcMessage,
 } from "../../service/transport";
 import {
@@ -30,6 +33,7 @@ import {
   agentRuntimeSend,
   agentRuntimeCancel,
   agentRuntimeShutdown,
+  AGENT_RUNTIME_EVENT_NAMES,
 } from "../../service/transport";
 import { CodexRouting } from "./codex-routing";
 import {
@@ -40,6 +44,12 @@ import {
 } from "./codex-wire-mapper";
 import { mapItemCompleted } from "./codex-wire-mapper";
 import type { Thread } from "../../generated/codex-app-server/v2/Thread";
+import type { FuzzyFileSearchResponse } from "../../generated/codex-app-server/FuzzyFileSearchResponse";
+import type { FuzzyFileSearchResult } from "../../generated/codex-app-server/FuzzyFileSearchResult";
+import type { SkillMetadata } from "../../generated/codex-app-server/v2/SkillMetadata";
+import type { SkillsListResponse } from "../../generated/codex-app-server/v2/SkillsListResponse";
+
+const CODEX_SKILL_MIME_TYPE = "application/vnd.codex.skill";
 
 /**
  * 어댑터 DI. transport·listen·시간/난수 등 I/O를 주입해 vitest로 모킹(1.5 패턴).
@@ -55,7 +65,7 @@ export interface CodexAdapterDeps {
   shutdown: typeof agentRuntimeShutdown;
   /** runtime event 구독(runtimeId 필터는 어댑터가 함). */
   listenRuntime: (
-    event: string,
+    event: AgentRuntimeEventName,
     h: (e: { payload: AgentRuntimeEvent }) => void,
   ) => Promise<UnlistenFn>;
   /** initialize ClientInfo.version. */
@@ -64,17 +74,10 @@ export interface CodexAdapterDeps {
   nextRpcId: () => number;
 }
 
-/** runtime event 이름(15 §8.3, transport.ts AGENT_RUNTIME_EVENTS와 동일). */
-const RUNTIME_EVENT_NAMES = [
-  "agent-runtime-message",
-  "agent-runtime-stderr",
-  "agent-runtime-exit",
-  "agent-runtime-error",
-  "agent-runtime-backpressure",
-] as const;
-
 /** 세션 1개의 Codex 런타임 상태(어댑터 내부, transcript store 아님). */
 interface CodexSessionRuntime {
+  /** CLCOMX 세션 handle. exit/error 같은 session-level event의 provider ref 재구성에 쓴다. */
+  sessionHandle: AgentSessionHandle;
   runtimeId: RuntimeId;
   routing: CodexRouting;
   /** 우리가 보낸 request의 pending(id → resolve/reject). */
@@ -97,6 +100,97 @@ interface CodexSessionRuntime {
 /** thread/start·thread/resume·thread/read response의 공통 부분(thread 보유). */
 interface ThreadResponse {
   thread: Thread;
+  approvalPolicy?: unknown;
+  approvalsReviewer?: unknown;
+  sandbox?: unknown;
+}
+
+/** Codex AskForApproval을 session badge용 짧은 문자열로 축약한다. */
+function formatApprovalPolicy(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "granular" in value) return "granular";
+  return undefined;
+}
+
+/** Codex SandboxPolicy/SandboxMode을 09 §8.2 표의 badge 값으로 축약한다. */
+function formatSandbox(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return undefined;
+  const type = (value as { type?: unknown }).type;
+  if (type === "dangerFullAccess") return "danger-full-access";
+  if (type === "readOnly") return "read-only";
+  if (type === "workspaceWrite") return "workspace-write";
+  if (type === "externalSandbox") return "external-sandbox";
+  if (typeof type === "string") return type;
+  return undefined;
+}
+
+/** Codex thread start/resume response에서 UI 표시용 policy metadata를 추출한다. */
+function buildCodexPolicyMetadata(resp: ThreadResponse): Pick<SessionStartResult, "sandbox" | "approvalPolicy" | "approvalsReviewer"> {
+  const sandbox = formatSandbox(resp.sandbox);
+  const approvalPolicy = formatApprovalPolicy(resp.approvalPolicy);
+  return {
+    ...(sandbox ? { sandbox } : {}),
+    ...(approvalPolicy ? { approvalPolicy } : {}),
+    ...(typeof resp.approvalsReviewer === "string" ? { approvalsReviewer: resp.approvalsReviewer } : {}),
+  };
+}
+
+/** WSL path를 file URI로 변환한다. slash는 유지하고 segment만 percent-encoding한다. */
+function toFileUri(wslPath: string): string {
+  const path = wslPath.startsWith("/") ? wslPath : `/${wslPath}`;
+  return `file://${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/** provider fuzzy file result를 composer resource suggestion으로 정규화한다. */
+function mapFuzzyFileResult(file: FuzzyFileSearchResult): ResourceSearchResult | null {
+  const root = file.root.trim();
+  const path = file.path.trim();
+  const label = path || file.file_name.trim();
+  if (!root || !label) return null;
+  const absolutePath = `${root.replace(/\/+$/, "")}/${label.replace(/^\/+/, "")}`;
+  return {
+    label,
+    uri: toFileUri(absolutePath),
+    detail: absolutePath,
+  };
+}
+
+/** Codex skill metadata에서 팔레트 보조 설명으로 쓸 짧은 설명을 고른다. */
+function skillDetail(skill: SkillMetadata): string | undefined {
+  return (
+    skill.interface?.shortDescription?.trim() ||
+    skill.shortDescription?.trim() ||
+    skill.description.trim() ||
+    undefined
+  );
+}
+
+/** skills/list 결과가 현재 @query에 대응하는지 보수적으로 확인한다. */
+function skillMatchesQuery(skill: SkillMetadata, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return false;
+  return [
+    skill.name,
+    skill.shortDescription ?? "",
+    skill.interface?.shortDescription ?? "",
+    skill.description,
+  ].some((value) => value.toLowerCase().includes(q));
+}
+
+/** Codex skills/list metadata를 composer @mention 후보로 정규화한다. */
+function mapSkillResult(skill: SkillMetadata, query: string): ResourceSearchResult | null {
+  const name = skill.name.trim();
+  const path = skill.path.trim();
+  if (!skill.enabled || !name || !path || !skillMatchesQuery(skill, query)) return null;
+  return {
+    label: name,
+    uri: toFileUri(path),
+    detail: skillDetail(skill),
+    mimeType: CODEX_SKILL_MIME_TYPE,
+    text: name,
+    resourceKind: "skill",
+  };
 }
 
 /**
@@ -128,6 +222,14 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       return;
     }
     for (const l of rt.listeners) l(e);
+  }
+
+  /** session-level Codex event에 붙일 현재 provider ref를 만든다. */
+  function currentRuntimeRef(rt: CodexSessionRuntime): ProviderRef {
+    const threadId = rt.routing.threadIdOf(rt.sessionHandle);
+    if (threadId === undefined) return { provider: "codex" };
+    const sessionId = rt.routing.sessionIdOf(threadId);
+    return { provider: "codex", threadId, ...(sessionId !== undefined ? { sessionId } : {}) };
   }
 
   /** JSON-RPC request 전송 + pending 매칭(§3.1). result→resolve, error→reject(H3). */
@@ -219,15 +321,16 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       case "error":
         emitToListeners(rt, {
           type: "error",
-          ref: { provider: "codex" },
+          ref: currentRuntimeRef(rt),
           message: payload.message,
           recoverable: payload.recoverable,
+          code: payload.code,
         });
         break;
       case "backpressure":
         emitToListeners(rt, {
           type: "error",
-          ref: { provider: "codex" },
+          ref: currentRuntimeRef(rt),
           message: "agentRuntime.errors.backpressure",
           recoverable: true,
         });
@@ -237,7 +340,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
 
   /** 모든 runtime event 채널을 구독한다(start/resume에서 호출). */
   async function bindListeners(rt: CodexSessionRuntime): Promise<void> {
-    for (const name of RUNTIME_EVENT_NAMES) {
+    for (const name of AGENT_RUNTIME_EVENT_NAMES) {
       const un = await deps.listenRuntime(name, (e) => onRuntimeEvent(rt, e.payload));
       rt.unlistens.push(un);
     }
@@ -268,7 +371,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
    * - reason="shutdown": process 살아 있음 → cancelled 응답을 wire로 best-effort 송신 후 내부 종료.
    * - reason="exit": process 사망 → wire 미전송, 내부 전용 failed만.
    */
-  function closePending(rt: CodexSessionRuntime, reason: "exit" | "shutdown"): void {
+  async function closePending(rt: CodexSessionRuntime, reason: "exit" | "shutdown"): Promise<void> {
     const outcome: ApprovalDecision["outcome"] = reason === "shutdown" ? "cancelled" : "failed";
     // "responding"(respondApproval in-flight)은 제외 — 그 경로가 단일 wire로 닫게 둔다(이중 wire 방지, New-F1).
     for (const reqId of rt.routing.pendingApprovalIdsForCleanup()) {
@@ -276,7 +379,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       if (reason === "shutdown" && pending) {
         // best-effort cancelled wire 응답(§7.3와 동일: 원본 id 타입 복원, jsonrpc 없음).
         try {
-          void deps.send(rt.runtimeId, {
+          await deps.send(rt.runtimeId, {
             id: pending.rpcId,
             result: { decision: "cancel" },
           } as JsonRpcMessage);
@@ -288,6 +391,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
         type: "approval_resolved",
         ref: { provider: "codex", requestId: reqId },
         decision: { requestId: reqId, outcome },
+        decidedBy: "cleanup",
       });
     }
     // pending RPC를 로컬 reject(응답이 영구히 안 오므로).
@@ -299,9 +403,9 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
   function handleExit(rt: CodexSessionRuntime, code?: number, signal?: string): void {
     if (rt.closed) return; // 멱등(이미 닫힘이면 no-op)
     rt.tearingDown = true; // in-flight respondApproval이 cleanup으로 인식하도록(exit 경로).
-    closePending(rt, "exit");
+    void closePending(rt, "exit");
     rt.closed = true;
-    emitToListeners(rt, { type: "process_exited", ref: { provider: "codex" }, code, signal });
+    emitToListeners(rt, { type: "process_exited", ref: currentRuntimeRef(rt), code, signal });
   }
 
   // ───────────────────────── Port 구현 ─────────────────────────
@@ -317,6 +421,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     });
     const rt: CodexSessionRuntime = {
       runtimeId,
+      sessionHandle: params.sessionHandle,
       routing: new CodexRouting(),
       pendingRpc: new Map(),
       listeners: new Set(),
@@ -340,7 +445,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     const ref = { provider: "codex" as const, threadId: thread.id, sessionId: thread.sessionId };
     emitToListeners(rt, { type: "session_started", ref, cwd: thread.cwd });
     emitToListeners(rt, { type: "session_status_changed", ref, status: "ready" });
-    return { ref };
+    return { ref, canResume: true, canLoad: true, ...buildCodexPolicyMetadata(startResp) };
   }
 
   /** 기존 세션 재개(§2.5). replay면 thread/read, 아니면 thread/resume. */
@@ -354,6 +459,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     });
     const rt: CodexSessionRuntime = {
       runtimeId,
+      sessionHandle: params.sessionHandle,
       routing: new CodexRouting(),
       pendingRpc: new Map(),
       listeners: new Set(),
@@ -368,19 +474,18 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
 
     await handshake(rt);
 
-    let thread: Thread;
+    let threadResp: ThreadResponse;
     if (params.replay) {
-      const readResp = (await rpcRequest(rt, "thread/read", {
+      threadResp = (await rpcRequest(rt, "thread/read", {
         threadId: params.providerThreadId,
         includeTurns: true,
       })) as ThreadResponse;
-      thread = readResp.thread;
     } else {
-      const resumeResp = (await rpcRequest(rt, "thread/resume", {
+      threadResp = (await rpcRequest(rt, "thread/resume", {
         threadId: params.providerThreadId,
       })) as ThreadResponse;
-      thread = resumeResp.thread;
     }
+    const thread = threadResp.thread;
     rt.routing.ensureThread(thread.id, thread.sessionId);
     rt.routing.bindHandle(params.sessionHandle, thread.id);
     rt.routing.markStarted(thread.id);
@@ -389,7 +494,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     emitToListeners(rt, { type: "session_loaded", ref });
     if (params.replay) replayThread(rt, thread);
     emitToListeners(rt, { type: "session_status_changed", ref, status: "ready" });
-    return { ref };
+    return { ref, canResume: true, canLoad: true, ...buildCodexPolicyMetadata(threadResp) };
   }
 
   /** turn 시작(§2.4). makeTextUserInput으로 outbound content 변환. */
@@ -400,6 +505,16 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     if (threadId === undefined) throw new Error("codex adapter: session not ready (no threadId)");
 
     const codexInput = mapAgentContentToUserInput(input.content);
+    // 지원 가능한 입력이 하나도 없으면 빈 turn/start 대신 복구 가능한 오류로 낮춘다(CX-4c).
+    if (codexInput.length === 0) {
+      emitToListeners(rt, {
+        type: "error",
+        ref: { provider: "codex", threadId },
+        message: "prompt content is not supported by this Codex session",
+        recoverable: true,
+      });
+      return;
+    }
     // v1: threadId/input만 전송, override 미설정(OQ-20).
     let resp: { turn: { id: string } };
     try {
@@ -420,6 +535,54 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       ref: { provider: "codex", threadId, turnId: resp.turn.id },
       status: "running",
     });
+  }
+
+  /** Codex fuzzyFileSearch를 composer @mention 후보로 노출한다(OQ-56). */
+  async function searchResources(
+    handle: AgentSessionHandle,
+    input: ResourceSearchInput,
+  ): Promise<ResourceSearchResult[]> {
+    const rt = sessions.get(handle);
+    if (!rt || rt.closed) return [];
+    const query = input.query.trim();
+    const workDir = input.workDir.trim();
+    if (!query || !workDir) return [];
+    const limit = input.limit ?? 8;
+    const results: ResourceSearchResult[] = [];
+    const seen = new Set<string>();
+
+    const [fileSearch, skillSearch] = await Promise.allSettled([
+      rpcRequest(rt, "fuzzyFileSearch", {
+        query,
+        roots: [workDir],
+        cancellationToken: null,
+      }) as Promise<FuzzyFileSearchResponse>,
+      rpcRequest(rt, "skills/list", { cwds: [workDir] }) as Promise<SkillsListResponse>,
+    ]);
+
+    /** resource 후보를 중복 없이 limit까지 추가한다. */
+    function addResult(result: ResourceSearchResult | null): void {
+      if (!result || seen.has(result.uri) || results.length >= limit) return;
+      seen.add(result.uri);
+      results.push(result);
+    }
+
+    if (skillSearch.status === "fulfilled") {
+      for (const entry of skillSearch.value.data ?? []) {
+        for (const skill of entry.skills ?? []) {
+          addResult(mapSkillResult(skill, query));
+          if (results.length >= limit) return results;
+        }
+      }
+    }
+
+    if (fileSearch.status === "fulfilled") {
+      for (const file of fileSearch.value.files ?? []) {
+        addResult(mapFuzzyFileResult(file));
+        if (results.length >= limit) return results;
+      }
+    }
+    return results;
   }
 
   /** turn 취소(§7.3). 순서: closing 표시→approval cancelled 먼저→turn/interrupt 나중→늦은 응답 멱등 무시. */
@@ -447,6 +610,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
         type: "approval_resolved",
         ref: { provider: "codex", threadId, turnId: tid, requestId: reqId },
         decision: { requestId: reqId, outcome: "cancelled" },
+        decidedBy: "cleanup",
       });
     }
 
@@ -463,6 +627,11 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     const rt = sessions.get(handle);
     if (!rt) return;
     if (decision.outcome === "failed") return; // 04 §4.2 규칙4: wire 미전송
+    const current = rt.routing.getPendingApproval(decision.requestId);
+    if (!current || current.state !== "pending") return;
+    if (decision.outcome === "selected" && !(decision.optionId && decision.optionId in OPTION_KIND_TO_DECISION)) {
+      throw new Error(`unknown approval optionId: ${decision.optionId ?? "<missing>"}`);
+    }
     // pending을 원자적으로 선점한다(New-F1 race): send await 동안 cancelTurn/serverRequest-resolved가
     // 같은 pending을 닫지 못하게 "responding"으로 표시. 이미 닫힘/응답중/cleanup 중이면 no-op(멱등).
     const pending = rt.routing.claimForResponse(decision.requestId);
@@ -498,6 +667,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
               requestId: decision.requestId,
             },
             decision: { requestId: decision.requestId, outcome: "failed" },
+            decidedBy: "cleanup",
           });
         }
         return;
@@ -565,7 +735,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     // shutdown 중 handleExit의 `if (rt.closed) return`이 process_exited를 삼키지 않게 한다.
     rt.tearingDown = true;
     // (a) shutdown 전에 pending 정리(process 살아 있으므로 cancelled wire 응답 best-effort).
-    closePending(rt, "shutdown");
+    await closePending(rt, "shutdown");
     // (b) graceful: backend가 stdin close→timeout→kill→child reap 후 반환.
     await deps.shutdown(rt.runtimeId);
     // (c) reap 이후에만 listener 해제·세션 삭제.
@@ -585,6 +755,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     startSession,
     resumeSession,
     sendPrompt,
+    searchResources,
     cancelTurn,
     respondApproval,
     subscribeEvents,

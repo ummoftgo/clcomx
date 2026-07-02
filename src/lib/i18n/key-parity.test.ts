@@ -38,9 +38,13 @@ describe("i18n key parity (en/ko 1:1)", () => {
     // 핵심 신규 네임스페이스가 양쪽에 존재하는지 명시 검증(approval/toolKind/fallback/replay).
     const required = [
       "agentRuntime.approval.title",
+      "agentRuntime.approval.command",
+      "agentRuntime.approval.fileChange",
+      "agentRuntime.approval.allowOnce",
       "agentRuntime.toolKind.execute",
       "agentRuntime.fallback.legacyNotice",
       "agentRuntime.replay.affordance",
+      "agentRuntime.replay.truncated",
       "agentRuntime.command.stdoutLabel",
       "agentRuntime.diff.updated",
     ];

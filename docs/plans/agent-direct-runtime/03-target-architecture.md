@@ -28,17 +28,16 @@ Direct Agent Runtime은 **hexagonal architecture**(ports & adapters)를 적용�
 ```mermaid
 flowchart TB
   subgraph UI["UI Layer (Svelte 5 view)"]
-    Shell["AgentRuntimeShell.svelte<br/>(host, SessionHostProps 수신)"]
-    Transcript["AgentTranscriptSurface<br/>tool-cards / ApprovalModal / Composer"]
+    Host["AgentTranscriptSurface.svelte<br/>(direct host + transcript, AgentRuntimeHostProps 수신)"]
+    ViewParts["MessageList / tool-cards<br/>ApprovalModal / AgentComposer"]
   end
 
   subgraph Store["Session Store (state, 세션 단위 격리)"]
-    RtState["agent-runtime-state.svelte.ts<br/>TranscriptModel(shallow 반응형 id-index), status, pendingApprovals[] (파생)"]
-    Composer["composer-state.svelte.ts"]
+    RtState["agent-runtime-store.svelte.ts<br/>TranscriptModel(shallow 반응형 id-index), status, pendingApprovals[] (파생), composer"]
   end
 
   subgraph Router["Event Router (controller, 순수 TS)"]
-    Reducer["transcript-reducer.ts<br/>applyEvent(prev: TranscriptModel, AgentEvent) → next"]
+    Reducer["agent-event-reducer.ts<br/>applyEvent(prev: TranscriptModel, AgentEvent) → next"]
     PendingTbl["pending request table<br/>((sessionHandle, requestId) → approval)"]
   end
 
@@ -68,10 +67,10 @@ flowchart TB
     PtyP["legacy PTY (wsl.exe bash)"]
   end
 
-  Shell --> RtState
-  Transcript --> RtState
-  Transcript -->|user action| Router
-  RtState -. read .-> Transcript
+  Host --> RtState
+  Host --> ViewParts
+  ViewParts -->|user action| Router
+  RtState -. read .-> Host
   Router -->|mutate| RtState
   Router -->|call| PortIf
   PortIf --> CodexAd
@@ -102,10 +101,10 @@ flowchart TB
 ### 2.1 UI Layer (view)
 
 - **responsibility**: 렌더링만. transcript 항목·tool card·approval dialog·composer를 그리고, 사용자 입력을 controller 콜백으로 위임한다. 로직을 두지 않는다 (`research/codebase-frontend.md` §1.2 view 규약).
-- **in**: Store(`agent-runtime-state`)의 reactive 값(`TranscriptModel`의 shallow 반응형 표면 — `visibleItemIds`/`itemVersions`/`status`/`pending`; item body는 `itemsById`에서 id로 조회, [`08`](08-ui-composition.md) §5), host props `SessionHostProps`(`sessionId`/`visible`/`agentId`/`distro`/`workDir` 등, `research/codebase-frontend.md` §2.4). 가상화는 `visibleItemIds`를 소싱한다(item 가상화 OQ-17과 별개로 store 표면 자체가 세션 길이와 무관하게 bounded).
+- **in**: Store(`agent-runtime-store`)의 reactive 값(`TranscriptModel`의 shallow 반응형 표면 — `visibleItemIds`/`itemVersions`/`status`/`pending`; item body는 `itemsById`에서 id로 조회, [`08`](08-ui-composition.md) §5), host props `AgentRuntimeHostProps`(`sessionId`/`visible`/`agentId`/`distro`/`workDir` 등, `research/codebase-frontend.md` §2.4). 가상화는 `visibleItemIds`를 소싱한다(item 가상화 OQ-17과 별개로 store 표면 자체가 세션 길이와 무관하게 bounded).
 - **out**: 사용자 의도(prompt submit, approval 선택, cancel)를 controller 콜백으로.
 - **owns**: 소유 상태 없음. DOM ref와 `$derived` 표시 값만. 비활성 탭에서도 unmount하지 않고 `visible` prop으로 CSS 토글한다 (`research/codebase-frontend.md` §3.3 무재mount 계약).
-- **핵심 컴포넌트**: host `AgentRuntimeShell.svelte`(= `Terminal.svelte` 대응), `AgentTranscriptSurface.svelte`, `tool-cards/*.svelte`, `ApprovalModal.svelte`(+ `ApprovalInlineCard.svelte`), `AgentComposer.svelte`. 컴포넌트명 정본은 [`08`](08-ui-composition.md) §10.
+- **핵심 컴포넌트**: host `AgentTranscriptSurface.svelte`(= `Terminal.svelte` 대응 direct host + transcript surface), `MessageList.svelte`, `tool-cards/*.svelte`, `ApprovalModal.svelte`(+ `ApprovalInlineCard.svelte`), `AgentComposer.svelte`. 컴포넌트명 정본은 [`08`](08-ui-composition.md) §10.
 
 ### 2.2 Session Store (state, 세션 단위 격리)
 
@@ -119,26 +118,27 @@ flowchart TB
   - `capabilities` / `providerLabel` — composer feature gating·provider indicator용([`08`](08-ui-composition.md) §6.4·§6.5). adapter가 `initialize`에서 채움.
   - `agentRuntime` metadata(provider session/thread id 등, resume용) — [`15`](15-data-contracts.md) §7.1 `AgentRuntimeMetadata`.
 - **approval 상태 단일 소유(주의)**: approval 요청의 **권위 보관처는 Event Router의 pending request table**(`(sessionHandle, requestId) → ApprovalRequest`, §2.3)이다. store의 `pendingApprovals`/`escalationApproval`은 그 table을 [`15`](15-data-contracts.md) §5 `ApprovalRequest.severity`로 분류해 view에 노출하는 **파생 표시 값**일 뿐, 별도 권위 store가 아니다(§5 원칙4 "같은 상태를 두 곳에서 쓰지 않는다"와 정합). `severity==="escalation"`만 `escalationApproval`(modal), 그 외 inline(기본값 `normal`, [`08`](08-ui-composition.md) §4.4, [`13`](13-risks-open-questions.md) OQ-47).
-- **규약**: 세션 인스턴스마다 격리돼야 하므로 **state class**(`createAgentRuntimeState()`)로 만든다. 윈도우 전역 상태(전역 approval queue 등)는 모듈 store(`*.svelte.ts`)로 분리한다 (`research/codebase-frontend.md` §1.3·§1.4 규약 결론).
+- **규약**: 세션 인스턴스마다 격리돼야 하므로 **state class**(`createAgentRuntimeStore()`, `state/agent-runtime-store.svelte.ts`)로 만든다. 윈도우 전역 상태(전역 approval queue 등)는 모듈 store(`*.svelte.ts`)로 분리한다 (`research/codebase-frontend.md` §1.3·§1.4 규약 결론).
 - **주의**: 기존 `live-session-store`는 세션 목록/활성 탭의 single source of truth를 그대로 유지한다. agent-runtime state는 그 위에 얹히는 **세션별 transcript 상태**다. `SessionViewMode`(`"terminal"|"editor"`)는 `"agent"`로 확장하지 **않는다** — host 종류는 `runtimeKind`로 구분한다 ([`15`](15-data-contracts.md) §7.2 주의, `research/codebase-frontend.md` §5).
 
 ### 2.3 Event Router (controller, 순수 TS)
 
-- **responsibility**: adapter가 emit한 `AgentEvent`를 받아 (a) `ProviderRef` 라우팅 키로 올바른 transcript 항목/tool card/approval에 매핑하고, (b) `transcript-reducer`로 store를 mutate하고, (c) approval은 pending table에 등록/해소한다. **변환은 안 하고 적용만 한다** — wire→AgentEvent 변환은 adapter 책임이다.
+- **responsibility**: adapter가 emit한 `AgentEvent`를 받아 (a) `ProviderRef` 라우팅 키로 올바른 transcript 항목/tool card/approval에 매핑하고, (b) `agent-event-reducer`로 store를 mutate하고, (c) approval은 pending table에 등록/해소한다. **변환은 안 하고 적용만 한다** — wire→AgentEvent 변환은 adapter 책임이다.
 - **in**: `AgentEvent`(adapter에서, [`15`](15-data-contracts.md) §3). 사용자 의도(view에서, submit/approve/cancel).
 - **out**: store mutation. 사용자 의도를 Port 메서드 호출로 변환(`sendPrompt`/`respondApproval`/`cancelTurn`).
 - **owns**: pending request table(`(sessionHandle, requestId) → ApprovalRequest`). 키는 반드시 **`(sessionHandle, requestId)` 복합 키**다 — JSON-RPC `id`는 runtime/connection 단위로만 유일하므로 전역 단독 `requestId` 키는 금지한다(두 runtime이 같은 `id`(예: 42)를 동시에 받아도 서로의 approval에 오응답하지 않는다 — **불변식**). 라우팅 키 인덱스(Codex `(threadId, turnId, itemId)`, ACP `(sessionId, messageId)`/`(sessionId, toolCallId)`).
+  - **구현 배치 주의(코드와 정합)**: 개념상 approval 권위 상태는 controller 레이어에 속하지만, 실제 코드에서 `PendingApprovalTable`(권위 보관처, `controller/pending-approval-table.ts`)은 **세션 store가 인스턴스로 보유**하고, Event Router(`controller/agent-event-router.ts`)는 module-level **registry**(sessionHandle→store, runtimeId↔window 바인딩; OQ-48 단일 윈도우 소유·cross-window dispatch 금지)만 소유한다. 위 `(sessionHandle, requestId)` 복합 키 불변식은 어느 배치에서든 동일하게 유지된다(이 절 다이어그램 §1.1의 `PendingTbl` 배치는 개념도이며 물리적 소유는 store다).
 - **적용 규칙(인용)**:
   - upsert/append/replace 의미, Codex delta→completed reconcile, ACP chunk vs update replace는 [`04`](04-normalized-agent-model.md) §3.1–§3.3.
   - 순서 보존·sequence 부여는 [`04`](04-normalized-agent-model.md) §3.4.
   - approval 정상/cancel/process-exit 정리는 [`04`](04-normalized-agent-model.md) §4·§5.
   - 식별자 라우팅 키는 [`04`](04-normalized-agent-model.md) §1, [`15`](15-data-contracts.md) §1.1.
-- **구현 형태**: `transcript-reducer.ts`는 `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel` 순수 함수로, `vi.fn` 없이 fixture 단위 테스트가 가능하다 (`research/codebase-frontend.md` §8 service/reducer). reducer는 단순 배열을 누적하지 않고 [`08`](08-ui-composition.md) §5 `TranscriptModel`(shallow 반응형 표면 + `itemsById`/`turnsById`/`tombstones`)을 갱신하며, seal/eviction·3-상태 turn residency·late-event 처리는 [`04`](04-normalized-agent-model.md) §3.7 규칙을 구현한다(03에서 재정의 금지). controller(`agent-runtime-controller.ts`)는 DI deps(`subscribe`/`send`/`cancel`)만 호출하고 직접 `invoke`/`listen`을 부르지 않는다 (`research/codebase-frontend.md` §1.5).
+- **구현 형태**: `agent-event-reducer.ts`는 `applyEvent(prev: TranscriptModel, event: AgentEvent): TranscriptModel` 순수 함수로, `vi.fn` 없이 fixture 단위 테스트가 가능하다 (`research/codebase-frontend.md` §8 service/reducer; 현재 구현 위치는 [`12`](12-implementation-workstreams.md) §0.1의 controller). reducer는 단순 배열을 누적하지 않고 [`08`](08-ui-composition.md) §5 `TranscriptModel`(shallow 반응형 표면 + `itemsById`/`turnsById`/`tombstones`)을 갱신하며, seal/eviction·3-상태 turn residency·late-event 처리는 [`04`](04-normalized-agent-model.md) §3.7 규칙을 구현한다(03에서 재정의 금지). controller(`agent-runtime-controller.ts`)는 DI deps(`subscribe`/`send`/`cancel`)만 호출하고 직접 `invoke`/`listen`을 부르지 않는다 (`research/codebase-frontend.md` §1.5).
 
 ### 2.4 Agent Runtime Port (contracts)
 
 - **responsibility**: provider별 adapter 구현을 숨기는 TS-facing interface. UI/Store/Router는 이 interface만 본다.
-- **정의 정본**: [`15`](15-data-contracts.md) §6 `AgentRuntimePort`. 7개 메서드(`startSession`/`resumeSession`/`sendPrompt`/`cancelTurn`/`respondApproval`/`subscribeEvents`/`shutdown`)와 입력 타입(`StartSessionParams`/`ResumeSessionParams`/`SendPromptInput`/`SessionStartResult`)은 거기서 정의된다. **여기서 재정의하지 않는다.**
+- **정의 정본**: [`15`](15-data-contracts.md) §6 `AgentRuntimePort`. 8개 메서드(`startSession`/`resumeSession`/`sendPrompt`/`searchResources`/`cancelTurn`/`respondApproval`/`subscribeEvents`/`shutdown`)와 입력 타입(`StartSessionParams`/`ResumeSessionParams`/`SendPromptInput`/`ResourceSearchInput`/`ResourceSearchResult`/`SessionStartResult`)은 거기서 정의된다. **여기서 재정의하지 않는다.**
 - **in/out**: 메서드 시그니처는 [`15`](15-data-contracts.md) §6 참조. `subscribeEvents`는 push 콜백 + `UnlistenFn`(frontend `listen` 래퍼 패턴, `research/codebase-frontend.md` §4.1).
 - **owns**: 상태 없음(interface). 구현체(adapter)가 상태를 가진다.
 
@@ -200,19 +200,20 @@ src/lib/features/agent-runtime/
 ├── contracts/
 │   ├── normalized.ts            # 15 §1–§5 타입을 여기 정의(정본 위치, 15가 권장한 경로)
 │   ├── runtime-port.ts          # 15 §6 AgentRuntimePort (정본 위치)
-│   ├── agent-runtime-shell.ts   # AgentRuntimeShellProps (SessionShellProps와 동형)
-│   ├── transcript.ts            # TranscriptItem 유니온(view 표현용; AgentContent 기반)
-│   └── composer.ts              # ComposerState/Action 타입
+│   ├── metadata.ts              # AgentRuntimeMetadata + AgentRuntimeHostProps (SessionHostProps와 동형)
+│   └── transcript.ts            # TranscriptItem 유니온(view 표현용; AgentContent 기반)
 ├── state/
-│   ├── agent-runtime-state.svelte.ts  # createAgentRuntimeState(): TranscriptModel(08 §5), status, pendingApproval, agentRuntime
-│   └── composer-state.svelte.ts       # createComposerState()
+│   └── agent-runtime-store.svelte.ts  # createAgentRuntimeStore(): TranscriptModel(08 §5), status, pendingApproval, composer, agentRuntime
 ├── controller/
 │   ├── agent-runtime-controller.ts    # createAgentRuntimeController(deps): Event Router 본체
-│   ├── approval-controller.ts         # approval 보존/응답(04 §4 규칙 구현)
-│   └── composer-controller.ts         # 입력/이미지 paste/전송
+│   ├── agent-event-router.ts          # AgentEvent 라우팅 + pending approval table 연결
+│   ├── agent-event-reducer.ts         # 순수 함수 (prev, AgentEvent) → next (Event Router 적용 로직)
+│   ├── pending-approval-table.ts      # approval 보존/응답(04 §4 규칙 구현)
+│   └── runtime-fallback-controller.ts # direct 실패 시 fallback 선택 상태
 ├── service/
 │   ├── transport.ts             # 15 §8.2 invoke 래퍼(agent_runtime_*), 15 §8.3 listen (adapter는 두지 않음)
-│   └── transcript-reducer.ts    # 순수 함수 (prev, AgentEvent) → next (Event Router 적용 로직)
+│   ├── runtime-port-factory.ts  # provider별 AgentRuntimePort factory 조립
+│   └── runtime-replay.ts        # replay/fixture용 runtime event 재생
 ├── adapters/                    # 변환 경계(§2.5) — provider별 서브디렉터리. service/가 아니라 여기에 둔다.
 │   ├── codex/                   # 05: codex-app-server-adapter.ts, codex-wire-mapper.ts, codex-launch.ts, codex-routing.ts (+ *.test.ts)
 │   ├── claude-acp/              # 06: claude-acp-adapter.ts 외 06 §1.1의 파일들 (+ *.test.ts)
@@ -220,8 +221,8 @@ src/lib/features/agent-runtime/
 ├── generated/
 │   └── codex-app-server/        # codex app-server generate-ts 산출 타입(수정 금지·핀 고정, 12 §0.1)
 └── view/
-    ├── AgentRuntimeShell.svelte       # host (Terminal.svelte 대응)
-    ├── AgentTranscriptSurface.svelte
+    ├── AgentTranscriptSurface.svelte  # host (Terminal.svelte 대응) + transcript surface
+    ├── MessageList.svelte
     ├── AgentComposer.svelte
     ├── tool-cards/*.svelte            # ToolCallCard / CommandOutputCard / FileDiffCard ...
     ├── ApprovalModal.svelte           # escalation/destructive blocking modal (정본 08 §10)
@@ -238,7 +239,7 @@ src/lib/features/agent-runtime/
 src-tauri/src/
 ├── commands/
 │   ├── mod.rs                  # `pub mod agent_runtime;` 추가
-│   └── agent_runtime.rs        # 얇은 #[tauri::command] 래퍼 5종 + re-export
+│   └── agent_runtime.rs        # 얇은 #[tauri::command] 래퍼 6종 + re-export
 └── features/
     └── agent_runtime/
         ├── mod.rs              # AgentRuntimeState + spawn/send/cancel/shutdown core fn + snapshot

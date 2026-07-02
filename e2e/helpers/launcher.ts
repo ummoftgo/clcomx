@@ -7,6 +7,7 @@ import {
   launcherDistroTestId,
 } from "../../src/lib/testids";
 import {
+  clickTestIdByScript,
   clickTestId,
   waitForAttributeValue,
   waitForTestId,
@@ -22,6 +23,7 @@ export interface OpenMockWorkspaceSessionOptions {
   agentId?: string;
   distro?: string;
   workDir?: string;
+  useDirectRuntime?: boolean;
 }
 
 async function setInputValue(driver: WebDriver, testId: string, value: string) {
@@ -84,16 +86,25 @@ export async function openMockWorkspaceSession(
   await waitForTestId(driver, TEST_IDS.launcherPathInput);
 
   log.step("opening agent picker", { agentId });
-  await clickTestId(driver, TEST_IDS.launcherAgentTrigger);
+  await clickTestIdByScript(driver, TEST_IDS.launcherAgentTrigger);
   await waitForTestId(driver, TEST_IDS.launcherAgentPicker);
-  await clickTestId(driver, launcherAgentTestId(agentId));
+  log.step("agent picker open", { agentId });
+  await clickTestIdByScript(driver, launcherAgentTestId(agentId));
   await waitForTestIdHidden(driver, TEST_IDS.launcherAgentPicker, 5_000);
+  log.step("agent selected", { agentId });
+
+  if (options.useDirectRuntime) {
+    log.step("enabling direct runtime", { agentId });
+    await clickTestId(driver, TEST_IDS.launcherDirectRuntimeToggle);
+  }
 
   log.step("opening distro picker", { distro });
-  await clickTestId(driver, TEST_IDS.launcherDistroTrigger);
+  await clickTestIdByScript(driver, TEST_IDS.launcherDistroTrigger);
   await waitForTestId(driver, TEST_IDS.launcherDistroPicker);
-  await clickTestId(driver, launcherDistroTestId(distro));
+  log.step("distro picker open", { distro });
+  await clickTestIdByScript(driver, launcherDistroTestId(distro));
   await waitForTestIdHidden(driver, TEST_IDS.launcherDistroPicker, 5_000);
+  log.step("distro selected", { distro });
 
   log.step("navigating to workDir", { workDir });
   const pathInput = await setInputValue(driver, TEST_IDS.launcherPathInput, workDir);

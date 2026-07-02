@@ -24,6 +24,14 @@ describe("session-tab-behavior", () => {
     expect(resolveCloseTabRequest({ locked: false, ptyId: 42, dirtyPaths: [] })).toBe(
       "close-confirm",
     );
+    expect(
+      resolveCloseTabRequest({
+        locked: false,
+        ptyId: -1,
+        runtimeKind: "direct-codex",
+        dirtyPaths: [],
+      }),
+    ).toBe("close-confirm");
     expect(resolveCloseTabRequest({ locked: false, ptyId: -1, dirtyPaths: [] })).toBe(
       "close-now",
     );

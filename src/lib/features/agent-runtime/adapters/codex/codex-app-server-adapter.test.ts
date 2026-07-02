@@ -3,9 +3,10 @@
  * mock transport(deps)로 process spawn·send·listen·shutdown을 주입하고, inbound message를
  * listener에 주입해 wire→AgentEvent 변환과 outbound wire를 검증한다.
  */
-import { describe, expect, it } from "vitest";
-import type { AgentEvent } from "../../contracts/normalized";
+import { describe, expect, it, vi } from "vitest";
+import type { AgentEvent, AgentRuntimeErrorCode } from "../../contracts/normalized";
 import type { AgentRuntimeEvent, JsonRpcMessage } from "../../service/transport";
+import { AGENT_RUNTIME_EVENTS } from "../../service/transport";
 import { createCodexAppServerAdapter, type CodexAdapterDeps } from "./codex-app-server-adapter";
 
 /** mock transport harness. send 캡처 + 자동 응답 + inbound 주입. */
@@ -22,13 +23,13 @@ function makeHarness(opts?: { autoRespond?: (msg: JsonRpcMessage) => unknown }) 
 
   // inbound 주입: backend → frontend event(이름별 1개 채널만).
   function inject(message: JsonRpcMessage): void {
-    fire("agent-runtime-message", { type: "message", runtimeId, message });
+    fire(AGENT_RUNTIME_EVENTS.message, { type: "message", runtimeId, message });
   }
   function injectExit(code?: number, signal?: string): void {
-    fire("agent-runtime-exit", { type: "exit", runtimeId, code, signal });
+    fire(AGENT_RUNTIME_EVENTS.exit, { type: "exit", runtimeId, code, signal });
   }
-  function injectError(message: string, recoverable: boolean): void {
-    fire("agent-runtime-error", { type: "error", runtimeId, message, recoverable });
+  function injectError(message: string, recoverable: boolean, code?: AgentRuntimeErrorCode): void {
+    fire(AGENT_RUNTIME_EVENTS.error, { type: "error", runtimeId, message, recoverable, code });
   }
 
   const deps: CodexAdapterDeps = {
@@ -58,7 +59,7 @@ function makeHarness(opts?: { autoRespond?: (msg: JsonRpcMessage) => unknown }) 
     nextRpcId: () => (idCounter += 1),
   };
 
-  return { deps, sent, inject, injectExit, injectError };
+  return { deps, sent, inject, injectExit, injectError, runtimeId };
 }
 
 /** initialize/thread/start/turn/start/turn/interrupt 자동 응답기. */
@@ -81,6 +82,7 @@ function autoResponder(message: JsonRpcMessage): unknown {
     };
   if (m === "turn/start") return { turn: { id: "t1", status: "inProgress" } };
   if (m === "turn/interrupt") return {};
+  if (m === "skills/list") return { data: [] };
   return undefined;
 }
 
@@ -124,9 +126,100 @@ describe("startSession lifecycle (CX-1)", () => {
     const after = events.filter((e) => e.type === "session_started").length;
     expect(after).toBe(before); // 멱등(response 권위)
   });
+
+  it("returns Codex sandbox and approval policy metadata from thread/start", async () => {
+    const h = makeHarness({
+      autoRespond: (message) => {
+        if (!("method" in message)) return undefined;
+        if (message.method === "thread/start") {
+          return {
+            thread: { id: "th_1", sessionId: "s1", cwd: "/work", turns: [] },
+            approvalPolicy: "on-request",
+            approvalsReviewer: "auto_review",
+            sandbox: "workspace-write",
+          };
+        }
+        return autoResponder(message);
+      },
+    });
+    const adapter = createCodexAppServerAdapter(h.deps);
+
+    const result = await adapter.startSession({
+      sessionHandle: "H",
+      provider: "codex",
+      distro: "Ubuntu",
+      workDir: "/work",
+    });
+
+    expect(result).toMatchObject({
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
+  });
 });
 
 describe("resumeSession replay (CX-2)", () => {
+  it("returns Codex sandbox and approval policy metadata from thread/resume", async () => {
+    const h = makeHarness({
+      autoRespond: (message) => {
+        if (!("method" in message)) return undefined;
+        if (message.method === "thread/resume") {
+          return {
+            thread: { id: "th_1", sessionId: "s1", cwd: "/work", turns: [] },
+            approvalPolicy: "on-failure",
+            approvalsReviewer: "user",
+            sandbox: { type: "readOnly" },
+          };
+        }
+        return autoResponder(message);
+      },
+    });
+    const adapter = createCodexAppServerAdapter(h.deps);
+
+    const result = await adapter.resumeSession({
+      sessionHandle: "H",
+      provider: "codex",
+      distro: "Ubuntu",
+      workDir: "/work",
+      providerThreadId: "th_1",
+      replay: false,
+    });
+
+    expect(result).toMatchObject({
+      sandbox: "read-only",
+      approvalPolicy: "on-failure",
+      approvalsReviewer: "user",
+    });
+  });
+
+  it("formats Codex external sandbox policy metadata in kebab-case", async () => {
+    const h = makeHarness({
+      autoRespond: (message) => {
+        if (!("method" in message)) return undefined;
+        if (message.method === "thread/resume") {
+          return {
+            thread: { id: "th_1", sessionId: "s1", cwd: "/work", turns: [] },
+            sandbox: { type: "externalSandbox", networkAccess: "restricted" },
+          };
+        }
+        return autoResponder(message);
+      },
+    });
+    const adapter = createCodexAppServerAdapter(h.deps);
+
+    const result = await adapter.resumeSession({
+      sessionHandle: "H",
+      provider: "codex",
+      distro: "Ubuntu",
+      workDir: "/work",
+      providerThreadId: "th_1",
+      replay: false,
+    });
+
+    expect(result.sandbox).toBe("external-sandbox");
+  });
+
   it("replay=true → thread/read, session_loaded + replayed item events", async () => {
     const h = makeHarness({ autoRespond: autoResponder });
     const adapter = createCodexAppServerAdapter(h.deps);
@@ -140,19 +233,44 @@ describe("resumeSession replay (CX-2)", () => {
     expect(replayed.content).toEqual([{ type: "text", text: "old msg" }]);
     const methods = h.sent.filter((m) => "method" in m).map((m) => (m as { method: string }).method);
     expect(methods).toContain("thread/read");
+    const read = h.sent.find((m) => "method" in m && m.method === "thread/read") as
+      | { params: { threadId: string; includeTurns?: boolean } }
+      | undefined;
+    expect(read?.params).toEqual({ threadId: "th_1", includeTurns: true });
   });
 });
 
 describe("sendPrompt (turn/start outbound)", () => {
-  it("sends turn/start with makeTextUserInput input, emits running", async () => {
+  it("OQ-20: sends turn/start with stable threadId/input only, emits running", async () => {
     const { adapter, events, h } = await startReadySession();
     h.sent.length = 0;
     events.length = 0;
     await adapter.sendPrompt("H", { content: [{ type: "text", text: "hi" }] });
     const turnStart = h.sent.find((m) => "method" in m && (m as { method: string }).method === "turn/start") as { params: { threadId: string; input: unknown[] } };
-    expect(turnStart.params.threadId).toBe("th_1");
-    expect(turnStart.params.input).toEqual([{ type: "text", text: "hi", text_elements: [] }]);
+    expect(turnStart.params).toEqual({
+      threadId: "th_1",
+      input: [{ type: "text", text: "hi", text_elements: [] }],
+    });
     expect(events.some((e) => e.type === "session_status_changed" && e.status === "running")).toBe(true);
+  });
+
+  it("CX-4c: does not send turn/start when all prompt content is unsupported", async () => {
+    const { adapter, events, h } = await startReadySession();
+    h.sent.length = 0;
+    events.length = 0;
+
+    await adapter.sendPrompt("H", {
+      content: [{ type: "image", uri: "https://example.test/image.png", mimeType: "image/png" }],
+    });
+
+    expect(h.sent.some((m) => "method" in m && m.method === "turn/start")).toBe(false);
+    expect(events.some((e) => e.type === "session_status_changed" && e.status === "running")).toBe(false);
+    expect(events).toContainEqual({
+      type: "error",
+      ref: { provider: "codex", threadId: "th_1" },
+      message: "prompt content is not supported by this Codex session",
+      recoverable: true,
+    });
   });
 
   it("H3: turn/start error → error event + status restored to ready, no active turn", async () => {
@@ -183,6 +301,145 @@ describe("sendPrompt (turn/start outbound)", () => {
   });
 });
 
+describe("provider-backed resource search (OQ-56)", () => {
+  it("maps Codex fuzzyFileSearch results to file resource suggestions", async () => {
+    const h = makeHarness({
+      autoRespond: (message) => {
+        if (!("method" in message)) return undefined;
+        if (message.method === "fuzzyFileSearch") {
+          return {
+            files: [
+              {
+                root: "/work",
+                path: "src/App.svelte",
+                match_type: "file",
+                file_name: "App.svelte",
+                score: 42,
+                indices: [4, 5, 6],
+              },
+              {
+                root: "/work",
+                path: "My Dir/app#main?.svelte",
+                match_type: "file",
+                file_name: "app#main?.svelte",
+                score: 38,
+                indices: null,
+              },
+            ],
+          };
+        }
+        return autoResponder(message);
+      },
+    });
+    const adapter = createCodexAppServerAdapter(h.deps);
+    await adapter.startSession({
+      sessionHandle: "H",
+      provider: "codex",
+      distro: "Ubuntu",
+      workDir: "/work",
+    });
+    h.sent.length = 0;
+
+    const results = await adapter.searchResources!("H", {
+      query: "app",
+      workDir: "/work",
+      limit: 2,
+    });
+
+    const search = h.sent.find((m) => "method" in m && m.method === "fuzzyFileSearch") as
+      | { params: { query: string; roots: string[]; cancellationToken: string | null } }
+      | undefined;
+    expect(search?.params).toEqual({
+      query: "app",
+      roots: ["/work"],
+      cancellationToken: null,
+    });
+    expect(results).toEqual([
+      {
+        label: "src/App.svelte",
+        uri: "file:///work/src/App.svelte",
+        detail: "/work/src/App.svelte",
+      },
+      {
+        label: "My Dir/app#main?.svelte",
+        uri: "file:///work/My%20Dir/app%23main%3F.svelte",
+        detail: "/work/My Dir/app#main?.svelte",
+      },
+    ]);
+  });
+
+  it("maps Codex skills/list results to skill resource suggestions", async () => {
+    const h = makeHarness({
+      autoRespond: (message) => {
+        if (!("method" in message)) return undefined;
+        if (message.method === "fuzzyFileSearch") {
+          return { files: [] };
+        }
+        if (message.method === "skills/list") {
+          return {
+            data: [
+              {
+                cwd: "/work",
+                skills: [
+                  {
+                    name: "review",
+                    description: "Review changes before merge",
+                    shortDescription: "Review changes",
+                    interface: null,
+                    path: "/home/tester/.codex/skills/review/SKILL.md",
+                    scope: "user",
+                    enabled: true,
+                  },
+                  {
+                    name: "disabled-review",
+                    description: "Disabled",
+                    shortDescription: null,
+                    interface: null,
+                    path: "/home/tester/.codex/skills/disabled/SKILL.md",
+                    scope: "user",
+                    enabled: false,
+                  },
+                ],
+                errors: [],
+              },
+            ],
+          };
+        }
+        return autoResponder(message);
+      },
+    });
+    const adapter = createCodexAppServerAdapter(h.deps);
+    await adapter.startSession({
+      sessionHandle: "H",
+      provider: "codex",
+      distro: "Ubuntu",
+      workDir: "/work",
+    });
+    h.sent.length = 0;
+
+    const results = await adapter.searchResources!("H", {
+      query: "review",
+      workDir: "/work",
+      limit: 8,
+    });
+
+    const skillsList = h.sent.find((m) => "method" in m && m.method === "skills/list") as
+      | { params: { cwds?: string[]; forceReload?: boolean } }
+      | undefined;
+    expect(skillsList?.params).toEqual({ cwds: ["/work"] });
+    expect(results).toEqual([
+      {
+        label: "review",
+        uri: "file:///home/tester/.codex/skills/review/SKILL.md",
+        detail: "Review changes",
+        mimeType: "application/vnd.codex.skill",
+        text: "review",
+        resourceKind: "skill",
+      },
+    ]);
+  });
+});
+
 describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
   it("approval_requested → respondApproval(allow_once) → outbound {id:7,result:{decision:accept}} no jsonrpc", async () => {
     const { adapter, events, h } = await startReadySession();
@@ -194,6 +451,31 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     expect(h.sent[0]).toEqual({ id: 7, result: { decision: "accept" } });
     expect((h.sent[0] as { jsonrpc?: string }).jsonrpc).toBeUndefined();
     expect(events.some((e) => e.type === "approval_resolved")).toBe(true);
+  });
+
+  it("NM-20: respondApproval(failed)는 provider wire로 전송하지 않는다", async () => {
+    const { adapter, h } = await startReadySession();
+    h.inject({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "th_1", turnId: "t1", itemId: "c1", startedAtMs: 1, command: "ls" } });
+    h.sent.length = 0;
+
+    await adapter.respondApproval("H", { requestId: "7", outcome: "failed" });
+
+    expect(h.sent).toEqual([]);
+  });
+
+  it("SEC-APPROVAL: unknown optionId is rejected before provider wire", async () => {
+    const { adapter, h } = await startReadySession();
+    h.inject({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "th_1", turnId: "t1", itemId: "c1", startedAtMs: 1, command: "ls" } });
+    h.sent.length = 0;
+
+    await expect(
+      adapter.respondApproval("H", { requestId: "7", outcome: "selected", optionId: "not-shown" }),
+    ).rejects.toThrow("unknown approval optionId");
+
+    expect(h.sent).toEqual([]);
+
+    await adapter.respondApproval("H", { requestId: "7", outcome: "selected", optionId: "allow_once" });
+    expect(h.sent[0]).toEqual({ id: 7, result: { decision: "accept" } });
   });
 
   it("CX-13: allow_always → acceptForSession; CX-14: reject_always → decline", async () => {
@@ -219,6 +501,28 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     expect(events.some((e) => e.type === "approval_requested")).toBe(false);
   });
 
+  it.each([
+    ["item/tool/call", { threadId: "th_1", turnId: "t1", callId: "call-1", namespace: null, tool: "write", arguments: { path: "/tmp/x" } }],
+    ["applyPatchApproval", { callId: "patch-1", fileChanges: {} }],
+    ["execCommandApproval", { command: "rm -rf build" }],
+  ])(
+    "SEC-CLIENT-TOOLS: unsupported side-effect server request %s returns method-not-found without approval UI",
+    async (method, params) => {
+      const { events, h } = await startReadySession();
+      h.sent.length = 0;
+      events.length = 0;
+
+      h.inject({ id: 77, method, params });
+
+      expect(h.sent).toHaveLength(1);
+      expect(h.sent[0]).toMatchObject({
+        id: 77,
+        error: { code: -32601, message: "method not found", data: { method } },
+      });
+      expect(events).toEqual([]);
+    },
+  );
+
   it("permissions request → auto-decline reply {permissions:{},scope:turn} (D12)", async () => {
     const { h } = await startReadySession();
     h.sent.length = 0;
@@ -234,7 +538,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     const fire = (name: string, payload: AgentRuntimeEvent) => {
       for (const l of byEvent.get(name) ?? []) l({ payload });
     };
-    const inject = (message: JsonRpcMessage) => fire("agent-runtime-message", { type: "message", runtimeId, message });
+    const inject = (message: JsonRpcMessage) => fire(AGENT_RUNTIME_EVENTS.message, { type: "message", runtimeId, message });
     const deps: CodexAdapterDeps = {
       start: async () => runtimeId,
       send: async (_rid, message) => {
@@ -288,7 +592,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     const fire = (name: string, payload: AgentRuntimeEvent) => {
       for (const l of byEvent.get(name) ?? []) l({ payload });
     };
-    const inject = (message: JsonRpcMessage) => fire("agent-runtime-message", { type: "message", runtimeId, message });
+    const inject = (message: JsonRpcMessage) => fire(AGENT_RUNTIME_EVENTS.message, { type: "message", runtimeId, message });
     const isApprovalResponse = (m: JsonRpcMessage) =>
       "result" in (m as object) && (m as { id?: unknown }).id === 7;
     const deps: CodexAdapterDeps = {
@@ -354,7 +658,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     const fire = (name: string, payload: AgentRuntimeEvent) => {
       for (const l of byEvent.get(name) ?? []) l({ payload });
     };
-    const inject = (message: JsonRpcMessage) => fire("agent-runtime-message", { type: "message", runtimeId, message });
+    const inject = (message: JsonRpcMessage) => fire(AGENT_RUNTIME_EVENTS.message, { type: "message", runtimeId, message });
     const isApprovalWire = (m: JsonRpcMessage) =>
       "result" in (m as object) && (m as { id?: unknown }).id === 7;
     const deps: CodexAdapterDeps = {
@@ -412,7 +716,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     const fire = (name: string, payload: AgentRuntimeEvent) => {
       for (const l of byEvent.get(name) ?? []) l({ payload });
     };
-    const inject = (message: JsonRpcMessage) => fire("agent-runtime-message", { type: "message", runtimeId, message });
+    const inject = (message: JsonRpcMessage) => fire(AGENT_RUNTIME_EVENTS.message, { type: "message", runtimeId, message });
     const isApprovalWire = (m: JsonRpcMessage) =>
       "result" in (m as object) && (m as { id?: unknown }).id === 7;
     const deps: CodexAdapterDeps = {
@@ -474,7 +778,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     const fire = (name: string, payload: AgentRuntimeEvent) => {
       for (const l of byEvent.get(name) ?? []) l({ payload });
     };
-    const inject = (message: JsonRpcMessage) => fire("agent-runtime-message", { type: "message", runtimeId, message });
+    const inject = (message: JsonRpcMessage) => fire(AGENT_RUNTIME_EVENTS.message, { type: "message", runtimeId, message });
     const deps: CodexAdapterDeps = {
       start: async () => runtimeId,
       send: async (_rid, message) => {
@@ -508,7 +812,7 @@ describe("approval roundtrip (CX-12/CX-13/CX-14)", () => {
     const shutdownP = adapter.shutdown("H");
     await Promise.resolve();
     // shutdown await 중 backend exit 도착 → handleExit가 process_exited를 emit해야 한다(억제 금지).
-    fire("agent-runtime-exit", { type: "exit", runtimeId, code: 0 });
+    fire(AGENT_RUNTIME_EVENTS.exit, { type: "exit", runtimeId, code: 0 });
     releaseShutdown();
     await shutdownP;
 
@@ -531,17 +835,31 @@ describe("cancel cleanup (CX approval cancel)", () => {
     const interruptIdx = h.sent.findIndex((m) => "method" in m && (m as { method: string }).method === "turn/interrupt");
     const respIdx = h.sent.findIndex((m) => "result" in m);
     expect(respIdx).toBeLessThan(interruptIdx); // approval 응답이 interrupt보다 먼저
-    expect(events.some((e) => e.type === "approval_resolved" && e.decision.outcome === "cancelled")).toBe(true);
+    const resolved = events.find((e) => e.type === "approval_resolved" && e.decision.outcome === "cancelled");
+    expect(resolved).toMatchObject({ decidedBy: "cleanup" });
   });
 });
 
 describe("process exit (CX-19)", () => {
+  it("exit preserves the started thread/session ref on process_exited", async () => {
+    const { events, h } = await startReadySession();
+    events.length = 0;
+
+    h.injectExit(1, undefined);
+
+    const exited = events.find((e) => e.type === "process_exited") as
+      | Extract<AgentEvent, { type: "process_exited" }>
+      | undefined;
+    expect(exited?.ref).toMatchObject({ provider: "codex", threadId: "th_1", sessionId: "s1" });
+  });
+
   it("exit closes all pending approval(failed) + rejects pending RPC + process_exited", async () => {
     const { events, h } = await startReadySession();
     h.inject({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "th_1", turnId: "t1", itemId: "c1", startedAtMs: 1, command: "ls" } });
     events.length = 0;
     h.injectExit(0, undefined);
-    expect(events.some((e) => e.type === "approval_resolved" && e.decision.outcome === "failed")).toBe(true);
+    const resolved = events.find((e) => e.type === "approval_resolved" && e.decision.outcome === "failed");
+    expect(resolved).toMatchObject({ decidedBy: "cleanup" });
     expect(events.some((e) => e.type === "process_exited")).toBe(true);
     // 멱등: 다시 exit → 추가 emit 없음
     events.length = 0;
@@ -552,38 +870,115 @@ describe("process exit (CX-19)", () => {
   it("runtime error event → error AgentEvent", async () => {
     const { events, h } = await startReadySession();
     events.length = 0;
-    h.injectError("boom", false);
-    expect(events.some((e) => e.type === "error" && e.message === "boom" && !e.recoverable)).toBe(true);
+    h.injectError("boom", false, "framing_broken");
+    const error = events.find((e) => e.type === "error") as Extract<AgentEvent, { type: "error" }> | undefined;
+    expect(error).toMatchObject({ message: "boom", recoverable: false, code: "framing_broken" });
+    expect(error?.ref).toMatchObject({ provider: "codex", threadId: "th_1", sessionId: "s1" });
   });
 });
 
 describe("shutdown boundary (S3)", () => {
-  it("shutdown closes pending(cancelled wire response) BEFORE backend shutdown + unlisten; idempotent on late exit", async () => {
+  it("shutdown closes pending approval/RPC BEFORE backend shutdown + unlisten; idempotent on late exit", async () => {
     const order: string[] = [];
-    const h = makeHarness({ autoRespond: autoResponder });
+    const h = makeHarness({
+      autoRespond: (message) => {
+        if ("method" in message && message.method === "turn/start") return undefined;
+        return autoResponder(message);
+      },
+    });
+    const realSend = h.deps.send;
+    h.deps.send = async (rid, message) => {
+      if ("result" in message && (message as { result: { decision?: string } }).result.decision === "cancel") {
+        order.push("approval-cancelled");
+      }
+      await realSend(rid, message);
+    };
     const realShutdown = h.deps.shutdown;
+    let releaseShutdown: () => void = () => {};
     h.deps.shutdown = async (rid) => {
       order.push("backend-shutdown");
+      await new Promise<void>((resolve) => {
+        releaseShutdown = resolve;
+      });
       await realShutdown(rid);
     };
     const adapter = createCodexAppServerAdapter(h.deps);
     const events: AgentEvent[] = [];
     await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "U", workDir: "/work" });
     adapter.subscribeEvents("H", (e) => events.push(e));
+    const promptPromise = adapter.sendPrompt("H", { content: [{ type: "text", text: "pending RPC" }] });
+    const promptSettled = expect(promptPromise).resolves.toBeUndefined();
     h.inject({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "th_1", turnId: "t1", itemId: "c1", startedAtMs: 1, command: "ls" } });
     h.sent.length = 0;
     events.length = 0;
-    await adapter.shutdown("H");
+    const shutdownPromise = adapter.shutdown("H");
+    for (let i = 0; i < 10 && !order.includes("backend-shutdown"); i += 1) {
+      await Promise.resolve();
+    }
 
     // (a) pending approval cancelled wire response BEFORE backend-shutdown
     const cancelRespIdx = h.sent.findIndex((m) => "result" in m && (m as { result: { decision?: string } }).result.decision === "cancel");
     expect(cancelRespIdx).toBeGreaterThanOrEqual(0);
-    expect(events.some((e) => e.type === "approval_resolved" && e.decision.outcome === "cancelled")).toBe(true);
-    expect(order).toEqual(["backend-shutdown"]);
+    const resolved = events.filter((e) => e.type === "approval_resolved" && e.decision.outcome === "cancelled");
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({ decidedBy: "cleanup" });
+    expect(events.some((e) => e.type === "error" && e.message === "shutdown: runtime closing")).toBe(true);
+    expect(order).toEqual(["approval-cancelled", "backend-shutdown"]);
+    await promptSettled;
+
+    // shutdown await 중 늦은 exit → process_exited는 1회만, pending은 재차 닫지 않음.
+    h.injectExit(0);
+    expect(events.filter((e) => e.type === "process_exited")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "approval_resolved")).toHaveLength(1);
+    releaseShutdown();
+    await shutdownPromise;
 
     // (c) late exit after shutdown → idempotent, no re-close
     events.length = 0;
     h.injectExit(0);
     expect(events).toHaveLength(0);
+  });
+
+  it("S3: shutdown awaits async pending approval cancel response before backend shutdown", async () => {
+    const h = makeHarness({
+      autoRespond: (message) => {
+        if ("method" in message && message.method === "turn/start") return undefined;
+        return autoResponder(message);
+      },
+    });
+    const realSend = h.deps.send;
+    let releaseCancelResponse: () => void = () => {};
+    let cancelResponseStarted: () => void = () => {};
+    const cancelResponseStartedPromise = new Promise<void>((resolve) => {
+      cancelResponseStarted = resolve;
+    });
+    h.deps.send = vi.fn(async (rid, message) => {
+      if ("result" in message && (message as { result: { decision?: string } }).result.decision === "cancel") {
+        cancelResponseStarted();
+        await new Promise<void>((resolve) => {
+          releaseCancelResponse = resolve;
+        });
+      }
+      await realSend(rid, message);
+    });
+    const shutdown = vi.fn(async () => {});
+    h.deps.shutdown = shutdown;
+
+    const adapter = createCodexAppServerAdapter(h.deps);
+    await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "U", workDir: "/work" });
+    adapter.subscribeEvents("H", () => undefined);
+    const promptPromise = adapter.sendPrompt("H", { content: [{ type: "text", text: "pending RPC" }] });
+    const promptSettled = expect(promptPromise).resolves.toBeUndefined();
+    h.inject({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "th_1", turnId: "t1", itemId: "c1", startedAtMs: 1, command: "ls" } });
+
+    const shutdownPromise = adapter.shutdown("H");
+    await cancelResponseStartedPromise;
+    const shutdownCallsBeforeCancelResponse = shutdown.mock.calls.length;
+    releaseCancelResponse();
+    await shutdownPromise;
+    await promptSettled;
+
+    expect(shutdownCallsBeforeCancelResponse).toBe(0);
+    expect(shutdown).toHaveBeenCalledWith(h.runtimeId);
   });
 });

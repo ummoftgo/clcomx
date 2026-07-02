@@ -278,6 +278,11 @@ mod tests {
                 protocol_version: Some("1".into()),
                 adapter_version: Some("0.1.0".into()),
                 provider_version: Some("0.142.0".into()),
+                sandbox: Some("workspace-write".into()),
+                approval_policy: Some("on-request".into()),
+                approvals_reviewer: Some("auto_review".into()),
+                permission_mode: Some("bypassPermissions".into()),
+                session_mode: Some("bypassPermissions".into()),
                 can_resume: Some(true),
                 can_load: Some(true),
             }),
@@ -439,6 +444,11 @@ mod tests {
         assert_eq!(meta.session_runtime_kind, "direct-codex");
         assert_eq!(meta.provider, "codex");
         assert_eq!(meta.last_turn_id.as_deref(), Some("turn-9"));
+        assert_eq!(meta.sandbox.as_deref(), Some("workspace-write"));
+        assert_eq!(meta.approval_policy.as_deref(), Some("on-request"));
+        assert_eq!(meta.approvals_reviewer.as_deref(), Some("auto_review"));
+        assert_eq!(meta.permission_mode.as_deref(), Some("bypassPermissions"));
+        assert_eq!(meta.session_mode.as_deref(), Some("bypassPermissions"));
         assert_eq!(meta.can_load, Some(true));
 
         // 디스크로 나가는 JSON에도 비밀 문자열이 부재해야 한다(scrub 정본 경계).
@@ -486,5 +496,8 @@ mod tests {
         // 비-비밀 메타는 디스크에 남는다.
         assert!(persisted.contains("direct-codex"));
         assert!(persisted.contains("turn-9"));
+        assert!(persisted.contains("workspace-write"));
+        assert!(persisted.contains("on-request"));
+        assert!(persisted.contains("auto_review"));
     }
 }

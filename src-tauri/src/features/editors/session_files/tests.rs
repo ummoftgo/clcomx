@@ -1,4 +1,5 @@
 use super::*;
+use crate::app_env::test_support::set_test_mode_env;
 use std::env;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -73,6 +74,24 @@ fn search_session_files_returns_empty_results_for_empty_query() {
     assert!(result.results.is_empty());
 
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn read_session_file_returns_test_mode_location_fixture() {
+    let _test_mode = set_test_mode_env();
+    let workspace_state =
+        workspace_state_with_session("session-1", "clcomx-test", "/home/tester/workspace", None);
+
+    let result = read_session_file_with_state(
+        &workspace_state,
+        "session-1",
+        "/home/tester/workspace/src/lib/example.ts",
+    )
+    .expect("test-mode fixture should be readable");
+
+    assert_eq!(result.wsl_path, "/home/tester/workspace/src/lib/example.ts");
+    assert_eq!(result.language_id, "typescript");
+    assert!(result.content.contains("export const example"));
 }
 
 #[test]

@@ -39,7 +39,7 @@ describe("agent-runtime-controller", () => {
     const store = createAgentRuntimeStore({ sessionHandle: "S1", provider: "codex" });
     const controller = createAgentRuntimeController({ createPort: () => port, store });
 
-    await controller.start({
+    const result = await controller.start({
       sessionHandle: "S1",
       runtimeKind: "direct-codex",
       distro: "Ubuntu",
@@ -47,6 +47,7 @@ describe("agent-runtime-controller", () => {
     });
 
     expect(port.startSession).toHaveBeenCalledOnce();
+    expect(result).toEqual({ ref: { provider: "codex" } });
     expect(getSessionStore("S1")).toBe(store);
 
     // subscribeEvents로 들어온 event가 store에 반영되는지.
@@ -63,7 +64,7 @@ describe("agent-runtime-controller", () => {
     const store = createAgentRuntimeStore({ sessionHandle: "S2", provider: "codex" });
     const controller = createAgentRuntimeController({ createPort: () => port, store });
 
-    await controller.start({
+    const result = await controller.start({
       sessionHandle: "S2",
       runtimeKind: "direct-codex",
       distro: "Ubuntu",
@@ -73,6 +74,51 @@ describe("agent-runtime-controller", () => {
 
     expect(port.resumeSession).toHaveBeenCalledOnce();
     expect(port.startSession).not.toHaveBeenCalled();
+    expect(result).toEqual({ ref: { provider: "codex" } });
+  });
+
+  it("applies composer capabilities from the session start result to the store", async () => {
+    const { port } = makeFakePort();
+    port.startSession = vi.fn().mockResolvedValue({
+      ref: { provider: "claude" },
+      composerCapabilities: { image: true, embeddedContext: true, audio: false },
+    });
+    const store = createAgentRuntimeStore({ sessionHandle: "S2C", provider: "claude" });
+    const controller = createAgentRuntimeController({ createPort: () => port, store });
+
+    await controller.start({
+      sessionHandle: "S2C",
+      runtimeKind: "direct-claude",
+      distro: "Ubuntu",
+      workDir: "/w",
+    });
+
+    expect(store.capabilities).toEqual({ image: true, embeddedContext: true, audio: false });
+  });
+
+  it("forwards session title events to the host callback", async () => {
+    const { port, emit } = makeFakePort();
+    const store = createAgentRuntimeStore({ sessionHandle: "S2T", provider: "claude" });
+    const onSessionTitleChange = vi.fn();
+    const controller = createAgentRuntimeController({
+      createPort: () => port,
+      store,
+      onSessionTitleChange,
+    } as Parameters<typeof createAgentRuntimeController>[0]);
+    await controller.start({
+      sessionHandle: "S2T",
+      runtimeKind: "direct-claude",
+      distro: "Ubuntu",
+      workDir: "/w",
+    });
+
+    emit({
+      type: "session_title_changed",
+      ref: { provider: "claude", sessionId: "claude-session-1" },
+      title: "Provider title",
+    } as unknown as AgentEvent);
+
+    expect(onSessionTitleChange).toHaveBeenCalledWith("Provider title");
   });
 
   it("forwards submit/approve/cancel to the port", async () => {
@@ -91,6 +137,11 @@ describe("agent-runtime-controller", () => {
       content: [{ type: "text", text: "go" }],
     });
 
+    store.dispatch({
+      type: "approval_requested",
+      ref: { provider: "codex", requestId: "7" },
+      request: { id: "7", title: "x", options: [{ id: "o1", label: "ok", kind: "allow_once" }] },
+    });
     await controller.approve({ requestId: "7", outcome: "selected", optionId: "o1" });
     expect(port.respondApproval).toHaveBeenCalledWith("S3", {
       requestId: "7",
@@ -100,6 +151,92 @@ describe("agent-runtime-controller", () => {
 
     await controller.cancel();
     expect(port.cancelTurn).toHaveBeenCalledWith("S3", undefined);
+  });
+
+  it("forwards resource search to the active port with the current workDir", async () => {
+    const { port } = makeFakePort();
+    port.searchResources = vi.fn().mockResolvedValue([
+      { label: "src/App.svelte", uri: "file:///w/src/App.svelte", detail: "/w/src/App.svelte" },
+    ]);
+    const store = createAgentRuntimeStore({ sessionHandle: "S3R", provider: "codex" });
+    const controller = createAgentRuntimeController({ createPort: () => port, store });
+    await controller.start({
+      sessionHandle: "S3R",
+      runtimeKind: "direct-codex",
+      distro: "Ubuntu",
+      workDir: "/w",
+    });
+
+    const results = await controller.searchResources("app", 8);
+
+    expect(port.searchResources).toHaveBeenCalledWith("S3R", {
+      query: "app",
+      workDir: "/w",
+      limit: 8,
+    });
+    expect(results).toEqual([
+      { label: "src/App.svelte", uri: "file:///w/src/App.svelte", detail: "/w/src/App.svelte" },
+    ]);
+  });
+
+  it("forwards an empty resource query so the source can provide default candidates", async () => {
+    const { port } = makeFakePort();
+    port.searchResources = vi.fn().mockResolvedValue([
+      { label: "README.md", uri: "file:///w/README.md", detail: "/w/README.md" },
+    ]);
+    const store = createAgentRuntimeStore({ sessionHandle: "S3RE", provider: "codex" });
+    const controller = createAgentRuntimeController({ createPort: () => port, store });
+    await controller.start({
+      sessionHandle: "S3RE",
+      runtimeKind: "direct-codex",
+      distro: "Ubuntu",
+      workDir: "/w",
+    });
+
+    const results = await controller.searchResources("", 8);
+
+    expect(port.searchResources).toHaveBeenCalledWith("S3RE", {
+      query: "",
+      workDir: "/w",
+      limit: 8,
+    });
+    expect(results).toEqual([
+      { label: "README.md", uri: "file:///w/README.md", detail: "/w/README.md" },
+    ]);
+  });
+
+  it("NM-20: rejects failed approval decisions before they can reach the port", async () => {
+    const { port } = makeFakePort();
+    const store = createAgentRuntimeStore({ sessionHandle: "S3F", provider: "codex" });
+    const controller = createAgentRuntimeController({ createPort: () => port, store });
+    await controller.start({
+      sessionHandle: "S3F",
+      runtimeKind: "direct-codex",
+      distro: "Ubuntu",
+      workDir: "/w",
+    });
+
+    await expect(controller.approve({ requestId: "7", outcome: "failed" })).rejects.toThrow(
+      "failed approval decisions are client-internal",
+    );
+    expect(port.respondApproval).not.toHaveBeenCalled();
+  });
+
+  it("SEC-APPROVAL: rejects approval decisions for requestIds not pending in the store", async () => {
+    const { port } = makeFakePort();
+    const store = createAgentRuntimeStore({ sessionHandle: "S3M", provider: "codex" });
+    const controller = createAgentRuntimeController({ createPort: () => port, store });
+    await controller.start({
+      sessionHandle: "S3M",
+      runtimeKind: "direct-codex",
+      distro: "Ubuntu",
+      workDir: "/w",
+    });
+
+    await expect(
+      controller.approve({ requestId: "missing", outcome: "selected", optionId: "ok" }),
+    ).rejects.toThrow("approval requestId is not pending");
+    expect(port.respondApproval).not.toHaveBeenCalled();
   });
 
   it("unsubscribes and shuts down on dispose", async () => {
@@ -117,6 +254,41 @@ describe("agent-runtime-controller", () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(port.shutdown).toHaveBeenCalledWith("S4");
     expect(getSessionStore("S4")).toBeUndefined();
+  });
+
+  it("does not let a stale controller dispose unregister a newer controller for the same session", async () => {
+    const first = makeFakePort();
+    const firstStore = createAgentRuntimeStore({ sessionHandle: "S4R", provider: "codex" });
+    const firstController = createAgentRuntimeController({
+      createPort: () => first.port,
+      store: firstStore,
+    });
+    await firstController.start({
+      sessionHandle: "S4R",
+      runtimeKind: "direct-codex",
+      distro: "Ubuntu",
+      workDir: "/w",
+    });
+
+    const second = makeFakePort();
+    const secondStore = createAgentRuntimeStore({ sessionHandle: "S4R", provider: "codex" });
+    const secondController = createAgentRuntimeController({
+      createPort: () => second.port,
+      store: secondStore,
+    });
+    await secondController.start({
+      sessionHandle: "S4R",
+      runtimeKind: "direct-codex",
+      distro: "Ubuntu",
+      workDir: "/w",
+    });
+
+    await firstController.dispose();
+
+    expect(getSessionStore("S4R")).toBe(secondStore);
+
+    await secondController.dispose();
+    expect(getSessionStore("S4R")).toBeUndefined();
   });
 
   // ── Codex 검토 발견 회귀 방지(lifecycle ordering, 실제 adapter 계약 고정) ──

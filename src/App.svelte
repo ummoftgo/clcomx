@@ -43,6 +43,8 @@
     setSessionLocked,
     setSessionPtyId,
     setSessionPinned,
+    setSessionAgentRuntime,
+    setSessionAgentRuntimeStatus,
     setSessionResumeToken,
     setSessionTitle,
   } from "./lib/features/session/state/live-session-store.svelte";
@@ -93,7 +95,11 @@
   import { killPty } from "./lib/pty";
   import type { TabHistoryEntry, WorkspaceSnapshot } from "./lib/types";
   import type { AgentId } from "./lib/agents";
-  import type { SessionRuntimeKind } from "./lib/features/agent-runtime/contracts/metadata";
+  import type {
+    AgentRuntimeMetadata,
+    SessionRuntimeKind,
+  } from "./lib/features/agent-runtime/contracts/metadata";
+  import type { AgentSessionStatus } from "./lib/features/agent-runtime/contracts/normalized";
   import { createSessionLifecycleController } from "./lib/features/session/controller/session-lifecycle-controller";
   import { createTabCloseOrchestrationController } from "./lib/features/session/controller/tab-close-orchestration-controller";
   import { createTabRenameOrchestrationController } from "./lib/features/session/controller/tab-rename-orchestration-controller";
@@ -372,6 +378,8 @@
       auxPtyId: session.auxPtyId,
       auxVisible: session.auxVisible,
       auxHeightPercent: session.auxHeightPercent,
+      runtimeKind: session.runtimeKind,
+      agentRuntime: session.agentRuntime,
     }));
     activeSessionId;
     currentWindowName;
@@ -476,6 +484,37 @@
     await sessionLifecycle.handleResumeFallback(sessionId);
   }
 
+  /** direct runtime 시작/재개 결과 metadata를 live session과 workspace snapshot에 반영한다. */
+  async function handleAgentRuntimeMetadataChange(
+    sessionId: string,
+    metadata: AgentRuntimeMetadata,
+  ) {
+    setSessionAgentRuntime(sessionId, metadata);
+    try {
+      await persistWorkspace();
+    } catch (error) {
+      reportSessionLifecycleError("Failed to persist agent runtime metadata", error);
+    }
+  }
+
+  /** direct runtime live status를 탭 badge용 상태에만 반영한다(OQ-06, 비영속). */
+  function handleAgentRuntimeStatusChange(sessionId: string, status: AgentSessionStatus) {
+    setSessionAgentRuntimeStatus(sessionId, status);
+  }
+
+  /** direct runtime provider title을 live session title과 workspace snapshot에 반영한다. */
+  async function handleSessionTitleChange(sessionId: string, title: string | null) {
+    const session = sessions.find((entry) => entry.id === sessionId);
+    const fallbackTitle = session?.workDir.split("/").pop() || session?.workDir || "";
+    const nextTitle = title?.trim() || fallbackTitle;
+    setSessionTitle(sessionId, nextTitle);
+    try {
+      await persistWorkspace();
+    } catch (error) {
+      reportSessionLifecycleError("Failed to persist direct runtime session title", error);
+    }
+  }
+
   async function captureResumeIdsBeforeAppClose() {
     await sessionLifecycle.captureResumeIdsBeforeAppClose();
   }
@@ -486,7 +525,7 @@
 
   /**
    * direct runtime spawn/initialize 실패 후 legacy PTY 새 세션으로 전환한다(10 §4.6).
-   * 실패한 direct 세션 탭을 닫고(재개 키 없음 — 캡처 불필요) 같은 agent/distro/workDir로 PTY 세션을 만든다.
+   * 실패한 direct 세션 탭을 닫고 같은 agent/distro/workDir 및 legacy resumeToken으로 PTY 세션을 만든다.
    * runtimeKind를 넘기지 않으므로 새 세션은 기본 PTY 경로다(10 §5: direct→PTY는 새 세션이므로 runtimeKind="pty").
    */
   async function handleFallbackToPty(request: {
@@ -494,13 +533,14 @@
     agentId: string;
     distro: string;
     workDir: string;
+    resumeToken?: string | null;
   }) {
     try {
       await closeSession(request.sessionId);
     } catch (error) {
       reportSessionLifecycleError("Failed to close failed direct runtime session", error);
     }
-    createSession(request.agentId, request.distro, request.workDir);
+    createSession(request.agentId, request.distro, request.workDir, undefined, request.resumeToken ?? null);
   }
 
   const tabCloseOrchestration = createTabCloseOrchestrationController({
@@ -727,6 +767,11 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    // 보조 dock/assistant surface가 먼저 소비한 단축키는 전역 탭 단축키로 재처리하지 않는다.
+    if (e.defaultPrevented) {
+      return;
+    }
+
     if (e.ctrlKey && e.key === "t") {
       e.preventDefault();
       appOverlayVisibility.requestNewTab();
@@ -831,6 +876,9 @@
         )}
       onSessionExit={handleExit}
       onSessionResumeFallback={handleResumeFallback}
+      onSessionAgentRuntimeMetadataChange={handleAgentRuntimeMetadataChange}
+      onSessionAgentRuntimeStatusChange={handleAgentRuntimeStatusChange}
+      onSessionTitleChange={handleSessionTitleChange}
       onSessionFallbackToPty={handleFallbackToPty}
     />
   </div>

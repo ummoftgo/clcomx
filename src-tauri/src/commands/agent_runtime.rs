@@ -1,13 +1,13 @@
-//! Direct Agent Runtime — 얇은 #[tauri::command] 래퍼 5종(15 §8.2).
+//! Direct Agent Runtime — 얇은 #[tauri::command] 래퍼 6종(15 §8.2).
 //!
 //! 정본: `07-tauri-process-runtime.md` §2.1. 로직·상태는 `features/agent_runtime/`에 두고
 //! 여기서는 command 진입점만 둔다. 모든 command는 `Result<T, String>` 반환(전역 에러 컨벤션).
 
+use crate::app_env::is_test_mode;
 pub use crate::features::agent_runtime::types::{
     AgentRuntimeCancelTarget, AgentRuntimeSnapshot, AgentRuntimeStartParams, JsonRpcMessage,
     RuntimeId,
 };
-use crate::app_env::is_test_mode;
 use crate::features::agent_runtime::{self, resolver, AgentRuntimeState};
 use tauri::AppHandle;
 

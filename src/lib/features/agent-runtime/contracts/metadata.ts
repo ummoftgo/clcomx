@@ -35,6 +35,16 @@ export interface AgentRuntimeMetadata {
   /** adapter/provider 바이너리 버전(호환성 추적). */
   adapterVersion?: string;
   providerVersion?: string;
+  /** provider sandbox/mode 표시용 metadata(09 §8.2). */
+  sandbox?: string;
+  /** provider approval policy 표시용 metadata(09 §8.2). */
+  approvalPolicy?: string;
+  /** provider approval reviewer 표시용 metadata(09 §8.2). */
+  approvalsReviewer?: string;
+  /** Claude SDK permissionMode 또는 동등 provider permission mode id. */
+  permissionMode?: string;
+  /** ACP session mode 또는 동등 provider session mode id. */
+  sessionMode?: string;
   /** replay 없는 재개 가능 여부(ACP resume / Codex thread/resume). */
   canResume?: boolean;
   /** replay 가능 여부(ACP loadSession / Codex thread/read). */

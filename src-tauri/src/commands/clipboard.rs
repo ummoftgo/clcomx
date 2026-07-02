@@ -331,13 +331,7 @@ mod tests {
 
     #[test]
     fn rejects_clipboard_images_above_the_per_image_limit() {
-        let err = validate_clipboard_image_request(
-            Path::new("/unused"),
-            11,
-            10,
-            100,
-        )
-        .unwrap_err();
+        let err = validate_clipboard_image_request(Path::new("/unused"), 11, 10, 100).unwrap_err();
 
         assert!(err.contains("too large"));
     }

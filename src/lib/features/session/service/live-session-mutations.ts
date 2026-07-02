@@ -4,6 +4,8 @@ import type {
   SessionEditorState,
   SessionViewMode,
 } from "../../../types";
+import type { AgentRuntimeMetadata } from "../../agent-runtime/contracts/metadata";
+import type { AgentSessionStatus } from "../../agent-runtime/contracts/normalized";
 
 export function removeSessionAndResolveActive(
   sessions: Session[],
@@ -58,6 +60,30 @@ export function setSessionResumeTokenInList(
   const session = sessions.find((entry) => entry.id === id);
   if (session) {
     session.resumeToken = resumeToken;
+  }
+}
+
+/** direct runtime provider 메타를 세션에 반영한다. */
+export function setSessionAgentRuntimeInList(
+  sessions: Session[],
+  id: string,
+  agentRuntime: AgentRuntimeMetadata | undefined,
+) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (session) {
+    session.agentRuntime = agentRuntime;
+  }
+}
+
+/** direct runtime live status를 탭 badge용 세션 상태에 반영한다. */
+export function setSessionAgentRuntimeStatusInList(
+  sessions: Session[],
+  id: string,
+  status: AgentSessionStatus,
+) {
+  const session = sessions.find((entry) => entry.id === id);
+  if (session) {
+    session.agentRuntimeStatus = status;
   }
 }
 

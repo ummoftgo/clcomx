@@ -2,7 +2,7 @@
   ApprovalModal — severity:"escalation" 차단 승인 모달(08 §4.4·§10.3, 09 §8.3, T5.4).
 
   sandbox 우회·bypassPermissions 등 고위험 결정(09 §8.3, OQ-47)을 blocking modal로 표시한다.
-  inline 카드와 동일하게 provider options를 원본 순서·개수로 렌더하고 label만 i18n으로 감싼다.
+  inline 카드와 동일하게 provider options를 원본 순서·개수로 렌더하고 표시 문자열은 redaction한다.
   **escape 회귀 보호(08 §10.3)**: Escape는 승인을 미해결로 두고 닫지 않는다 — cancelled 결정으로 응답한다.
   backdrop 클릭도 마찬가지로 무시(명시적 option/취소 버튼만 결정). 문자열은 i18n 키만 쓴다.
 -->
@@ -10,6 +10,7 @@
   import { t } from "../../../i18n";
   import { TEST_IDS, agentApprovalOptionTestId } from "../../../testids";
   import type { ApprovalDecision, ApprovalRequest } from "../contracts/normalized";
+  import { approvalDisplayText } from "./approval-display";
 
   interface Props {
     /** escalation 승인 요청. */
@@ -21,6 +22,11 @@
   let { request, onRespond }: Props = $props();
 
   let locked = $state(false);
+  let modalEl = $state<HTMLDivElement | null>(null);
+  const title = $derived(approvalDisplayText(request.title, $t));
+  const body = $derived(
+    request.body ? approvalDisplayText(request.body, $t) : $t("agentRuntime.approval.bodyFallback"),
+  );
 
   /** option 선택 → selected 응답. */
   function select(optionId: string): void {
@@ -36,6 +42,13 @@
     onRespond({ requestId: request.id, outcome: "cancelled" });
   }
 
+  /** "기억되는 승인"(always) 힌트 노출 여부. */
+  function alwaysHint(kind: ApprovalRequest["options"][number]["kind"]): string | null {
+    if (kind === "allow_always") return $t("agentRuntime.approval.optionAllowAlwaysHint");
+    if (kind === "reject_always") return $t("agentRuntime.approval.optionRejectAlwaysHint");
+    return null;
+  }
+
   /** Escape 회귀 보호: 조용히 닫지 않고 cancelled로 명시 응답. */
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape") {
@@ -44,24 +57,42 @@
       cancel();
     }
   }
+
+  /** Tab focus를 모달 안 action들로 순환시켜 배경 transcript로 새지 않게 한다(FE-15). */
+  function trapFocus(e: KeyboardEvent): void {
+    if (e.key !== "Tab") return;
+    const focusable = Array.from(
+      modalEl?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? [],
+    );
+    if (focusable.length === 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const currentIndex = focusable.indexOf(document.activeElement as HTMLButtonElement);
+    const baseIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = e.shiftKey
+      ? (baseIndex - 1 + focusable.length) % focusable.length
+      : (baseIndex + 1) % focusable.length;
+    focusable[nextIndex]?.focus();
+  }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
 <div class="approval-modal-backdrop" role="presentation">
   <div
+    bind:this={modalEl}
     class="approval-modal"
     data-testid={TEST_IDS.agentApprovalModal}
     data-request-id={request.id}
     role="alertdialog"
     aria-modal="true"
-    aria-label={request.title}
+    aria-label={title}
+    tabindex="-1"
+    onkeydown={trapFocus}
   >
     <div class="modal-badge">{$t("agentRuntime.approval.escalationBadge")}</div>
-    <div class="modal-title">{request.title}</div>
-    <div class="modal-body">
-      {request.body ?? $t("agentRuntime.approval.bodyFallback")}
-    </div>
+    <div class="modal-title">{title}</div>
+    <div class="modal-body">{body}</div>
 
     <div class="modal-options">
       {#each request.options as option (option.id)}
@@ -75,7 +106,10 @@
           disabled={locked}
           onclick={() => select(option.id)}
         >
-          {option.label}
+          <span class="option-label">{approvalDisplayText(option.label, $t)}</span>
+          {#if alwaysHint(option.kind)}
+            <span class="option-hint">{alwaysHint(option.kind)}</span>
+          {/if}
         </button>
       {/each}
       <button
@@ -145,6 +179,9 @@
     margin-top: 0.3rem;
   }
   .modal-option {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
     padding: 0.4rem 0.85rem;
     border-radius: 0.4rem;
     border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.3));
@@ -165,6 +202,10 @@
   .modal-option.kind-reject_once,
   .modal-option.kind-reject_always {
     border-color: var(--ui-danger, #f85149);
+  }
+  .option-hint {
+    font-size: var(--ui-font-size-xs);
+    opacity: 0.6;
   }
   .modal-processing {
     font-size: var(--ui-font-size-sm);

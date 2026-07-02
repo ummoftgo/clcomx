@@ -2,9 +2,13 @@ import type { SessionCore, SessionEditorState, SessionShellRuntimeState } from "
 
 type SessionTabState = Pick<SessionCore, "id" | "pinned">;
 type SessionCloseState =
-  | (Pick<SessionCore, "locked"> &
+  | (Pick<SessionCore, "locked" | "runtimeKind"> &
       Pick<SessionShellRuntimeState, "ptyId"> &
       Pick<SessionEditorState, "dirtyPaths">)
+  | null
+  | undefined;
+type SessionRuntimeCloseState =
+  | (Pick<SessionCore, "runtimeKind"> & Pick<SessionShellRuntimeState, "ptyId">)
   | null
   | undefined;
 
@@ -15,6 +19,11 @@ export function hasDirtyEditorState(session: SessionCloseState) {
   return Boolean(session && session.dirtyPaths.length > 0);
 }
 
+/** 세션 닫기 확인이 필요한 실행 중 host인지 판정한다. */
+export function hasLiveSessionRuntime(session: SessionRuntimeCloseState) {
+  return Boolean(session && (session.ptyId >= 0 || session.runtimeKind?.startsWith("direct-")));
+}
+
 export function resolveCloseTabRequest(session: SessionCloseState): CloseTabRequest {
   if (!session || session.locked) {
     return "blocked";
@@ -22,7 +31,7 @@ export function resolveCloseTabRequest(session: SessionCloseState): CloseTabRequ
   if (hasDirtyEditorState(session)) {
     return "dirty-warning";
   }
-  if (session.ptyId >= 0) {
+  if (hasLiveSessionRuntime(session)) {
     return "close-confirm";
   }
   return "close-now";

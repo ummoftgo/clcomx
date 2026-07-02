@@ -7,6 +7,7 @@ import {
   applySessionAuxState,
   clearSessionResumeFallback,
   registerSessionPty,
+  recordSessionHistory,
   type SessionRuntimeDependencies,
 } from "../service/session-runtime";
 import { launchSession, launchSessionFromHistoryEntry } from "./session-launch-controller";
@@ -170,13 +171,7 @@ export function createSessionLifecycleController(
           deps.reportError("Failed to clear auxiliary terminal state", error);
         }
 
-        await deps.recordTabHistory(
-          session.agentId,
-          session.distro,
-          session.workDir,
-          session.title,
-          resumeToken,
-        );
+        await recordSessionHistory(deps.recordTabHistory, session, session.title, resumeToken);
       }
 
       await deps.persistWorkspace();
@@ -191,13 +186,7 @@ export function createSessionLifecycleController(
 
     try {
       const resumeToken = await captureSessionResumeTokenForSession(session);
-      await deps.recordTabHistory(
-        session.agentId,
-        session.distro,
-        session.workDir,
-        session.title,
-        resumeToken,
-      );
+      await recordSessionHistory(deps.recordTabHistory, session, session.title, resumeToken);
       await deps.closeSession(sessionId);
     } catch (error) {
       deps.reportError("Failed to close session", error);

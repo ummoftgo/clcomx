@@ -13,6 +13,8 @@
  * 규약: 이 모듈은 순수 상태 + DI 콜백만 다룬다(transport/store 직접 접근 없음). 상대경로만.
  */
 
+import { redactDisplayText } from "../service/display-redaction";
+
 /** fallback에 전달되는 세션 식별 정보(PTY 새 세션 생성 입력). */
 export interface RuntimeFallbackContext {
   /** 실패한 direct 세션 핸들(닫기 대상). */
@@ -21,14 +23,16 @@ export interface RuntimeFallbackContext {
   agentId: string;
   distro: string;
   workDir: string;
+  /** legacy PTY resume 토큰이 있으면 PTY 전환 시 이어받기에 사용한다. */
+  resumeToken?: string | null;
 }
 
 /** fallback 컨트롤러 DI 콜백. */
 export interface RuntimeFallbackDeps {
   context: RuntimeFallbackContext;
   /**
-   * legacy PTY 새 세션으로 전환(10 §4.6 "legacy PTY 새 세션"). 실패한 direct 세션을 닫고
-   * 같은 agent/distro/workDir로 PTY 세션을 만든다. 호출부(App)가 실제 세션 생성/탭 정리를 담당.
+   * legacy PTY 새 세션으로 전환(10 §4.6 "legacy PTY 새 세션/legacy resume"). 실패한 direct 세션을 닫고
+   * 같은 agent/distro/workDir 및 기존 PTY resumeToken으로 PTY 세션을 만든다. 호출부(App)가 실제 세션 생성/탭 정리를 담당.
    */
   onFallbackToPty: (context: RuntimeFallbackContext) => void | Promise<void>;
   /** direct runtime 재시도(같은 세션 재기동). 미지정이면 retry 선택지 비활성. */
@@ -61,13 +65,21 @@ export interface RuntimeFallbackController {
 
 /** unknown 에러를 비밀 비포함 사람용 문구로 정규화한다(provider raw 메시지는 그대로 두지 않고 toString). */
 function normalizeErrorMessage(error: unknown): string {
-  if (error == null) return "";
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
+  let message = "";
+  if (error == null) return message;
+  if (error instanceof Error) message = error.message;
+  else if (typeof error === "string") message = error;
+  else {
+    try {
+      message = String(error);
+    } catch {
+      message = "";
+    }
+  }
   try {
-    return String(error);
+    return redactDisplayText(message);
   } catch {
-    return "";
+    return message;
   }
 }
 
