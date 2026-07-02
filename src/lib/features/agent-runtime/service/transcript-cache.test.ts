@@ -89,4 +89,65 @@ describe("transcript-cache 직렬화", () => {
     expect(snap.visibleItemIds).toContain("keep");
     expect(snap.visibleItemIds).not.toContain("ghost");
   });
+
+  it("credential 문자열이 포함된 item은 직렬화 시 실제로 redact됨", () => {
+    // sk-ant-* 패턴과 Authorization 헤더를 포함한 message item을 직렬화하면
+    // 스냅샷에 실제 secret이 없고 [REDACTED] 마커가 나타남을 검증한다.
+    const secretToken = "sk-ant-v7xHxE7h2j9Ks5mP2qZx8uW4rN3yJqT6vB1lF8wX";
+    const secretHeader = "Authorization: Bearer sk-ant-xxxxxxxxxxxxxxxx";
+    const secretApiKey = "api_key=sk-abc123defghij789";
+
+    const credentialItem: TranscriptItem = {
+      type: "message",
+      id: "secret",
+      role: "agent",
+      content: [
+        {
+          type: "text",
+          text: `Config: ${secretToken} and Header: ${secretHeader} and ${secretApiKey}`,
+        },
+      ],
+      streaming: false,
+      ref: { provider: "codex", threadId: "A", turnId: "t1" },
+    };
+
+    const model: TranscriptModel = {
+      visibleItemIds: ["secret"],
+      itemVersions: { secret: 1 },
+      itemsById: new Map([["secret", credentialItem]]),
+      turnsById: new Map([
+        [
+          "t1",
+          {
+            residency: "sealed-retained",
+            itemIds: ["secret"],
+            terminated: true,
+            openItemCount: 0,
+            pendingRequestCount: 0,
+            resealCount: 0,
+          },
+        ],
+      ]),
+      tombstones: { lru: [], droppedLateEventCount: 0 },
+    };
+
+    const snap = serializeTranscript(model);
+
+    // 스냅샷에서 직렬화된 item 조회
+    const secretSnapshot = snap.items.find(([id]) => id === "secret");
+    expect(secretSnapshot).toBeDefined();
+
+    const snapshotItem = secretSnapshot![1];
+    expect(snapshotItem.type).toBe("message");
+    const messageContent = snapshotItem.content[0] as any;
+    const redactedText = messageContent.text;
+
+    // 원본 secret이 없음을 검증(실제 치환 증명)
+    expect(redactedText).not.toContain(secretToken);
+    expect(redactedText).not.toContain("sk-ant-xxxxxxxxxxxxxxxx");
+    expect(redactedText).not.toContain("sk-abc123defghij789");
+
+    // [REDACTED] 마커가 있음을 검증(redaction이 일어남)
+    expect(redactedText).toContain("[REDACTED]");
+  });
 });

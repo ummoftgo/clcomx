@@ -24,7 +24,7 @@ export function serializeTranscript(model: TranscriptModel): TranscriptCacheSnap
   const keepItemIds = new Set<string>();
   for (const [turnId, turn] of model.turnsById) {
     if (turn.residency === "evicted-tombstone") continue; // 본문 없는 tombstone 제외
-    turns.push([turnId, turn]);
+    turns.push([turnId, { ...turn, itemIds: [...turn.itemIds] }]);
     for (const id of turn.itemIds) keepItemIds.add(id);
   }
   const items: [string, TranscriptItem][] = [];
