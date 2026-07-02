@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ApprovalRequest, ProviderRef } from "../contracts/normalized";
+import type { TranscriptModel } from "../contracts/transcript";
 import { DEFAULT_TRANSCRIPT_RESIDENCY_CONFIG } from "../contracts/transcript";
 import { turnKeyOf } from "../controller/agent-event-reducer";
 import { createAgentRuntimeStore } from "./agent-runtime-store.svelte";
@@ -310,5 +311,36 @@ describe("agent-runtime-store — shallow reactive surface bounded (NM-31b)", ()
     expect(s.getTranscript().turnsById.get(retainedKey)?.residency).toBe("sealed-retained");
     expect(s.visibleItemIds).toHaveLength(hotWindow);
     expect(Object.keys(s.itemVersions)).toHaveLength(hotWindow);
+  });
+});
+
+describe("agent-runtime-store — hydrateReadOnly(OQ-16 cold restart cache hydrate)", () => {
+  it("injects a transcript model as display-only state without dispatching an event", () => {
+    const s = store();
+    const cachedItem = {
+      type: "message" as const,
+      id: "cached-1",
+      role: "agent" as const,
+      content: [{ type: "text" as const, text: "cached history" }],
+      streaming: false,
+      ref: codexRef({ itemId: "cached-1" }),
+    };
+    const model: TranscriptModel = {
+      visibleItemIds: ["cached-1"],
+      itemVersions: {},
+      itemsById: new Map([["cached-1", cachedItem]]),
+      turnsById: new Map(),
+      tombstones: { lru: [], droppedLateEventCount: 0 },
+    };
+
+    s.hydrateReadOnly(model);
+
+    // 반응형 표면(visibleItemIds/itemVersions)이 syncReactiveSurface로 갱신된다.
+    expect(s.visibleItemIds).toEqual(["cached-1"]);
+    expect(s.getItem("cached-1")).toEqual(cachedItem);
+    expect(s.getTranscript()).toBe(model);
+    // dispatch가 아니므로 status/pending 등은 영향받지 않는다(기본값 유지).
+    expect(s.status).toBe("starting");
+    expect(s.pendingApprovals).toEqual([]);
   });
 });

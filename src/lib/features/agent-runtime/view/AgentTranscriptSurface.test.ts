@@ -14,6 +14,7 @@ import type { AgentEvent } from "../contracts/normalized";
 import type { AgentRuntimePort, SessionStartResult } from "../contracts/runtime-port";
 import type { ReplayLoader } from "../service/runtime-replay";
 import type { TranscriptCacheSnapshot } from "../service/transcript-cache";
+import type { TranscriptModel } from "../contracts/transcript";
 import { resetRegistry } from "../controller/agent-event-router";
 import AgentTranscriptSurface from "./AgentTranscriptSurface.svelte";
 
@@ -37,6 +38,11 @@ const transcriptCacheMocks = vi.hoisted(() => ({
     items: [],
     turns: [],
   })),
+  // OQ-16 Task 8: cold restart 캐시 즉시 hydrate 검증용(기본은 캐시 없음 → null).
+  loadTranscriptCache: vi.fn<(sessionHandle: string) => Promise<TranscriptCacheSnapshot | null>>(
+    () => Promise.resolve(null),
+  ),
+  deserializeTranscript: vi.fn<(snap: TranscriptCacheSnapshot) => TranscriptModel | null>(() => null),
 }));
 
 vi.mock("../service/resume-store", () => ({
@@ -45,6 +51,8 @@ vi.mock("../service/resume-store", () => ({
 vi.mock("../service/transcript-cache", () => ({
   saveTranscriptCache: transcriptCacheMocks.saveTranscriptCache,
   serializeTranscript: transcriptCacheMocks.serializeTranscript,
+  loadTranscriptCache: transcriptCacheMocks.loadTranscriptCache,
+  deserializeTranscript: transcriptCacheMocks.deserializeTranscript,
 }));
 
 function makeFakePort(options: { canResume?: boolean; canLoad?: boolean } = {}) {
@@ -117,6 +125,10 @@ describe("AgentTranscriptSurface", () => {
       items: [],
       turns: [],
     });
+    transcriptCacheMocks.loadTranscriptCache.mockReset();
+    transcriptCacheMocks.loadTranscriptCache.mockResolvedValue(null);
+    transcriptCacheMocks.deserializeTranscript.mockReset();
+    transcriptCacheMocks.deserializeTranscript.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -944,6 +956,82 @@ describe("AgentTranscriptSurface", () => {
 
     await waitFor(() => {
       expect(composer.textContent).toContain("bypassPermissions");
+    });
+  });
+
+  it("OQ-16 Task 8: cache hydrate renders cached transcript history immediately on cold restart", async () => {
+    const { port } = makeFakePort();
+    const cachedSnapshot: TranscriptCacheSnapshot = {
+      schemaVersion: 1,
+      visibleItemIds: ["cached-1"],
+      items: [
+        [
+          "cached-1",
+          {
+            type: "message",
+            id: "cached-1",
+            role: "agent",
+            content: [{ type: "text", text: "cached history line" }],
+            streaming: false,
+            ref: { provider: "codex", threadId: "thread-1" },
+          },
+        ],
+      ],
+      turns: [],
+    };
+    const cachedModel: TranscriptModel = {
+      visibleItemIds: ["cached-1"],
+      itemVersions: {},
+      itemsById: new Map(cachedSnapshot.items),
+      turnsById: new Map(),
+      tombstones: { lru: [], droppedLateEventCount: 0 },
+    };
+    transcriptCacheMocks.loadTranscriptCache.mockResolvedValue(cachedSnapshot);
+    transcriptCacheMocks.deserializeTranscript.mockReturnValue(cachedModel);
+
+    const { findByText } = render(AgentTranscriptSurface, {
+      props: baseProps(port, {
+        agentRuntime: {
+          sessionRuntimeKind: "direct-codex",
+          provider: "codex",
+          providerSessionId: "session-tree-1",
+          providerThreadId: "thread-1",
+          canResume: true,
+          canLoad: true,
+        },
+      }),
+    });
+
+    // 캐시 히스토리가 provider resume 시작 전에 즉시 read-only로 렌더된다.
+    await findByText("cached history line");
+    expect(transcriptCacheMocks.loadTranscriptCache).toHaveBeenCalledWith("S1");
+
+    // resume은 그대로 뒤이어 진행된다(이 task는 timing 변경 없음, Task 9 범위).
+    await waitFor(() => {
+      expect(port.resumeSession).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("OQ-16 Task 8: ignores a rejected cache load and still proceeds to resume", async () => {
+    const { port } = makeFakePort();
+    transcriptCacheMocks.loadTranscriptCache.mockRejectedValue(new Error("disk read error"));
+
+    render(AgentTranscriptSurface, {
+      props: baseProps(port, {
+        agentRuntime: {
+          sessionRuntimeKind: "direct-codex",
+          provider: "codex",
+          providerSessionId: "session-tree-1",
+          providerThreadId: "thread-1",
+          canResume: true,
+          canLoad: true,
+        },
+      }),
+    });
+
+    // 캐시 로드 실패가 startRuntime 진행을 막지 않는다(best-effort).
+    await waitFor(() => {
+      expect(port.resumeSession).toHaveBeenCalledOnce();
     });
   });
 

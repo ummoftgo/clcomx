@@ -87,6 +87,12 @@ export interface AgentRuntimeStore {
 
   /** AgentEvent 1개를 적용한다(reducer + status + pending table). */
   dispatch(event: AgentEvent): void;
+  /**
+   * cold restart 시 캐시된 TranscriptModel을 표시용으로 즉시 주입한다(OQ-16, 08 §6.6).
+   * dispatch(event 기반 reduce)를 거치지 않는 비반응형 body 직접 대입 + 반응형 표면 동기화뿐이며,
+   * status/pending approval/audit 등 다른 상태는 건드리지 않는다. 권위 히스토리는 이후 provider replay다.
+   */
+  hydrateReadOnly(model: TranscriptModel): void;
   /** 사용자/자동 approval 응답을 기록한다(04 §4.1). 정확히 1회 멱등. */
   respondApproval(decision: ApprovalDecision, decidedBy?: ApprovalDecidedBy): void;
   /** turn cancel cleanup(04 §4.2): pending approval을 cancelled로 정확히 1회 닫는다. */
@@ -173,6 +179,17 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
     }
     this.pendingApprovals = inline;
     this.escalationApproval = escalation;
+  }
+
+  /**
+   * cold restart 시 캐시된 TranscriptModel을 표시용으로 즉시 주입한다(OQ-16, 08 §6.6).
+   * dispatch와 달리 event reduce/status 전이/pending table을 거치지 않고, transcript body를
+   * 그대로 교체한 뒤 반응형 표면만 동기화한다 — 캐시는 read-only 즉시표시용이고, 권위 히스토리는
+   * 이후 provider replay(Task 9/10)가 대체한다.
+   */
+  hydrateReadOnly(model: TranscriptModel): void {
+    this.transcript = model;
+    this.syncReactiveSurface();
   }
 
   dispatch(event: AgentEvent): void {

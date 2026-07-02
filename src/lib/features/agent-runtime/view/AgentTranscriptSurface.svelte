@@ -30,7 +30,12 @@
   } from "../controller/agent-runtime-controller";
   import { createDefaultPortFactory } from "../service/runtime-port-factory";
   import { saveResumeKeys } from "../service/resume-store";
-  import { saveTranscriptCache, serializeTranscript } from "../service/transcript-cache";
+  import {
+    saveTranscriptCache,
+    serializeTranscript,
+    loadTranscriptCache,
+    deserializeTranscript,
+  } from "../service/transcript-cache";
   import type { AgentRuntimePort, SessionStartResult } from "../contracts/runtime-port";
   import MessageList from "./MessageList.svelte";
   import AgentComposer from "./AgentComposer.svelte";
@@ -518,8 +523,29 @@
     disposeSurfaceRuntime();
   }
 
+  /**
+   * OQ-16 Task 8: cold restart(props.agentRuntime 존재) 시 provider resume가 시작되기 전에
+   * 캐시된 지난 대화를 즉시 read-only로 렌더한다(process spawn 없음). 캐시가 없거나 스키마가
+   * 안 맞으면 조용히 건너뛰고 기존 startRuntime 흐름(빈 화면에서 시작)으로 진행한다.
+   * IO 실패(예: 캐시 파일 read 오류)도 같은 이유로 무시한다 — 캐시는 best-effort 즉시표시용이고
+   * 권위 히스토리는 뒤이은 provider replay이므로 실패가 startRuntime 진행을 막으면 안 된다.
+   * dedup/대체(캐시 item ↔ provider replay item)는 이 task 범위 밖이다(Task 10).
+   */
+  async function hydrateFromCacheIfColdRestart(): Promise<void> {
+    if (!props.agentRuntime) return;
+    try {
+      const cached = await loadTranscriptCache(props.sessionId);
+      const model = cached && deserializeTranscript(cached);
+      if (model) store.hydrateReadOnly(model);
+    } catch {
+      // best-effort — 캐시 로드 실패는 무시하고 기존 startRuntime 흐름으로 진행한다.
+    }
+  }
+
   onMount(() => {
-    void startRuntime().finally(syncFallback);
+    void hydrateFromCacheIfColdRestart().finally(() => {
+      void startRuntime().finally(syncFallback);
+    });
     sealTimer = setInterval(() => store.flushSealAndEvict(), 1000);
     window.addEventListener("pagehide", onPageTeardown);
     window.addEventListener("beforeunload", onPageTeardown);
