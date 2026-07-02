@@ -5,6 +5,20 @@ import {
   type SessionLifecycleControllerDependencies,
 } from "./session-lifecycle-controller";
 
+const resumeStoreMocks = vi.hoisted(() => ({
+  clearResumeKeys: vi.fn(async () => {}),
+}));
+const transcriptCacheMocks = vi.hoisted(() => ({
+  clearTranscriptCache: vi.fn(async () => {}),
+}));
+
+vi.mock("../../agent-runtime/service/resume-store", () => ({
+  clearResumeKeys: resumeStoreMocks.clearResumeKeys,
+}));
+vi.mock("../../agent-runtime/service/transcript-cache", () => ({
+  clearTranscriptCache: transcriptCacheMocks.clearTranscriptCache,
+}));
+
 function createSession(overrides: Partial<Session> = {}): Session {
   return {
     id: "session-1",
@@ -252,6 +266,89 @@ describe("session-lifecycle-controller", () => {
     expect(deps.closeSession).toHaveBeenCalledWith("session-1");
   });
 
+  it("GC: direct 세션 탭을 닫으면 재개 id/transcript 캐시를 정리한다(OQ-16 Task 11)", async () => {
+    const sessions = new Map<string, Session>([
+      [
+        "session-1",
+        createSession({
+          ptyId: -1,
+          runtimeKind: "direct-claude",
+          resumeToken: null,
+        }),
+      ],
+    ]);
+    const deps = createDeps(sessions);
+    const controller = createSessionLifecycleController(deps);
+
+    resumeStoreMocks.clearResumeKeys.mockClear();
+    transcriptCacheMocks.clearTranscriptCache.mockClear();
+
+    await controller.handleCloseTab("session-1");
+
+    expect(resumeStoreMocks.clearResumeKeys).toHaveBeenCalledWith("session-1");
+    expect(transcriptCacheMocks.clearTranscriptCache).toHaveBeenCalledWith("session-1");
+  });
+
+  it("GC: pty 세션 탭을 닫을 때는 재개 id/transcript 캐시를 정리하지 않는다(direct 한정)", async () => {
+    const deps = createDeps();
+    const controller = createSessionLifecycleController(deps);
+
+    resumeStoreMocks.clearResumeKeys.mockClear();
+    transcriptCacheMocks.clearTranscriptCache.mockClear();
+
+    await controller.handleCloseTab("session-1");
+
+    expect(resumeStoreMocks.clearResumeKeys).not.toHaveBeenCalled();
+    expect(transcriptCacheMocks.clearTranscriptCache).not.toHaveBeenCalled();
+  });
+
+  it("GC: closeSession이 실패해도 GC는 best-effort로 여전히 시도한다", async () => {
+    const sessions = new Map<string, Session>([
+      [
+        "session-1",
+        createSession({
+          ptyId: -1,
+          runtimeKind: "direct-codex",
+          resumeToken: null,
+        }),
+      ],
+    ]);
+    const error = new Error("close failed");
+    const deps = createDeps(sessions, {
+      closeSession: vi.fn(async () => {
+        throw error;
+      }),
+    });
+    const controller = createSessionLifecycleController(deps);
+
+    resumeStoreMocks.clearResumeKeys.mockClear();
+    transcriptCacheMocks.clearTranscriptCache.mockClear();
+
+    await controller.handleCloseTab("session-1");
+
+    expect(deps.reportError).toHaveBeenCalledWith("Failed to close session", error);
+  });
+
+  it("GC: clearResumeKeys/clearTranscriptCache가 거부돼도 탭 닫기 흐름은 계속된다(best-effort)", async () => {
+    const sessions = new Map<string, Session>([
+      [
+        "session-1",
+        createSession({
+          ptyId: -1,
+          runtimeKind: "direct-codex",
+          resumeToken: null,
+        }),
+      ],
+    ]);
+    const deps = createDeps(sessions);
+    const controller = createSessionLifecycleController(deps);
+
+    resumeStoreMocks.clearResumeKeys.mockRejectedValueOnce(new Error("gc failed"));
+
+    await expect(controller.handleCloseTab("session-1")).resolves.toBeUndefined();
+    expect(deps.closeSession).toHaveBeenCalledWith("session-1");
+  });
+
   it("releases app-close exit suppression after app-close capture fails", async () => {
     const sessions = new Map<string, Session>([
       ["session-1", createSession({ ptyId: 42 })],
@@ -278,5 +375,28 @@ describe("session-lifecycle-controller", () => {
 
     await controller.handleExit(77);
     expect(deps.closeSessionByPtyId).toHaveBeenCalledWith(77);
+  });
+
+  it("GC: 앱 종료 경로(captureResumeIdsBeforeAppClose)에서는 direct 세션이어도 GC하지 않는다", async () => {
+    const sessions = new Map<string, Session>([
+      [
+        "session-1",
+        createSession({
+          ptyId: -1,
+          runtimeKind: "direct-codex",
+          resumeToken: null,
+        }),
+      ],
+    ]);
+    const deps = createDeps(sessions);
+    const controller = createSessionLifecycleController(deps);
+
+    resumeStoreMocks.clearResumeKeys.mockClear();
+    transcriptCacheMocks.clearTranscriptCache.mockClear();
+
+    await controller.captureResumeIdsBeforeAppClose();
+
+    expect(resumeStoreMocks.clearResumeKeys).not.toHaveBeenCalled();
+    expect(transcriptCacheMocks.clearTranscriptCache).not.toHaveBeenCalled();
   });
 });

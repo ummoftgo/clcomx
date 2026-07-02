@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { By, type WebDriver } from "selenium-webdriver";
 import {
   TEST_IDS,
@@ -5,6 +7,7 @@ import {
   agentToolLocationTestId,
   agentTranscriptItemTestId,
 } from "../../src/lib/testids";
+import type { TranscriptCacheSnapshot } from "../../src/lib/features/agent-runtime/service/transcript-cache";
 import { clickTestId, waitForTestId } from "./tauri";
 import { setTextareaValue } from "./terminal";
 
@@ -158,4 +161,61 @@ export async function countVisibleTestIds(driver: WebDriver, testId: string): Pr
     }
   }
   return count;
+}
+
+/**
+ * `sessionHandle`을 backend `transcript_cache::cache_path`와 동일한 규칙(base64 URL-safe, 패딩 없음)으로
+ * 파일명 세그먼트로 인코딩한다. E2E에서 transcript 캐시 파일을 직접 seed할 때 backend와 같은 경로를 쓰기 위함.
+ */
+function encodeSessionHandleForFileName(sessionHandle: string): string {
+  return Buffer.from(sessionHandle, "utf8").toString("base64url");
+}
+
+/**
+ * `<stateDir>/agent-runtime/transcript-<encoded sessionHandle>.json`에 scrub된 transcript 캐시 스냅샷을
+ * 평문 JSON으로 직접 써 넣는다(backend가 암호화하지 않는 파일이므로 E2E에서 seed 가능, OQ-16 Task 11).
+ */
+export function seedTranscriptCacheFile(
+  stateDir: string,
+  sessionHandle: string,
+  snapshot: TranscriptCacheSnapshot,
+): void {
+  const dir = path.join(stateDir, "agent-runtime");
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `transcript-${encodeSessionHandleForFileName(sessionHandle)}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(snapshot), "utf8");
+}
+
+/** E2E-13a/13b에서 read-only 즉시표시 검증용으로 쓰는 최소 transcript 캐시 스냅샷을 만든다. */
+export function buildSeedTranscriptCacheSnapshot(messageText: string): TranscriptCacheSnapshot {
+  return {
+    schemaVersion: 1,
+    visibleItemIds: ["seed-item-1"],
+    items: [
+      [
+        "seed-item-1",
+        {
+          type: "message",
+          id: "seed-item-1",
+          role: "agent",
+          streaming: false,
+          content: [{ type: "text", text: messageText }],
+          ref: { provider: "codex", threadId: "t-mock", turnId: "turn-seed-1" },
+        },
+      ],
+    ],
+    turns: [
+      [
+        "turn-seed-1",
+        {
+          residency: "sealed-retained",
+          itemIds: ["seed-item-1"],
+          terminated: true,
+          openItemCount: 0,
+          pendingRequestCount: 0,
+          resealCount: 0,
+        },
+      ],
+    ],
+  };
 }

@@ -148,6 +148,7 @@ describe("transcript-cache 직렬화", () => {
 
     const snapshotItem = secretSnapshot![1];
     expect(snapshotItem.type).toBe("message");
+    if (snapshotItem.type !== "message") throw new Error("expected message item");
     const messageContent = snapshotItem.content[0] as any;
     const redactedText = messageContent.text;
 

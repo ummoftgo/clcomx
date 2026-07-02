@@ -3,6 +3,8 @@ import type { PtyResumeCaptureResult } from "../../../workspace";
 import type { Session, TabHistoryEntry } from "../../../types";
 import type { SessionRuntimeKind } from "../../agent-runtime/contracts/metadata";
 import type { SessionShellAuxState } from "../contracts/session-shell";
+import { clearResumeKeys } from "../../agent-runtime/service/resume-store";
+import { clearTranscriptCache } from "../../agent-runtime/service/transcript-cache";
 import {
   applySessionAuxState,
   clearSessionResumeFallback,
@@ -180,6 +182,30 @@ export function createSessionLifecycleController(
     }
   };
 
+  /**
+   * OQ-16 Task 11: 사용자가 direct 세션 탭을 명시적으로 닫을 때 고아 파일을 막기 위한 GC.
+   * 암호화 재개 id 파일(clearResumeKeys)과 transcript 캐시 파일(clearTranscriptCache)을 정리한다.
+   * best-effort — 실패해도 탭 닫기 흐름 자체를 막지 않는다(개별 catch로 격리).
+   * [중요] 이 GC는 오직 사용자의 명시적 탭 닫기(handleCloseTab)에서만 호출한다.
+   * 앱 종료(captureResumeIdsBeforeAppClose)·webview reload·컴포넌트 destroy 같은 teardown 경로는
+   * 재시작 후 복원에 그 파일들이 필요하므로 절대 GC하지 않는다(component teardown은
+   * AgentTranscriptSurface.disposeSurfaceRuntime이 별도로 담당하며 여기와 무관하다).
+   */
+  const gcDirectSessionFiles = async (sessionId: string, runtimeKind?: SessionRuntimeKind) => {
+    if (!runtimeKind?.startsWith("direct-")) return;
+
+    try {
+      await clearResumeKeys(sessionId);
+    } catch (error) {
+      deps.reportError("Failed to clear resume keys on tab close", error);
+    }
+    try {
+      await clearTranscriptCache(sessionId);
+    } catch (error) {
+      deps.reportError("Failed to clear transcript cache on tab close", error);
+    }
+  };
+
   const handleCloseTab = async (sessionId: string) => {
     const session = deps.getSession(sessionId);
     if (!session) return;
@@ -191,6 +217,8 @@ export function createSessionLifecycleController(
     } catch (error) {
       deps.reportError("Failed to close session", error);
     }
+
+    await gcDirectSessionFiles(sessionId, session.runtimeKind);
   };
 
   return {
