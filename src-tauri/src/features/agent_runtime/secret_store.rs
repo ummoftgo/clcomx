@@ -3,6 +3,8 @@
 //! OS 키스토어(Windows Credential Manager/libsecret)에 **단일 앱 키 1개**를 두고,
 //! 세션별 재개 id 파일을 AES-256-GCM으로 at-rest 암호화한다. 키/복호화 실패는
 //! 상위에서 "복원 불가"로 낮추는 것이 정책이므로 여기서는 typed error를 반환한다.
+//!
+//! 앱 키의 난수는 `aes-gcm`이 아니라 [`rand::rngs::OsRng`]에서 얻는다.
 
 use base64::Engine;
 use rand::RngCore;
@@ -34,20 +36,27 @@ impl std::fmt::Display for SecretStoreError {
     }
 }
 
+/// 키스토어에 저장된 base64 문자열을 32바이트 앱 키로 디코드·검증한다(키스토어 비의존 순수 로직).
+///
+/// # 오류
+/// - base64 STANDARD 디코드 실패 → `SecretStoreError::Keystore(...)`
+/// - 디코드된 길이가 32가 아님 → `SecretStoreError::Keystore("stored key not 32 bytes")`
+fn decode_app_key(b64: &str) -> Result<[u8; 32], SecretStoreError> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.as_bytes())
+        .map_err(|e| SecretStoreError::Keystore(e.to_string()))?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| SecretStoreError::Keystore("stored key not 32 bytes".into()))?;
+    Ok(arr)
+}
+
 /// OS 키스토어에서 앱 키를 로드하고, 없으면 32바이트를 새로 생성해 저장한 뒤 반환한다.
 pub fn load_or_create_app_key() -> Result<[u8; 32], SecretStoreError> {
     let entry = keyring::Entry::new(KEYSTORE_SERVICE, KEYSTORE_USER)
         .map_err(|e| SecretStoreError::Keystore(e.to_string()))?;
     match entry.get_password() {
-        Ok(b64) => {
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(b64.as_bytes())
-                .map_err(|e| SecretStoreError::Keystore(e.to_string()))?;
-            let arr: [u8; 32] = bytes
-                .try_into()
-                .map_err(|_| SecretStoreError::Keystore("stored key not 32 bytes".into()))?;
-            Ok(arr)
-        }
+        Ok(b64) => decode_app_key(&b64),
         Err(keyring::Error::NoEntry) => {
             // 최초 실행: 새 32바이트 키를 생성해 키스토어에 저장한다.
             let mut key = [0u8; 32];
@@ -65,6 +74,48 @@ pub fn load_or_create_app_key() -> Result<[u8; 32], SecretStoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== 순수 decode_app_key 테스트 (키스토어 비의존) =====
+
+    #[test]
+    fn decode_valid_32byte_key() {
+        // 유효한 32바이트 키의 base64 인코딩을 다시 디코드하면 원본과 일치한다.
+        let mut original_key = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut original_key);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(original_key);
+
+        let decoded = decode_app_key(&b64).expect("decode should succeed");
+        assert_eq!(decoded, original_key);
+    }
+
+    #[test]
+    fn decode_invalid_base64_fails() {
+        // 유효하지 않은 base64 문자열은 Err을 반환한다.
+        let invalid_b64 = "!!!invalid base64!!!";
+        let result = decode_app_key(invalid_b64);
+        assert!(result.is_err());
+        match result {
+            Err(SecretStoreError::Keystore(_)) => {} // 예상된 에러
+            _ => panic!("Expected Keystore error"),
+        }
+    }
+
+    #[test]
+    fn decode_wrong_length_key_fails() {
+        // 32바이트가 아닌 키(예: 16바이트)는 Err을 반환한다.
+        let mut short_key = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut short_key);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(short_key);
+
+        let result = decode_app_key(&b64);
+        assert!(result.is_err());
+        match result {
+            Err(SecretStoreError::Keystore(msg)) if msg.contains("not 32 bytes") => {}
+            _ => panic!("Expected 'not 32 bytes' error, got {:?}", result),
+        }
+    }
+
+    // ===== OS 키스토어 테스트 (#[ignore]로 로컬에서만 실행) =====
 
     // 이 빌드 환경(Linux/WSL)에는 OS 키스토어 데몬(libsecret/Secret Service)이 없어
     // 실제 키스토어를 호출하는 아래 테스트는 여기서 통과할 수 없다.
