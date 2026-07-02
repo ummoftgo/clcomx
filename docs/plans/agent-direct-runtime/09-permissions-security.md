@@ -45,6 +45,10 @@ flowchart TB
         PERSIST["workspace store<br/>sanitize_workspace_for_persist"]
         TB3{{"TB-3: persist 경계<br/>resume 키류 scrub"}}
         DISK[("workspace.json<br/>setting.json<br/>tab_history.json")]
+        SECSTORE["secret_store.rs<br/>AES-256-GCM 재개 id 저장소"]
+        TB5{{"TB-5: 암호화 재개 저장소 경계<br/>OS 키스토어 단일 앱 키 + at-rest 암호화"}}
+        KEYSTORE[("OS 키스토어<br/>(Credential Manager/libsecret)")]
+        RESUMEFILE[("agent-runtime/resume-*.enc<br/>(암호화 blob)")]
     end
 
     subgraph FRONT["Frontend (Svelte, webview — semi-trusted)"]
@@ -66,6 +70,10 @@ flowchart TB
     RT -->|"stdin NDJSON"| PROV
     FRONT -->|"agent_runtime_start params"| TB1 --> RT
     STORE -->|"AgentRuntimeMetadata (15 §7.1)"| PERSIST --> TB3 --> DISK
+    STORE -->|"resume id (providerThreadId/providerSessionId, canResume/canLoad)"| TB5
+    TB5 --> SECSTORE
+    SECSTORE <-->|"단일 앱 키 조회/생성"| KEYSTORE
+    SECSTORE -->|"AES-256-GCM 암호화 blob"| RESUMEFILE
 ```
 
 경계별 책임(정본 위치):
@@ -74,6 +82,7 @@ flowchart TB
 - **TB-2 (provider → backend framing)**: provider stdout은 **JSON-RPC만**, stderr는 **log만**. claude-agent-acp는 `console.*`를 stderr로 redirect해 stdout 청결을 보장한다 (ref-claude-agent-acp §1 "stdout 청결", ref-acp §1 stdout purity MUST). backend는 protocol 의미를 해석하지 않고 framing만 한다 (15 §8.3 주석, `07-tauri-process-runtime.md` §Framing).
 - **TB-3 (메모리 → 디스크)**: `providerSessionId`/`providerThreadId`/`providerResumeToken`을 디스크 직전 scrub. §7, 15 §7.3 정본, `research/codebase-backend.md` §4.2.
 - **TB-4 (store → 화면)**: redaction 적용 + approval option label을 i18n으로 감싸 표시. §5, §3.2.
+- **TB-5 (메모리 → 암호화 재개 저장소, OQ-16 후속)**: cross-restart 하이브리드 복원([`10-persistence-migration.md`](10-persistence-migration.md) §4.4a)이 재개 id(`providerThreadId`/`providerSessionId` + `canResume`/`canLoad`)를 **TB-3(workspace.json)과 별도의 암호화 저장소**에 둔다. `workspace.json` 평문 scrub 경계(TB-3)는 그대로이며, TB-5는 그 경계를 대체하거나 약화하지 않는다 — 재개 id가 흘러가는 목적지가 다를 뿐이다. 상세는 §7.1.
 
 ---
 
@@ -325,6 +334,25 @@ redaction은 로그·transcript·디스크 평문 노출을 막지만, **OS 관�
 > - [x] history upsert/read 경로가 새 resume 키류를 저장하지 않는가(`research/codebase-backend.md` §4.4). 증거: `history` tests의 `upsert_tab_history_does_not_store_resume_tokens`, history record가 `runtimeKind` 외 direct provider id/resume 필드를 보유하지 않는 타입 구조.
 > - [x] 디스크에 기록된 `workspace.json`을 직접 grep해 위 키가 평문으로 없는지 테스트가 있는가(11 수용 기준 연동). 증거: Rust `workspace` tests의 `write_workspace_omits_agent_runtime_secrets_on_disk`.
 > - [x] 메모리 상태(`AgentRuntimeState`)에만 resume 키가 살아있고, emit/snapshot(`AgentRuntimeSnapshot`, 15 §8.1)에는 포함되지 않는가. 증거: `AgentRuntimeSnapshot` Rust/TS 타입은 provider session/thread/resume 필드를 포함하지 않고, 11 §8.5 FE-3/RS-25가 UI metadata strip과 snapshot scrub 경계를 검증한다.
+
+### 7.1 암호화 재개 저장소 경계 (TB-5, OQ-16 후속 구현)
+
+정본은 [`10-persistence-migration.md`](10-persistence-migration.md) §4.4a와 [`oq16-cross-restart-restore-design.md`](oq16-cross-restart-restore-design.md)다. TB-3(위 §7)는 "재개 키를 `workspace.json`에 평문 저장하지 않는다"는 경계였고, OQ-16 후속 구현은 그 경계를 **약화하지 않고 유지한 채** cross-restart 복원을 위해 재개 키를 **별도의 암호화 저장소**에 두는 새 경계(TB-5)를 추가했다. 보안 요점:
+
+- **저장 위치**: `src-tauri/src/features/agent_runtime/secret_store.rs`. `workspace.json`이 아니라 app-state 하위의 별도 파일(세션 handle당 1개)에 저장하며, 파일 내용은 평문 JSON이 아니라 **AES-256-GCM 암호화 blob**이다.
+- **암호화 키**: **세션별 키가 아니라 OS 키스토어(Windows Credential Manager / libsecret, `keyring` crate)의 단일 앱 키 1개**(`clcomx` / `agent-runtime-mkey`)다. 앱 최초 실행 시 32바이트를 `rand::rngs::OsRng`로 생성해 키스토어에 저장하고, 이후 실행은 같은 엔트리를 재사용한다. per-secret keychain entry(세션마다 별도 키)는 과설계로 보고 채택하지 않았다 — 이는 방어적 posture이지 완전한 키 분리는 아니다(키 하나가 모든 세션의 재개 id를 복호화할 수 있음).
+- **저장 대상**: 세션 handle당 `providerThreadId`(Codex) / `providerSessionId`(Claude) + `canResume`/`canLoad`. **`providerResumeToken`은 계속 저장하지 않는다** — 설계 조사에서 어느 adapter도 이 필드를 소비하지 않는 dead 필드로 확인됐고(§ dead 필드, `oq16-cross-restart-restore-design.md` §1), TB-3의 scrub 대상 3필드 중 이 필드만 애초에 저장 후보에서 제외했다.
+- **TB-3과의 관계(경계 불변)**: `workspace.json`에 대한 frontend 보조 마스킹(`sanitizeWorkspaceSnapshotForSave`)과 backend 최종 scrub(`sanitize_workspace_for_persist`)은 **변경되지 않았다**. TB-5는 TB-3이 의도적으로 비워둔 자리(재개 id는 어디에도 평문 저장하지 않는다)에 **별도의, 더 강한 통제(암호화)가 걸린 저장소**를 추가한 것이지, TB-3 경계를 우회하거나 대체한 것이 아니다.
+- **command**: `agent_runtime_save_resume_keys`/`agent_runtime_load_resume_keys`/`agent_runtime_clear_resume_keys`(`src-tauri/src/commands/agent_runtime.rs`). frontend는 `loadResumeKeys`/`saveResumeKeys`/`clearResumeKeys` 래퍼로 호출한다.
+- **실패 처리(graceful degrade, Information disclosure/DoS 방어)**: 키스토어 접근 실패, 키 부재, 복호화 실패(키 회전/손상 등)는 모두 예외로 전파하지 않고 **`Ok(None)`으로 낮춘다**. 상위(`AgentTranscriptSurface`)는 이를 "재개 id 없음"과 동일하게 취급해 §4.4a의 read-only 히스토리 또는 §4.4 fallback으로 낮춘다. 즉 암호화 저장소 장애가 크래시나 무한 대기로 이어지지 않는다.
+- **transcript 캐시와의 구분**: bounded transcript 캐시(`transcript_cache.rs`)는 이 TB-5 대상이 **아니다** — 캐시 파일은 이미 display-redaction을 통과한 non-secret 콘텐츠만 담으므로 평문 JSON으로 저장한다(암호화 불필요). 암호화 대상은 재개 id뿐이다.
+- **GC와의 상호작용**: 탭을 명시적으로 닫을 때(`handleCloseTab`)만 `clearResumeKeys`로 이 저장소의 항목을 지운다. 앱 종료 시에는 오히려 `captureResumeIdsBeforeAppClose`로 보존한다(다음 cold restore에 대비) — TB-5는 "세션 종료"와 "앱 종료"를 GC 관점에서 구분하는 유일한 경계다.
+
+> **구현 시 점검 (§7.1)**
+> - [x] 저장된 파일을 앱 키 없이 직접 읽었을 때(다른 키로 복호화 시도) 재개 id가 복원되지 않는가(무결성/기밀성). 증거: `secret_store.rs` 단위 테스트 `resume_keys_encrypt_decrypt_round_trip`이 왕복 성공과 함께 "다른 키로는 복호화 실패"를 assert한다. 저장 파일 자체는 AES-256-GCM ciphertext이므로 평문 JSON이 디스크에 남지 않는다(구조상 보장, `encrypt_resume_keys`/`decrypt_resume_keys` 구현).
+> - [x] 파일이 손상되었거나 복호화에 실패했을 때 `load_resume_keys`가 panic/Err 전파 대신 `Ok(None)`류 graceful 폴백으로 낮아지는가. 증거: `secret_store.rs` 단위 테스트 `corrupt_blob_loads_as_none_not_error`(유효하지 않은 blob → `Ok(None)`). 키스토어 접근 자체가 불가한 경우도 `load_resume_keys` 구현이 `Err(_) => return Ok(None)`으로 동일하게 낮춘다(코드 주석 "키스토어 접근 불가 → 폴백"). 이 경로를 exercise하는 `save_load_clear_resume_keys_by_handle`/`app_key_is_32_bytes_and_stable_across_calls`는 실제 OS 키스토어 데몬(Windows Credential Manager/libsecret)이 필요해 `#[ignore]`로 표시돼 있고 **이 WSL/Linux 개발 환경에서는 실행되지 않는다** — 로컬/Windows에서 별도 확인이 필요하다(코드 주석에 명시).
+> - [x] `providerResumeToken`이 이 저장소에도 저장되지 않는가(TB-3 scrub 대상과 동일 필드를 여기서도 배제). 증거: `ResumeKeys` struct(`secret_store.rs`)는 `provider_thread_id`/`provider_session_id`/`can_resume`/`can_load` 4필드만 가지며 resume token 필드가 애초에 존재하지 않는다(타입 구조로 배제, 우연한 누락이 아님).
+> - [x] `workspace.json` 저장 경로(TB-3)가 이 TB-5 도입 이후에도 재개 id 3필드를 여전히 scrub하는가(회귀 없음). 증거: §7 기존 점검(`sanitize_workspace_for_persist_strips_runtime_and_resume_handles` 등)은 TB-5 구현 과정에서 수정되지 않았고 그대로 통과한다 — TB-5는 `secret_store.rs`/`transcript_cache.rs`라는 새 모듈로만 추가됐다.
 
 ---
 

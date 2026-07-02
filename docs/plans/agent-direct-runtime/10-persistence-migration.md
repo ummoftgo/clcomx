@@ -134,18 +134,46 @@ transcript 본문(메시지/tool call/diff)은 1차 범위에서 **저장하지 
 
 ### 4.4 복원 불가 시 처리 (fallback)
 
-cold restore에서 재개 키가 없거나(scrub됨), provider가 resume/load를 모두 미지원(`canResume==false && canLoad==false`)이거나, replay/resume 호출이 에러로 실패하면:
+cold restore에서 재개 키가 없거나(암호화 저장소에도 없음/복호화 실패), provider가 resume/load를 모두 미지원(`canResume==false && canLoad==false`)이거나, replay/resume 호출이 에러로 실패하면:
 
 1. transcript는 빈 새 세션으로 시작하되, **세션 탭은 유지**한다(사용자 작업 컨텍스트 보존). 헤더에 "이전 대화를 복원할 수 없습니다" 류 locale 메시지 표시([`11`](11-testing-acceptance.md) FE-24b/FE-24c, i18n key). `AgentTranscriptSurface`는 provider id가 scrub된 경우 `resumeSession`을 건너뛰고, provider `resumeSession`/load 호출이 실패한 경우 실패 controller를 정리한 뒤 새 `startSession`으로 낮춘다.
 2. 새 direct runtime spawn 자체가 실패하면 §4.6 fallback 선택지를 제시.
+3. **§4.4a와의 관계**: 위 1은 "재개 키가 아예 없거나 resume이 실패했고 캐시도 없는" 순수 fallback이다. bounded transcript 캐시(§4.4a)가 있으면 이 fallback 대신 §4.4a의 read-only 히스토리 경로로 낮춘다 — 사용자에게 빈 화면보다 지난 대화를 보여주는 쪽을 우선한다.
+
+### 4.4a 하이브리드 복원 (OQ-16 후속 구현, `oq16-cross-restart-restore-design.md`/`-plan.md`)
+
+§4.5에서 서술한 "v1은 cross-restart direct 복원을 지원하지 않는다"는 이후 **하이브리드 복원**으로 대체 구현됐다([`13`](13-risks-open-questions.md) OQ-16 "후속 구현됨"). 설계 원문은 [`oq16-cross-restart-restore-design.md`](oq16-cross-restart-restore-design.md), 작업 분해는 [`oq16-cross-restart-restore-plan.md`](oq16-cross-restart-restore-plan.md)다. 이 절은 그 구현이 §4의 결정 트리·scrub 경계와 어떻게 맞물리는지만 요약한다.
+
+**핵심 아이디어**: scrub 경계(§6)는 그대로 두되(`workspace.json`에는 여전히 재개 id를 평문 저장하지 않음), 재개 id는 **별도 암호화 저장소**에, transcript는 **bounded 캐시 파일**에 각각 저장해 cold restore 시 즉시 표시 + 가능하면 live resume으로 이어간다.
+
+**신규 컴포넌트**:
+
+- **암호화 재개 id 저장소** (`src-tauri/src/features/agent_runtime/secret_store.rs`): OS 키스토어(`keyring` crate)에 둔 **단일 앱 키 1개**(`clcomx`/`agent-runtime-mkey`, 세션별 키 아님)로 AES-256-GCM at-rest 암호화한다. 저장 단위는 세션 handle당 `providerThreadId`/`providerSessionId` + `canResume`/`canLoad`이며, `providerResumeToken`은 **여전히 저장하지 않는다**(dead 필드, scrub 유지). command: `agent_runtime_save_resume_keys`/`agent_runtime_load_resume_keys`/`agent_runtime_clear_resume_keys`(`src-tauri/src/commands/agent_runtime.rs`).
+- **bounded transcript 캐시** (`src-tauri/src/features/agent_runtime/transcript_cache.rs` 파일 IO + `src/lib/features/agent-runtime/service/transcript-cache.ts` 직렬화): `TranscriptModel`을 residency 윈도우(§4.7, [`04`](04-normalized-agent-model.md) §3.7) 범위로 bound해 Map↔array 직렬화하고, tombstone 구간은 제외하며 저장 전 display-redaction을 적용한다(비밀 비포함). command: `agent_runtime_save_transcript_cache`/`agent_runtime_load_transcript_cache`/`agent_runtime_clear_transcript_cache`. 저장은 디바운스해 IO 빈도를 낮춘다.
+
+**복원 흐름** (`AgentTranscriptSurface.svelte`):
+
+1. 탭 hydrate 시 캐시가 있으면 **즉시** `store.hydrateReadOnly(model)`로 read-only 렌더한다(프로세스 spawn 없음).
+2. 실제 resume/새 process spawn은 **탭이 처음 화면에 보일 때**(`props.visible` 최초 `true` 전이, 정확히 1회)로 **지연**한다 — boot 시 모든 direct 탭을 동시에 resume해 다중 세션 동시 복원 AppHang을 유발하지 않기 위함이다(예약된 후속 "다중 세션 동시 복원 AppHang 수정" 작업과 지연 원칙을 공유한다).
+3. 지연된 시점에 `loadResumeKeys(sessionId)`로 암호화 저장소에서 재개 id를 복호화해 `buildResumeConfig`/`isRestoreUnavailable`(§4.2와 동일 경로)에 주입한다. **workspace.json의 scrub된 metadata가 아니라 암호화 저장소 값을 재개 id 소스로 쓴다.**
+4. **리컨실리에이션**:
+   - resume이 **권위 replay로 성공**하면 `store.discardReadOnlyHydration()`으로 캐시를 비우고 replay로 재구성한다(캐시-replay 중복 없음). 세션은 live로 전환되어 그대로 이어갈 수 있다.
+   - resume이 **미지원**(`canResume==false && canLoad==false`)이거나 재개 id 자체가 없는데 **캐시는 존재**하면, `historyReadOnly` notice로 캐시를 read-only 히스토리로 유지한다.
+   - resume **RPC가 실패**하면 §4.4의 기존 fallback(실패 controller 정리 → fresh start + `restoreUnavailable` notice)을 그대로 따른다.
+
+**[중요] `historyReadOnly`는 composer를 잠그지 않는다**: `historyReadOnly` notice는 "이전 대화를 읽기 전용으로 보여준다"는 뜻이지 입력을 막는다는 뜻이 아니다. 이 notice가 뜬 아래에서는 **새 fresh 세션이 정상적으로 시작**되고, 그 fresh 세션의 시작이 끝나면(store status가 `ready`/`idle`/`running`) composer는 활성화되어 사용자가 바로 이어 입력할 수 있다. 즉 "이어가려면 새 세션"의 실제 동작은 "read-only 히스토리 아래 새 세션이 곧바로 열려 있다"이며, composer가 비활성인 구간은 그 fresh 세션이 아직 시작 중인 짧은 순간뿐이다(§4.4a 캐시 유무와 무관하게 항상 있는 일반적인 세션 시작 지연).
+
+**탭 삭제 GC**: 사용자가 direct 세션 탭을 **명시적으로 닫을 때만**(`App.svelte::handleCloseTab` → `session-lifecycle-controller.ts`) 암호화 재개 id(`clearResumeKeys`)와 transcript 캐시(`clearTranscriptCache`)를 정리한다. 반대로 **앱 종료 경로**(`window-close-orchestration-controller.ts`)는 `captureResumeIdsBeforeAppClose`로 재개 id를 **보존**해 다음 cold restore에 대비한다 — teardown(webview reload/컴포넌트 destroy 등)에서는 GC를 하지 않는다. "탭을 닫는다"와 "앱을 끈다"를 GC 관점에서 반대로 처리하는 것이 의도된 동작이다.
+
+**E2E**: `e2e/agent-runtime/agent-runtime.test.ts`에 E2E-13a(캐시 즉시 렌더 + resume 성공 시 이어가기)와 E2E-13b(resume 미지원 시 read-only 히스토리 + composer는 fresh 세션 시작 후 사용 가능)를 추가했다. 두 테스트는 **작성·통과 확인은 로컬에서 했으나 Windows E2E 러너에서는 아직 실행하지 않았다**(이 개발 환경 제약) — 실제 Windows app-boundary 회귀 확인은 남은 작업이다.
 
 ### 4.5 scrub와 cold restore의 상호작용 (중요한 함의)
 
-§6 scrub 정책상 `providerSessionId`/`providerThreadId`/`providerResumeToken`은 **디스크에 저장되지 않는다**. 따라서:
+§6 scrub 정책상 `providerSessionId`/`providerThreadId`/`providerResumeToken`은 **`workspace.json` 디스크에 저장되지 않는다**. 이 scrub 경계 자체는 §4.4a 하이브리드 복원 구현 이후에도 **변하지 않았다** — 재개 id는 workspace.json이 아니라 §4.4a의 별도 암호화 저장소로 옮겨졌을 뿐이다. 따라서:
 
 - **메모리 내 세션(앱 실행 중)**: `WorkspaceState`의 메모리 snapshot에는 scrub 전 값이 살아 있으므로(디스크 저장 직전에만 scrub, `research/codebase-backend.md` §4.2), 같은 실행 동안의 탭 이동/창 이동/late-attach는 정상 복원된다.
-- **앱 재시작 후 cold restore**: 디스크에 재개 키가 없으므로 §4.2 트리는 사실상 "재개 불가" 경로로 빠진다 → §4.4. 즉 **1차 범위에서 앱 재시작 후 과거 direct 대화 복원은 기본적으로 불가**하며, 이는 PTY resume token이 재시작 후에도 복원 안 되는 현 동작과 일관적이다(PTY도 scrub).
-- v1 결정: 앱 재시작 후 direct 대화 복원은 **지원하지 않는다**([`13`](13-risks-open-questions.md) OQ-16 해소). 재개 키를 디스크에 저장하지 않는 scrub 경계를 우선하며, scrub된 cold restore metadata는 §4.4 복원 불가 notice + 새 direct start로 처리한다. 앱 재시작 후 direct 복원을 원하면 재개 키를 (a) OS secret store에 저장하거나 (b) provider 자체 session store에 의존(provider가 sessionId만으로 최신 세션을 찾을 수 있는지)하는 별도 후속 scope로 설계해야 한다.
+- **앱 재시작 후 cold restore(v1 원안)**: 디스크(`workspace.json`)에 재개 키가 없으므로, workspace.json만 보면 §4.2 트리는 "재개 불가" 경로로 빠진다 → §4.4. v1 원안 결정은 앱 재시작 후 direct 대화 복원을 **지원하지 않는 것**이었고, 이는 PTY resume token이 재시작 후에도 복원 안 되는 현 동작과 일관적이었다(PTY도 scrub).
+- **후속 구현(하이브리드, §4.4a)**: v1 원안의 위 결정은 [`13`](13-risks-open-questions.md) OQ-16에서 **"후속 구현됨"으로 갱신**됐다. §4.4a의 암호화 재개 id 저장소 + bounded transcript 캐시 + 탭 포커스 지연 resume 조합으로, cross-restart direct 대화는 (a) 캐시로 즉시 read-only 표시되고 (b) provider가 지원하면 live resume으로 이어갈 수 있게 됐다. **scrub 경계 자체(§6, workspace.json에 재개 id 평문 미저장)는 그대로 유지**하면서, "복원을 원하면 재개 키를 OS secret store에 저장"이라는 당시 남겨둔 후속 설계 방향을 그대로 채택한 것이다.
 
 ### 4.6 direct runtime 실패 시 fallback 선택지
 
@@ -275,6 +303,7 @@ scrub 비대상(평문 저장 OK): `runtimeKind`, `provider`, `lastTurnId`, `pro
 | transcript view-model 정본(`TranscriptTurnResidency`/`TranscriptModel`)·scrollback affordance | [`08-ui-composition.md`](08-ui-composition.md) | §5, §7.2 |
 | 격리 read-only replay 뷰 구현(§4.7) | [`12-implementation-workstreams.md`](12-implementation-workstreams.md) | T5.6 |
 | `thread/read(includeTurns)` full snapshot 실측 | [`13-risks-open-questions.md`](13-risks-open-questions.md) | OQ-54 |
+| OQ-16 하이브리드 복원 설계/작업 분해(§4.4a 근거) | [`oq16-cross-restart-restore-design.md`](oq16-cross-restart-restore-design.md) / [`oq16-cross-restart-restore-plan.md`](oq16-cross-restart-restore-plan.md) | 전체 |
 | 영속화 코드 현실(scrub·default·merge) | [`research/codebase-backend.md`](research/codebase-backend.md) | §4, §10 |
 | frontend 타입·workspace.ts·통합 체크리스트 | [`research/codebase-frontend.md`](research/codebase-frontend.md) | §4.3, §8, §10 |
 | 보안·redaction·debug 정책 | [`09-permissions-security.md`](09-permissions-security.md) | 전체 |
