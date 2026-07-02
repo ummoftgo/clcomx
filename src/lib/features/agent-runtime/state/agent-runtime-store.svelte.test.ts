@@ -343,4 +343,65 @@ describe("agent-runtime-store — hydrateReadOnly(OQ-16 cold restart cache hydra
     expect(s.status).toBe("starting");
     expect(s.pendingApprovals).toEqual([]);
   });
+
+  it("marks isReadOnlyHydrated after a read-only hydrate(Task 10 dedup/affordance gate)", () => {
+    const s = store();
+    expect(s.isReadOnlyHydrated).toBe(false);
+
+    const model: TranscriptModel = {
+      visibleItemIds: ["cached-1"],
+      itemVersions: {},
+      itemsById: new Map([
+        [
+          "cached-1",
+          {
+            type: "message" as const,
+            id: "cached-1",
+            role: "agent" as const,
+            content: [{ type: "text" as const, text: "cached history" }],
+            streaming: false,
+            ref: codexRef({ itemId: "cached-1" }),
+          },
+        ],
+      ]),
+      turnsById: new Map(),
+      tombstones: { lru: [], droppedLateEventCount: 0 },
+    };
+    s.hydrateReadOnly(model);
+
+    expect(s.isReadOnlyHydrated).toBe(true);
+  });
+
+  it("discardReadOnlyHydration empties the transcript and clears the hydrated flag(Task 10 resume dedup)", () => {
+    const s = store();
+    const model: TranscriptModel = {
+      visibleItemIds: ["cached-1"],
+      itemVersions: {},
+      itemsById: new Map([
+        [
+          "cached-1",
+          {
+            type: "message" as const,
+            id: "cached-1",
+            role: "agent" as const,
+            content: [{ type: "text" as const, text: "cached history" }],
+            streaming: false,
+            ref: codexRef({ itemId: "cached-1" }),
+          },
+        ],
+      ]),
+      turnsById: new Map(),
+      tombstones: { lru: [], droppedLateEventCount: 0 },
+    };
+    s.hydrateReadOnly(model);
+    expect(s.isReadOnlyHydrated).toBe(true);
+
+    s.discardReadOnlyHydration();
+
+    // 권위 replay가 처음부터 재구성할 수 있도록 캐시 body를 빈 모델로 비운다.
+    expect(s.visibleItemIds).toEqual([]);
+    expect(s.getItem("cached-1")).toBeUndefined();
+    expect(s.getTranscript().itemsById.size).toBe(0);
+    expect(s.isReadOnlyHydrated).toBe(false);
+  });
 });

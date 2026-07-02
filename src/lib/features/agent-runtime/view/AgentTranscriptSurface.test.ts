@@ -1020,6 +1020,140 @@ describe("AgentTranscriptSurface", () => {
     });
   });
 
+  it("OQ-16 Task 10: authoritative resume replay replaces cached history without duplicating items", async () => {
+    const { port, emit } = makeFakePort({ canLoad: true });
+    // resume(replay=true) 성공 경로: resumeSession이 캐시와 같은 provider item id로 권위 replay를 emit한다.
+    port.resumeSession = vi.fn().mockImplementation(async () => {
+      emit({
+        type: "agent_message",
+        ref: {
+          provider: "codex",
+          threadId: "thread-1",
+          turnId: "replayed-turn",
+          itemId: "cached-1",
+        },
+        content: [{ type: "text", text: "authoritative replay line" }],
+        mode: "replace",
+      } as AgentEvent);
+      return {
+        ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+        canResume: true,
+        canLoad: true,
+      } satisfies SessionStartResult;
+    });
+
+    const cachedSnapshot: TranscriptCacheSnapshot = {
+      schemaVersion: 1,
+      visibleItemIds: ["cached-1"],
+      items: [
+        [
+          "cached-1",
+          {
+            type: "message",
+            id: "cached-1",
+            role: "agent",
+            content: [{ type: "text", text: "stale cached line" }],
+            streaming: false,
+            ref: { provider: "codex", threadId: "thread-1" },
+          },
+        ],
+      ],
+      turns: [],
+    };
+    const cachedModel: TranscriptModel = {
+      visibleItemIds: ["cached-1"],
+      itemVersions: {},
+      itemsById: new Map(cachedSnapshot.items),
+      turnsById: new Map(),
+      tombstones: { lru: [], droppedLateEventCount: 0 },
+    };
+    transcriptCacheMocks.loadTranscriptCache.mockResolvedValue(cachedSnapshot);
+    transcriptCacheMocks.deserializeTranscript.mockReturnValue(cachedModel);
+
+    const { findByText, queryAllByText, queryByText } = render(AgentTranscriptSurface, {
+      props: baseProps(port, {
+        agentRuntime: {
+          sessionRuntimeKind: "direct-codex",
+          provider: "codex",
+          providerSessionId: "session-tree-1",
+          providerThreadId: "thread-1",
+          canResume: true,
+          canLoad: true,
+        },
+      }),
+    });
+
+    // 권위 replay 내용이 렌더되고, discard로 인해 캐시 잔여(stale)는 남지 않는다.
+    await findByText("authoritative replay line");
+    expect(queryByText("stale cached line")).toBeNull();
+    // 같은 item id는 upsert로 dedup되어 정확히 1개만 렌더된다(중복 없음).
+    expect(queryAllByText("authoritative replay line")).toHaveLength(1);
+
+    await waitFor(() => {
+      expect(port.resumeSession).toHaveBeenCalledOnce();
+    });
+    expect(port.startSession).not.toHaveBeenCalled();
+  });
+
+  it("OQ-16 Task 10: shows a read-only history affordance and keeps cache when resume is unsupported", async () => {
+    const { port } = makeFakePort();
+    // resume 소스 없음(scrub + 암호화 저장소도 없음) → buildResumeConfig가 undefined.
+    resumeStoreMocks.loadResumeKeys.mockResolvedValue(null);
+
+    const cachedSnapshot: TranscriptCacheSnapshot = {
+      schemaVersion: 1,
+      visibleItemIds: ["cached-1"],
+      items: [
+        [
+          "cached-1",
+          {
+            type: "message",
+            id: "cached-1",
+            role: "agent",
+            content: [{ type: "text", text: "read-only cached line" }],
+            streaming: false,
+            ref: { provider: "codex", threadId: "thread-1" },
+          },
+        ],
+      ],
+      turns: [],
+    };
+    const cachedModel: TranscriptModel = {
+      visibleItemIds: ["cached-1"],
+      itemVersions: {},
+      itemsById: new Map(cachedSnapshot.items),
+      turnsById: new Map(),
+      tombstones: { lru: [], droppedLateEventCount: 0 },
+    };
+    transcriptCacheMocks.loadTranscriptCache.mockResolvedValue(cachedSnapshot);
+    transcriptCacheMocks.deserializeTranscript.mockReturnValue(cachedModel);
+
+    const { findByTestId, findByText, queryByTestId } = render(AgentTranscriptSurface, {
+      props: baseProps(port, {
+        agentRuntime: {
+          sessionRuntimeKind: "direct-codex",
+          provider: "codex",
+          // scrub되어 provider id 없음 → resume 불가.
+          canResume: true,
+          canLoad: true,
+        },
+      }),
+    });
+
+    // 캐시 히스토리는 read-only로 유지되고, historyReadOnly affordance notice가 표시된다.
+    await findByText("read-only cached line");
+    const notice = await findByTestId(TEST_IDS.agentHistoryReadOnlyNotice);
+    expect(notice.textContent).toContain("read-only");
+
+    // resume 소스가 없으므로 새 fresh 세션은 진행하되, 캐시를 지우지 않는다.
+    await waitFor(() => {
+      expect(port.startSession).toHaveBeenCalledOnce();
+    });
+    expect(port.resumeSession).not.toHaveBeenCalled();
+    // historyReadOnly가 restoreUnavailable을 대신하므로 복원 불가 notice는 뜨지 않는다.
+    expect(queryByTestId(TEST_IDS.agentRestoreUnavailableNotice)).toBeNull();
+  });
+
   it("OQ-16 Task 8: ignores a rejected cache load and still proceeds to resume", async () => {
     const { port } = makeFakePort();
     transcriptCacheMocks.loadTranscriptCache.mockRejectedValue(new Error("disk read error"));

@@ -93,6 +93,18 @@ export interface AgentRuntimeStore {
    * status/pending approval/audit 등 다른 상태는 건드리지 않는다. 권위 히스토리는 이후 provider replay다.
    */
   hydrateReadOnly(model: TranscriptModel): void;
+  /**
+   * cold restart에서 캐시가 read-only로 주입됐는지 여부(OQ-16 Task 10).
+   * dedup(권위 replay가 캐시를 대체) / read-only 히스토리 affordance 게이트로 surface가 참조한다.
+   */
+  readonly isReadOnlyHydrated: boolean;
+  /**
+   * read-only hydrate된 캐시 본문을 비운다(OQ-16 Task 10 resume dedup).
+   * 권위 replay(session/load) 직전에 호출해 캐시를 빈 모델로 대체함으로써, replay가 transcript를
+   * 처음부터 재구성하게 하고 캐시 item과 replay item이 중복 렌더되지 않게 한다. transcript body와
+   * hydrated flag만 초기화하며 status/pending 등 다른 상태는 건드리지 않는다.
+   */
+  discardReadOnlyHydration(): void;
   /** 사용자/자동 approval 응답을 기록한다(04 §4.1). 정확히 1회 멱등. */
   respondApproval(decision: ApprovalDecision, decidedBy?: ApprovalDecidedBy): void;
   /** turn cancel cleanup(04 §4.2): pending approval을 cancelled로 정확히 1회 닫는다. */
@@ -132,6 +144,8 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
 
   // plain(비반응형) — body·turn·tombstone은 TranscriptModel에 둔다(heap 경계 대상).
   private transcript: TranscriptModel = createEmptyTranscriptModel();
+  // OQ-16 Task 10: cold restart 캐시가 read-only로 주입됐는지 여부(dedup/affordance 게이트).
+  private readOnlyHydrated = false;
   private readonly pending = new PendingApprovalTable();
   private readonly audit = new ApprovalAuditTrail();
 
@@ -189,6 +203,22 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
    */
   hydrateReadOnly(model: TranscriptModel): void {
     this.transcript = model;
+    this.readOnlyHydrated = true;
+    this.syncReactiveSurface();
+  }
+
+  get isReadOnlyHydrated(): boolean {
+    return this.readOnlyHydrated;
+  }
+
+  /**
+   * read-only hydrate된 캐시 본문을 빈 모델로 비운다(OQ-16 Task 10 resume dedup).
+   * 권위 replay 직전에 호출해 캐시 item이 replay item과 중복되지 않도록 한다 — transcript body와
+   * hydrated flag만 초기화하고 반응형 표면만 동기화하며 status/pending 등 다른 상태는 유지한다.
+   */
+  discardReadOnlyHydration(): void {
+    this.transcript = createEmptyTranscriptModel();
+    this.readOnlyHydrated = false;
     this.syncReactiveSurface();
   }
 

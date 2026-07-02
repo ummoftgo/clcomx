@@ -45,6 +45,7 @@ describe("i18n key parity (en/ko 1:1)", () => {
       "agentRuntime.fallback.legacyNotice",
       "agentRuntime.replay.affordance",
       "agentRuntime.replay.truncated",
+      "agentRuntime.transcript.historyReadOnly",
       "agentRuntime.command.stdoutLabel",
       "agentRuntime.diff.updated",
     ];

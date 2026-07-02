@@ -413,6 +413,7 @@ const en = {
       agentLabel: "Agent",
       streaming: "Streaming…",
       restoreUnavailable: "Previous conversation could not be restored.",
+      historyReadOnly: "Showing previous conversation (read-only). Continue below in this new session.",
     },
     editor: {
       switchToTranscript: "Back to transcript",

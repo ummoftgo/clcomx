@@ -368,6 +368,10 @@
   // session/load replay는 protocol 초기화와 구분해 사용자에게 "복원 중"으로 표시한다(08 §6.6).
   let resumeReplayPending = $state(false);
   let restoreUnavailable = $state(false);
+  // OQ-16 Task 10: resume 소스가 없어(id 없음/미지원) 이어갈 수 없지만 캐시 히스토리가 있는 경우,
+  // 캐시를 read-only로 유지하며 "이전 대화는 읽기 전용, 이 새 세션에서 이어감" affordance를 표시한다.
+  // 이때 restoreUnavailable(빈 새 세션 notice)는 세우지 않는다 — historyReadOnly가 대신한다.
+  let historyReadOnly = $state(false);
 
   $effect(() => {
     if (props.agentRuntime?.canLoad !== undefined) {
@@ -437,8 +441,23 @@
       onSessionTitleChange: (title) => publishSessionTitleChange(title, attemptId),
     });
     controller = next;
-    restoreUnavailable = isRestoreUnavailable(restoreMeta);
+    // OQ-16 Task 10: resume 소스가 없고(id 없음/미지원) 캐시 히스토리가 있으면 캐시를 read-only로
+    // 유지하며 historyReadOnly affordance를 세운다(restoreUnavailable 대신). 캐시가 없던 미지원 케이스는
+    // 기존 restoreUnavailable 경로 그대로 둔다.
+    if (!resume && store.isReadOnlyHydrated) {
+      historyReadOnly = true;
+      restoreUnavailable = false;
+    } else {
+      historyReadOnly = false;
+      restoreUnavailable = isRestoreUnavailable(restoreMeta);
+    }
     resumeReplayPending = resume?.replay === true;
+    // OQ-16 Task 10: 권위 replay가 도착 예정(resume.replay)이면 start 직전에 read-only 캐시를 비워
+    // replay가 transcript를 처음부터 재구성하게 한다(같은 provider item id의 중복 렌더 방지). replay가
+    // 없는 재개(resume.replay===false)는 provider가 히스토리를 재방출하지 않으므로 캐시를 유지한다.
+    if (resume?.replay === true && store.isReadOnlyHydrated) {
+      store.discardReadOnlyHydration();
+    }
     try {
       const result = await next.start({
         sessionHandle: props.sessionId,
@@ -758,6 +777,18 @@
         data-testid={TEST_IDS.agentRestoreUnavailableNotice}
       >
         {$t("agentRuntime.transcript.restoreUnavailable")}
+      </div>
+    {/if}
+
+    {#if historyReadOnly}
+      <!-- OQ-16 Task 10: resume 불가(id 없음/미지원) + 캐시 존재 → 이전 대화를 read-only로 유지하고
+           이 새 세션에서 아래로 이어가도록 안내하는 정보성 notice(v1은 버튼 없음, 정보 표시만). -->
+      <div
+        class="restore-unavailable-notice"
+        role="status"
+        data-testid={TEST_IDS.agentHistoryReadOnlyNotice}
+      >
+        {$t("agentRuntime.transcript.historyReadOnly")}
       </div>
     {/if}
 

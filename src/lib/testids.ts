@@ -84,6 +84,7 @@ export const TEST_IDS = {
   agentRuntimeFallbackRetry: "agent-runtime-fallback-retry",
   agentRuntimeFallbackCancel: "agent-runtime-fallback-cancel",
   agentRestoreUnavailableNotice: "agent-restore-unavailable-notice",
+  agentHistoryReadOnlyNotice: "agent-history-read-only-notice",
   legacyPtyPermissionNotice: "legacy-pty-permission-notice",
   agentReplayPanel: "agent-replay-panel",
   agentReplayClose: "agent-replay-close",

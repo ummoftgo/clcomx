@@ -413,6 +413,7 @@ const ko = {
       agentLabel: "에이전트",
       streaming: "스트리밍 중…",
       restoreUnavailable: "이전 대화를 복원할 수 없습니다.",
+      historyReadOnly: "이전 대화 (읽기 전용). 이 새 세션에서 아래로 이어집니다.",
     },
     editor: {
       switchToTranscript: "트랜스크립트로 돌아가기",
