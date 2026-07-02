@@ -6,8 +6,11 @@
 //!
 //! 앱 키의 난수는 `aes-gcm`이 아니라 [`rand::rngs::OsRng`]에서 얻는다.
 
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::Engine;
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 
 const KEYSTORE_SERVICE: &str = "clcomx";
 const KEYSTORE_USER: &str = "agent-runtime-mkey";
@@ -71,6 +74,60 @@ pub fn load_or_create_app_key() -> Result<[u8; 32], SecretStoreError> {
     }
 }
 
+/// 세션별 재개 식별자(암호화 저장 대상).
+///
+/// `providerResumeToken`은 상위 설계에서 dead 필드로 확인되어 포함하지 않는다.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeKeys {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+    pub can_resume: bool,
+    pub can_load: bool,
+}
+
+/// `ResumeKeys`를 JSON 직렬화 후 AES-256-GCM으로 암호화한다.
+///
+/// 출력 형식은 `nonce(12바이트) || ciphertext`이다. nonce는 매 호출마다
+/// `rand::rngs::OsRng`로 새로 생성한다(앱 키 생성과 동일한 난수원 사용, Task 1과 일관).
+///
+/// # 오류
+/// - JSON 직렬화 실패 → `SecretStoreError::Serde(...)`
+/// - AES-GCM 암호화 실패 → `SecretStoreError::Crypto(...)`
+pub fn encrypt_resume_keys(rk: &ResumeKeys, key: &[u8; 32]) -> Result<Vec<u8>, SecretStoreError> {
+    let plaintext = serde_json::to_vec(rk).map_err(|e| SecretStoreError::Serde(e.to_string()))?;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let mut nonce_bytes = [0u8; 12];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    let ct = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_ref())
+        .map_err(|e| SecretStoreError::Crypto(e.to_string()))?;
+    let mut out = Vec::with_capacity(12 + ct.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+/// `nonce(12바이트) || ciphertext` 형식의 블롭을 복호화해 `ResumeKeys`로 역직렬화한다.
+///
+/// # 오류
+/// - 블롭 길이가 12바이트 미만(nonce를 담을 수 없음) → `SecretStoreError::Crypto(...)`
+/// - AES-GCM 복호화 실패(키 불일치·변조 등 무결성 위반) → `SecretStoreError::Crypto(...)`
+/// - JSON 역직렬화 실패 → `SecretStoreError::Serde(...)`
+pub fn decrypt_resume_keys(blob: &[u8], key: &[u8; 32]) -> Result<ResumeKeys, SecretStoreError> {
+    if blob.len() < 12 {
+        return Err(SecretStoreError::Crypto("blob too short".into()));
+    }
+    let (nonce_bytes, ct) = blob.split_at(12);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce_bytes), ct)
+        .map_err(|e| SecretStoreError::Crypto(e.to_string()))?;
+    serde_json::from_slice(&plaintext).map_err(|e| SecretStoreError::Serde(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +185,23 @@ mod tests {
         let k2 = load_or_create_app_key().expect("second");
         assert_eq!(k1.len(), 32);
         assert_eq!(k1, k2);
+    }
+
+    // ===== ResumeKeys 암·복호화 테스트 (고정 키, 키스토어 비의존) =====
+
+    #[test]
+    fn resume_keys_encrypt_decrypt_round_trip() {
+        let key = [7u8; 32];
+        let rk = ResumeKeys {
+            provider_thread_id: Some("th_1".into()),
+            provider_session_id: None,
+            can_resume: true,
+            can_load: true,
+        };
+        let blob = encrypt_resume_keys(&rk, &key).expect("encrypt");
+        let back = decrypt_resume_keys(&blob, &key).expect("decrypt");
+        assert_eq!(rk, back);
+        // 다른 키로는 복호화 실패(무결성).
+        assert!(decrypt_resume_keys(&blob, &[9u8; 32]).is_err());
     }
 }
