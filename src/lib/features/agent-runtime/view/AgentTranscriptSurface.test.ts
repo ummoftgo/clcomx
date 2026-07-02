@@ -13,6 +13,7 @@ import { TEST_IDS } from "../../../testids";
 import type { AgentEvent } from "../contracts/normalized";
 import type { AgentRuntimePort, SessionStartResult } from "../contracts/runtime-port";
 import type { ReplayLoader } from "../service/runtime-replay";
+import type { ResumeKeys } from "../service/resume-store";
 import type { TranscriptCacheSnapshot } from "../service/transcript-cache";
 import type { TranscriptModel } from "../contracts/transcript";
 import { resetRegistry } from "../controller/agent-event-router";
@@ -27,8 +28,12 @@ vi.mock("../../../editors", () => ({
 }));
 
 // OQ-16: 진행 중 재개 id·transcript 캐시 저장 훅 검증용 mock(Task 4/5/6 서비스).
+// Task 9: cold restart resume 소스는 암호화 저장소(loadResumeKeys)이므로 로드 mock도 함께 둔다(기본 null).
 const resumeStoreMocks = vi.hoisted(() => ({
   saveResumeKeys: vi.fn().mockResolvedValue(undefined),
+  loadResumeKeys: vi.fn<(sessionHandle: string) => Promise<ResumeKeys | null>>(() =>
+    Promise.resolve(null),
+  ),
 }));
 const transcriptCacheMocks = vi.hoisted(() => ({
   saveTranscriptCache: vi.fn().mockResolvedValue(undefined),
@@ -47,6 +52,7 @@ const transcriptCacheMocks = vi.hoisted(() => ({
 
 vi.mock("../service/resume-store", () => ({
   saveResumeKeys: resumeStoreMocks.saveResumeKeys,
+  loadResumeKeys: resumeStoreMocks.loadResumeKeys,
 }));
 vi.mock("../service/transcript-cache", () => ({
   saveTranscriptCache: transcriptCacheMocks.saveTranscriptCache,
@@ -116,6 +122,8 @@ describe("AgentTranscriptSurface", () => {
     editorMocks.searchSessionFiles.mockResolvedValue({ rootDir: "/w", results: [] });
     resumeStoreMocks.saveResumeKeys.mockReset();
     resumeStoreMocks.saveResumeKeys.mockResolvedValue(undefined);
+    resumeStoreMocks.loadResumeKeys.mockReset();
+    resumeStoreMocks.loadResumeKeys.mockResolvedValue(null);
     transcriptCacheMocks.saveTranscriptCache.mockReset();
     transcriptCacheMocks.saveTranscriptCache.mockResolvedValue(undefined);
     transcriptCacheMocks.serializeTranscript.mockReset();
@@ -1033,6 +1041,105 @@ describe("AgentTranscriptSurface", () => {
     await waitFor(() => {
       expect(port.resumeSession).toHaveBeenCalledOnce();
     });
+  });
+
+  it("OQ-16 Task 9: defers process spawn until the restored tab first becomes visible, then starts exactly once", async () => {
+    const { port } = makeFakePort();
+    resumeStoreMocks.loadResumeKeys.mockResolvedValue({
+      providerThreadId: "thread-1",
+      providerSessionId: "session-tree-1",
+      canResume: true,
+      canLoad: true,
+    });
+    const coldRestartProps = {
+      agentRuntime: {
+        sessionRuntimeKind: "direct-codex" as const,
+        provider: "codex" as const,
+        // cold restart에선 provider id가 scrub된다 — resume 소스는 loadResumeKeys여야 한다.
+        canResume: true,
+        canLoad: true,
+      },
+    };
+    // 비활성 탭(visible=false)으로 마운트 → boot에서 프로세스를 띄우지 않는다(AppHang 방지).
+    const view = render(AgentTranscriptSurface, {
+      props: baseProps(port, { ...coldRestartProps, visible: false }),
+    });
+
+    // 캐시 hydrate/resume-key 로드는 즉시 하되, 실제 spawn(start/resume)은 아직 없어야 한다.
+    await waitFor(() => {
+      expect(resumeStoreMocks.loadResumeKeys).toHaveBeenCalledWith("S1");
+    });
+    await tick();
+    await tick();
+    expect(port.resumeSession).not.toHaveBeenCalled();
+    expect(port.startSession).not.toHaveBeenCalled();
+
+    // 탭이 전경(visible=true)이 되는 순간 정확히 1회 시작한다.
+    await view.rerender(baseProps(port, { ...coldRestartProps, visible: true }));
+
+    await waitFor(() => {
+      expect(port.resumeSession).toHaveBeenCalledOnce();
+    });
+
+    // 이후 visible 재토글(false→true)이 반복돼도 재시작하지 않는다(1회 가드).
+    await view.rerender(baseProps(port, { ...coldRestartProps, visible: false }));
+    await view.rerender(baseProps(port, { ...coldRestartProps, visible: true }));
+    await tick();
+    await tick();
+    expect(port.resumeSession).toHaveBeenCalledOnce();
+    expect(port.startSession).not.toHaveBeenCalled();
+  });
+
+  it("OQ-16 Task 9: resumes with encrypted-store ids, not the scrubbed in-memory metadata", async () => {
+    const { port } = makeFakePort();
+    // 암호화 저장소에서 로드한 id가 resume 소스가 되어야 한다(props.agentRuntime의 scrub id 아님).
+    resumeStoreMocks.loadResumeKeys.mockResolvedValue({
+      providerThreadId: "stored-thread-9",
+      providerSessionId: "stored-session-9",
+      canResume: true,
+      canLoad: true,
+    });
+    render(AgentTranscriptSurface, {
+      props: baseProps(port, {
+        visible: true,
+        agentRuntime: {
+          sessionRuntimeKind: "direct-codex",
+          provider: "codex",
+          // scrub되어 provider id 없음 — resume은 loadResumeKeys 값으로 이뤄져야 한다.
+          canResume: true,
+          canLoad: true,
+        },
+      }),
+    });
+
+    await waitFor(() => {
+      expect(port.resumeSession).toHaveBeenCalledWith({
+        sessionHandle: "S1",
+        provider: "codex",
+        distro: "Ubuntu",
+        workDir: "/w",
+        providerSessionId: "stored-session-9",
+        providerThreadId: "stored-thread-9",
+        replay: true,
+        options: undefined,
+      });
+    });
+    expect(port.startSession).not.toHaveBeenCalled();
+  });
+
+  it("OQ-16 Task 9: a fresh visible session starts immediately on mount (no deferral)", async () => {
+    const { port } = makeFakePort();
+    // fresh 세션(agentRuntime 없음)은 생성 시 visible=true라 마운트 즉시 시작된다.
+    render(AgentTranscriptSurface, {
+      props: baseProps(port, { visible: true }),
+    });
+
+    await waitFor(() => {
+      expect(port.startSession).toHaveBeenCalledOnce();
+    });
+    // fresh는 cold restart 경로가 아니므로 암호화 저장소를 로드하지 않는다.
+    expect(resumeStoreMocks.loadResumeKeys).not.toHaveBeenCalled();
+    expect(port.resumeSession).not.toHaveBeenCalled();
   });
 
   it("uses resumeSession when in-memory direct runtime metadata has provider ids", async () => {

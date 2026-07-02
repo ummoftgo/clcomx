@@ -29,7 +29,7 @@
     type AgentRuntimeController,
   } from "../controller/agent-runtime-controller";
   import { createDefaultPortFactory } from "../service/runtime-port-factory";
-  import { saveResumeKeys } from "../service/resume-store";
+  import { saveResumeKeys, loadResumeKeys, type ResumeKeys } from "../service/resume-store";
   import {
     saveTranscriptCache,
     serializeTranscript,
@@ -413,7 +413,19 @@
   /** direct runtime 세션 시작. 실패하면 fallback 패널을 띄운다(10 §4.6 — 자동 폴백 금지). */
   async function startRuntime(): Promise<void> {
     // retry/새 시도 시작 시 이전 실패 시도의 pre-start metadata patch를 폐기한다.
-    const resume = buildResumeConfig(props.agentRuntime);
+    // OQ-16 Task 9: cold restart resume 소스는 암호화 저장소(loadedResumeKeys)다. props.agentRuntime의
+    // provider id는 scrub(undefined)되므로, 로드된 키가 있으면 그 값으로 병합해 resume 판정/설정을 만든다.
+    const restoreMeta: AgentRuntimeMetadata | undefined = loadedResumeKeys
+      ? {
+          ...(props.agentRuntime ?? { sessionRuntimeKind: runtimeKind, provider }),
+          provider,
+          providerThreadId: loadedResumeKeys.providerThreadId,
+          providerSessionId: loadedResumeKeys.providerSessionId,
+          canResume: loadedResumeKeys.canResume,
+          canLoad: loadedResumeKeys.canLoad,
+        }
+      : props.agentRuntime;
+    const resume = buildResumeConfig(restoreMeta);
     const attemptId = beginRuntimeMetadataAttempt({
       // session/load replay event는 load 응답 전에 transcript를 재구성해야 하므로 live로 통과시킨다(10 §4.2).
       storeDispatchMode: resume?.replay === true ? "live" : "queue",
@@ -425,7 +437,7 @@
       onSessionTitleChange: (title) => publishSessionTitleChange(title, attemptId),
     });
     controller = next;
-    restoreUnavailable = isRestoreUnavailable(props.agentRuntime);
+    restoreUnavailable = isRestoreUnavailable(restoreMeta);
     resumeReplayPending = resume?.replay === true;
     try {
       const result = await next.start({
@@ -493,6 +505,18 @@
   // 값이 싸므로 즉시 저장하고, 이 타이머는 transcript 캐시 저장에만 적용한다.
   let cacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // OQ-16 Task 9: cold restart resume 소스. workspace.json의 provider id는 scrub(undefined)되므로,
+  // 암호화 저장소(loadResumeKeys)에서 로드한 값을 buildResumeConfig/isRestoreUnavailable의 소스로 병합한다.
+  // fresh 세션(props.agentRuntime 없음)에선 로드하지 않으므로 null로 남는다.
+  let loadedResumeKeys: ResumeKeys | null = null;
+  // OQ-16 Task 9: 실제 process spawn(start/resume)을 탭이 처음 보일 때(props.visible 최초 true)로 지연하는
+  // 1회 가드. 앱 재시작 시 복원된 여러 direct 탭이 boot에서 동시에 프로세스를 띄워 AppHang 나는 것을 막는다.
+  // fresh 세션은 생성 시 visible=true라 즉시 시작된다.
+  let runtimeStartTriggered = false;
+  // OQ-16 Task 9: 캐시 hydrate + resume-key 로드는 spawn과 무관하므로 mount 즉시 1회 시작하고, 지연된
+  // start가 이 promise를 await한 뒤 spawn한다(hydrate가 spawn보다 먼저 끝나도록 순서 보장).
+  let coldRestartHydration: Promise<void> | null = null;
+
   /** 짧은 시간 내 반복되는 metadata persist를 마지막 1건으로 합쳐 transcript 캐시 저장 IO 빈도를 완화한다. */
   function scheduleTranscriptCacheSave(): void {
     if (cacheSaveTimer) clearTimeout(cacheSaveTimer);
@@ -533,6 +557,14 @@
    */
   async function hydrateFromCacheIfColdRestart(): Promise<void> {
     if (!props.agentRuntime) return;
+    // OQ-16 Task 9: cold restart resume 소스는 암호화 저장소다. process spawn을 탭 포커스로 지연해도
+    // 키 로드는 spawn과 무관하므로 hydrate 단계에서 미리 로드해 startRuntime이 곧바로 쓸 수 있게 둔다.
+    try {
+      loadedResumeKeys = await loadResumeKeys(props.sessionId);
+    } catch {
+      // best-effort — 키 로드 실패 시 props.agentRuntime(대개 scrub) 기준으로 진행한다(복원 불가 notice).
+      loadedResumeKeys = null;
+    }
     try {
       const cached = await loadTranscriptCache(props.sessionId);
       const model = cached && deserializeTranscript(cached);
@@ -542,13 +574,37 @@
     }
   }
 
-  onMount(() => {
-    void hydrateFromCacheIfColdRestart().finally(() => {
+  /**
+   * OQ-16 Task 9: 지연된 실제 runtime 시작(process spawn). 탭이 처음 보일 때 1회만 호출된다.
+   * 캐시 hydrate/resume-key 로드(coldRestartHydration)를 먼저 await해 hydrate가 spawn보다 앞서게 한다.
+   */
+  function triggerRuntimeStart(): void {
+    if (runtimeStartTriggered) return;
+    runtimeStartTriggered = true;
+    // onMount와 이 $effect의 실행 순서에 의존하지 않도록, 아직 시작 안 됐으면 여기서 hydration을 킥한다.
+    if (!coldRestartHydration) coldRestartHydration = hydrateFromCacheIfColdRestart();
+    void coldRestartHydration.finally(() => {
       void startRuntime().finally(syncFallback);
     });
+  }
+
+  onMount(() => {
+    // 캐시 hydrate/resume-key 로드는 process spawn과 무관하므로 지연 없이 mount 즉시 시작한다(브리프).
+    // 지연 게이트($effect)가 아직 안 보이는 탭이면 spawn은 미뤄지지만 hydrate는 여기서 곧바로 진행된다.
+    if (!coldRestartHydration) coldRestartHydration = hydrateFromCacheIfColdRestart();
     sealTimer = setInterval(() => store.flushSealAndEvict(), 1000);
     window.addEventListener("pagehide", onPageTeardown);
     window.addEventListener("beforeunload", onPageTeardown);
+  });
+
+  // OQ-16 Task 9: 실제 process spawn을 탭이 처음 보일 때(props.visible 최초 true)로 지연한다.
+  // 앱 재시작 시 복원된 여러 direct 탭이 boot에서 동시에 spawn해 AppHang 나는 것을 막는다(§5, 예약된
+  // 다중 세션 복원 작업과 동일 원칙). mount 시 이미 visible이면 즉시, 아니면 true가 되는 순간 1회만 시작한다.
+  // fresh 세션은 생성 시 visible=true라 즉시 시작된다.
+  $effect(() => {
+    if (props.visible && !runtimeStartTriggered) {
+      triggerRuntimeStart();
+    }
   });
 
   onDestroy(() => {
