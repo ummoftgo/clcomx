@@ -661,7 +661,7 @@ describe.skipIf(process.platform !== "win32")("CLCOMX agent-runtime pack", () =>
     log.step("hybrid cold restart resumed and accepted a follow-up prompt");
   });
 
-  it("E2E-13b: shows read-only cached history and disables the composer when resume/load are both unsupported", async () => {
+  it("E2E-13b: shows read-only cached history and starts a fresh usable session when resume/load are both unsupported", async () => {
     const stateDir = createE2eStateDir("clcomx-e2e-agent-readonly-restore-");
     const sessionId = "direct-readonly-history-session";
 

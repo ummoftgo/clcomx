@@ -854,7 +854,7 @@ git commit -m "feat(agent-runtime): OQ-16 resume 성공 대체 / 미지원 시 r
 - [ ] **Step 1: GC 훅** — 탭/세션 삭제 시 `clearResumeKeys(handle)`+`clearTranscriptCache(handle)` 호출(고아 암호화/캐시 파일 방지). 단위 테스트로 삭제 시 두 clear가 불리는지 검증.
 - [ ] **Step 2: E2E 시나리오 추가**:
   - `E2E-13a`: 암호화 재개 id + 캐시 seed된 상태로 앱 재시작 → 히스토리 즉시 표시 + (mock provider) resume 성공 → 이어서 prompt 응답.
-  - `E2E-13b`: `canResume=false && canLoad=false` mock → 히스토리 read-only + `historyReadOnly` affordance + composer 비활성.
+  - `E2E-13b`: `canResume=false && canLoad=false` mock → 히스토리 read-only + `historyReadOnly` affordance. (정정: 계획 시점의 "composer 비활성"은 잘못된 기대였다 — 구현된 동작은 read-only 히스토리 아래 fresh 세션이 정상 시작되어 composer가 사용 가능해지는 것이며, 10 §4.4a가 정본이다.)
   - 기존 `E2E-12`(scrub cold restore fresh start) 회귀 없음 확인(암호화 저장소가 비어 있으면 기존 fresh 경로 유지).
 - [ ] **Step 3: 실행 확인**:
 Run: `npm run test:e2e:wsl -- --skip-build --project agent-runtime 2>&1 | tail -20`
