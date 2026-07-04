@@ -133,6 +133,8 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     readSessionFile: deps.readSessionFile,
     setTabs: runtimeController.setTabs,
     syncSessionState: runtimeController.syncSessionState,
+    // 숨김 탭은 파일 content IPC 읽기를 첫 visible로 지연한다(다중 세션 동시 복원 AppHang 완화).
+    shouldDeferContentLoading: () => !deps.getVisible(),
   });
   const pathOpenController = createEditorPathOpenController({
     prepareForEditorPathOpen: deps.prepareForEditorPathOpen,
@@ -162,6 +164,7 @@ export function createEditorFacade(deps: EditorFacadeDependencies) {
     cancelCloseTab: runtimeController.cancelCloseTab,
     cancelMonacoPrewarm: quickOpenController.cancelMonacoPrewarm,
     cancelQuickOpenPrewarm: quickOpenController.cancelPrewarm,
+    completeDeferredContentHydration: hydrationController.completeDeferredContentHydration,
     confirmCloseTab: runtimeController.confirmCloseTab,
     ensureRuntimeReady: hydrationController.ensureRuntimeReady,
     handleActivePathChange: viewController.handleActivePathChange,

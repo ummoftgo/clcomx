@@ -17,10 +17,13 @@ function createController(options?: {
     sizeBytes: number;
     mtimeMs: number;
   }>;
+  /** 지정하면 shouldDeferContentLoading 게이트를 켠다(visible=false → content 지연). */
+  visible?: boolean;
 }) {
   const runtimeState = createEditorRuntimeState();
   const quickOpenState = createEditorQuickOpenState();
   let sessionSnapshot = options?.sessionSnapshot ?? null;
+  let visible = options?.visible ?? true;
   let viewMode: "terminal" | "editor" = "editor";
   let rootDir = "/workspace";
   const syncSessionState = vi.fn();
@@ -63,6 +66,7 @@ function createController(options?: {
     },
     readSessionFile,
     setTabs,
+    shouldDeferContentLoading: options?.visible === undefined ? undefined : () => !visible,
     syncSessionState: () => {
       syncSessionState("session-1", {
         viewMode,
@@ -90,6 +94,9 @@ function createController(options?: {
     syncSessionState,
     getViewMode: () => viewMode,
     getRootDir: () => rootDir,
+    setVisible: (nextVisible: boolean) => {
+      visible = nextVisible;
+    },
     setSessionSnapshot: (
       nextSessionSnapshot: {
         viewMode: "terminal" | "editor";
@@ -240,5 +247,80 @@ describe("editor-session-hydration-controller", () => {
 
     expect(runtimeState.tabs).toEqual([]);
     expect(runtimeState.activePath).toBeNull();
+  });
+
+  it("defer: 숨김 탭은 메타데이터/placeholder만 적용하고 파일 content 읽기를 지연한다", async () => {
+    const { controller, runtimeState, readSessionFile, getViewMode, getRootDir } = createController({
+      visible: false,
+      sessionSnapshot: {
+        viewMode: "editor",
+        editorRootDir: "/workspace/src",
+        openEditorTabs: [{ wslPath: "/workspace/src/a.ts" }],
+        activeEditorPath: "/workspace/src/a.ts",
+      },
+    });
+
+    await controller.ensureRuntimeReady();
+
+    // 메타데이터는 즉시 적용된다(포커스 시 terminal→editor 깜빡임 방지).
+    expect(getViewMode()).toBe("editor");
+    expect(getRootDir()).toBe("/workspace/src");
+    expect(runtimeState.tabs).toMatchObject([{ wslPath: "/workspace/src/a.ts", loading: true }]);
+    // 파일 IPC 읽기는 지연된다(다중 세션 동시 복원 AppHang 완화).
+    expect(readSessionFile).not.toHaveBeenCalled();
+
+    await controller.completeDeferredContentHydration();
+
+    expect(readSessionFile).toHaveBeenCalledWith("session-1", "/workspace/src/a.ts");
+    expect(runtimeState.tabs).toMatchObject([
+      { wslPath: "/workspace/src/a.ts", content: "alpha", loading: false },
+    ]);
+  });
+
+  it("defer: 지연 중 재hydrate가 오면 이전 지연분은 폐기되고 최신 snapshot의 content만 로드된다", async () => {
+    const { controller, readSessionFile, runtimeState, setSessionSnapshot } = createController({
+      visible: false,
+      sessionSnapshot: {
+        viewMode: "editor",
+        editorRootDir: "/workspace/src",
+        openEditorTabs: [{ wslPath: "/workspace/src/a.ts" }],
+        activeEditorPath: "/workspace/src/a.ts",
+      },
+    });
+
+    await controller.ensureRuntimeReady();
+
+    setSessionSnapshot({
+      viewMode: "editor",
+      editorRootDir: "/workspace/src",
+      openEditorTabs: [{ wslPath: "/workspace/src/b.ts" }],
+      activeEditorPath: "/workspace/src/b.ts",
+    });
+    await controller.ensureRuntimeReady();
+
+    await controller.completeDeferredContentHydration();
+
+    expect(readSessionFile).toHaveBeenCalledTimes(1);
+    expect(readSessionFile).toHaveBeenCalledWith("session-1", "/workspace/src/b.ts");
+    expect(runtimeState.tabs).toMatchObject([{ wslPath: "/workspace/src/b.ts", content: "alpha" }]);
+  });
+
+  it("defer: 지연분이 없으면 completeDeferredContentHydration은 no-op이다", async () => {
+    const { controller, readSessionFile } = createController({
+      visible: true,
+      sessionSnapshot: {
+        viewMode: "editor",
+        editorRootDir: "/workspace/src",
+        openEditorTabs: [{ wslPath: "/workspace/src/a.ts" }],
+        activeEditorPath: "/workspace/src/a.ts",
+      },
+    });
+
+    // visible이므로 즉시 로드된다.
+    await controller.ensureRuntimeReady();
+    expect(readSessionFile).toHaveBeenCalledTimes(1);
+
+    await controller.completeDeferredContentHydration();
+    expect(readSessionFile).toHaveBeenCalledTimes(1);
   });
 });

@@ -194,6 +194,62 @@ describe("main-terminal-runtime-controller", () => {
     runtime.controller.dispose();
   });
 
+  it("allowSpawnFallback=false: attach 실패 시 spawn하지 않고 false를 반환한다(숨김 탭 eager attach)", async () => {
+    const runtime = createController({
+      storedPtyId: 15,
+      requestCanonicalScreenSnapshotImpl: async () => {
+        throw new Error("restore failed");
+      },
+    });
+
+    const started = await runtime.controller.attachOrSpawnPty(runtime.term, {
+      loadingAlreadyShown: true,
+      allowSpawnFallback: false,
+    });
+
+    expect(started).toBe(false);
+    expect(runtime.spawnPty).not.toHaveBeenCalled();
+    expect(runtime.state.livePtyId).toBe(-1);
+    // 실패 정리 후 spawn 대기 상태로 남는다(첫 visible에서 fallback 허용 재호출).
+    expect(runtime.state.replayInProgress).toBe(false);
+    expect(runtime.state.initialOutputReady).toBe(false);
+
+    runtime.controller.dispose();
+  });
+
+  it("allowSpawnFallback=false: attach 성공은 그대로 true를 반환한다", async () => {
+    const runtime = createController({
+      storedPtyId: 15,
+    });
+
+    const started = await runtime.controller.attachOrSpawnPty(runtime.term, {
+      loadingAlreadyShown: true,
+      allowSpawnFallback: false,
+    });
+
+    expect(started).toBe(true);
+    expect(runtime.spawnPty).not.toHaveBeenCalled();
+    expect(runtime.state.livePtyId).toBe(15);
+    expect(runtime.state.initialOutputReady).toBe(true);
+
+    runtime.controller.dispose();
+  });
+
+  it("allowSpawnFallback=false: stored ptyId가 없으면(cold) spawn 없이 false를 반환한다", async () => {
+    const runtime = createController();
+
+    const started = await runtime.controller.attachOrSpawnPty(runtime.term, {
+      loadingAlreadyShown: true,
+      allowSpawnFallback: false,
+    });
+
+    expect(started).toBe(false);
+    expect(runtime.spawnPty).not.toHaveBeenCalled();
+    expect(runtime.state.livePtyId).toBe(-1);
+
+    runtime.controller.dispose();
+  });
+
   it("restores an existing PTY from canonical snapshot and replays newer chunks", async () => {
     const runtime = createController({
       storedPtyId: 15,

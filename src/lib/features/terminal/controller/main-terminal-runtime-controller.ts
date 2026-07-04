@@ -507,7 +507,16 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
     void deps.onPtyId?.(state.livePtyId);
   }
 
-  async function attachOrSpawnPty(term: Terminal, options?: { loadingAlreadyShown?: boolean }) {
+  /**
+   * 살아 있는 PTY(stored ptyId ≥ 0)면 attach를, 아니면 새 spawn을 수행한다.
+   * `allowSpawnFallback: false`면 attach 실패 시 spawn으로 넘어가지 않고 false를 반환한다 —
+   * 숨김 탭 eager attach에서 stale ptyId가 CLI resume spawn으로 되살아나는 것을 막고,
+   * spawn은 첫 visible 시점의 재호출(기본 fallback 허용)에 맡긴다. 성공 시 true.
+   */
+  async function attachOrSpawnPty(
+    term: Terminal,
+    options?: { loadingAlreadyShown?: boolean; allowSpawnFallback?: boolean },
+  ): Promise<boolean> {
     state.spawnError = null;
     const storedPtyId = deps.getStoredPtyId();
     if (storedPtyId >= 0) {
@@ -516,7 +525,7 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
       }
       try {
         await attachToExistingPty(storedPtyId, term);
-        return;
+        return true;
       } catch (error) {
         console.warn("Failed to attach to existing PTY, spawning a new one", error);
         state.livePtyId = -1;
@@ -529,11 +538,18 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
         state.terminalLoadingReadySignalSeen = !requiresAgentReadySignal();
         clearShellHomeDirCache();
       }
-    } else if (!options?.loadingAlreadyShown) {
+    }
+
+    // attach 실패 fall-through와 cold(stored ptyId 없음) 모두 여기서 spawn 여부가 갈린다.
+    if (options?.allowSpawnFallback === false) {
+      return false;
+    }
+    if (storedPtyId < 0 && !options?.loadingAlreadyShown) {
       await showTerminalLoadingState("connecting");
     }
 
     await spawnNewPty(term);
+    return true;
   }
 
   function handlePtyExit(ptyId: number) {

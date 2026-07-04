@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from "svelte";
+  import { onMount, onDestroy, tick, untrack } from "svelte";
   import { Terminal, type IDisposable } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import TerminalEmbeddedEditorSurface from "../features/terminal/view/TerminalEmbeddedEditorSurface.svelte";
@@ -125,6 +125,11 @@
   const mainTerminalRuntimeState = createMainTerminalRuntimeState();
   let terminalReady = $state(false);
   let terminalStartupSettled = $state(false);
+  // 다중 세션 동시 복원 AppHang 수정: cold PTY spawn(CLI resume 내장)은 첫 visible까지 지연한다
+  // (OQ-16 direct 탭 지연 spawn과 동일 원칙). alive PTY(webview reload)는 eager attach만 시도하고,
+  // attach 실패 시의 spawn 폴백도 첫 visible로 미룬다(숨김 탭에서 stale ptyId 재스폰 방지).
+  let mainPtyStartPending = $state(false);
+  let mainPtyStartTriggered = false;
   let interruptConfirmVisible = $state(false);
   const editorDetection = getEditorDetectionState();
   const detectedEditors = $derived(editorDetection.editors);
@@ -248,6 +253,7 @@
     cancelQuickOpenPrewarm: cancelEditorQuickOpenPrewarm,
     closeQuickOpen: closeEditorQuickOpen,
     ensureRuntimeReady: ensureEditorRuntimeReady,
+    completeDeferredContentHydration: completeDeferredEditorContentHydration,
   } = createTerminalEditorIntegrationController({
     runtimeState: editorRuntimeState,
     quickOpenState: editorQuickOpenState,
@@ -814,6 +820,34 @@
     mainTerminalRuntime.handleMainOutputChunk(event);
   }
 
+  /**
+   * main PTY 기동(attach-or-spawn) — onMount 즉시 경로와 첫-visible 지연 경로가 공유한다.
+   * allowSpawnFallback=false면 alive attach만 시도하고, 실패 시 spawn을 첫 visible로 넘긴다.
+   */
+  async function startMainPtyRuntime(options?: { allowSpawnFallback?: boolean }): Promise<void> {
+    const term = terminal;
+    if (!term) return;
+    try {
+      await mainTerminalRuntime.showTerminalLoadingState(ptyId >= 0 ? "restoring" : "connecting");
+      await syncMainTerminalLayoutToPty({ stickToBottom: false });
+      const started = await mainTerminalRuntime.attachOrSpawnPty(term, {
+        loadingAlreadyShown: true,
+        allowSpawnFallback: options?.allowSpawnFallback,
+      });
+      if (!terminal) return; // destroy 후 늦게 끝난 기동이 상태를 만지지 않게 한다.
+      if (!started) {
+        // eager attach 실패(spawn 폴백 금지) — spawn은 첫 visible 게이트가 실행한다.
+        mainPtyStartPending = true;
+        return;
+      }
+      terminalStartupSettled = true;
+      scheduleEditorQuickOpenPrewarm();
+    } catch (error) {
+      mainTerminalRuntimeState.spawnError = error instanceof Error ? error.message : String(error);
+      await mainTerminalRuntime.clearTerminalLoadingState();
+    }
+  }
+
   onMount(async () => {
     const initialTheme = getThemeById(settings.interface.theme)?.theme;
     const term = new Terminal(buildTerminalOptions(initialTheme));
@@ -878,19 +912,21 @@
       }
     });
 
-    try {
-      terminal = term;
-      fitAddon = fit;
-      terminalReady = true;
-      await mainTerminalRuntime.showTerminalLoadingState(ptyId >= 0 ? "restoring" : "connecting");
-      await syncMainTerminalLayoutToPty({ stickToBottom: false });
-
-      await mainTerminalRuntime.attachOrSpawnPty(term, { loadingAlreadyShown: true });
-      terminalStartupSettled = true;
-      scheduleEditorQuickOpenPrewarm();
-    } catch (error) {
-      mainTerminalRuntimeState.spawnError = error instanceof Error ? error.message : String(error);
-      await mainTerminalRuntime.clearTerminalLoadingState();
+    terminal = term;
+    fitAddon = fit;
+    terminalReady = true;
+    if (ptyId >= 0) {
+      // 살아 있는 PTY(webview reload)는 숨김 탭이어도 eager attach — 출력 링버퍼/canonical
+      // snapshot 재생 공백이 커지지 않게 한다. 단 attach 실패의 spawn 폴백은 금지하고
+      // 첫 visible로 미룬다(숨김 탭에서 stale ptyId가 CLI resume spawn으로 되살아나는 것 방지).
+      await startMainPtyRuntime({ allowSpawnFallback: false });
+    } else if (visible) {
+      // 활성 탭(fresh 생성 포함)은 기존과 동일하게 즉시 spawn.
+      mainPtyStartTriggered = true;
+      await startMainPtyRuntime();
+    } else {
+      // 숨김 복원 탭의 cold spawn은 첫 visible까지 지연(아래 $effect 게이트).
+      mainPtyStartPending = true;
     }
 
     term.onData((data) => {
@@ -949,6 +985,16 @@
 
     mainTerminalRuntime.armBottomLock();
     void syncMainTerminalLayoutToPty();
+  });
+
+  // 다중 세션 동시 복원 AppHang 수정: 지연된 PTY 기동(cold spawn / eager attach 실패분)을
+  // 첫 visible에서 정확히 1회 실행한다(OQ-16 direct 탭 지연 spawn과 동일 패턴).
+  $effect(() => {
+    if (!terminalReady || !visible || !mainPtyStartPending) return;
+    if (mainPtyStartTriggered) return;
+    mainPtyStartTriggered = true;
+    mainPtyStartPending = false;
+    void startMainPtyRuntime();
   });
 
   $effect(() => {
@@ -1016,9 +1062,14 @@
       auxTerminal.options.fontFamily = terminalFontFamily;
       auxTerminal.options.scrollback = settings.terminal.scrollback;
     }
-    void syncMainTerminalLayoutToPty();
-    if (auxTerminal) {
-      scheduleAuxLayoutSettle(0);
+    // 숨김 탭에서는 layout sync를 돌리지 않는다(다중 세션 동시 복원 AppHang 완화) — visible 전환 시
+    // 위의 visible 게이트 effect가 최신 설정으로 재동기화한다. untrack: visible/viewMode 전환 자체로
+    // 이 설정-변경 effect가 재실행되지 않게 한다(기존에도 둘은 이 effect의 의존성이 아니었다).
+    if (untrack(() => visible && editorViewMode === "terminal")) {
+      void syncMainTerminalLayoutToPty();
+      if (auxTerminal) {
+        scheduleAuxLayoutSettle(0);
+      }
     }
   });
 
@@ -1087,6 +1138,13 @@
     sessionId;
     sessionSnapshot;
     void ensureEditorRuntimeReady();
+  });
+
+  // 숨김 탭에서 지연된 에디터 파일 content hydration을 visible 시점에 마저 로드한다
+  // (메타데이터/placeholder 탭은 위 effect에서 항상 즉시 적용됨). 지연분 없으면 no-op.
+  $effect(() => {
+    if (!visible) return;
+    void completeDeferredEditorContentHydration();
   });
 
   onDestroy(() => {
