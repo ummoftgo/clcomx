@@ -399,4 +399,96 @@ describe("session-lifecycle-controller", () => {
     expect(resumeStoreMocks.clearResumeKeys).not.toHaveBeenCalled();
     expect(transcriptCacheMocks.clearTranscriptCache).not.toHaveBeenCalled();
   });
+
+  it("GC: direct→PTY 폴백(handleFallbackToPtyClose)도 세션을 닫고 재개 id/transcript 캐시를 정리한다", async () => {
+    const sessions = new Map<string, Session>([
+      [
+        "session-1",
+        createSession({
+          ptyId: -1,
+          runtimeKind: "direct-codex",
+          resumeToken: null,
+        }),
+      ],
+    ]);
+    const deps = createDeps(sessions);
+    const controller = createSessionLifecycleController(deps);
+
+    resumeStoreMocks.clearResumeKeys.mockClear();
+    transcriptCacheMocks.clearTranscriptCache.mockClear();
+
+    await controller.handleFallbackToPtyClose("session-1");
+
+    expect(deps.closeSession).toHaveBeenCalledWith("session-1");
+    expect(resumeStoreMocks.clearResumeKeys).toHaveBeenCalledWith("session-1");
+    expect(transcriptCacheMocks.clearTranscriptCache).toHaveBeenCalledWith("session-1");
+    // 폴백은 탭 히스토리를 기록하지 않는다(legacy resumeToken은 새 PTY 세션 생성에 직접 전달).
+    expect(deps.recordTabHistory).not.toHaveBeenCalled();
+  });
+
+  it("GC: 폴백 close가 실패해도 에러를 보고하고 GC는 여전히 시도한다(best-effort)", async () => {
+    const sessions = new Map<string, Session>([
+      [
+        "session-1",
+        createSession({
+          ptyId: -1,
+          runtimeKind: "direct-claude",
+          resumeToken: null,
+        }),
+      ],
+    ]);
+    const error = new Error("close failed");
+    const deps = createDeps(sessions, {
+      closeSession: vi.fn(async () => {
+        throw error;
+      }),
+    });
+    const controller = createSessionLifecycleController(deps);
+
+    resumeStoreMocks.clearResumeKeys.mockClear();
+    transcriptCacheMocks.clearTranscriptCache.mockClear();
+
+    await expect(controller.handleFallbackToPtyClose("session-1")).resolves.toBeUndefined();
+
+    expect(deps.reportError).toHaveBeenCalledWith(
+      "Failed to close failed direct runtime session",
+      error,
+    );
+    expect(resumeStoreMocks.clearResumeKeys).toHaveBeenCalledWith("session-1");
+    expect(transcriptCacheMocks.clearTranscriptCache).toHaveBeenCalledWith("session-1");
+  });
+
+  it("GC: 폴백 GC가 거부돼도 폴백 흐름은 계속된다(best-effort)", async () => {
+    const sessions = new Map<string, Session>([
+      [
+        "session-1",
+        createSession({
+          ptyId: -1,
+          runtimeKind: "direct-codex",
+          resumeToken: null,
+        }),
+      ],
+    ]);
+    const deps = createDeps(sessions);
+    const controller = createSessionLifecycleController(deps);
+
+    resumeStoreMocks.clearResumeKeys.mockRejectedValueOnce(new Error("gc failed"));
+
+    await expect(controller.handleFallbackToPtyClose("session-1")).resolves.toBeUndefined();
+    expect(deps.closeSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("GC: 세션을 찾지 못한 폴백은 close만 시도하고 GC는 건너뛴다(runtimeKind 불명)", async () => {
+    const deps = createDeps(new Map());
+    const controller = createSessionLifecycleController(deps);
+
+    resumeStoreMocks.clearResumeKeys.mockClear();
+    transcriptCacheMocks.clearTranscriptCache.mockClear();
+
+    await controller.handleFallbackToPtyClose("session-missing");
+
+    expect(deps.closeSession).toHaveBeenCalledWith("session-missing");
+    expect(resumeStoreMocks.clearResumeKeys).not.toHaveBeenCalled();
+    expect(transcriptCacheMocks.clearTranscriptCache).not.toHaveBeenCalled();
+  });
 });

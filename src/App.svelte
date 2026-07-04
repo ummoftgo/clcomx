@@ -525,7 +525,8 @@
 
   /**
    * direct runtime spawn/initialize 실패 후 legacy PTY 새 세션으로 전환한다(10 §4.6).
-   * 실패한 direct 세션 탭을 닫고 같은 agent/distro/workDir 및 legacy resumeToken으로 PTY 세션을 만든다.
+   * 실패한 direct 세션 탭을 닫고(이전 실행이 남긴 재개 id/transcript 캐시 GC 포함 — 10 §4.4a),
+   * 같은 agent/distro/workDir 및 legacy resumeToken으로 PTY 세션을 만든다.
    * runtimeKind를 넘기지 않으므로 새 세션은 기본 PTY 경로다(10 §5: direct→PTY는 새 세션이므로 runtimeKind="pty").
    */
   async function handleFallbackToPty(request: {
@@ -535,11 +536,7 @@
     workDir: string;
     resumeToken?: string | null;
   }) {
-    try {
-      await closeSession(request.sessionId);
-    } catch (error) {
-      reportSessionLifecycleError("Failed to close failed direct runtime session", error);
-    }
+    await sessionLifecycle.handleFallbackToPtyClose(request.sessionId);
     createSession(request.agentId, request.distro, request.workDir, undefined, request.resumeToken ?? null);
   }
 

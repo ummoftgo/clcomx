@@ -186,7 +186,8 @@ export function createSessionLifecycleController(
    * OQ-16 Task 11: 사용자가 direct 세션 탭을 명시적으로 닫을 때 고아 파일을 막기 위한 GC.
    * 암호화 재개 id 파일(clearResumeKeys)과 transcript 캐시 파일(clearTranscriptCache)을 정리한다.
    * best-effort — 실패해도 탭 닫기 흐름 자체를 막지 않는다(개별 catch로 격리).
-   * [중요] 이 GC는 오직 사용자의 명시적 탭 닫기(handleCloseTab)에서만 호출한다.
+   * [중요] 이 GC는 사용자가 direct 세션을 명시적으로 버리는 경로에서만 호출한다 —
+   * 탭 닫기(handleCloseTab)와 direct→PTY 폴백 선택(handleFallbackToPtyClose) 두 곳뿐이다.
    * 앱 종료(captureResumeIdsBeforeAppClose)·webview reload·컴포넌트 destroy 같은 teardown 경로는
    * 재시작 후 복원에 그 파일들이 필요하므로 절대 GC하지 않는다(component teardown은
    * AgentTranscriptSurface.disposeSurfaceRuntime이 별도로 담당하며 여기와 무관하다).
@@ -221,6 +222,25 @@ export function createSessionLifecycleController(
     await gcDirectSessionFiles(sessionId, session.runtimeKind);
   };
 
+  /**
+   * direct→PTY 폴백(사용자가 fallback 패널에서 "터미널로 열기"를 선택) 시 실패한 direct 세션을 닫는다.
+   * 대체 PTY 세션은 새 id를 받으므로 이 세션 id의 재개 id/transcript 캐시 파일은 어떤 경로로도
+   * 다시 참조될 수 없다 — 탭 닫기와 같은 "명시적으로 버리기"이므로 함께 GC한다(고아 파일 방지).
+   * 탭 히스토리는 기록하지 않는다(legacy resumeToken은 호출부가 새 PTY 세션 생성에 직접 넘긴다).
+   * 세션 조회는 close 전에 해야 한다 — close 후에는 store에서 제거되어 runtimeKind를 알 수 없다.
+   */
+  const handleFallbackToPtyClose = async (sessionId: string) => {
+    const runtimeKind = deps.getSession(sessionId)?.runtimeKind;
+
+    try {
+      await deps.closeSession(sessionId);
+    } catch (error) {
+      deps.reportError("Failed to close failed direct runtime session", error);
+    }
+
+    await gcDirectSessionFiles(sessionId, runtimeKind);
+  };
+
   return {
     createSession,
     openHistoryEntry,
@@ -231,5 +251,6 @@ export function createSessionLifecycleController(
     captureSessionResumeToken,
     captureResumeIdsBeforeAppClose,
     handleCloseTab,
+    handleFallbackToPtyClose,
   };
 }

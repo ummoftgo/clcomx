@@ -222,6 +222,7 @@ vi.mock("./lib/features/session/controller/session-lifecycle-controller", () => 
     handleResumeFallback: vi.fn(async () => {}),
     captureResumeIdsBeforeAppClose: vi.fn(async () => {}),
     handleCloseTab: vi.fn(async () => {}),
+    handleFallbackToPtyClose: vi.fn(async () => {}),
   })),
 }));
 
@@ -538,6 +539,8 @@ describe("App", () => {
         undefined,
       );
     });
+    // 폴백 close는 GC 포함 lifecycle 경로(handleFallbackToPtyClose)로 위임된다(10 §4.4a).
+    expect(lifecycle.handleFallbackToPtyClose).toHaveBeenCalledWith("session-1");
   });
 
   it("applies direct runtime provider title updates to the live session", async () => {
