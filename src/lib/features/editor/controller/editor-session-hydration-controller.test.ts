@@ -305,6 +305,54 @@ describe("editor-session-hydration-controller", () => {
     expect(runtimeState.tabs).toMatchObject([{ wslPath: "/workspace/src/b.ts", content: "alpha" }]);
   });
 
+  it("defer: 완료 전 사용자가 편집한(dirty) 탭은 지연 로드가 덮어쓰지 않는다", async () => {
+    const { controller, runtimeState, readSessionFile } = createController({
+      visible: false,
+      sessionSnapshot: {
+        viewMode: "editor",
+        editorRootDir: "/workspace/src",
+        openEditorTabs: [{ wslPath: "/workspace/src/a.ts" }],
+        activeEditorPath: "/workspace/src/a.ts",
+      },
+    });
+    await controller.ensureRuntimeReady();
+
+    // 첫 visible 직후 사용자가 placeholder 모델에 타이핑한 상황을 재현한다.
+    runtimeState.tabs = runtimeState.tabs.map((tab) => ({
+      ...tab,
+      content: "user edit",
+      dirty: true,
+    }));
+
+    await controller.completeDeferredContentHydration();
+
+    expect(readSessionFile).toHaveBeenCalledTimes(1);
+    expect(runtimeState.tabs).toMatchObject([
+      { wslPath: "/workspace/src/a.ts", content: "user edit", dirty: true },
+    ]);
+  });
+
+  it("defer: 완료 전 닫힌 탭은 지연 로드가 되살리지 않는다", async () => {
+    const { controller, runtimeState, readSessionFile } = createController({
+      visible: false,
+      sessionSnapshot: {
+        viewMode: "editor",
+        editorRootDir: "/workspace/src",
+        openEditorTabs: [{ wslPath: "/workspace/src/a.ts" }],
+        activeEditorPath: "/workspace/src/a.ts",
+      },
+    });
+    await controller.ensureRuntimeReady();
+
+    // 완료 전에 사용자가 탭을 닫은 상황을 재현한다.
+    runtimeState.tabs = [];
+
+    await controller.completeDeferredContentHydration();
+
+    expect(readSessionFile).toHaveBeenCalledTimes(1);
+    expect(runtimeState.tabs).toEqual([]);
+  });
+
   it("defer: 지연분이 없으면 completeDeferredContentHydration은 no-op이다", async () => {
     const { controller, readSessionFile } = createController({
       visible: true,

@@ -124,10 +124,30 @@ export function createEditorSessionHydrationController(
     }
 
     const { tabs, savedContentByPath, mtimeByPath } = splitHydratedEditorTabs(loadedTabs);
-    deps.runtimeState.savedContentByPath = savedContentByPath;
-    deps.runtimeState.mtimeByPath = mtimeByPath;
-    deps.runtimeState.tabs = tabs;
-    deps.runtimeState.activePath = resolveHydratedActivePath(deps.runtimeState.activePath, tabs);
+    // 로드가 도는 사이(특히 지연 로드의 첫 visible 이후) 사용자가 탭을 닫았거나(현재 목록에 없음)
+    // 타이핑했거나(dirty) 직접 열어 이미 로드를 끝낸(loading 아님) 탭은 보존하고, 아직 loading
+    // placeholder인 탭만 로드 결과로 교체한다 — 전체 교체는 이 윈도우의 사용자 편집을 덮어쓰거나
+    // 닫은 탭을 되살린다.
+    const loadedByPath = new Map(tabs.map((tab) => [tab.wslPath, tab]));
+    const nextSavedContentByPath = { ...deps.runtimeState.savedContentByPath };
+    const nextMtimeByPath = { ...deps.runtimeState.mtimeByPath };
+    const nextTabs = deps.runtimeState.tabs.map((current) => {
+      const loaded = loadedByPath.get(current.wslPath);
+      if (!loaded || current.dirty || !current.loading) {
+        return current;
+      }
+      if (current.wslPath in savedContentByPath) {
+        nextSavedContentByPath[current.wslPath] = savedContentByPath[current.wslPath];
+      }
+      if (current.wslPath in mtimeByPath) {
+        nextMtimeByPath[current.wslPath] = mtimeByPath[current.wslPath];
+      }
+      return loaded;
+    });
+    deps.runtimeState.savedContentByPath = nextSavedContentByPath;
+    deps.runtimeState.mtimeByPath = nextMtimeByPath;
+    deps.runtimeState.tabs = nextTabs;
+    deps.runtimeState.activePath = resolveHydratedActivePath(deps.runtimeState.activePath, nextTabs);
 
     deps.syncSessionState();
   }

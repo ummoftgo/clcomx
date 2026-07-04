@@ -44,6 +44,8 @@ function createController(options?: {
     homeDir: "/home/tester",
   }));
   const resizePty = vi.fn(async () => {});
+  const killPty = vi.fn(async () => {});
+  const registerCanonicalSession = vi.fn();
   const writeTerminalData = vi.fn(
     options?.writeTerminalDataImpl
       ?? (async (_term, data: string) => {
@@ -76,12 +78,13 @@ function createController(options?: {
     syncLayoutToPty,
     scrollTerminalToBottom: scrollToBottom,
     requestCanonicalScreenSnapshot,
-    registerCanonicalSession: vi.fn(),
+    registerCanonicalSession,
     spawnPty,
     takePtyInitialOutput,
     getPtyOutputSnapshot,
     getPtyRuntimeSnapshot,
     resizePty,
+    killPty,
     onPtyId,
     onResumeFallback,
     onExit,
@@ -100,8 +103,10 @@ function createController(options?: {
     spawnPty,
     takePtyInitialOutput,
     requestCanonicalScreenSnapshot,
+    registerCanonicalSession,
     getPtyOutputSnapshot,
     writeTerminalData,
+    killPty,
   };
 }
 
@@ -233,6 +238,30 @@ describe("main-terminal-runtime-controller", () => {
     expect(runtime.state.initialOutputReady).toBe(true);
 
     runtime.controller.dispose();
+  });
+
+  it("dispose 후 완료된 지연 spawn은 고아 PTY를 회수하고 등록 부수효과를 내지 않는다", async () => {
+    let resolveSpawn!: (id: number) => void;
+    const runtime = createController();
+    runtime.spawnPty.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveSpawn = resolve;
+        }),
+    );
+
+    const startPromise = runtime.controller.attachOrSpawnPty(runtime.term, {
+      loadingAlreadyShown: true,
+    });
+    runtime.controller.dispose();
+    resolveSpawn(42);
+
+    await expect(startPromise).resolves.toBe(false);
+    expect(runtime.killPty).toHaveBeenCalledWith(42);
+    expect(runtime.registerCanonicalSession).not.toHaveBeenCalled();
+    expect(runtime.takePtyInitialOutput).not.toHaveBeenCalled();
+    expect(runtime.onPtyId).not.toHaveBeenCalled();
+    expect(runtime.state.livePtyId).toBe(-1);
   });
 
   it("allowSpawnFallback=false: stored ptyId가 없으면(cold) spawn 없이 false를 반환한다", async () => {

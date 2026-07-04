@@ -24,6 +24,7 @@
     writePty,
     resizePty,
     takePtyInitialOutput,
+    killPty,
   } from "../pty";
   import {
     registerCanonicalSession,
@@ -193,6 +194,7 @@
     getPtyOutputSnapshot,
     getPtyRuntimeSnapshot,
     resizePty,
+    killPty,
     onPtyId: (nextPtyId) => onPtyId?.(nextPtyId),
     onResumeFallback: () => onResumeFallback?.(),
     onExit: (exitedPtyId) => onExit?.(exitedPtyId),

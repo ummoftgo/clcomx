@@ -60,6 +60,8 @@ interface MainTerminalRuntimeControllerDeps {
   getPtyOutputSnapshot: (id: number) => Promise<PtyOutputSnapshot>;
   getPtyRuntimeSnapshot: (id: number) => Promise<PtyRuntimeSnapshot>;
   resizePty: (id: number, cols: number, rows: number) => Promise<void>;
+  /** dispose 후 늦게 완료된 spawn이 남긴 고아 프로세스를 회수한다(미지정이면 회수 생략). */
+  killPty?: (id: number) => Promise<void>;
   onPtyId?: (ptyId: number) => void | Promise<void>;
   onResumeFallback?: () => void | Promise<void>;
   onExit?: (ptyId: number) => void | Promise<void>;
@@ -67,6 +69,9 @@ interface MainTerminalRuntimeControllerDeps {
 
 export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeControllerDeps) {
   const { state } = deps;
+  // host destroy(dispose) 후 늦게 resolve된 spawn의 부수효과(onPtyId/canonical 등록)를 차단하는
+  // 편도 플래그. 지연 spawn(첫 visible 기동) 도중 탭이 닫히는 경합에서 고아 PTY를 막는다.
+  let disposed = false;
   const terminalLoadingLifecycle = createTerminalLoadingLifecycle({
     getLoadingState: () => state.terminalLoadingState,
     setLoadingState: (terminalLoadingState) => {
@@ -475,7 +480,17 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
     await deps.syncLayoutToPty({ refresh: true });
   }
 
-  async function spawnNewPty(term: Terminal) {
+  /** dispose 후 완료된 spawn의 프로세스를 회수한다(추적 주체가 없어 방치 시 고아). */
+  function reclaimOrphanedSpawn(): void {
+    const orphanPtyId = state.livePtyId;
+    state.livePtyId = -1;
+    if (orphanPtyId >= 0) {
+      void deps.killPty?.(orphanPtyId);
+    }
+  }
+
+  /** 새 PTY를 spawn한다. dispose 경합으로 프로세스를 회수하고 중단했으면 false. */
+  async function spawnNewPty(term: Terminal): Promise<boolean> {
     const { cols, rows } = deps.getInitialPtySize(term);
     state.mainMetadataRemainder = "";
     clearShellHomeDirCache();
@@ -487,6 +502,10 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
       deps.getWorkDir(),
       deps.getResumeToken(),
     );
+    if (disposed) {
+      reclaimOrphanedSpawn();
+      return false;
+    }
     void deps.registerCanonicalSession({
       sessionId: deps.getSessionId(),
       ptyId: state.livePtyId,
@@ -501,10 +520,16 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
       void deps.onResumeFallback?.();
     }
     await writeMainTerminalData(term, sanitizedOutput);
+    if (disposed) {
+      // 초기 출력 수신 중 dispose된 경우 — 세션 store에 등록(onPtyId)되기 전이므로 여기서 회수한다.
+      reclaimOrphanedSpawn();
+      return false;
+    }
     state.initialOutputReady = true;
     armBottomLock();
     noteTerminalLoadingOutput(sanitizedOutput);
     void deps.onPtyId?.(state.livePtyId);
+    return true;
   }
 
   /**
@@ -541,15 +566,14 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
     }
 
     // attach 실패 fall-through와 cold(stored ptyId 없음) 모두 여기서 spawn 여부가 갈린다.
-    if (options?.allowSpawnFallback === false) {
+    if (options?.allowSpawnFallback === false || disposed) {
       return false;
     }
     if (storedPtyId < 0 && !options?.loadingAlreadyShown) {
       await showTerminalLoadingState("connecting");
     }
 
-    await spawnNewPty(term);
-    return true;
+    return await spawnNewPty(term);
   }
 
   function handlePtyExit(ptyId: number) {
@@ -577,6 +601,7 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
   }
 
   function dispose() {
+    disposed = true;
     terminalLoadingLifecycle.dispose();
     clearDeferredBottomScrollTimer();
     releaseBottomLock();
