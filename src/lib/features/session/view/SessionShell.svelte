@@ -266,6 +266,14 @@
     hostProps.sessionSnapshot;
     void directEditorFacade.ensureRuntimeReady();
   });
+
+  // 숨김 direct 세션에서 지연된 에디터 파일 content hydration을 visible 시점에 마저 로드한다
+  // (facade의 shouldDeferContentLoading이 숨김 탭 content 읽기를 지연하므로, 완료 훅이 없으면
+  // 복원된 editor 탭이 placeholder로 남는다). 지연분 없으면 no-op.
+  $effect(() => {
+    if (!useDirectRuntime || !props.visible) return;
+    void directEditorFacade.completeDeferredContentHydration();
+  });
 </script>
 
 {#if useDirectRuntime}

@@ -145,6 +145,41 @@ describe("SessionShell", () => {
     );
   });
 
+  it("숨김 direct 세션은 에디터 content 읽기를 지연하고 visible 전환 시 마저 로드한다", async () => {
+    const directEditorSession: SessionShellSession = {
+      ...BASE_SESSION,
+      runtimeKind: "direct-codex",
+      viewMode: "editor",
+      openEditorTabs: [{ wslPath: "/workspace/a/src/app.ts", line: null, column: null }],
+      activeEditorPath: "/workspace/a/src/app.ts",
+    };
+    const { rerender } = render(SessionShell, {
+      props: {
+        session: directEditorSession,
+        visible: false,
+      },
+    });
+
+    // 숨김 mount에서는 메타데이터/placeholder만 hydrate되고 파일 IPC 읽기는 지연된다.
+    await waitFor(() => {
+      expect(screen.getByTestId("session-host-probe")).toHaveAttribute(
+        "data-runtime-kind",
+        "direct-codex",
+      );
+    });
+    expect(editorMocks.readSessionFile).not.toHaveBeenCalled();
+
+    await rerender({ session: directEditorSession, visible: true });
+
+    // visible 전환이 지연된 content hydration을 완료한다(placeholder 잔존 방지).
+    await waitFor(() => {
+      expect(editorMocks.readSessionFile).toHaveBeenCalledWith(
+        "session-a",
+        "/workspace/a/src/app.ts",
+      );
+    });
+  });
+
   it("OQ-61: wires direct tool location clicks into the embedded editor state", async () => {
     const onSessionEditorStateChange = vi.fn();
 
