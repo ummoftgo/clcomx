@@ -264,6 +264,48 @@ describe("main-terminal-runtime-controller", () => {
     expect(runtime.state.livePtyId).toBe(-1);
   });
 
+  it("dispose가 attach 도중 발생하면 남은 attach 부수효과 없이 false로 중단한다", async () => {
+    let resolveSnapshot!: (value: CanonicalScreenSnapshot | null) => void;
+    const runtime = createController({ storedPtyId: 15 });
+    runtime.requestCanonicalScreenSnapshot.mockImplementationOnce(
+      () =>
+        new Promise<CanonicalScreenSnapshot | null>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+
+    const startPromise = runtime.controller.attachOrSpawnPty(runtime.term, {
+      loadingAlreadyShown: true,
+    });
+    // snapshot await에 도달한 뒤(=조회 시작 후) destroy되는 경합을 재현한다.
+    await vi.waitFor(() => {
+      expect(runtime.requestCanonicalScreenSnapshot).toHaveBeenCalledTimes(1);
+    });
+    runtime.controller.dispose();
+    resolveSnapshot(null);
+
+    await expect(startPromise).resolves.toBe(false);
+    // snapshot fallback 조회/화면 write/spawn 폴백 어느 것도 진행하지 않는다.
+    expect(runtime.getPtyOutputSnapshot).not.toHaveBeenCalled();
+    expect(runtime.writes).toEqual([]);
+    expect(runtime.spawnPty).not.toHaveBeenCalled();
+    expect(runtime.state.livePtyId).toBe(-1);
+    expect(runtime.state.replayInProgress).toBe(false);
+  });
+
+  it("dispose 후 attachOrSpawnPty 진입은 아무 부수효과 없이 false를 반환한다", async () => {
+    const runtime = createController({ storedPtyId: 15 });
+    runtime.controller.dispose();
+
+    await expect(
+      runtime.controller.attachOrSpawnPty(runtime.term, { loadingAlreadyShown: true }),
+    ).resolves.toBe(false);
+
+    expect(runtime.registerCanonicalSession).not.toHaveBeenCalled();
+    expect(runtime.requestCanonicalScreenSnapshot).not.toHaveBeenCalled();
+    expect(runtime.spawnPty).not.toHaveBeenCalled();
+  });
+
   it("allowSpawnFallback=false: stored ptyId가 없으면(cold) spawn 없이 false를 반환한다", async () => {
     const runtime = createController();
 

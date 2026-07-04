@@ -413,7 +413,16 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
     return true;
   }
 
-  async function attachToExistingPty(id: number, term: Terminal) {
+  /** dispose 경합으로 attach를 중단하고 frontend attach 상태를 되돌린다(프로세스는 stored ptyId로 추적됨). */
+  function abortAttachAfterDispose(): false {
+    state.livePtyId = -1;
+    state.replayInProgress = false;
+    state.replayBuffer = [];
+    return false;
+  }
+
+  /** 살아 있는 PTY에 attach한다. dispose 경합으로 중단했으면 false. */
+  async function attachToExistingPty(id: number, term: Terminal): Promise<boolean> {
     state.livePtyId = id;
     state.replayInProgress = true;
     state.replayBuffer = [];
@@ -426,6 +435,7 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
     });
 
     await deps.syncLayoutToPty({ stickToBottom: false });
+    if (disposed) return abortAttachAfterDispose();
 
     let appliedSeq = 0;
     let restored = false;
@@ -437,6 +447,7 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
       cols: term.cols,
       rows: term.rows,
     });
+    if (disposed) return abortAttachAfterDispose();
 
     if (canonicalSnapshot) {
       await writeMainTerminalData(term, canonicalSnapshot.serialized);
@@ -458,6 +469,7 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
     for (const chunk of pendingChunks) {
       await writeMainTerminalData(term, chunk.data);
     }
+    if (disposed) return abortAttachAfterDispose();
 
     state.initialOutputReady = true;
     armBottomLock();
@@ -478,6 +490,7 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
 
     await rehydrateShellHomeDirFromRuntimeSnapshot();
     await deps.syncLayoutToPty({ refresh: true });
+    return true;
   }
 
   /** dispose 후 완료된 spawn의 프로세스를 회수한다(추적 주체가 없어 방치 시 고아). */
@@ -542,6 +555,11 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
     term: Terminal,
     options?: { loadingAlreadyShown?: boolean; allowSpawnFallback?: boolean },
   ): Promise<boolean> {
+    // 호출자가 term을 캡처하고 loading/layout await를 거치는 동안 destroy될 수 있다 —
+    // dispose 후에는 attach/spawn 어느 쪽의 부수효과도 시작하지 않는다.
+    if (disposed) {
+      return false;
+    }
     state.spawnError = null;
     const storedPtyId = deps.getStoredPtyId();
     if (storedPtyId >= 0) {
@@ -549,8 +567,10 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
         await showTerminalLoadingState("restoring");
       }
       try {
-        await attachToExistingPty(storedPtyId, term);
-        return true;
+        if (await attachToExistingPty(storedPtyId, term)) {
+          return true;
+        }
+        // disposed로 중단된 attach — 아래 disposed 가드에서 spawn 없이 종료된다.
       } catch (error) {
         console.warn("Failed to attach to existing PTY, spawning a new one", error);
         state.livePtyId = -1;

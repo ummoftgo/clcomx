@@ -327,9 +327,19 @@ describe("editor-session-hydration-controller", () => {
     await controller.completeDeferredContentHydration();
 
     expect(readSessionFile).toHaveBeenCalledTimes(1);
+    // 사용자 편집(content/dirty)은 보존하되, 로드 기준선을 병합하고 loading을 내려
+    // 저장 버튼 영구 비활성/빈 baseline으로 인한 dirty 오판정을 막는다.
     expect(runtimeState.tabs).toMatchObject([
-      { wslPath: "/workspace/src/a.ts", content: "user edit", dirty: true },
+      {
+        wslPath: "/workspace/src/a.ts",
+        content: "user edit",
+        dirty: true,
+        loading: false,
+        languageId: "typescript",
+      },
     ]);
+    expect(runtimeState.savedContentByPath["/workspace/src/a.ts"]).toBe("alpha");
+    expect(runtimeState.mtimeByPath["/workspace/src/a.ts"]).toBe(12);
   });
 
   it("defer: 완료 전 닫힌 탭은 지연 로드가 되살리지 않는다", async () => {

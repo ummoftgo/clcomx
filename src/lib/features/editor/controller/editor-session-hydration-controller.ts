@@ -125,15 +125,18 @@ export function createEditorSessionHydrationController(
 
     const { tabs, savedContentByPath, mtimeByPath } = splitHydratedEditorTabs(loadedTabs);
     // 로드가 도는 사이(특히 지연 로드의 첫 visible 이후) 사용자가 탭을 닫았거나(현재 목록에 없음)
-    // 타이핑했거나(dirty) 직접 열어 이미 로드를 끝낸(loading 아님) 탭은 보존하고, 아직 loading
-    // placeholder인 탭만 로드 결과로 교체한다 — 전체 교체는 이 윈도우의 사용자 편집을 덮어쓰거나
-    // 닫은 탭을 되살린다.
+    // 직접 열어 이미 로드를 끝낸(loading 아님) 탭은 보존한다 — 전체 교체는 이 윈도우의 사용자
+    // 편집을 덮어쓰거나 닫은 탭을 되살린다. 아직 loading placeholder인 탭은:
+    // - clean이면 로드 결과로 교체하고,
+    // - dirty(사용자가 이미 타이핑)면 content/dirty/커서는 보존하되 로드 기준선(saved
+    //   content/mtime/languageId)을 병합하고 loading을 내린다 — loading이 남으면 저장 버튼이
+    //   영구 비활성되고 saved baseline이 비어 dirty 판정도 틀어진다.
     const loadedByPath = new Map(tabs.map((tab) => [tab.wslPath, tab]));
     const nextSavedContentByPath = { ...deps.runtimeState.savedContentByPath };
     const nextMtimeByPath = { ...deps.runtimeState.mtimeByPath };
     const nextTabs = deps.runtimeState.tabs.map((current) => {
       const loaded = loadedByPath.get(current.wslPath);
-      if (!loaded || current.dirty || !current.loading) {
+      if (!loaded || !current.loading) {
         return current;
       }
       if (current.wslPath in savedContentByPath) {
@@ -142,7 +145,17 @@ export function createEditorSessionHydrationController(
       if (current.wslPath in mtimeByPath) {
         nextMtimeByPath[current.wslPath] = mtimeByPath[current.wslPath];
       }
-      return loaded;
+      if (!current.dirty) {
+        return loaded;
+      }
+      return {
+        ...loaded,
+        content: current.content,
+        dirty: true,
+        line: current.line,
+        column: current.column,
+        loading: false,
+      };
     });
     deps.runtimeState.savedContentByPath = nextSavedContentByPath;
     deps.runtimeState.mtimeByPath = nextMtimeByPath;
