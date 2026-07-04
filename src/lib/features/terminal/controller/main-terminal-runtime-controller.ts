@@ -451,12 +451,16 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
 
     if (canonicalSnapshot) {
       await writeMainTerminalData(term, canonicalSnapshot.serialized);
+      if (disposed) return abortAttachAfterDispose();
       await writeMainTerminalData(term, canonicalSnapshot.delta);
+      if (disposed) return abortAttachAfterDispose();
       appliedSeq = canonicalSnapshot.appliedSeq;
       restored = true;
     } else {
       const snapshot = await deps.getPtyOutputSnapshot(id);
+      if (disposed) return abortAttachAfterDispose();
       await writeMainTerminalData(term, snapshot.data);
+      if (disposed) return abortAttachAfterDispose();
       appliedSeq = snapshot.seq;
       fallbackSnapshotData = snapshot.data;
     }
@@ -468,8 +472,8 @@ export function createMainTerminalRuntimeController(deps: MainTerminalRuntimeCon
     state.replayInProgress = false;
     for (const chunk of pendingChunks) {
       await writeMainTerminalData(term, chunk.data);
+      if (disposed) return abortAttachAfterDispose();
     }
-    if (disposed) return abortAttachAfterDispose();
 
     state.initialOutputReady = true;
     armBottomLock();

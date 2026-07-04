@@ -293,6 +293,69 @@ describe("main-terminal-runtime-controller", () => {
     expect(runtime.state.replayInProgress).toBe(false);
   });
 
+  it("dispose가 attach write 도중 발생하면 남은 write 없이 중단한다", async () => {
+    let resolveWrite!: () => void;
+    const writeCalls: string[] = [];
+    const runtime = createController({
+      storedPtyId: 15,
+      writeTerminalDataImpl: (_term, data) => {
+        writeCalls.push(data);
+        if (writeCalls.length === 1) {
+          return new Promise<void>((resolve) => {
+            resolveWrite = resolve;
+          });
+        }
+        return Promise.resolve();
+      },
+    });
+    runtime.requestCanonicalScreenSnapshot.mockResolvedValueOnce({
+      serialized: "screen",
+      delta: " delta",
+      captureSeq: 3,
+      appliedSeq: 5,
+      cols: 120,
+      rows: 36,
+    });
+
+    const startPromise = runtime.controller.attachOrSpawnPty(runtime.term, {
+      loadingAlreadyShown: true,
+    });
+    await vi.waitFor(() => {
+      expect(writeCalls).toEqual(["screen"]);
+    });
+    runtime.controller.dispose();
+    resolveWrite();
+
+    await expect(startPromise).resolves.toBe(false);
+    // 첫 write 완료 직후 중단 — delta write는 진행하지 않는다.
+    expect(writeCalls).toEqual(["screen"]);
+    expect(runtime.state.livePtyId).toBe(-1);
+  });
+
+  it("dispose가 fallback snapshot 조회 도중 발생하면 write 없이 중단한다", async () => {
+    let resolveSnapshot!: (value: { data: string; seq: number }) => void;
+    const runtime = createController({ storedPtyId: 15 });
+    runtime.getPtyOutputSnapshot.mockImplementationOnce(
+      () =>
+        new Promise<{ data: string; seq: number }>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+
+    const startPromise = runtime.controller.attachOrSpawnPty(runtime.term, {
+      loadingAlreadyShown: true,
+    });
+    await vi.waitFor(() => {
+      expect(runtime.getPtyOutputSnapshot).toHaveBeenCalledTimes(1);
+    });
+    runtime.controller.dispose();
+    resolveSnapshot({ data: "snapshot", seq: 3 });
+
+    await expect(startPromise).resolves.toBe(false);
+    expect(runtime.writes).toEqual([]);
+    expect(runtime.state.livePtyId).toBe(-1);
+  });
+
   it("dispose 후 attachOrSpawnPty 진입은 아무 부수효과 없이 false를 반환한다", async () => {
     const runtime = createController({ storedPtyId: 15 });
     runtime.controller.dispose();
