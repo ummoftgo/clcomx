@@ -417,6 +417,9 @@ class AgentRuntimeStoreImpl implements AgentRuntimeStore {
     this.pending.removeSession(this.sessionHandle);
     this.audit.clear();
     this.transcript = createEmptyTranscriptModel();
+    // dispose는 transcript를 통째로 비우므로 hydrated 플래그가 살아남으면
+    // 빈 transcript 위에서 isReadOnlyHydrated가 true로 남는 모순 상태가 된다.
+    this.readOnlyHydrated = false;
     this.syncReactiveSurface();
   }
 }

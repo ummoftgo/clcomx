@@ -69,7 +69,8 @@
   └─▶ (탭 포커스 시, 지연) 암호화 저장소에서 재개 id 복호화
         ├─ id 있음 & (canResume|canLoad) → resumeSession(replay = canLoad)
         │     ├─ 성공: provider 권위 replay가 캐시 대체, 세션 live 전환(ready/idle) — 이어가기 가능
-        │     └─ 실패: 실패 controller 정리 → fresh startSession + "복원 불가" notice (10 §4.4)
+        │     └─ 실패: 실패 controller 정리 → 캐시 있으면 read-only 히스토리 복귀 + fresh startSession (10 §4.4a)
+        │            캐시 없으면 fresh startSession + "복원 불가" notice (10 §4.4)
         └─ id 없음/복호화 실패/미지원 → 캐시를 read-only 히스토리로 유지 + "이어가려면 새 세션" affordance
 ```
 - **AppHang 대비**: boot 시 모든 direct 탭을 동시에 resume(=process spawn)하지 않는다. 캐시 렌더는 즉시(프로세스 없음), 실제 resume/spawn은 **탭 포커스 트리거**로 지연. 예약된 다중 세션 복원 순차/지연화 작업과 동일 원칙.
@@ -88,7 +89,7 @@
 |---|---|
 | 암호화 키 부재/생성 실패 | id 없음과 동일 취급 → 히스토리-only 폴백 |
 | 복호화 실패(키 회전/손상) | id 무시 → 히스토리-only 폴백 |
-| resume RPC 실패/timeout | 실패 controller 정리 → fresh start + notice(10 §4.4 재사용) |
+| resume RPC 실패/timeout | 실패 controller 정리 → 캐시 있으면 read-only 히스토리 복귀 + fresh start(10 §4.4a), 없으면 fresh start + "복원 불가" notice(10 §4.4) |
 | 캐시 손상/스키마 버전 불일치 | 캐시 무시 → 빈 히스토리(graceful), 신규 세션 정상 |
 | provider `canResume==false && canLoad==false` | resume 시도 안 함 → 히스토리-only + affordance |
 

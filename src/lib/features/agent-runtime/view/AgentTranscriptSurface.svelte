@@ -37,6 +37,7 @@
     deserializeTranscript,
   } from "../service/transcript-cache";
   import type { AgentRuntimePort, SessionStartResult } from "../contracts/runtime-port";
+  import type { TranscriptModel } from "../contracts/transcript";
   import MessageList from "./MessageList.svelte";
   import AgentComposer from "./AgentComposer.svelte";
   import ApprovalModal from "./ApprovalModal.svelte";
@@ -452,6 +453,13 @@
       restoreUnavailable = isRestoreUnavailable(restoreMeta);
     }
     resumeReplayPending = resume?.replay === true;
+    // OQ-16 후속: resume 실패 시 read-only 히스토리로 복귀할 수 있게 캐시 모델을 보관한다.
+    // 아래 discard뿐 아니라 실패 catch의 next.dispose()도 transcript를 통째로 비우므로
+    // (unregisterSession → store.dispose()), replay 유무와 무관하게 start 전에 잡아둬야 한다.
+    // discard/dispose는 모델을 교체할 뿐 변형하지 않으므로 보관한 참조는 안전하다.
+    const stashedHistory: TranscriptModel | null = store.isReadOnlyHydrated
+      ? store.getTranscript()
+      : null;
     // OQ-16 Task 10: 권위 replay가 도착 예정(resume.replay)이면 start 직전에 read-only 캐시를 비워
     // replay가 transcript를 처음부터 재구성하게 한다(같은 provider item id의 중복 렌더 방지). replay가
     // 없는 재개(resume.replay===false)는 provider가 히스토리를 재방출하지 않으므로 캐시를 유지한다.
@@ -470,11 +478,22 @@
       await publishAgentRuntimeMetadata(result, attemptId);
     } catch (error) {
       if (resume) {
-        // cold restore의 replay/resume 실패는 복원 불가 notice를 남기고 새 direct 세션으로 낮춘다(10 §4.4).
+        // cold restore의 replay/resume 실패: 캐시가 있었으면 read-only 히스토리로 복귀하고(10 §4.4a),
+        // 없으면 복원 불가 notice를 남긴다(10 §4.4). 어느 쪽이든 새 direct 세션으로 낮춘다.
         await next.dispose();
         if (controller === next) controller = null;
         discardRuntimeMetadataAttempt(attemptId);
-        restoreUnavailable = true;
+        // 재주입은 반드시 dispose 이후 — dispose가 unregisterSession → store.dispose()로
+        // transcript(부분 replay item 포함)를 통째로 비우므로, 먼저 넣으면 다시 지워진다.
+        // 두 notice는 독립 {#if}라 동시 렌더될 수 있으니 반드시 한쪽만 세운다.
+        if (stashedHistory) {
+          store.hydrateReadOnly(stashedHistory);
+          historyReadOnly = true;
+          restoreUnavailable = false;
+        } else {
+          historyReadOnly = false;
+          restoreUnavailable = true;
+        }
         resumeReplayPending = false;
         try {
           await startFreshRuntime();

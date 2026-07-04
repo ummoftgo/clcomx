@@ -159,7 +159,7 @@ cold restore에서 재개 키가 없거나(암호화 저장소에도 없음/복�
 4. **리컨실리에이션**:
    - resume이 **권위 replay로 성공**하면 `store.discardReadOnlyHydration()`으로 캐시를 비우고 replay로 재구성한다(캐시-replay 중복 없음). 세션은 live로 전환되어 그대로 이어갈 수 있다.
    - resume이 **미지원**(`canResume==false && canLoad==false`)이거나 재개 id 자체가 없는데 **캐시는 존재**하면, `historyReadOnly` notice로 캐시를 read-only 히스토리로 유지한다.
-   - resume **RPC가 실패**하면 §4.4의 기존 fallback(실패 controller 정리 → fresh start + `restoreUnavailable` notice)을 그대로 따른다.
+   - resume **RPC가 실패**하면 실패 controller를 정리한 뒤, **캐시가 있으면** start 전에 보관해 둔 캐시 모델을 재주입해 read-only 히스토리로 복귀하고(`historyReadOnly`, 위 미지원 케이스와 동일 affordance) fresh start로 낮춘다. 재주입은 반드시 controller `dispose()` **이후**여야 한다 — dispose가 `unregisterSession` → `store.dispose()`로 transcript(부분 replay item 포함)를 통째로 비우기 때문이다. **캐시가 없으면** §4.4의 기존 fallback(fresh start + `restoreUnavailable` notice)을 따른다.
 
 **[중요] `historyReadOnly`는 composer를 잠그지 않는다**: `historyReadOnly` notice는 "이전 대화를 읽기 전용으로 보여준다"는 뜻이지 입력을 막는다는 뜻이 아니다. 이 notice가 뜬 아래에서는 **새 fresh 세션이 정상적으로 시작**되고, 그 fresh 세션의 시작이 끝나면(store status가 `ready`/`idle`/`running`) composer는 활성화되어 사용자가 바로 이어 입력할 수 있다. 즉 "이어가려면 새 세션"의 실제 동작은 "read-only 히스토리 아래 새 세션이 곧바로 열려 있다"이며, composer가 비활성인 구간은 그 fresh 세션이 아직 시작 중인 짧은 순간뿐이다(§4.4a 캐시 유무와 무관하게 항상 있는 일반적인 세션 시작 지연).
 

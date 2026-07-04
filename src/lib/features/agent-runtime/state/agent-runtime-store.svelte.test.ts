@@ -404,4 +404,34 @@ describe("agent-runtime-store — hydrateReadOnly(OQ-16 cold restart cache hydra
     expect(s.getTranscript().itemsById.size).toBe(0);
     expect(s.isReadOnlyHydrated).toBe(false);
   });
+
+  it("dispose는 transcript와 함께 hydrated 플래그도 비운다(빈 transcript 위 stale-true 방지)", () => {
+    const s = store();
+    const model: TranscriptModel = {
+      visibleItemIds: ["cached-1"],
+      itemVersions: {},
+      itemsById: new Map([
+        [
+          "cached-1",
+          {
+            type: "message" as const,
+            id: "cached-1",
+            role: "agent" as const,
+            content: [{ type: "text" as const, text: "cached history" }],
+            streaming: false,
+            ref: codexRef({ itemId: "cached-1" }),
+          },
+        ],
+      ]),
+      turnsById: new Map(),
+      tombstones: { lru: [], droppedLateEventCount: 0 },
+    };
+    s.hydrateReadOnly(model);
+    expect(s.isReadOnlyHydrated).toBe(true);
+
+    s.dispose();
+
+    expect(s.getTranscript().itemsById.size).toBe(0);
+    expect(s.isReadOnlyHydrated).toBe(false);
+  });
 });
