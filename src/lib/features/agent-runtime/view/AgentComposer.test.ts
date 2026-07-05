@@ -608,6 +608,18 @@ describe("AgentComposer", () => {
     await waitFor(() => expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerOptionsToggle)));
   });
 
+  it("approval selector: confirm 포커스 도달 전 비-ready 전환이 와도 포커스를 토글로 복원한다(레이스)", async () => {
+    const { getByTestId, queryByTestId, rerender } = render(AgentComposer, {
+      props: approvalProps(),
+    });
+    await openOptions(getByTestId);
+    // never 선택 직후(accept 포커스 도달을 기다리지 않고) 곧바로 running으로 전환 — tick 레이스 재현.
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), { target: { value: "never" } });
+    await rerender(approvalProps({ status: "running" }));
+    expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerOptionsToggle)));
+  });
+
   it("mode selector: restoring 자동취소로 배너가 닫히면 포커스를 토글로 복원한다", async () => {
     const modeProps = (extra: Record<string, unknown> = {}) => ({
       status: "ready" as const,

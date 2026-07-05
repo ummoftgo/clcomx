@@ -208,7 +208,7 @@
   async function confirmHighRiskMode(): Promise<void> {
     const modeId = pendingHighRiskModeId;
     pendingHighRiskModeId = null;
-    optionsToggleEl?.focus(); // 배너 종료 후 포커스를 토글로 복원.
+    restoreFocusToToggle(); // 배너 종료 후 포커스를 토글로 복원.
     // 확인 배너가 떠 있는 사이 상태가 바뀌었을 수 있으므로 셀렉터와 동일한 readiness/후보 유효성을
     // 재검사한다 — active turn/승인 대기/복원 중에는 고위험 전환을 보내지 않는다(Codex 13차).
     if (!modeId || !modeSelectEnabled) return;
@@ -218,7 +218,7 @@
 
   function cancelHighRiskMode(): void {
     pendingHighRiskModeId = null;
-    optionsToggleEl?.focus();
+    restoreFocusToToggle();
   }
 
   // ②-C: turn 옵션 통합 popover + Codex approval policy override.
@@ -253,10 +253,21 @@
     }
   }
 
+  // 고위험 pending이 옵션 UI에서 생성됐음을 표시한다 — 자동취소가 confirm 포커스 도달 전(tick 레이스)에
+  // 발생해도 포커스 owner(옵션 UI)로 복원할지 판단하는 플래그다(Codex medium 9차).
+  let pendingConfirmOwnsFocus = false;
+
   /** 고위험 확인 배너가 뜨면 accept 버튼으로 포커스를 옮긴다(키보드/SR 사용자 경로 유지). */
   async function focusPendingConfirm(kind: "mode" | "approval"): Promise<void> {
+    pendingConfirmOwnsFocus = true;
     await tick();
     (kind === "mode" ? modeConfirmAcceptEl : approvalConfirmAcceptEl)?.focus();
+  }
+
+  /** 확인 배너 종료(확인/취소) 후 포커스를 토글로 복원한다. */
+  function restoreFocusToToggle(): void {
+    pendingConfirmOwnsFocus = false;
+    optionsToggleEl?.focus();
   }
 
   function closeOptions(): void {
@@ -311,7 +322,7 @@
   function confirmHighRiskApproval(): void {
     const policyId = pendingHighRiskApprovalId;
     pendingHighRiskApprovalId = null;
-    optionsToggleEl?.focus(); // 배너 종료 후 포커스를 토글로 복원.
+    restoreFocusToToggle(); // 배너 종료 후 포커스를 토글로 복원.
     // 배너가 떠 있는 사이 상태가 바뀌었을 수 있으므로 셀렉터와 동일한 readiness/후보 유효성을 재검사한다.
     if (!policyId || !modeSelectEnabled) return;
     // sentinel은 후보 목록 밖의 정당한 값이므로 별도 허용한다.
@@ -323,7 +334,7 @@
 
   function cancelHighRiskApproval(): void {
     pendingHighRiskApprovalId = null;
-    optionsToggleEl?.focus();
+    restoreFocusToToggle();
   }
 
   // 셀렉터가 비활성(비 ready/idle·restoring·pending)이 되면 미확정 고위험 확인 배너를 취소한다 —
@@ -331,13 +342,16 @@
   $effect(() => {
     if (!modeSelectEnabled) {
       const hadPending = pendingHighRiskModeId !== null || pendingHighRiskApprovalId !== null;
-      // DOM 패치 전이라 배너/포커스가 아직 살아 있다 — 자동취소로 확인 버튼이 제거되면 포커스가 body로
-      // 떨어지므로, 현재 포커스가 확인 배너 안이면 배너 unmount 후 토글로 복원한다(Codex medium 8차).
+      // 자동취소로 확인 버튼(또는 아직 confirm 포커스 전이면 옵션 select)이 제거되면 포커스가 body로
+      // 떨어진다. pendingConfirmOwnsFocus는 pending이 옵션 UI에서 생성됐음을 나타내므로, confirm 포커스
+      // 도달 여부와 무관하게(tick 레이스 포함) 배너 unmount 후 토글로 복원한다(Codex medium 8·9차).
       const active = document.activeElement;
       const focusInConfirm = active instanceof HTMLElement && !!active.closest(".high-risk-confirm");
+      const shouldRestore = hadPending && (focusInConfirm || pendingConfirmOwnsFocus);
       if (pendingHighRiskModeId !== null) pendingHighRiskModeId = null;
       if (pendingHighRiskApprovalId !== null) pendingHighRiskApprovalId = null;
-      if (hadPending && focusInConfirm) {
+      if (shouldRestore) {
+        pendingConfirmOwnsFocus = false;
         void tick().then(() => optionsToggleEl?.focus());
       }
     }
