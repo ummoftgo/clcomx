@@ -16,6 +16,7 @@
     AgentSessionModeOption,
     AgentSessionStatus,
   } from "../contracts/normalized";
+  import { isHighRiskSessionModeId } from "../contracts/normalized";
   import type { ComposerCapabilities } from "../contracts/transcript";
 
   const DEFAULT_CAPABILITIES: ComposerCapabilities = {
@@ -128,6 +129,22 @@
     !restoring && !modeChangePending && (status === "ready" || status === "idle"),
   );
 
+  // 고위험 모드(bypassPermissions 등) 진입은 별도 확인을 거친다 — provider가 request 없이 tool을
+  // allow하는 모드이므로 진입 자체를 escalation 경계로 취급한다(Codex 12차). 확인 대기 중인 모드 id.
+  let pendingHighRiskModeId = $state<string | null>(null);
+
+  async function requestModeChange(nextModeId: string): Promise<void> {
+    if (!onModeChange || nextModeId === (currentModeId ?? "")) return;
+    modeChangePending = true;
+    try {
+      await onModeChange(nextModeId);
+    } catch {
+      // 거부/실패: 셀렉터는 이미 권위 값으로 표시 중이므로 추가 롤백 불필요.
+    } finally {
+      modeChangePending = false;
+    }
+  }
+
   async function handleModeChange(event: Event): Promise<void> {
     const select = event.target as HTMLSelectElement;
     const nextModeId = select.value;
@@ -136,14 +153,22 @@
     // 갱신해 reactive value 바인딩이 옮기고, 실패/미확정이면 계속 권위 값에 머문다(desync 없음).
     select.value = currentModeId ?? "";
     if (!onModeChange || nextModeId === (currentModeId ?? "")) return;
-    modeChangePending = true;
-    try {
-      await onModeChange(nextModeId);
-    } catch {
-      // 거부/실패: 이미 권위 값으로 표시 중이므로 추가 롤백 불필요.
-    } finally {
-      modeChangePending = false;
+    if (isHighRiskSessionModeId(nextModeId)) {
+      // 고위험 진입: 즉시 보내지 않고 확인 게이트를 띄운다.
+      pendingHighRiskModeId = nextModeId;
+      return;
     }
+    await requestModeChange(nextModeId);
+  }
+
+  async function confirmHighRiskMode(): Promise<void> {
+    const modeId = pendingHighRiskModeId;
+    pendingHighRiskModeId = null;
+    if (modeId) await requestModeChange(modeId);
+  }
+
+  function cancelHighRiskMode(): void {
+    pendingHighRiskModeId = null;
   }
 
   const placeholder = $derived(
@@ -668,6 +693,36 @@
       {/if}
     </div>
   {/if}
+  {#if pendingHighRiskModeId}
+    <div
+      class="high-risk-confirm"
+      role="alertdialog"
+      aria-label={$t("agentRuntime.composer.highRiskModeTitle")}
+      data-testid={TEST_IDS.agentComposerModeConfirm}
+    >
+      <span class="high-risk-confirm-text">
+        {$t("agentRuntime.composer.highRiskModeConfirm", { values: { mode: pendingHighRiskModeId } })}
+      </span>
+      <div class="high-risk-confirm-actions">
+        <button
+          type="button"
+          class="high-risk-confirm-btn danger"
+          data-testid={TEST_IDS.agentComposerModeConfirmAccept}
+          onclick={confirmHighRiskMode}
+        >
+          {$t("agentRuntime.composer.highRiskModeAccept")}
+        </button>
+        <button
+          type="button"
+          class="high-risk-confirm-btn"
+          data-testid={TEST_IDS.agentComposerModeConfirmCancel}
+          onclick={cancelHighRiskMode}
+        >
+          {$t("common.actions.cancel")}
+        </button>
+      </div>
+    </div>
+  {/if}
   <div class="composer-footer">
     <div class="composer-indicators">
       <span class="provider-label" title={providerLabel}>{providerLabel}</span>
@@ -912,6 +967,36 @@
     color: inherit;
     font-size: var(--ui-font-size-xs);
     max-width: 12ch;
+  }
+  .high-risk-confirm {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.4rem;
+    padding: 0.4rem 0.55rem;
+    border-radius: var(--ui-radius-md, 0.4rem);
+    border: 1px solid var(--ui-danger-border, rgba(220, 80, 80, 0.5));
+    background: var(--ui-danger-bg, rgba(220, 80, 80, 0.08));
+    font-size: var(--ui-font-size-sm);
+  }
+  .high-risk-confirm-actions {
+    display: inline-flex;
+    gap: 0.4rem;
+  }
+  .high-risk-confirm-btn {
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--ui-radius-sm, 0.25rem);
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.35));
+    background: var(--ui-bg-elevated, transparent);
+    color: inherit;
+    font-size: var(--ui-font-size-xs);
+    cursor: pointer;
+  }
+  .high-risk-confirm-btn.danger {
+    border-color: var(--ui-danger-border, rgba(220, 80, 80, 0.6));
+    color: var(--ui-danger-text, #d05050);
   }
   .composer-controls {
     display: flex;

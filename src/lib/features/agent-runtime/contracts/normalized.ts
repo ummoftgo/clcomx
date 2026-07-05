@@ -140,6 +140,18 @@ export type AgentEvent =
     };
 
 /** transcript가 아닌 세션 metadata badge/persistence patch. provider id·token 같은 비밀은 담지 않는다. */
+/**
+ * 고위험 세션 모드 id(진입 시 명시 확인 + 승인 severity escalation 대상).
+ * provider가 request 없이 tool을 allow하는 모드이므로 진입 자체를 escalation 경계로 취급한다.
+ * adapter(severity 판정)와 composer(진입 확인 게이트)가 공유한다.
+ */
+export const HIGH_RISK_SESSION_MODE_IDS = ["bypassPermissions"] as const;
+
+/** 주어진 모드 id가 고위험(진입 확인/escalation 대상)인지. */
+export function isHighRiskSessionModeId(modeId: string | undefined): boolean {
+  return modeId !== undefined && (HIGH_RISK_SESSION_MODE_IDS as readonly string[]).includes(modeId);
+}
+
 /** 세션 모드 선택 후보 1건(composer 모드 셀렉터 소스). 비밀 아님(id/표시명만). */
 export interface AgentSessionModeOption {
   /** 모드 id(예: plan/acceptEdits/default). set 요청에 그대로 쓴다. */

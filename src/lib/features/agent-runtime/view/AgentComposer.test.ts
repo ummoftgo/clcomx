@@ -227,6 +227,83 @@ describe("AgentComposer", () => {
     expect((getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement).disabled).toBe(true);
   });
 
+  it("mode selector: 고위험 모드(bypassPermissions) 진입은 확인 후에만 요청한다", async () => {
+    const onModeChange = vi.fn().mockResolvedValue(undefined);
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "bypassPermissions", name: "Bypass" },
+        ],
+        currentModeId: "default",
+        onModeChange,
+      },
+    });
+
+    const select = getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "bypassPermissions" } });
+    // 즉시 요청하지 않고 확인 게이트를 띄운다.
+    expect(onModeChange).not.toHaveBeenCalled();
+    expect(getByTestId(TEST_IDS.agentComposerModeConfirm)).toBeTruthy();
+    expect(select.value).toBe("default"); // 확인 전까지 셀렉터는 권위 값 유지.
+
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerModeConfirmAccept));
+    expect(onModeChange).toHaveBeenCalledWith("bypassPermissions");
+    expect(queryByTestId(TEST_IDS.agentComposerModeConfirm)).toBeNull();
+  });
+
+  it("mode selector: 고위험 진입 확인을 취소하면 요청하지 않는다", async () => {
+    const onModeChange = vi.fn().mockResolvedValue(undefined);
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "bypassPermissions", name: "Bypass" },
+        ],
+        currentModeId: "default",
+        onModeChange,
+      },
+    });
+
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), {
+      target: { value: "bypassPermissions" },
+    });
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerModeConfirmCancel));
+    expect(onModeChange).not.toHaveBeenCalled();
+    expect(queryByTestId(TEST_IDS.agentComposerModeConfirm)).toBeNull();
+  });
+
+  it("mode selector: 저위험 모드는 확인 없이 바로 요청한다", async () => {
+    const onModeChange = vi.fn().mockResolvedValue(undefined);
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+        currentModeId: "default",
+        onModeChange,
+      },
+    });
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), {
+      target: { value: "plan" },
+    });
+    expect(onModeChange).toHaveBeenCalledWith("plan");
+    expect(queryByTestId(TEST_IDS.agentComposerModeConfirm)).toBeNull();
+  });
+
   it("mode selector: availableModes가 없으면(미지원 provider) 셀렉터를 노출하지 않는다", () => {
     const { queryByTestId } = render(AgentComposer, {
       props: {

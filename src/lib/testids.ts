@@ -70,6 +70,9 @@ export const TEST_IDS = {
   agentComposerResourcePalette: "agent-composer-resource-palette",
   agentComposerResourceOption: "agent-composer-resource-option",
   agentComposerModeSelect: "agent-composer-mode-select",
+  agentComposerModeConfirm: "agent-composer-mode-confirm",
+  agentComposerModeConfirmAccept: "agent-composer-mode-confirm-accept",
+  agentComposerModeConfirmCancel: "agent-composer-mode-confirm-cancel",
   // Stage 2: tool/command/diff 카드 + approval + replay (08 §4·§7, T5.3·T5.4·T5.6)
   agentToolCallCard: "agent-tool-call-card",
   agentToolCallToggle: "agent-tool-call-toggle",

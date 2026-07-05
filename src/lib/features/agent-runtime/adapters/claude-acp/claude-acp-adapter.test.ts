@@ -441,6 +441,38 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "bypassPermissions" });
   });
 
+  it("setSessionMode: config echo가 set_mode 응답보다 먼저 와도 체인이 진행된다(데드락 없음)", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "acceptEdits", name: "Accept Edits" }] },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+    const setModeReqs = () => h.outbound.filter((m) => "method" in m && m.method === "session/set_mode") as { id: string | number }[];
+
+    // 실제 Claude ACP 순서 재현: set_mode 전송 → config_option_update echo가 먼저 → 그 뒤 {} 응답.
+    const first = adapter.setSessionMode!("A", "plan");
+    const planReq = (await h.waitForOutbound("session/set_mode")) as { id: string | number };
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { sessionId: "sess-1", update: { sessionUpdate: "config_option_update", configOptions: [{ id: "mode", name: "Mode", type: "select", currentValue: "plan", options: [{ id: "plan", name: "Plan" }] }] } },
+    });
+    h.inject({ jsonrpc: "2.0", id: planReq.id, result: {} });
+    await first;
+
+    // echo가 응답보다 먼저 왔지만 waiter가 RPC 전에 등록돼 있어 소비됐다 → 체인이 풀려 다음 전환이 진행된다.
+    const second = adapter.setSessionMode!("A", "acceptEdits");
+    await vi.waitFor(() => expect(setModeReqs().length).toBe(2));
+    h.inject({ jsonrpc: "2.0", id: setModeReqs()[1].id, result: {} });
+    await second;
+  });
+
   it("setSessionMode: availableModes에 없는 모드는 wire 전송 없이 거부한다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);

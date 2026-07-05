@@ -16,6 +16,7 @@ import type {
   ProviderRef,
   TokenUsage,
 } from "../../contracts/normalized";
+import { isHighRiskSessionModeId } from "../../contracts/normalized";
 import type {
   AgentRuntimePort,
   AgentSessionHandle,
@@ -297,10 +298,8 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     }
   }
 
-  /** severity 보수 판정에 쓰는 고위험 모드 판정(classifySeverity와 동일 기준). */
-  function isHighRiskMode(mode: string | undefined): boolean {
-    return mode === "bypassPermissions";
-  }
+  /** severity 보수 판정에 쓰는 고위험 모드 판정(공유 상수 — composer 진입 확인과 동일 기준). */
+  const isHighRiskMode = isHighRiskSessionModeId;
 
   /** 권위 mode echo 도착 — 대기 중인 전환 1건의 확정으로 소비한다(직렬화라 최대 1개 대기). */
   function consumeModeEchoConfirmation(rt: ClaudeAcpSessionRuntime): void {
@@ -308,9 +307,24 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (waiter) waiter();
   }
 
-  /** 다음 권위 mode echo까지 대기하는 promise. echo 도착 시 consumeModeEchoConfirmation이 resolve한다. */
-  function waitForNextModeEcho(rt: ClaudeAcpSessionRuntime): Promise<void> {
-    return new Promise<void>((resolve) => rt.modeEchoWaiters.push(resolve));
+  /**
+   * 다음 권위 mode echo까지 대기하는 waiter를 **즉시 등록**하고 promise+dispose를 돌려준다.
+   * [중요] 실제 provider(Claude ACP)는 set_mode의 {} 응답 전에 config_option_update를 먼저 보낼 수
+   * 있으므로, waiter는 RPC 전송 전에 등록해야 echo를 놓쳐 체인이 영구 대기하는 것을 막는다(Codex 12차).
+   * dispose는 소비되지 않은 waiter를 큐에서 제거하고 매달린 await를 풀어준다(RPC 실패 시 leak/오소비 방지).
+   */
+  function registerModeEchoWaiter(rt: ClaudeAcpSessionRuntime): { promise: Promise<void>; dispose: () => void } {
+    let resolveFn!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      resolveFn = resolve;
+    });
+    rt.modeEchoWaiters.push(resolveFn);
+    const dispose = () => {
+      const i = rt.modeEchoWaiters.indexOf(resolveFn);
+      if (i >= 0) rt.modeEchoWaiters.splice(i, 1);
+      resolveFn();
+    };
+    return { promise, dispose };
   }
 
   /** ACP session/update에서 metadata로 노출할 mode patch를 추출한다. */
@@ -718,17 +732,21 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       // 전송 전(in-flight)부터 보수 반영 — provider가 set_mode 응답 전에 모드를 적용하고 승인 요청을
       // 먼저 보내도 그 창의 승인을 escalation으로 판정한다(Codex 7차).
       if (isHighRisk) rt.pendingHighRiskMode = true;
+      // echo waiter를 RPC **전에** 등록한다 — provider가 set_mode 응답 전에 config_option_update를
+      // 먼저 보내도 그 echo를 놓치지 않고 체인이 진행되게 한다(Codex 12차 데드락 방지).
+      const echo = registerModeEchoWaiter(rt);
       try {
         await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
       } catch (err) {
         if (isHighRisk) rt.pendingHighRiskMode = false; // 실패 — 이 전환의 보수 반영 해제.
+        echo.dispose(); // 소비되지 않은 waiter 제거(오소비/leak 방지).
         rpcReject(err);
         return;
       }
       rpcResolve(); // 수락됨 — UI(composer) 즉시 해제.
       // 고위험이면 pendingHighRiskMode를 유지한 채 다음 권위 echo까지 hold한다. 직렬화라 그동안
       // 다음 전환은 시작되지 않으므로 미확정 전환은 항상 최대 1건이다.
-      await waitForNextModeEcho(rt);
+      await echo.promise;
       rt.pendingHighRiskMode = false;
     };
     rt.modeChangeChain = rt.modeChangeChain.then(runOne, runOne);
