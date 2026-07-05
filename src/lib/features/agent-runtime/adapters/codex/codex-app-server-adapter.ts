@@ -20,7 +20,7 @@ import type {
   SendPromptInput,
   SessionStartResult,
 } from "../../contracts/runtime-port";
-import type { AgentEvent, ApprovalDecision, ProviderRef } from "../../contracts/normalized";
+import type { AgentEvent, ApprovalDecision, ProviderRef, AgentModelOption, AgentEffortOption } from "../../contracts/normalized";
 import type { UnlistenFn } from "../../../../tauri/event";
 import type {
   RuntimeId,
@@ -95,6 +95,9 @@ interface CodexSessionRuntime {
    * 발동해 shutdown 중 process_exited가 누락된다(분리 필수).
    */
   tearingDown: boolean;
+  /** 다음 turn 이후에 적용할 model/effort override(②-B, 세션 메모리 범위). undefined면 provider default. */
+  turnModel?: string;
+  turnEffort?: string;
 }
 
 /** thread/start·thread/resume·thread/read response의 공통 부분(thread 보유). */
@@ -515,10 +518,17 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       });
       return;
     }
-    // v1: threadId/input만 전송, override 미설정(OQ-20).
+    // 사용자가 model/effort override를 설정했으면 turn/start에 실어 이 turn 이후에 적용한다(②-B).
+    // 미설정이면 provider/server default(OQ-20 기존 동작 유지).
+    const turnParams: { threadId: string; input: typeof codexInput; model?: string; effort?: string } = {
+      threadId,
+      input: codexInput,
+    };
+    if (rt.turnModel !== undefined) turnParams.model = rt.turnModel;
+    if (rt.turnEffort !== undefined) turnParams.effort = rt.turnEffort;
     let resp: { turn: { id: string } };
     try {
-      resp = (await rpcRequest(rt, "turn/start", { threadId, input: codexInput })) as {
+      resp = (await rpcRequest(rt, "turn/start", turnParams)) as {
         turn: { id: string };
       };
     } catch (err) {
@@ -751,6 +761,58 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
   }
 
 
+  /** model/list — 사용 가능한 모델 + effort 후보를 비밀 아닌 표시 정보로 정규화한다(②-B). */
+  async function listModels(handle: AgentSessionHandle): Promise<AgentModelOption[]> {
+    const rt = sessions.get(handle);
+    if (!rt) throw new Error("codex adapter: unknown session handle");
+    const resp = (await rpcRequest(rt, "model/list", {})) as {
+      data?: Array<{
+        id?: unknown;
+        model?: unknown;
+        displayName?: unknown;
+        hidden?: unknown;
+        supportedReasoningEfforts?: Array<{ reasoningEffort?: unknown; description?: unknown }>;
+        defaultReasoningEffort?: unknown;
+      }>;
+    };
+    const models: AgentModelOption[] = [];
+    for (const m of resp.data ?? []) {
+      if (m.hidden === true) continue;
+      const id = typeof m.id === "string" ? m.id : typeof m.model === "string" ? m.model : undefined;
+      if (!id) continue;
+      const label = typeof m.displayName === "string" && m.displayName.trim() ? m.displayName : id;
+      const efforts: AgentEffortOption[] = [];
+      for (const e of m.supportedReasoningEfforts ?? []) {
+        if (typeof e.reasoningEffort === "string") {
+          efforts.push({
+            id: e.reasoningEffort,
+            ...(typeof e.description === "string" ? { description: e.description } : {}),
+          });
+        }
+      }
+      models.push({
+        id,
+        label,
+        efforts,
+        ...(typeof m.defaultReasoningEffort === "string"
+          ? { defaultEffort: m.defaultReasoningEffort }
+          : {}),
+      });
+    }
+    return models;
+  }
+
+  /** 다음 turn 이후에 적용할 model/effort override를 세션 메모리에 저장한다(②-B). null은 해제. */
+  function setTurnOptions(
+    handle: AgentSessionHandle,
+    options: { model?: string | null; effort?: string | null },
+  ): void {
+    const rt = sessions.get(handle);
+    if (!rt) return;
+    if (options.model !== undefined) rt.turnModel = options.model ?? undefined;
+    if (options.effort !== undefined) rt.turnEffort = options.effort ?? undefined;
+  }
+
   return {
     startSession,
     resumeSession,
@@ -758,6 +820,8 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     searchResources,
     cancelTurn,
     respondApproval,
+    listModels,
+    setTurnOptions,
     subscribeEvents,
     shutdown,
   };

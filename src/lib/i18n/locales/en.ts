@@ -461,6 +461,8 @@ const en = {
       commandPalette: "Commands",
       commandResume: "Resume a previous session",
       modeSelect: "Change session mode",
+      modelSelect: "Select model",
+      effortSelect: "Select reasoning effort",
       highRiskModeTitle: "Confirm high-risk mode",
       highRiskModeConfirm: "The '{mode}' mode can allow tool execution without approval. Continue?",
       highRiskModeAccept: "Switch to high-risk mode",

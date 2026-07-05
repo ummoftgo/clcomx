@@ -343,6 +343,71 @@ describe("AgentComposer", () => {
     expect(queryByTestId(TEST_IDS.agentComposerModeConfirm)).toBeNull();
   });
 
+  it("model selector: availableModels가 있으면 모델/effort 셀렉터를 노출하고 변경을 콜백한다", async () => {
+    const onModelChange = vi.fn();
+    const onEffortChange = vi.fn();
+    const { getByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "codex",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModels: [
+          { id: "gpt-a", label: "GPT A", efforts: [{ id: "low" }, { id: "high" }], defaultEffort: "low" },
+          { id: "gpt-b", label: "GPT B", efforts: [{ id: "medium" }], defaultEffort: "medium" },
+        ],
+        selectedModel: "gpt-a",
+        selectedEffort: "low",
+        modelEfforts: [{ id: "low" }, { id: "high" }],
+        onModelChange,
+        onEffortChange,
+      },
+    });
+
+    const modelSelect = getByTestId(TEST_IDS.agentComposerModelSelect) as HTMLSelectElement;
+    expect(modelSelect.value).toBe("gpt-a");
+    await fireEvent.change(modelSelect, { target: { value: "gpt-b" } });
+    expect(onModelChange).toHaveBeenCalledWith("gpt-b");
+
+    const effortSelect = getByTestId(TEST_IDS.agentComposerEffortSelect) as HTMLSelectElement;
+    expect(effortSelect.value).toBe("low");
+    await fireEvent.change(effortSelect, { target: { value: "high" } });
+    expect(onEffortChange).toHaveBeenCalledWith("high");
+  });
+
+  it("model selector: availableModels가 없으면(Claude 등) 모델/effort 셀렉터를 노출하지 않는다", () => {
+    const { queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+      },
+    });
+    expect(queryByTestId(TEST_IDS.agentComposerModelSelect)).toBeNull();
+    expect(queryByTestId(TEST_IDS.agentComposerEffortSelect)).toBeNull();
+  });
+
+  it("model selector: 선택 모델이 effort를 지원하지 않으면 effort 셀렉터를 감춘다", () => {
+    const { queryByTestId, getByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "codex",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModels: [{ id: "gpt-a", label: "GPT A", efforts: [] }],
+        selectedModel: "gpt-a",
+        modelEfforts: [],
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+      },
+    });
+    expect(getByTestId(TEST_IDS.agentComposerModelSelect)).toBeTruthy();
+    expect(queryByTestId(TEST_IDS.agentComposerEffortSelect)).toBeNull();
+  });
+
   it("mode selector: availableModes가 없으면(미지원 provider) 셀렉터를 노출하지 않는다", () => {
     const { queryByTestId } = render(AgentComposer, {
       props: {

@@ -17,6 +17,7 @@
 import type {
   AgentContent,
   AgentEvent,
+  AgentModelOption,
   AgentRuntimeMetadataUpdate,
   ApprovalDecision,
 } from "../contracts/normalized";
@@ -96,6 +97,10 @@ export interface AgentRuntimeController {
   cancel(turnId?: string): Promise<void>;
   /** 세션 모드 전환(지원 provider만). 미지원이면 no-op. */
   setSessionMode(modeId: string): Promise<void>;
+  /** 사용 가능한 모델 목록 조회(지원 provider만). 미지원이면 빈 배열. */
+  listModels(): Promise<AgentModelOption[]>;
+  /** model/effort turn override 설정(지원 provider만). 미지원이면 no-op. */
+  setTurnOptions(options: { model?: string | null; effort?: string | null }): void;
   /** auto-follow 토글(store 표면 갱신). */
   setAutoFollow(value: boolean): void;
   /** teardown: unsubscribe + shutdown(멱등). */
@@ -212,6 +217,16 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
   async setSessionMode(modeId: string): Promise<void> {
     if (!this.port?.setSessionMode || !this.sessionHandle || this.disposed) return;
     await this.port.setSessionMode(this.sessionHandle, modeId);
+  }
+
+  async listModels(): Promise<AgentModelOption[]> {
+    if (!this.port?.listModels || !this.sessionHandle || this.disposed) return [];
+    return this.port.listModels(this.sessionHandle);
+  }
+
+  setTurnOptions(options: { model?: string | null; effort?: string | null }): void {
+    if (!this.port?.setTurnOptions || !this.sessionHandle || this.disposed) return;
+    this.port.setTurnOptions(this.sessionHandle, options);
   }
 
   setAutoFollow(value: boolean): void {

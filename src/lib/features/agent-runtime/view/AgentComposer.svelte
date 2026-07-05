@@ -13,6 +13,8 @@
   import type {
     AgentCommand,
     AgentContent,
+    AgentEffortOption,
+    AgentModelOption,
     AgentSessionModeOption,
     AgentSessionStatus,
   } from "../contracts/normalized";
@@ -77,6 +79,18 @@
     /** 모드 셀렉터 변경 콜백(지원 provider만 전달). 거부/실패 시 reject하는 promise를 돌려주면
      *  셀렉터를 권위 값으로 롤백한다. */
     onModeChange?: (modeId: string) => void | Promise<void>;
+    /** 모델 후보(있으면 모델 셀렉터 노출, Codex 전용). */
+    availableModels?: AgentModelOption[];
+    /** 현재 선택된 모델 id. */
+    selectedModel?: string;
+    /** 현재 선택된 effort id. */
+    selectedEffort?: string;
+    /** 선택된 모델이 지원하는 effort 후보(있으면 effort 셀렉터 노출). */
+    modelEfforts?: AgentEffortOption[];
+    /** 모델 셀렉터 변경 콜백. */
+    onModelChange?: (modelId: string) => void;
+    /** effort 셀렉터 변경 콜백. */
+    onEffortChange?: (effortId: string) => void;
     /** provider prompt capability. image 버튼 노출과 전송 gate에 사용한다. */
     capabilities?: ComposerCapabilities;
     /** `@` mention query를 workspace/resource 후보로 변환하는 검색 함수. */
@@ -95,6 +109,12 @@
     availableModes,
     currentModeId,
     onModeChange,
+    availableModels,
+    selectedModel,
+    selectedEffort,
+    modelEfforts,
+    onModelChange,
+    onEffortChange,
     capabilities = DEFAULT_CAPABILITIES,
     resourceSearch,
     restoring = false,
@@ -754,6 +774,36 @@
         </select>
       {:else if visibleModeLabel}
         <span class="mode-label" title={visibleModeLabel}>{visibleModeLabel}</span>
+      {/if}
+      {#if onModelChange && availableModels && availableModels.length > 0}
+        <!-- 모델 셀렉터(Codex 전용). model/list 후보에서 선택. -->
+        <select
+          class="mode-select"
+          data-testid={TEST_IDS.agentComposerModelSelect}
+          value={selectedModel ?? ""}
+          disabled={!modeSelectEnabled}
+          aria-label={$t("agentRuntime.composer.modelSelect")}
+          onchange={(event) => onModelChange?.((event.target as HTMLSelectElement).value)}
+        >
+          {#each availableModels as model (model.id)}
+            <option value={model.id}>{model.label}</option>
+          {/each}
+        </select>
+      {/if}
+      {#if onEffortChange && modelEfforts && modelEfforts.length > 0}
+        <!-- effort 셀렉터(선택된 모델이 지원할 때만). -->
+        <select
+          class="mode-select"
+          data-testid={TEST_IDS.agentComposerEffortSelect}
+          value={selectedEffort ?? ""}
+          disabled={!modeSelectEnabled}
+          aria-label={$t("agentRuntime.composer.effortSelect")}
+          onchange={(event) => onEffortChange?.((event.target as HTMLSelectElement).value)}
+        >
+          {#each modelEfforts as effort (effort.id)}
+            <option value={effort.id} title={effort.description ?? ""}>{effort.id}</option>
+          {/each}
+        </select>
       {/if}
     </div>
     <div class="composer-controls">

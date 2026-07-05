@@ -6,7 +6,7 @@
  * UI/store는 이 interface만 본다(03 §Agent Runtime Port).
  */
 
-import type { AgentEvent, AgentContent, ApprovalDecision, ProviderRef, AgentProvider, AgentSessionModeOption } from "./normalized";
+import type { AgentEvent, AgentContent, ApprovalDecision, ProviderRef, AgentProvider, AgentSessionModeOption, AgentModelOption } from "./normalized";
 import type { ComposerCapabilities } from "./transcript";
 import type { UnlistenFn } from "../../../tauri/event"; // src/lib/tauri/event.ts (프로젝트는 상대경로 컨벤션)
 
@@ -120,6 +120,22 @@ export interface AgentRuntimePort {
    * current_mode_update 또는 result로 새 모드를 알리고, adapter가 runtime_metadata_changed로 반영한다.
    */
   setSessionMode?(sessionHandle: AgentSessionHandle, modeId: string): Promise<void>;
+
+  /**
+   * 사용 가능한 모델 목록 조회(Codex model/list). 미지원 provider(Claude v1)는 이 메서드를 정의하지 않는다.
+   * 반환은 비밀 아닌 표시 정보(id/label/effort 후보)만 담는다.
+   */
+  listModels?(sessionHandle: AgentSessionHandle): Promise<AgentModelOption[]>;
+
+  /**
+   * 다음 turn 이후에 적용할 model/effort override를 설정한다(Codex turn/start override).
+   * 미지원 provider는 이 메서드를 정의하지 않는다. 세션 메모리 범위(영속 안 함) — 새 세션은 기본값.
+   * undefined 필드는 변경하지 않고, null은 해당 override 해제를 뜻한다.
+   */
+  setTurnOptions?(
+    sessionHandle: AgentSessionHandle,
+    options: { model?: string | null; effort?: string | null },
+  ): void;
 
   /**
    * 세션 이벤트 구독. 반환된 UnlistenFn으로 해제.

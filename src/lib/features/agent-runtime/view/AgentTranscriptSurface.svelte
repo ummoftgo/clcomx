@@ -254,6 +254,8 @@
     }
     publishAgentRuntimeStatus(store.status);
     await persistAgentRuntimeMetadata(metadata);
+    // ②-B: 세션이 준비되면 모델 목록을 채운다(Codex만; best-effort — 실패해도 세션은 유지).
+    void refreshAvailableModels().catch(() => {});
     const pendingTitleChange = pendingRuntimeTitleChange;
     pendingRuntimeTitleChange = null;
     if (pendingTitleChange) {
@@ -375,6 +377,43 @@
   // 캐시를 read-only로 유지하며 "이전 대화는 읽기 전용, 이 새 세션에서 이어감" affordance를 표시한다.
   // 이때 restoreUnavailable(빈 새 세션 notice)는 세우지 않는다 — historyReadOnly가 대신한다.
   let historyReadOnly = $state(false);
+
+  // ②-B: Codex 모델/effort 셀렉터 상태(세션 메모리 범위). 세션 시작 후 model/list로 채운다.
+  let availableModels = $state<import("../contracts/normalized").AgentModelOption[]>([]);
+  let selectedModel = $state<string | undefined>(undefined);
+  let selectedEffort = $state<string | undefined>(undefined);
+  const selectedModelEfforts = $derived(
+    availableModels.find((m) => m.id === selectedModel)?.efforts ?? [],
+  );
+
+  /** 세션 시작 후 사용 가능한 모델 목록을 조회해 셀렉터를 채운다(Codex만; 미지원이면 빈 배열). */
+  async function refreshAvailableModels(): Promise<void> {
+    const models = (await controller?.listModels()) ?? [];
+    availableModels = models;
+    if (models.length === 0) return;
+    // 기본 선택: provider가 알린 첫 모델 + 그 모델의 defaultEffort(사용자가 아직 안 골랐을 때만).
+    if (selectedModel === undefined) {
+      const first = models[0];
+      selectedModel = first.id;
+      selectedEffort = first.defaultEffort ?? first.efforts[0]?.id;
+    }
+  }
+
+  function onModelChange(modelId: string): void {
+    selectedModel = modelId;
+    const model = availableModels.find((m) => m.id === modelId);
+    // 모델이 바뀌면 effort를 그 모델의 기본값으로 맞춘다(이전 effort가 새 모델에 없을 수 있음).
+    const nextEffort = model?.efforts.some((e) => e.id === selectedEffort)
+      ? selectedEffort
+      : (model?.defaultEffort ?? model?.efforts[0]?.id);
+    selectedEffort = nextEffort;
+    controller?.setTurnOptions({ model: modelId, effort: nextEffort ?? null });
+  }
+
+  function onEffortChange(effortId: string): void {
+    selectedEffort = effortId;
+    controller?.setTurnOptions({ effort: effortId });
+  }
 
   $effect(() => {
     if (props.agentRuntime?.canLoad !== undefined) {
@@ -960,6 +999,10 @@
     modeLabel={composerModeLabel(runtimeMetadata)}
     availableModes={runtimeMetadata?.availableModes}
     currentModeId={runtimeMetadata?.sessionMode ?? runtimeMetadata?.permissionMode}
+    {availableModels}
+    {selectedModel}
+    selectedEffort={selectedEffort}
+    modelEfforts={selectedModelEfforts}
     availableCommands={store.availableCommands}
     capabilities={store.capabilities}
     resourceSearch={searchResourceMentions}
@@ -967,6 +1010,8 @@
     {onSend}
     {onStop}
     {onModeChange}
+    {onModelChange}
+    {onEffortChange}
   />
 </div>
 

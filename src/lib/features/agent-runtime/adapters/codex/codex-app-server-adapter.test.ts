@@ -254,6 +254,83 @@ describe("sendPrompt (turn/start outbound)", () => {
     expect(events.some((e) => e.type === "session_status_changed" && e.status === "running")).toBe(true);
   });
 
+  it("②-B: turn/start에 설정된 model/effort override를 실어 보낸다", async () => {
+    const { adapter, h } = await startReadySession();
+    h.sent.length = 0;
+    adapter.setTurnOptions!("H", { model: "gpt-x", effort: "high" });
+    await adapter.sendPrompt("H", { content: [{ type: "text", text: "hi" }] });
+    const turnStart = h.sent.find(
+      (m) => "method" in m && (m as { method: string }).method === "turn/start",
+    ) as { params: { threadId: string; input: unknown[]; model?: string; effort?: string } };
+    expect(turnStart.params).toMatchObject({ threadId: "th_1", model: "gpt-x", effort: "high" });
+  });
+
+  it("②-B: override 미설정이면 turn/start에 model/effort를 넣지 않는다(OQ-20 기존 동작)", async () => {
+    const { adapter, h } = await startReadySession();
+    h.sent.length = 0;
+    await adapter.sendPrompt("H", { content: [{ type: "text", text: "hi" }] });
+    const turnStart = h.sent.find(
+      (m) => "method" in m && (m as { method: string }).method === "turn/start",
+    ) as { params: Record<string, unknown> };
+    expect(turnStart.params).not.toHaveProperty("model");
+    expect(turnStart.params).not.toHaveProperty("effort");
+  });
+
+  it("②-B: setTurnOptions null은 해당 override를 해제한다", async () => {
+    const { adapter, h } = await startReadySession();
+    adapter.setTurnOptions!("H", { model: "gpt-x", effort: "high" });
+    adapter.setTurnOptions!("H", { model: null });
+    h.sent.length = 0;
+    await adapter.sendPrompt("H", { content: [{ type: "text", text: "hi" }] });
+    const turnStart = h.sent.find(
+      (m) => "method" in m && (m as { method: string }).method === "turn/start",
+    ) as { params: Record<string, unknown> };
+    expect(turnStart.params).not.toHaveProperty("model");
+    expect(turnStart.params).toMatchObject({ effort: "high" }); // effort는 유지.
+  });
+
+  it("②-B: listModels가 model/list를 정규화하고 hidden 모델을 제외한다", async () => {
+    const h = makeHarness({
+      autoRespond: (m) => {
+        if ("method" in m && m.method === "model/list") {
+          return {
+            data: [
+              {
+                id: "gpt-a",
+                model: "gpt-a",
+                displayName: "GPT A",
+                hidden: false,
+                supportedReasoningEfforts: [
+                  { reasoningEffort: "low", description: "빠름" },
+                  { reasoningEffort: "high", description: "정밀" },
+                ],
+                defaultReasoningEffort: "low",
+              },
+              { id: "gpt-hidden", model: "gpt-hidden", displayName: "Hidden", hidden: true, supportedReasoningEfforts: [], defaultReasoningEffort: "low" },
+            ],
+            nextCursor: null,
+          };
+        }
+        return autoResponder(m);
+      },
+    });
+    const adapter = createCodexAppServerAdapter(h.deps);
+    await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "Ubuntu", workDir: "/work" });
+
+    const models = await adapter.listModels!("H");
+    expect(models).toEqual([
+      {
+        id: "gpt-a",
+        label: "GPT A",
+        efforts: [
+          { id: "low", description: "빠름" },
+          { id: "high", description: "정밀" },
+        ],
+        defaultEffort: "low",
+      },
+    ]);
+  });
+
   it("CX-4c: does not send turn/start when all prompt content is unsupported", async () => {
     const { adapter, events, h } = await startReadySession();
     h.sent.length = 0;

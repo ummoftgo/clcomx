@@ -152,6 +152,26 @@ export function isHighRiskSessionModeId(modeId: string | undefined): boolean {
   return modeId !== undefined && (HIGH_RISK_SESSION_MODE_IDS as readonly string[]).includes(modeId);
 }
 
+/** reasoning effort 후보 1건(모델별 지원 목록). 비밀 아님(id/표시명만). */
+export interface AgentEffortOption {
+  /** effort id(예: minimal/low/medium/high). turn override에 그대로 쓴다. */
+  id: string;
+  /** 표시 설명(없으면 id). */
+  description?: string;
+}
+
+/** 모델 후보 1건(composer 모델 셀렉터 소스). 비밀 아님(id/표시명/effort 목록만). */
+export interface AgentModelOption {
+  /** 모델 id(turn override의 model에 그대로 쓴다). */
+  id: string;
+  /** 표시명(없으면 id). */
+  label: string;
+  /** 이 모델이 지원하는 reasoning effort 후보. 비어 있으면 effort 셀렉터 미노출. */
+  efforts: AgentEffortOption[];
+  /** 기본 effort id. */
+  defaultEffort?: string;
+}
+
 /** 세션 모드 선택 후보 1건(composer 모드 셀렉터 소스). 비밀 아님(id/표시명만). */
 export interface AgentSessionModeOption {
   /** 모드 id(예: plan/acceptEdits/default). set 요청에 그대로 쓴다. */

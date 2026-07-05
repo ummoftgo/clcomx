@@ -70,6 +70,8 @@ export const TEST_IDS = {
   agentComposerResourcePalette: "agent-composer-resource-palette",
   agentComposerResourceOption: "agent-composer-resource-option",
   agentComposerModeSelect: "agent-composer-mode-select",
+  agentComposerModelSelect: "agent-composer-model-select",
+  agentComposerEffortSelect: "agent-composer-effort-select",
   agentComposerModeConfirm: "agent-composer-mode-confirm",
   agentComposerModeConfirmAccept: "agent-composer-mode-confirm-accept",
   agentComposerModeConfirmCancel: "agent-composer-mode-confirm-cancel",
