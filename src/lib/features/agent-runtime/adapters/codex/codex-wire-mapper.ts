@@ -95,17 +95,28 @@ export function formatCodexApprovalPolicy(value: unknown): string | undefined {
   return undefined;
 }
 
-/** Codex SandboxPolicy/SandboxMode을 09 §8.2 표의 kebab badge 값으로 축약한다. */
+/** 인식하는 sandbox badge 값(kebab). full snapshot에서 미인식 값은 fail-closed로 clear한다. */
+const KNOWN_SANDBOX_BADGES = new Set([
+  "read-only",
+  "workspace-write",
+  "danger-full-access",
+  "external-sandbox",
+]);
+
+/**
+ * Codex SandboxPolicy/SandboxMode을 09 §8.2 표의 kebab badge 값으로 축약한다. 알려진 variant만 인식하고,
+ * future/malformed(예: `{type:"dangerFullAccessV2"}`)는 undefined를 돌려 stale-safe clear + fail-closed로
+ * 떨어뜨린다 — 미인식 정책을 정상 non-warning 배지로 표시하지 않는다(Codex medium 19차).
+ */
 export function formatCodexSandbox(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return KNOWN_SANDBOX_BADGES.has(value) ? value : undefined;
   if (!value || typeof value !== "object") return undefined;
   const type = (value as { type?: unknown }).type;
   if (type === "dangerFullAccess") return "danger-full-access";
   if (type === "readOnly") return "read-only";
   if (type === "workspaceWrite") return "workspace-write";
   if (type === "externalSandbox") return "external-sandbox";
-  if (typeof type === "string") return type;
-  return undefined;
+  return undefined; // 미인식 object type → fail-closed clear.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
