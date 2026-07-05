@@ -140,6 +140,14 @@ export type AgentEvent =
     };
 
 /** transcript가 아닌 세션 metadata badge/persistence patch. provider id·token 같은 비밀은 담지 않는다. */
+/** 세션 모드 선택 후보 1건(composer 모드 셀렉터 소스). 비밀 아님(id/표시명만). */
+export interface AgentSessionModeOption {
+  /** 모드 id(예: plan/acceptEdits/default). set 요청에 그대로 쓴다. */
+  id: string;
+  /** 표시명. 없으면 UI가 id를 그대로 보여준다. */
+  name?: string;
+}
+
 export interface AgentRuntimeMetadataUpdate {
   /** provider sandbox/mode 표시용 metadata(09 §8.2). */
   sandbox?: string;
@@ -151,6 +159,8 @@ export interface AgentRuntimeMetadataUpdate {
   permissionMode?: string;
   /** ACP session mode 또는 동등 provider session mode id. */
   sessionMode?: string;
+  /** 세션 모드 전환 후보 목록(provider가 알린 availableModes). 셀렉터 노출용. */
+  availableModes?: AgentSessionModeOption[];
 }
 
 /** 슬래시 커맨드 1건(composer 팔레트 소스). provider가 알린 server-side 커맨드. */

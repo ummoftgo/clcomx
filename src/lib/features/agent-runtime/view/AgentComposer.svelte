@@ -10,7 +10,12 @@
   import { formatImageSize, MAX_CLIPBOARD_IMAGE_BYTES } from "../../../clipboard";
   import { t } from "../../../i18n";
   import { TEST_IDS } from "../../../testids";
-  import type { AgentCommand, AgentContent, AgentSessionStatus } from "../contracts/normalized";
+  import type {
+    AgentCommand,
+    AgentContent,
+    AgentSessionModeOption,
+    AgentSessionStatus,
+  } from "../contracts/normalized";
   import type { ComposerCapabilities } from "../contracts/transcript";
 
   const DEFAULT_CAPABILITIES: ComposerCapabilities = {
@@ -64,6 +69,12 @@
     onStop: () => void;
     /** provider가 알린 슬래시 커맨드 목록(팔레트 소스). */
     availableCommands?: AgentCommand[];
+    /** 세션 모드 전환 후보(있으면 셀렉터 노출). 없으면 modeLabel만 표시(읽기 전용). */
+    availableModes?: AgentSessionModeOption[];
+    /** 현재 세션 모드 id(셀렉터 선택값). */
+    currentModeId?: string;
+    /** 모드 셀렉터 변경 콜백(지원 provider만 전달). */
+    onModeChange?: (modeId: string) => void;
     /** provider prompt capability. image 버튼 노출과 전송 gate에 사용한다. */
     capabilities?: ComposerCapabilities;
     /** `@` mention query를 workspace/resource 후보로 변환하는 검색 함수. */
@@ -79,6 +90,9 @@
     onSend,
     onStop,
     availableCommands = [],
+    availableModes,
+    currentModeId,
+    onModeChange,
     capabilities = DEFAULT_CAPABILITIES,
     resourceSearch,
     restoring = false,
@@ -631,7 +645,20 @@
   <div class="composer-footer">
     <div class="composer-indicators">
       <span class="provider-label" title={providerLabel}>{providerLabel}</span>
-      {#if visibleModeLabel}
+      {#if onModeChange && availableModes && availableModes.length > 0}
+        <!-- 모드 셀렉터: provider가 availableModes를 알린 경우에만(예: Claude plan/acceptEdits 등). -->
+        <select
+          class="mode-select"
+          data-testid={TEST_IDS.agentComposerModeSelect}
+          value={currentModeId ?? ""}
+          aria-label={$t("agentRuntime.composer.modeSelect")}
+          onchange={(event) => onModeChange?.((event.target as HTMLSelectElement).value)}
+        >
+          {#each availableModes as mode (mode.id)}
+            <option value={mode.id}>{mode.name ?? mode.id}</option>
+          {/each}
+        </select>
+      {:else if visibleModeLabel}
         <span class="mode-label" title={visibleModeLabel}>{visibleModeLabel}</span>
       {/if}
     </div>
@@ -848,6 +875,16 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .mode-select {
+    margin-left: 0.35rem;
+    padding: 0.1rem 0.3rem;
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.3));
+    border-radius: var(--ui-radius-sm, 0.25rem);
+    background: var(--ui-bg-elevated, transparent);
+    color: inherit;
+    font-size: var(--ui-font-size-xs);
+    max-width: 12ch;
   }
   .composer-controls {
     display: flex;

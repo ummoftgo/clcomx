@@ -94,6 +94,8 @@ export interface AgentRuntimeController {
   approve(decision: ApprovalDecision): Promise<void>;
   /** 진행 turn 취소. */
   cancel(turnId?: string): Promise<void>;
+  /** 세션 모드 전환(지원 provider만). 미지원이면 no-op. */
+  setSessionMode(modeId: string): Promise<void>;
   /** auto-follow 토글(store 표면 갱신). */
   setAutoFollow(value: boolean): void;
   /** teardown: unsubscribe + shutdown(멱등). */
@@ -205,6 +207,11 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
     if (!this.port || !this.sessionHandle || this.disposed) return;
     // adapter가 cancel cleanup 정본 순서(04 §4.2)를 수행하므로 store 측은 wire 응답을 기다린다.
     await this.port.cancelTurn(this.sessionHandle, turnId);
+  }
+
+  async setSessionMode(modeId: string): Promise<void> {
+    if (!this.port?.setSessionMode || !this.sessionHandle || this.disposed) return;
+    await this.port.setSessionMode(this.sessionHandle, modeId);
   }
 
   setAutoFollow(value: boolean): void {

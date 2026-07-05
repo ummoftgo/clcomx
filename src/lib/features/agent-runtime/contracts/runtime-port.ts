@@ -6,7 +6,7 @@
  * UI/store는 이 interface만 본다(03 §Agent Runtime Port).
  */
 
-import type { AgentEvent, AgentContent, ApprovalDecision, ProviderRef, AgentProvider } from "./normalized";
+import type { AgentEvent, AgentContent, ApprovalDecision, ProviderRef, AgentProvider, AgentSessionModeOption } from "./normalized";
 import type { ComposerCapabilities } from "./transcript";
 import type { UnlistenFn } from "../../../tauri/event"; // src/lib/tauri/event.ts (프로젝트는 상대경로 컨벤션)
 
@@ -87,6 +87,8 @@ export interface SessionStartResult {
   permissionMode?: string;
   /** ACP session mode 또는 동등 provider session mode id. */
   sessionMode?: string;
+  /** 세션 모드 전환 후보 목록(셀렉터 노출용). provider가 알린 availableModes. */
+  availableModes?: AgentSessionModeOption[];
 }
 
 /**
@@ -111,6 +113,13 @@ export interface AgentRuntimePort {
 
   /** 승인 요청에 응답. requestId로 pending request에 매칭. */
   respondApproval(sessionHandle: AgentSessionHandle, decision: ApprovalDecision): Promise<void>;
+
+  /**
+   * 세션 모드 전환(예: plan/acceptEdits). 미지원 provider(Codex v1)는 이 메서드를 정의하지 않는다.
+   * modeId는 metadata.availableModes에 존재하는 값이어야 한다(호출부 검증). 성공 시 provider가
+   * current_mode_update 또는 result로 새 모드를 알리고, adapter가 runtime_metadata_changed로 반영한다.
+   */
+  setSessionMode?(sessionHandle: AgentSessionHandle, modeId: string): Promise<void>;
 
   /**
    * 세션 이벤트 구독. 반환된 UnlistenFn으로 해제.

@@ -160,6 +160,7 @@
     if (result.approvalsReviewer !== undefined) metadata.approvalsReviewer = result.approvalsReviewer;
     if (result.permissionMode !== undefined) metadata.permissionMode = result.permissionMode;
     if (result.sessionMode !== undefined) metadata.sessionMode = result.sessionMode;
+    if (result.availableModes !== undefined) metadata.availableModes = result.availableModes;
     return metadata;
   }
 
@@ -690,6 +691,11 @@
     void controller?.cancel();
   }
 
+  /** 세션 모드 셀렉터 → controller.setSessionMode(지원 provider만). */
+  function onModeChange(modeId: string): void {
+    void controller?.setSessionMode(modeId);
+  }
+
   /** approval 응답(inline/modal 공통) → controller.approve(store 멱등 기록 + wire 전송). */
   function onRespondApproval(decision: ApprovalDecision): void {
     void controller?.approve(decision);
@@ -951,12 +957,15 @@
     status={store.status}
     providerLabel={store.providerLabel}
     modeLabel={composerModeLabel(runtimeMetadata)}
+    availableModes={runtimeMetadata?.availableModes}
+    currentModeId={runtimeMetadata?.sessionMode ?? runtimeMetadata?.permissionMode}
     availableCommands={store.availableCommands}
     capabilities={store.capabilities}
     resourceSearch={searchResourceMentions}
     restoring={resumeReplayPending}
     {onSend}
     {onStop}
+    {onModeChange}
   />
 </div>
 

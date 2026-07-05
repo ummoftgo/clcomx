@@ -159,6 +159,75 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     });
   });
 
+  it("exposes availableModes in start metadata for the mode selector", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: {
+        currentModeId: "default",
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+      },
+    });
+    const result = await startPromise;
+    expect(result.availableModes).toEqual([
+      { id: "default", name: "Default" },
+      { id: "plan", name: "Plan" },
+    ]);
+  });
+
+  it("setSessionMode: 알려진 모드는 session/set_mode wire 전송 + 낙관적 metadata를 emit한다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: {
+        currentModeId: "default",
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+      },
+    });
+    await startPromise;
+
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    const setPromise = adapter.setSessionMode!("A", "plan");
+    const req = (await h.waitForOutbound("session/set_mode")) as {
+      id: string | number;
+      params: { sessionId: string; modeId: string };
+    };
+    expect(req.params).toEqual({ sessionId: "sess-1", modeId: "plan" });
+    h.inject({ jsonrpc: "2.0", id: req.id, result: {} });
+    await setPromise;
+
+    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "plan", permissionMode: "plan" });
+  });
+
+  it("setSessionMode: availableModes에 없는 모드는 wire 전송 없이 거부한다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }] },
+    });
+    await startPromise;
+
+    await expect(adapter.setSessionMode!("A", "nonexistent")).rejects.toThrow(/unknown session mode/);
+    expect(h.outbound.some((m) => "method" in m && m.method === "session/set_mode")).toBe(false);
+  });
+
   it("emits metadata updates for current_mode_update", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);

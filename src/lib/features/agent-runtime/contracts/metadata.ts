@@ -5,7 +5,7 @@
  * transcript 전체가 아닌 재개·복원용 메타만 저장한다(RD-3 full cache 제외).
  */
 
-import type { AgentProvider } from "./normalized";
+import type { AgentProvider, AgentSessionModeOption } from "./normalized";
 import type { SessionHostProps } from "../../session/contracts/session-shell";
 
 /** 세션이 어떤 runtime으로 구동되는지. 기존 PTY는 "pty". */
@@ -45,6 +45,9 @@ export interface AgentRuntimeMetadata {
   permissionMode?: string;
   /** ACP session mode 또는 동등 provider session mode id. */
   sessionMode?: string;
+  /** 세션 모드 전환 후보 목록(셀렉터 노출용, 비밀 아님). 세션 시작 시 provider가 다시 알리므로
+   *  영속화돼도 무해하지만 복원의 권위 소스는 아니다(재시작 시 갱신). */
+  availableModes?: AgentSessionModeOption[];
   /** replay 없는 재개 가능 여부(ACP resume / Codex thread/resume). */
   canResume?: boolean;
   /** replay 가능 여부(ACP loadSession / Codex thread/read). */

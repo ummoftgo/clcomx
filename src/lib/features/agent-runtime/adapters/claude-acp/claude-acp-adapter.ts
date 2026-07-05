@@ -650,6 +650,29 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     }
   }
 
+  /**
+   * setSessionMode: session/set_mode wire로 모드를 전환한다(ref-acp §10).
+   * modeId는 provider가 알린 availableModes에 존재해야 한다(미존재는 wire 전 거부).
+   * provider는 성공 시 current_mode_update로 새 모드를 알리지만, 낙관적으로 runtime state와
+   * metadata를 즉시 반영해 셀렉터 표시 지연을 없앤다(update가 오면 동일 값으로 수렴).
+   */
+  async function setSessionMode(handle: AgentSessionHandle, modeId: string): Promise<void> {
+    const rt = byHandle(handle);
+    if (!rt.providerSessionId) throw new Error("claude adapter: session not ready (no sessionId)");
+    const known = rt.modes?.availableModes.some((m) => m.id === modeId) ?? false;
+    if (!known) throw new Error(`claude adapter: unknown session mode: ${modeId}`);
+
+    await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
+
+    rt.currentModeId = modeId;
+    if (rt.modes) rt.modes = { ...rt.modes, currentModeId: modeId };
+    emit(rt, {
+      type: "runtime_metadata_changed",
+      ref: refFor(rt),
+      metadata: currentModeMetadata(rt),
+    });
+  }
+
   /** subscribeEvents: listener 등록 → AgentEvent 수신. 반환된 fn으로 해제. */
   function subscribeEvents(handle: AgentSessionHandle, listener: (event: AgentEvent) => void): UnlistenFn {
     const rt = sessions.get(handle);
@@ -726,6 +749,10 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     const metadata: AgentRuntimeMetadataUpdate = {};
     if (sessionMode) metadata.sessionMode = sessionMode;
     if (permissionMode) metadata.permissionMode = permissionMode;
+    // availableModes: 세션 모드 셀렉터 후보(비밀 아님). provider가 알린 목록만 노출한다.
+    if (rt.modes && rt.modes.availableModes.length > 0) {
+      metadata.availableModes = rt.modes.availableModes.map((m) => ({ id: m.id, name: m.name }));
+    }
     return metadata;
   }
 
@@ -754,6 +781,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     searchResources,
     cancelTurn,
     respondApproval,
+    setSessionMode,
     subscribeEvents,
     shutdown,
   };

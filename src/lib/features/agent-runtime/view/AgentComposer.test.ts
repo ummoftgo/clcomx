@@ -119,6 +119,44 @@ describe("AgentComposer", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("mode selector: onModeChange + availableModes가 있으면 셀렉터를 노출하고 변경을 콜백한다", async () => {
+    const onModeChange = vi.fn();
+    const { getByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+          { id: "acceptEdits", name: "Accept Edits" },
+        ],
+        currentModeId: "default",
+        onModeChange,
+      },
+    });
+
+    const select = getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement;
+    expect(select.value).toBe("default");
+    await fireEvent.change(select, { target: { value: "plan" } });
+    expect(onModeChange).toHaveBeenCalledWith("plan");
+  });
+
+  it("mode selector: availableModes가 없으면(미지원 provider) 셀렉터를 노출하지 않는다", () => {
+    const { queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "codex",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        modeLabel: "workspace-write",
+        onModeChange: vi.fn(),
+      },
+    });
+    expect(queryByTestId(TEST_IDS.agentComposerModeSelect)).toBeNull();
+  });
+
   it("opens the slash command palette and filters by query", async () => {
     const { getByTestId, queryByTestId, getAllByTestId } = render(AgentComposer, {
       props: {

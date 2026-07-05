@@ -460,6 +460,7 @@ const en = {
       disabled: "Input unavailable",
       commandPalette: "Commands",
       commandResume: "Resume a previous session",
+      modeSelect: "Change session mode",
       imageButton: "Attach an image",
       imageAttachment: "Image",
       removeImage: "Remove image",

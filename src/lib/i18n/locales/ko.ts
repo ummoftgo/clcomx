@@ -460,6 +460,7 @@ const ko = {
       disabled: "입력 불가",
       commandPalette: "커맨드",
       commandResume: "이전 세션 이어가기",
+      modeSelect: "모드 전환",
       imageButton: "이미지 첨부",
       imageAttachment: "이미지",
       removeImage: "이미지 제거",
