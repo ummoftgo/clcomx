@@ -59,10 +59,15 @@ fn decode_app_key(b64: &str) -> Result<[u8; 32], SecretStoreError> {
 /// OS 키스토어에서 앱 키를 로드하고, 없으면 32바이트를 새로 생성해 저장한 뒤 반환한다.
 /// test-mode(E2E) 전용 고정 앱 키. E2E harness가 같은 키로 재개 id 파일을 시드해
 /// TB-5 복호화 경로를 실제로 검증할 수 있게 한다(`e2e/helpers/agent-runtime.ts`와 바이트 동일 유지).
-/// `CLCOMX_TEST_MODE`에서만 쓰이며 OS 키스토어는 접근하지 않는다 — 프로덕션 키 경로 불변.
+/// [보안] debug 빌드에서만 컴파일된다 — release 아티팩트에는 이 상수/분기가 존재하지 않아
+/// `CLCOMX_TEST_MODE` env로 키스토어를 우회할 수 없다(TB-5 at-rest 경계 유지).
+#[cfg(debug_assertions)]
 const TEST_MODE_APP_KEY: &[u8; 32] = b"clcomx-test-mode-app-key-0123456";
 
 pub fn load_or_create_app_key() -> Result<[u8; 32], SecretStoreError> {
+    // E2E 러너는 debug exe를 사용하므로 이 분기로 충분하고, release에서는 cfg로 제거되어
+    // env 오염/실수로도 도달 불가(compile-time 보장).
+    #[cfg(debug_assertions)]
     if crate::app_env::is_test_mode() {
         return Ok(*TEST_MODE_APP_KEY);
     }
