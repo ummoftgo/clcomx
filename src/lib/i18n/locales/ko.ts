@@ -483,7 +483,10 @@ const ko = {
         "승인 정책 'never'는 이 세션의 이후 turn에서 모든 승인 요청을 끕니다. 계속할까요?",
       highRiskApprovalConfirmDanger:
         "샌드박스가 '{sandbox}'인 상태에서 승인 정책 'never'는 모든 승인 요청을 끕니다. 이후 turn이 전체 접근 권한으로 확인 없이 실행될 수 있습니다. 계속할까요?",
+      highRiskApprovalDefaultConfirm:
+        "provider 기본 승인 정책으로 되돌립니다. 결과 정책을 알 수 없으며 이후 turn에서 승인이 꺼질 수 있습니다. 계속할까요?",
       highRiskApprovalAccept: "승인 끄기",
+      highRiskApprovalDefaultAccept: "provider 기본값 사용",
       imageButton: "이미지 첨부",
       imageAttachment: "이미지",
       removeImage: "이미지 제거",

@@ -930,8 +930,9 @@ describe("AgentTranscriptSurface", () => {
     // 초기(base on-request)는 고위험 아님.
     const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
     expect(toggle.textContent).not.toContain("High Risk");
-    // provider 기본값 선택 → wire null + 결과 미상이라 fail-closed 고위험.
+    // provider 기본값 선택 → 결과 미상(never 가능)이라 확인 게이트를 거친다.
     await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
+    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
     expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: null });
     await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
     const metadata = await findByTestId(TEST_IDS.agentRuntimeMetadata);
@@ -943,16 +944,24 @@ describe("AgentTranscriptSurface", () => {
 
   it("②-C: base가 granular/미상이어도 provider 기본값 옵션으로 override를 null 해제할 수 있다", async () => {
     // granular base — scalar 후보에 없어 placeholder로 시작하고 fail-closed 고위험이다.
-    const { port } = makeFakePort({ startApprovalPolicy: "granular" });
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "granular" });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    emit({
+      type: "session_status_changed",
+      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+      status: "ready",
+    });
     await openSurfaceOptions(findByTestId);
     const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
     // granular는 scalar 후보 밖 → placeholder(빈 값).
     await waitFor(() => expect(approvalSelect.value).toBe(""));
-    // scalar override를 건 뒤에도 provider 기본값으로 되돌릴 수 있어야 한다.
+    // scalar override(저위험)를 건 뒤에도 provider 기본값으로 되돌릴 수 있어야 한다.
     await fireEvent.change(approvalSelect, { target: { value: "on-request" } });
     expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: "on-request" });
+    // provider 기본값 sentinel은 확인 게이트를 거친다(결과 미상). popover가 닫히므로 확인 배너에서 수락한다.
     await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
+    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
     expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: null });
   });
 

@@ -531,16 +531,19 @@ describe("AgentComposer", () => {
     expect(toggle.textContent).toContain("High Risk");
   });
 
-  it("approval selector: provider 기본값 옵션은 확인 없이 override를 해제(sentinel)한다", async () => {
+  it("approval selector: provider 기본값(sentinel)은 결과 미상이라 확인 게이트 후에만 콜백한다", async () => {
     const onApprovalPolicyChange = vi.fn();
     const { getByTestId, queryByTestId } = render(AgentComposer, {
-      props: approvalProps({ selectedApprovalPolicy: "never", approvalHighRisk: true, onApprovalPolicyChange }),
+      props: approvalProps({ onApprovalPolicyChange }),
     });
     await openOptions(getByTestId);
     await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), {
       target: { value: "__provider_default__" },
     });
-    // 기본값 복귀는 위험 감소이므로 확인 게이트 없이 즉시 sentinel을 콜백한다.
+    // provider default는 never로 풀릴 수 있어 never와 동일하게 확인 게이트를 거친다.
+    expect(onApprovalPolicyChange).not.toHaveBeenCalled();
+    expect(getByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeTruthy();
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
     expect(onApprovalPolicyChange).toHaveBeenCalledWith("__provider_default__");
     expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
   });

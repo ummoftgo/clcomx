@@ -483,7 +483,10 @@ const en = {
         "Approval policy 'never' turns off all approval requests for this session's subsequent turns. Continue?",
       highRiskApprovalConfirmDanger:
         "Approval policy 'never' turns off all approval requests while the sandbox is '{sandbox}'. Subsequent turns can run with full access and no prompts. Continue?",
+      highRiskApprovalDefaultConfirm:
+        "Reverting to the provider default approval policy. The resulting policy is unknown and may disable approvals for subsequent turns. Continue?",
       highRiskApprovalAccept: "Turn off approvals",
+      highRiskApprovalDefaultAccept: "Use provider default",
       imageButton: "Attach an image",
       imageAttachment: "Image",
       removeImage: "Remove image",

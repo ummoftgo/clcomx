@@ -265,13 +265,18 @@
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
   });
 
+  /** 확인 게이트가 필요한 고위험 전환인지: 명시 never, 또는 결과 정책 미상(never 가능)인 provider 기본값 sentinel. */
+  function isGatedApprovalTransition(policyId: string): boolean {
+    return isHighRiskApprovalPolicy(policyId) || policyId === APPROVAL_DEFAULT_SELECTION;
+  }
+
   async function handleApprovalChange(event: Event): Promise<void> {
     const select = event.target as HTMLSelectElement;
     const nextPolicy = select.value;
     if (!onApprovalPolicyChange || nextPolicy === (selectedApprovalPolicy ?? "")) return;
-    if (isHighRiskApprovalPolicy(nextPolicy)) {
-      // 고위험(never): 즉시 적용하지 않고 확인 게이트를 띄운다. native 표시는 권위 값으로 되돌리고
-      // popover는 닫아 확인 배너(composer 레벨)로 초점을 옮긴다 — 숨은 미확정 상태를 만들지 않는다.
+    if (isGatedApprovalTransition(nextPolicy)) {
+      // 고위험(never) 또는 provider 기본값(결과 미상, never로 풀릴 수 있음): 즉시 적용하지 않고 확인 게이트를
+      // 띄운다. native 표시는 권위 값으로 되돌리고 popover는 닫아 확인 배너(composer 레벨)로 초점을 옮긴다.
       select.value = selectedApprovalPolicy ?? "";
       pendingHighRiskApprovalId = nextPolicy;
       optionsOpen = false;
@@ -285,9 +290,12 @@
     pendingHighRiskApprovalId = null;
     // 배너가 떠 있는 사이 상태가 바뀌었을 수 있으므로 셀렉터와 동일한 readiness/후보 유효성을 재검사한다.
     if (!policyId || !modeSelectEnabled) return;
-    if (!availableApprovalPolicies?.includes(policyId)) return;
+    // sentinel은 후보 목록 밖의 정당한 값이므로 별도 허용한다.
+    if (policyId !== APPROVAL_DEFAULT_SELECTION && !availableApprovalPolicies?.includes(policyId)) return;
     onApprovalPolicyChange?.(policyId);
   }
+
+  const pendingApprovalIsDefault = $derived(pendingHighRiskApprovalId === APPROVAL_DEFAULT_SELECTION);
 
   function cancelHighRiskApproval(): void {
     pendingHighRiskApprovalId = null;
@@ -309,9 +317,16 @@
   });
 
   const approvalConfirmText = $derived(
-    currentSandbox && isHighRiskRuntimeSandbox(currentSandbox)
-      ? $t("agentRuntime.composer.highRiskApprovalConfirmDanger", { values: { sandbox: currentSandbox } })
-      : $t("agentRuntime.composer.highRiskApprovalConfirm"),
+    pendingApprovalIsDefault
+      ? $t("agentRuntime.composer.highRiskApprovalDefaultConfirm")
+      : currentSandbox && isHighRiskRuntimeSandbox(currentSandbox)
+        ? $t("agentRuntime.composer.highRiskApprovalConfirmDanger", { values: { sandbox: currentSandbox } })
+        : $t("agentRuntime.composer.highRiskApprovalConfirm"),
+  );
+  const approvalConfirmAcceptLabel = $derived(
+    pendingApprovalIsDefault
+      ? $t("agentRuntime.composer.highRiskApprovalDefaultAccept")
+      : $t("agentRuntime.composer.highRiskApprovalAccept"),
   );
 
   /** sandbox 표시값이 전체 접근(danger-full-access) 계열인지 — approval never 확인 문구 강조에 쓴다. */
@@ -886,7 +901,7 @@
           data-testid={TEST_IDS.agentComposerApprovalConfirmAccept}
           onclick={confirmHighRiskApproval}
         >
-          {$t("agentRuntime.composer.highRiskApprovalAccept")}
+          {approvalConfirmAcceptLabel}
         </button>
         <button
           type="button"
