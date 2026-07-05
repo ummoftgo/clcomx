@@ -824,16 +824,42 @@ describe("AgentTranscriptSurface", () => {
     expect(port.setTurnOptions).toHaveBeenCalledWith("S1", { approvalPolicy: "on-failure" });
   });
 
-  it("②-C: approval을 세션 시작 권위값으로 되돌리면 null(해제)로 override를 revert한다", async () => {
+  it("②-C: 명시 scalar는 base와 같아도 그 값을 전송한다(stale base로 null revert 금지)", async () => {
     const { port } = makeFakePort({ startApprovalPolicy: "on-request" });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
     await openSurfaceOptions(findByTestId);
     const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
     await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
     await fireEvent.change(approvalSelect, { target: { value: "on-failure" } });
+    // base("on-request") 재선택 → null이 아니라 명시 on-request 전송(UI 표시=wire 값, 위험 은닉 방지).
     await fireEvent.change(approvalSelect, { target: { value: "on-request" } });
-    // base로 복귀 → 명시적 null 해제(누수 방지).
-    expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: null });
+    expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: "on-request" });
+  });
+
+  it("②-C: never override 후 안전 scalar 복귀는 그 scalar를 전송하고 고위험을 해제한다", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    emit({
+      type: "session_status_changed",
+      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+      status: "ready",
+    });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
+    // never 적용(확인 게이트 통과).
+    await fireEvent.change(approvalSelect, { target: { value: "never" } });
+    // never 선택 시 popover가 닫히므로 확인 후 다시 열어 셀렉터에 접근한다.
+    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
+    expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: "never" });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect2 = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    // 안전 scalar 복귀 → 명시 on-request 전송(provider default null 아님) + 고위험 해제.
+    await fireEvent.change(approvalSelect2, { target: { value: "on-request" } });
+    expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: "on-request" });
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    await waitFor(() => expect(toggle.textContent).not.toContain("High Risk"));
   });
 
   it("②-C: never override 확정 시 metadata에 고위험 override chip이 뜬다", async () => {

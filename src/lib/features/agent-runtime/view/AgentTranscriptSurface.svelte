@@ -506,9 +506,11 @@
     // granular/미지원 값은 무시(정적 scalar 후보 밖).
     if (!availableApprovalPolicies.includes(policyId)) return;
     approvalSelection = policyId;
-    const base = runtimeMetadata?.approvalPolicy;
-    // base(scalar)와 같은 값이면 명시적 해제(null)로 wire override를 revert, 아니면 값 전송.
-    controller?.setTurnOptions({ approvalPolicy: base !== undefined && policyId === base ? null : policyId });
+    // 명시 scalar는 base와 같아도 그대로 전송한다. runtimeMetadata.approvalPolicy는 start/resume 시점 값이라
+    // 이후 turn/start override로 실제 thread 정책이 바뀌어도 갱신되지 않는다 — base-equality로 null(provider
+    // default revert)을 보내면 UI 표시(scalar)와 wire(provider default)가 분리돼 위험을 숨길 수 있다(Codex high).
+    // null revert는 오직 "provider 기본값" sentinel에서만 보낸다.
+    controller?.setTurnOptions({ approvalPolicy: policyId });
   }
 
   $effect(() => {
