@@ -155,6 +155,16 @@ impl Default for EditorSettingsPayload {
     }
 }
 
+/// direct(agent transcript) 인터페이스 설정(FE-25 후속). `None`은 "상속"이며 그대로 보존한다.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentRuntimeSettingsPayload {
+    pub font_size: Option<u16>,
+    pub font_family: Option<String>,
+    pub code_font_family: Option<String>,
+    pub claude_allow_subscription_auth: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WorkspaceSettingsPayload {
@@ -195,6 +205,7 @@ pub struct SettingsPayload {
     pub workspace: WorkspaceSettingsPayload,
     pub terminal: TerminalSettingsPayload,
     pub editor: EditorSettingsPayload,
+    pub agent_runtime: AgentRuntimeSettingsPayload,
     pub history: HistorySettingsPayload,
     pub main_window: Option<WindowPlacement>,
 }
@@ -207,6 +218,7 @@ impl Default for SettingsPayload {
             workspace: WorkspaceSettingsPayload::default(),
             terminal: TerminalSettingsPayload::default(),
             editor: EditorSettingsPayload::default(),
+            agent_runtime: AgentRuntimeSettingsPayload::default(),
             history: HistorySettingsPayload::default(),
             main_window: None,
         }
@@ -278,6 +290,11 @@ fn clamp_scrollback(value: u32) -> u32 {
 }
 
 fn clamp_editor_font_size(value: u16) -> u16 {
+    value.clamp(MIN_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE)
+}
+
+/// agentRuntime transcript 본문 크기 — 설정 UI(10~24px)와 동일 범위.
+fn clamp_agent_runtime_font_size(value: u16) -> u16 {
     value.clamp(MIN_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE)
 }
 
@@ -395,6 +412,15 @@ fn u32_from_paths(value: &serde_json::Value, paths: &[&[&str]], fallback: u32) -
     }
 
     fallback
+}
+
+/// agentRuntime의 "상속(None)" 문자열 필드용 — 문자열이 있고 trim 후 비어있지 않을 때만 Some.
+fn opt_trimmed_string_from_path(value: &serde_json::Value, path: &[&str]) -> Option<String> {
+    lookup_value(value, path)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn bool_from_paths(value: &serde_json::Value, paths: &[&[&str]], fallback: bool) -> bool {
@@ -585,6 +611,21 @@ fn parse_settings_value(value: &serde_json::Value) -> Result<SettingsPayload, St
         settings.terminal.font_size,
     ));
 
+    // agentRuntime(FE-25 후속): None은 "상속"이므로 기본값 대체 없이 Option으로 보존한다.
+    settings.agent_runtime.font_size = lookup_value(value, &["agentRuntime", "fontSize"])
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|v| u16::try_from(v).ok())
+        .map(clamp_agent_runtime_font_size);
+    settings.agent_runtime.font_family =
+        opt_trimmed_string_from_path(value, &["agentRuntime", "fontFamily"]);
+    settings.agent_runtime.code_font_family =
+        opt_trimmed_string_from_path(value, &["agentRuntime", "codeFontFamily"]);
+    settings.agent_runtime.claude_allow_subscription_auth = bool_from_paths(
+        value,
+        &[&["agentRuntime", "claudeAllowSubscriptionAuth"]],
+        false,
+    );
+
     settings.history.tab_limit = clamp_tab_history_limit(u16_from_paths(
         value,
         &[&["history", "tabLimit"], &["tabHistoryLimit"]],
@@ -656,6 +697,25 @@ fn normalize_settings_payload(mut settings: SettingsPayload) -> SettingsPayload 
         settings.editor.font_family_fallback = settings.terminal.font_family_fallback.clone();
     }
     settings.editor.font_size = clamp_editor_font_size(settings.editor.font_size);
+    // agentRuntime: None(상속)은 보존, 값이 있으면 clamp/trim만. 빈 문자열은 None으로 접는다.
+    settings.agent_runtime.font_size = settings
+        .agent_runtime
+        .font_size
+        .map(clamp_agent_runtime_font_size);
+    settings.agent_runtime.font_family = settings
+        .agent_runtime
+        .font_family
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    settings.agent_runtime.code_font_family = settings
+        .agent_runtime
+        .code_font_family
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     settings.history.tab_limit = clamp_tab_history_limit(settings.history.tab_limit);
     settings
 }
@@ -860,6 +920,56 @@ mod tests {
         assert_eq!(parsed.interface.window_default_cols, MAX_WINDOW_COLS);
         assert_eq!(parsed.interface.window_default_rows, MIN_WINDOW_ROWS);
         assert_eq!(parsed.history.tab_limit, MIN_TAB_HISTORY_LIMIT);
+    }
+
+    #[test]
+    fn parse_settings_value_reads_agent_runtime_settings() {
+        let raw = json!({
+            "agentRuntime": {
+                "fontSize": 16,
+                "fontFamily": "  Pretendard  ",
+                "codeFontFamily": "",
+                "claudeAllowSubscriptionAuth": true
+            }
+        });
+
+        let parsed = parse_settings_value(&raw).unwrap();
+
+        assert_eq!(parsed.agent_runtime.font_size, Some(16));
+        assert_eq!(parsed.agent_runtime.font_family.as_deref(), Some("Pretendard"));
+        // 빈 문자열은 "상속"(None)으로 접는다.
+        assert_eq!(parsed.agent_runtime.code_font_family, None);
+        assert!(parsed.agent_runtime.claude_allow_subscription_auth);
+
+        // 미지정이면 전부 상속/false 기본이다.
+        let empty = parse_settings_value(&json!({})).unwrap();
+        assert_eq!(empty.agent_runtime.font_size, None);
+        assert_eq!(empty.agent_runtime.font_family, None);
+        assert_eq!(empty.agent_runtime.code_font_family, None);
+        assert!(!empty.agent_runtime.claude_allow_subscription_auth);
+    }
+
+    #[test]
+    fn agent_runtime_settings_survive_save_load_round_trip() {
+        // 재시작 유실 회귀 방어: save(serialize) → read(parse) 왕복에서 opt-in과 상속(None)이 보존된다.
+        let state_dir = unique_test_dir("agent-runtime-settings");
+        let _ = fs::create_dir_all(&state_dir);
+        let _guard = set_state_dir_env(&state_dir);
+
+        let mut settings = SettingsPayload::default();
+        settings.agent_runtime.font_size = Some(30); // clamp 대상(>24)
+        settings.agent_runtime.font_family = Some("Pretendard".into());
+        settings.agent_runtime.code_font_family = None;
+        settings.agent_runtime.claude_allow_subscription_auth = true;
+
+        let saved = save_settings_payload(settings).unwrap();
+        assert_eq!(saved.agent_runtime.font_size, Some(24)); // normalize에서 clamp
+
+        let loaded = read_settings().unwrap().expect("settings file exists");
+        assert_eq!(loaded.agent_runtime.font_size, Some(24));
+        assert_eq!(loaded.agent_runtime.font_family.as_deref(), Some("Pretendard"));
+        assert_eq!(loaded.agent_runtime.code_font_family, None);
+        assert!(loaded.agent_runtime.claude_allow_subscription_auth);
     }
 
     #[test]
