@@ -465,12 +465,15 @@
   const selectedApprovalPolicy = $derived<string | undefined>(
     approvalSelection ?? (approvalBaseIsScalar ? runtimeMetadata?.approvalPolicy : undefined),
   );
-  // 다음 turn에 적용될 실효 정책(위험 판정 권위): scalar override면 그 값, 미설정/기본복귀면 base(thread 정책).
-  // base가 이미 `never`여도 실효 위험을 표시하도록 base를 포함한다 — 위험 은닉 방지(Codex high 지적).
+  // 다음 turn에 적용될 실효 정책(위험 판정 권위):
+  //  - scalar override → 그 값(base가 never여도 은닉 없이 표시, Codex high 1차).
+  //  - provider 기본값 sentinel → provider/server default로 revert하는데 그 결과 정책을 client가 알 수 없다
+  //    (start metadata와 다를 수 있음) → undefined(미상)로 둬 fail-closed(Codex high 4차).
+  //  - 미설정(사용자 미선택) → base(thread 시작 정책; replay면 undefined).
   const effectiveApprovalPolicy = $derived<string | undefined>(
-    approvalSelection !== undefined && approvalSelection !== APPROVAL_DEFAULT_SELECTION
-      ? approvalSelection
-      : runtimeMetadata?.approvalPolicy,
+    approvalSelection === APPROVAL_DEFAULT_SELECTION
+      ? undefined
+      : (approvalSelection ?? runtimeMetadata?.approvalPolicy),
   );
   // 실효 정책이 우리가 판정 가능한 scalar 후보인지(never 포함). granular(experimental) 객체나 replay로
   // 미상(undefined)이면 안전 여부를 확인할 수 없다.
@@ -1022,7 +1025,11 @@
           >
             <dt>{$t("agentRuntime.metadata.approval")}</dt>
             <dd>
-              {runtimeMetadata.approvalPolicy ?? $t("agentRuntime.metadata.unknownValue")}
+              <!-- 실효 정책이 미상(replay 또는 provider 기본값 revert)이면 stale base scalar를 안전한 것처럼
+                   보여주지 않고 unknown으로 표기한다(Codex high 4차). -->
+              {approvalPolicyUnknown
+                ? $t("agentRuntime.metadata.unknownValue")
+                : (runtimeMetadata.approvalPolicy ?? $t("agentRuntime.metadata.unknownValue"))}
               {#if approvalOverrideActive}
                 <!-- 다음 turn에 적용될 override가 세션 시작 권위값과 달라 위험을 숨기지 않도록 chip으로 노출한다. -->
                 <span

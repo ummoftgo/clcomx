@@ -914,6 +914,33 @@ describe("AgentTranscriptSurface", () => {
     expect(toggle.textContent).toContain("High Risk");
   });
 
+  it("②-C: provider 기본값(sentinel) 선택은 결과 정책 미상이라 fail-closed 고위험으로 남는다", async () => {
+    // base가 known scalar(on-request)라도, provider default revert의 실제 결과 정책은 알 수 없다.
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    emit({
+      type: "session_status_changed",
+      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+      status: "ready",
+    });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
+    // 초기(base on-request)는 고위험 아님.
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    expect(toggle.textContent).not.toContain("High Risk");
+    // provider 기본값 선택 → wire null + 결과 미상이라 fail-closed 고위험.
+    await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
+    expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: null });
+    await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
+    const metadata = await findByTestId(TEST_IDS.agentRuntimeMetadata);
+    const approval = [...metadata.querySelectorAll(".metadata-item[data-risk='high']")].find((el) =>
+      el.textContent?.includes("Approval"),
+    );
+    expect(approval).toBeTruthy();
+  });
+
   it("②-C: base가 granular/미상이어도 provider 기본값 옵션으로 override를 null 해제할 수 있다", async () => {
     // granular base — scalar 후보에 없어 placeholder로 시작하고 fail-closed 고위험이다.
     const { port } = makeFakePort({ startApprovalPolicy: "granular" });
