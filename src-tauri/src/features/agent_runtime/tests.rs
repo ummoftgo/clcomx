@@ -555,7 +555,7 @@ fn e2e10_outbound_protocol_debug_log_is_opt_in_and_redacted() {
 #[test]
 fn rs8_codex_exact_args_allowed_and_resolves_executable() {
     let params = stdio("codex", &["app-server", "--stdio"], None);
-    let launch = validate_and_extract(&params, ok_exe, ok_entry).expect("codex allowed");
+    let launch = validate_and_extract(&params, ok_exe, ok_entry, || false).expect("codex allowed");
     assert_eq!(launch.executable, "/usr/bin/codex");
     assert_eq!(launch.argv, vec!["app-server", "--stdio"]);
 }
@@ -563,12 +563,13 @@ fn rs8_codex_exact_args_allowed_and_resolves_executable() {
 #[test]
 fn rs8b_codex_wrong_args_rejected() {
     assert!(
-        validate_and_extract(&stdio("codex", &["app-server"], None), ok_exe, ok_entry).is_err()
+        validate_and_extract(&stdio("codex", &["app-server"], None), ok_exe, ok_entry, || false).is_err()
     );
     assert!(validate_and_extract(
         &stdio("codex", &["app-server", "--stdio", "--extra"], None),
         ok_exe,
-        ok_entry
+        ok_entry,
+        || false
     )
     .is_err());
 }
@@ -583,7 +584,7 @@ fn rs8c_empty_distro_rejected_but_distro_list_is_not_probed() {
         env: None,
     };
 
-    assert!(validate_and_extract(&params, ok_exe, ok_entry).is_err());
+    assert!(validate_and_extract(&params, ok_exe, ok_entry, || false).is_err());
 }
 
 #[test]
@@ -593,6 +594,7 @@ fn rs9_claude_trusted_entry_allowed_and_resolves_node() {
         &stdio("claude", &[entry, "--hide-claude-auth"], None),
         ok_exe,
         ok_entry,
+        || false,
     )
     .expect("claude ok");
     assert_eq!(launch.executable, "/usr/bin/node");
@@ -603,41 +605,50 @@ fn rs9_claude_trusted_entry_allowed_and_resolves_node() {
 fn rs9b_claude_untrusted_or_multi_args_rejected() {
     // 임의 .js
     assert!(
-        validate_and_extract(&stdio("claude", &["/tmp/x.js"], None), ok_exe, ok_entry).is_err()
+        validate_and_extract(&stdio("claude", &["/tmp/x.js"], None), ok_exe, ok_entry, || false).is_err()
     );
     // 허용된 고정 auth 숨김 플래그 외의 추가 argv
     let entry = "/opt/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
     assert!(
-        validate_and_extract(&stdio("claude", &[entry, "--x"], None), ok_exe, ok_entry).is_err()
+        validate_and_extract(&stdio("claude", &[entry, "--x"], None), ok_exe, ok_entry, || false).is_err()
     );
     // 3개 이상 argv(플래그 + 임의 추가)도 거부된다.
     assert!(validate_and_extract(
         &stdio("claude", &[entry, "--hide-claude-auth", "--x"], None),
         ok_exe,
-        ok_entry
+        ok_entry,
+        || false
     )
     .is_err());
 }
 
 #[test]
-fn rs9c_claude_entry_without_hide_flag_allowed_for_subscription_opt_in() {
-    // 구독 인증 opt-in(agentRuntime.claudeAllowSubscriptionAuth) 형태: [entry] 단독 허용.
+fn rs9c_claude_entry_without_hide_flag_gated_by_backend_opt_in() {
+    // [entry] 단독(구독 인증)은 backend 저장 설정 opt-in일 때만 허용된다 —
+    // renderer가 플래그를 임의 생략해도 opt-in이 꺼져 있으면 거부(동의 경계는 backend가 판정).
     let entry = "/opt/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
-    let launch = validate_and_extract(&stdio("claude", &[entry], None), ok_exe, ok_entry)
+
+    // opt-in 꺼짐(기본): [entry] 거부.
+    assert!(
+        validate_and_extract(&stdio("claude", &[entry], None), ok_exe, ok_entry, || false).is_err()
+    );
+
+    // opt-in 켜짐: [entry] 허용.
+    let launch = validate_and_extract(&stdio("claude", &[entry], None), ok_exe, ok_entry, || true)
         .expect("claude subscription opt-in ok");
     assert_eq!(launch.executable, "/usr/bin/node");
     assert_eq!(launch.argv, vec![entry]);
 
-    // opt-in 형태에서도 entry 신뢰 검증은 그대로다.
+    // opt-in이 켜져 있어도 entry 신뢰 검증은 그대로다.
     assert!(
-        validate_and_extract(&stdio("claude", &["/tmp/x.js"], None), ok_exe, ok_entry).is_err()
+        validate_and_extract(&stdio("claude", &["/tmp/x.js"], None), ok_exe, ok_entry, || true).is_err()
     );
 }
 
 #[test]
 fn rs10c_resolve_failure_rejects_start() {
     let params = stdio("codex", &["app-server", "--stdio"], None);
-    assert!(validate_and_extract(&params, fail_exe, ok_entry).is_err());
+    assert!(validate_and_extract(&params, fail_exe, ok_entry, || false).is_err());
 }
 
 #[test]
@@ -650,7 +661,7 @@ fn rs11_shell_metachar_args_rejected() {
         args: vec!["app-server".to_string(), "--stdio; rm -rf".to_string()],
         env: None,
     };
-    assert!(validate_and_extract(&params, ok_exe, ok_entry).is_err());
+    assert!(validate_and_extract(&params, ok_exe, ok_entry, || false).is_err());
 }
 
 #[test]
@@ -664,7 +675,8 @@ fn rs12_invalid_env_key_regex_rejected() {
     assert!(validate_and_extract(
         &stdio("codex", &["app-server", "--stdio"], Some(env)),
         ok_exe,
-        ok_entry
+        ok_entry,
+        || false
     )
     .is_err());
 }
@@ -676,7 +688,8 @@ fn rs12b_env_key_outside_allowlist_rejected() {
     assert!(validate_and_extract(
         &stdio("codex", &["app-server", "--stdio"], Some(env)),
         ok_exe,
-        ok_entry
+        ok_entry,
+        || false
     )
     .is_err());
     // 허용 key는 통과.
@@ -686,7 +699,8 @@ fn rs12b_env_key_outside_allowlist_rejected() {
     assert!(validate_and_extract(
         &stdio("codex", &["app-server", "--stdio"], Some(ok)),
         ok_exe,
-        ok_entry
+        ok_entry,
+        || false
     )
     .is_ok());
 }
@@ -702,7 +716,8 @@ fn rs12b_claude_specific_env_keys() {
     assert!(validate_and_extract(
         &stdio("claude", &[entry, "--hide-claude-auth"], Some(env)),
         ok_exe,
-        ok_entry
+        ok_entry,
+        || false
     )
     .is_ok());
     // codex에는 claude 전용 key가 허용되지 않는다.
@@ -711,7 +726,8 @@ fn rs12b_claude_specific_env_keys() {
     assert!(validate_and_extract(
         &stdio("codex", &["app-server", "--stdio"], Some(env2)),
         ok_exe,
-        ok_entry
+        ok_entry,
+        || false
     )
     .is_err());
 }

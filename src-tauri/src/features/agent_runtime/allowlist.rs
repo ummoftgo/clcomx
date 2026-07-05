@@ -72,16 +72,21 @@ pub struct ValidatedLaunch {
 /// resolve 함수 쌍을 주입받아 start params를 검증·추출한다.
 /// `resolve_exe(provider, distro)` = 신뢰 executable 절대경로, `resolve_entry(provider, distro)` =
 /// claude adapter entry 절대경로. 테스트는 이 둘을 mock으로 주입해 WSL 호출 없이 검증한다.
+/// `claude_subscription_opt_in()` = backend 저장 설정(agentRuntime.claudeAllowSubscriptionAuth) —
+/// renderer는 untrusted이므로 `[entry]`(플래그 생략) 형태의 최종 허용 판정은 frontend 의도가 아니라
+/// 이 backend 값으로 한다(09 §9). claude `[entry]` 검증 시에만 호출된다(지연 평가).
 ///
 /// D-WSAUTH: 비-stdio variant(websocket)는 params를 디버그 출력하지 않고 정적 문자열만으로 거부한다.
-pub fn validate_and_extract<FExe, FEntry>(
+pub fn validate_and_extract<FExe, FEntry, FOptIn>(
     params: &AgentRuntimeStartParams,
     resolve_exe: FExe,
     resolve_entry: FEntry,
+    claude_subscription_opt_in: FOptIn,
 ) -> Result<ValidatedLaunch, String>
 where
     FExe: Fn(&str, &str) -> Result<String, String>,
     FEntry: Fn(&str, &str) -> Result<String, String>,
+    FOptIn: Fn() -> bool,
 {
     // websocket 등 비-stdio는 params(authToken 포함)를 절대 로깅하지 않고 정적 에러로 거부.
     let AgentRuntimeStartParams::JsonrpcStdio {
@@ -122,7 +127,9 @@ where
             // 플래그 생략은 어댑터가 기존 claude.ai 구독 크레덴셜(~/.claude)을 받아들이게 할 뿐,
             // 다른 argv 확장을 허용하지 않는다.
             let shape_ok = match args.len() {
-                1 => true,
+                // [entry] 단독(구독 인증)은 backend 저장 설정이 opt-in일 때만 허용 —
+                // renderer가 플래그를 임의 생략해 동의 경계를 우회하지 못하게 한다.
+                1 => claude_subscription_opt_in(),
                 2 => args[1] == CLAUDE_HIDE_AUTH_ARG,
                 _ => false,
             };

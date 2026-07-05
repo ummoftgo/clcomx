@@ -221,7 +221,13 @@ where
     FExe: Fn(&str, &str) -> Result<String, String>,
     FEntry: Fn(&str, &str) -> Result<String, String>,
 {
-    allowlist::validate_and_extract(params, resolve_exe, resolve_entry).map_err(|err| {
+    allowlist::validate_and_extract(params, resolve_exe, resolve_entry, || {
+        // 구독 인증 opt-in의 최종 판정은 backend 저장 설정이다(renderer untrusted, 09 §9).
+        crate::features::settings::load_settings_or_default()
+            .agent_runtime
+            .claude_allow_subscription_auth
+    })
+    .map_err(|err| {
         let _ = audit::write_launch_rejection_audit(params, &err);
         err
     })
