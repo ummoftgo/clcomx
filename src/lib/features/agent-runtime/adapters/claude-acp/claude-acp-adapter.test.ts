@@ -428,6 +428,50 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(approvalEvent?.request.severity).toBe("escalation");
   });
 
+  it("setSessionMode: 반복 고위험 전환에서 첫 bypass echo가 이후 미확정 bypass를 지우지 않는다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: {
+        currentModeId: "default",
+        availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass" }],
+      },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    // bypass → plan → bypass (세 요청 모두 성공, echo는 아직).
+    const b1 = adapter.setSessionMode!("A", "bypassPermissions");
+    await h.respondToLast("session/set_mode", {});
+    await b1;
+    const p = adapter.setSessionMode!("A", "plan");
+    await h.respondToLast("session/set_mode", {});
+    await p;
+    const b2 = adapter.setSessionMode!("A", "bypassPermissions");
+    await h.respondToLast("session/set_mode", {});
+    await b2;
+
+    // 첫 bypass echo + plan echo가 도착(두 번째 bypass echo는 아직). count: 2 → (bypass echo)1 → (plan echo)1.
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } } });
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } } });
+
+    // 이 시점 currentModeId=plan(저위험)이지만 미확정 bypass가 1건 남아 approval은 escalation이어야 한다.
+    h.inject({
+      jsonrpc: "2.0",
+      id: 901,
+      method: "session/request_permission",
+      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-6", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
+    });
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
+      | { request: { severity: string } }
+      | undefined;
+    expect(approvalEvent?.request.severity).toBe("escalation");
+  });
+
   it("setSessionMode: 비매칭 stale echo는 고위험 pending fail-safe를 풀지 않는다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);

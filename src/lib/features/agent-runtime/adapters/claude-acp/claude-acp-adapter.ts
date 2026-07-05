@@ -300,14 +300,16 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
   }
 
   /**
-   * provider 권위 echo 도착 시 미확정 고위험 pending 카운터를 리셋할지 결정한다.
-   * 고위험(bypassPermissions) echo가 오면 currentModeId가 bypass로 확정돼(그 자체로 escalation)
-   * 미확정 고위험 시도를 전부 해소한 것으로 보고 0으로 리셋한다. 저위험(비-bypass) echo는 미확정
-   * 고위험 전환의 실제 echo가 아니므로 카운터를 유지한다 — stale 저위험 echo가 fail-safe를 조기에
-   * 풀어 승인이 normal로 새는 것을 막는다(Codex 6차).
+   * provider 권위 echo 도착 시 미확정 고위험 pending 카운터를 조정한다.
+   * 고위험(bypassPermissions) echo는 미확정 고위험 전환 1건이 확정된 것으로 보고 **1만 감소**한다
+   * (floor 0) — reset-to-0으로 하면 첫 echo가 이후의 다른 미확정 bypass까지 지워 반복/역전 전환에서
+   * fail-safe가 뚫린다(Codex 9차). 저위험(비-bypass) echo는 고위험 전환의 실제 echo가 아니므로
+   * 카운터를 건드리지 않는다(stale 저위험 echo가 fail-safe를 조기에 풀지 못하게, Codex 6차).
    */
   function resetPendingHighRiskOnEcho(rt: ClaudeAcpSessionRuntime, echoMode: string): void {
-    if (isHighRiskMode(echoMode)) rt.pendingHighRiskModeCount = 0;
+    if (isHighRiskMode(echoMode) && rt.pendingHighRiskModeCount > 0) {
+      rt.pendingHighRiskModeCount -= 1;
+    }
   }
 
   /** ACP session/update에서 metadata로 노출할 mode patch를 추출한다. */
