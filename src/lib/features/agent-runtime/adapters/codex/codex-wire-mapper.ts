@@ -19,6 +19,7 @@ import type {
   TokenUsage,
   ToolCallUpdate,
 } from "../../contracts/normalized";
+import { SANDBOX_UNKNOWN } from "../../contracts/normalized";
 import type { JsonRpcMessage } from "../../service/transport";
 import type { CodexRouting } from "./codex-routing";
 
@@ -116,7 +117,17 @@ export function formatCodexSandbox(value: unknown): string | undefined {
   if (type === "readOnly") return "read-only";
   if (type === "workspaceWrite") return "workspace-write";
   if (type === "externalSandbox") return "external-sandbox";
-  return undefined; // 미인식 object type → fail-closed clear.
+  return undefined; // 미인식 object type → fail-closed.
+}
+
+/**
+ * sandbox 배지 값을 만든다. **보고 여부**를 구분한다: null/undefined(미보고)면 배지 없음(undefined),
+ * 보고됐지만 인식 불가면 `SANDBOX_UNKNOWN`(stale 안전 배지를 지우면서 unknown+고위험으로 표시, Codex 20차),
+ * 인식되면 kebab 배지. 서버가 sandbox를 알린 모든 경로(thread start/resume, settings/updated)에서 공유한다.
+ */
+export function codexSandboxBadge(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  return formatCodexSandbox(value) ?? SANDBOX_UNKNOWN;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -594,9 +605,11 @@ export function mapCodexNotification(
       // approvalPolicy·sandbox는 full snapshot의 권위값이다 — 인식 불가(future/malformed)여도 키를 undefined로
       // 포함해 이전 안전 배지를 clear한다. surface는 미상 approval을 fail-closed 고위험으로 떨어뜨리고, sandbox도
       // stale 안전값이 남지 않는다(Codex medium 17·18차).
+      // sandbox는 full snapshot 필수 필드다 — 보고됐으므로 codexSandboxBadge로 인식/미인식(SANDBOX_UNKNOWN)을
+      // 만들어 stale 안전 배지를 지우면서도 미인식 상태를 숨기지 않는다(Codex 20차).
       const metadata: AgentRuntimeMetadataUpdate = {
         approvalPolicy: formatCodexApprovalPolicy(s.approvalPolicy),
-        sandbox: formatCodexSandbox(s.sandboxPolicy),
+        sandbox: codexSandboxBadge(s.sandboxPolicy) ?? SANDBOX_UNKNOWN,
       };
       if (typeof s.approvalsReviewer === "string") metadata.approvalsReviewer = s.approvalsReviewer;
       return [{ type: "runtime_metadata_changed", ref: refOf({ threadId }), metadata }];

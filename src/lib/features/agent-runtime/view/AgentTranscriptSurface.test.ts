@@ -937,6 +937,26 @@ describe("AgentTranscriptSurface", () => {
     await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
   });
 
+  it("②-C: settings echo의 미인식 sandbox(SANDBOX_UNKNOWN)는 metadata에 unknown + 고위험으로 표시한다", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
+    const metadata = await findByTestId(TEST_IDS.agentRuntimeMetadata);
+    await waitFor(() => expect(metadata.textContent).toContain("Approval"));
+    // 서버가 인식 불가 sandbox를 알림(mapper가 SANDBOX_UNKNOWN='unknown'으로 변환한 상태를 모사).
+    emit({
+      type: "runtime_metadata_changed",
+      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+      metadata: { sandbox: "unknown" },
+    });
+    await waitFor(() => {
+      const sandbox = [...metadata.querySelectorAll(".metadata-item[data-risk='high']")].find((el) =>
+        el.textContent?.includes("Sandbox"),
+      );
+      expect(sandbox).toBeTruthy();
+      expect(sandbox?.textContent).toContain("unknown");
+    });
+  });
+
   it("②-C: approvalPolicy 미상(replay resume)이면 fail-closed로 고위험 표시한다", async () => {
     // startApprovalPolicy 미지정 → SessionStartResult에 approvalPolicy 없음(thread/read replay 경로 모사).
     const { port } = makeFakePort();

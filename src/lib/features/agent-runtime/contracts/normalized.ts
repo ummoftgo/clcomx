@@ -167,6 +167,13 @@ export const CODEX_APPROVAL_POLICIES = ["untrusted", "on-failure", "on-request",
 export const APPROVAL_DEFAULT_SELECTION = "__provider_default__";
 
 /**
+ * sandbox policy가 **보고됐지만 인식 불가**(future/malformed variant)일 때 쓰는 표시 marker.
+ * "sandbox 미보고"(undefined, 배지 없음)와 구분해, 실제 권한 상태를 확인하지 못한 경우 stale 안전 배지를
+ * 지우면서도 배지를 숨기지 않고 fail-closed 고위험으로 표시한다(09 §8.2, Codex 20차).
+ */
+export const SANDBOX_UNKNOWN = "unknown";
+
+/**
  * 고위험 approval policy id. `never`는 이후 turn의 **모든 승인 요청을 끈다**(구조화 권한 흐름 무력화)이므로
  * 세션 모드 bypassPermissions와 동일하게 진입 확인 게이트 대상이다(09 §8.3). adapter는 이 값을 wire로
  * 그대로 보내되(provider가 최종 권위), UI는 선택/override 표시를 고위험으로 강조한다.

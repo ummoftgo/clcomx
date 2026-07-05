@@ -23,6 +23,7 @@
     isHighRiskSessionModeId,
     isHighRiskApprovalPolicy,
     APPROVAL_DEFAULT_SELECTION,
+    SANDBOX_UNKNOWN,
   } from "../contracts/normalized";
   import type { ComposerCapabilities } from "../contracts/transcript";
 
@@ -401,7 +402,8 @@
   const visibleModeLabel = $derived(modeLabel?.trim() ?? "");
   // 표시 라벨이 전체접근/bypass 계열 고위험 값이면 warning 강조를 유지한다(09 §8.3 metadata strip과 정합).
   const modeLabelHighRisk = $derived(
-    /danger-full-access|bypassPermissions|full access/i.test(visibleModeLabel),
+    visibleModeLabel === SANDBOX_UNKNOWN ||
+      /danger-full-access|bypassPermissions|full access/i.test(visibleModeLabel),
   );
   const imageAttachAvailable = $derived(capabilities.image === true);
   const hasImageAttachmentFeedback = $derived(imageAttachments.length !== 0 || imageError !== null);

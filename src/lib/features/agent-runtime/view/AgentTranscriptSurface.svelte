@@ -26,6 +26,7 @@
   import {
     CODEX_APPROVAL_POLICIES,
     APPROVAL_DEFAULT_SELECTION,
+    SANDBOX_UNKNOWN,
     isHighRiskApprovalPolicy,
   } from "../contracts/normalized";
   import { createAgentRuntimeStore, type AgentRuntimeStore } from "../state/agent-runtime-store.svelte";
@@ -174,6 +175,7 @@
   /** 09 §8.3의 provider 고위험 모드/샌드박스 값을 metadata badge에서 경고로 표시한다. */
   function isHighRiskRuntimeMetadataValue(value: string | undefined): boolean {
     if (!value) return false;
+    if (value === SANDBOX_UNKNOWN) return true; // 인식 불가 sandbox → fail-closed 고위험(Codex 20차).
     const compact = value.toLowerCase().replace(/[^a-z0-9]/g, "");
     return (
       compact === "bypasspermissions" ||

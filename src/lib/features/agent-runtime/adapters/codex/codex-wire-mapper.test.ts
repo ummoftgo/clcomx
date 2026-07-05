@@ -92,7 +92,7 @@ describe("thread/turn lifecycle (CX-1/CX-3/CX-4)", () => {
     expect(metadata.approvalPolicy).toBeUndefined();
   });
 
-  it("②-C: thread/settings/updated의 미인식 sandboxPolicy(future/malformed)는 undefined로 clear한다(fail-closed)", () => {
+  it("②-C: thread/settings/updated의 미인식 sandboxPolicy(future/malformed)는 SANDBOX_UNKNOWN으로 표시한다(fail-closed)", () => {
     const r = new CodexRouting();
     for (const sandboxPolicy of [{}, { type: "dangerFullAccessV2" }, { type: "unknownSandbox" }, "not-a-known-mode"]) {
       const events = mapCodexNotification(
@@ -101,9 +101,8 @@ describe("thread/turn lifecycle (CX-1/CX-3/CX-4)", () => {
         r,
       );
       const metadata = (events[0] as unknown as { metadata: Record<string, unknown> }).metadata;
-      // 미인식 sandbox는 정상 배지로 통과시키지 않고 키를 undefined로 포함해 이전 안전 배지를 지운다.
-      expect("sandbox" in metadata).toBe(true);
-      expect(metadata.sandbox).toBeUndefined();
+      // 미인식 sandbox는 정상 배지로 통과시키지 않고, 숨기지도 않는다 — unknown marker로 표시(고위험).
+      expect(metadata.sandbox).toBe("unknown");
     }
   });
 

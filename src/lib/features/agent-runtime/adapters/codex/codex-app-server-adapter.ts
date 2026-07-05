@@ -42,7 +42,7 @@ import {
   mapAgentContentToUserInput,
   OPTION_KIND_TO_DECISION,
 } from "./codex-wire-mapper";
-import { mapItemCompleted, formatCodexApprovalPolicy, formatCodexSandbox } from "./codex-wire-mapper";
+import { mapItemCompleted, formatCodexApprovalPolicy, codexSandboxBadge } from "./codex-wire-mapper";
 import type { Thread } from "../../generated/codex-app-server/v2/Thread";
 import type { FuzzyFileSearchResponse } from "../../generated/codex-app-server/FuzzyFileSearchResponse";
 import type { FuzzyFileSearchResult } from "../../generated/codex-app-server/FuzzyFileSearchResult";
@@ -125,7 +125,8 @@ interface ThreadResponse {
 function buildCodexPolicyMetadata(
   resp: ThreadResponse,
 ): Pick<SessionStartResult, "sandbox" | "approvalPolicy" | "approvalsReviewer" | "model" | "effort"> {
-  const sandbox = formatCodexSandbox(resp.sandbox);
+  // 보고된 sandbox가 인식 불가면 SANDBOX_UNKNOWN(고위험 표시), 미보고면 배지 없음(codexSandboxBadge).
+  const sandbox = codexSandboxBadge(resp.sandbox);
   const approvalPolicy = formatCodexApprovalPolicy(resp.approvalPolicy);
   return {
     ...(sandbox ? { sandbox } : {}),
