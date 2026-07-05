@@ -198,6 +198,8 @@
       optionsOpen = false;
       return;
     }
+    // 안전 모드 선택은 미확정 고위험 mode pending을 무효화한다(approval과 대칭, stale accept 덮어쓰기 방지).
+    pendingHighRiskModeId = null;
     await requestModeChange(nextModeId);
   }
 
@@ -282,6 +284,9 @@
       optionsOpen = false;
       return;
     }
+    // 안전(비-gated) 선택은 미확정 고위험 approval pending을 무효화한다 — 방금 낮춘 정책을 stale 확인 배너의
+    // accept가 다시 never/provider-default로 덮어쓰지 못하게 한다(Codex high 6차).
+    pendingHighRiskApprovalId = null;
     onApprovalPolicyChange(nextPolicy);
   }
 

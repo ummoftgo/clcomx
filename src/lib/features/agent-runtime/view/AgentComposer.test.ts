@@ -548,6 +548,51 @@ describe("AgentComposer", () => {
     expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
   });
 
+  it("approval selector: never 대기 중 안전 scalar를 고르면 stale 확인이 never를 덮어쓰지 못한다", async () => {
+    const onApprovalPolicyChange = vi.fn();
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: approvalProps({ onApprovalPolicyChange }),
+    });
+    await openOptions(getByTestId);
+    // never 선택 → 확인 배너(미확정), popover 닫힘.
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), { target: { value: "never" } });
+    expect(getByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeTruthy();
+    // popover 다시 열어 안전 scalar 선택 → 즉시 적용 + 미확정 배너 소멸.
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), { target: { value: "on-failure" } });
+    expect(onApprovalPolicyChange).toHaveBeenCalledWith("on-failure");
+    expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
+    // stale never는 남아 있지 않으므로 never로 덮어써지지 않는다.
+    expect(onApprovalPolicyChange).not.toHaveBeenCalledWith("never");
+  });
+
+  it("mode selector: 고위험 대기 중 저위험 모드를 고르면 stale 확인이 고위험을 덮어쓰지 못한다", async () => {
+    const onModeChange = vi.fn().mockResolvedValue(undefined);
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+          { id: "bypassPermissions", name: "Bypass" },
+        ],
+        currentModeId: "default",
+        onModeChange,
+      },
+    });
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), { target: { value: "bypassPermissions" } });
+    expect(getByTestId(TEST_IDS.agentComposerModeConfirm)).toBeTruthy();
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), { target: { value: "plan" } });
+    expect(onModeChange).toHaveBeenCalledWith("plan");
+    expect(queryByTestId(TEST_IDS.agentComposerModeConfirm)).toBeNull();
+    expect(onModeChange).not.toHaveBeenCalledWith("bypassPermissions");
+  });
+
   it("options popover: 토글로 열고 Escape로 닫는다", async () => {
     const { getByTestId, queryByTestId } = render(AgentComposer, {
       props: approvalProps(),
