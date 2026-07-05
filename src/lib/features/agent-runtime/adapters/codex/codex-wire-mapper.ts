@@ -12,6 +12,7 @@ import type {
   AgentEvent,
   AgentContent,
   AgentPlanEntry,
+  AgentRuntimeMetadataUpdate,
   FileChangeSummary,
   FileLocation,
   ProviderRef,
@@ -80,6 +81,31 @@ function refOf(
     itemId: params.itemId,
     raw,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// policy badge 포맷터(09 §8.2). thread start/resume 응답과 thread/settings/updated 알림에서
+// 공유한다 — 어댑터가 여기서 import해 SessionStartResult를, 매퍼가 settings 알림을 만든다(단일 정의).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Codex AskForApproval을 session badge용 짧은 문자열로 축약한다(granular 객체는 "granular"). */
+export function formatCodexApprovalPolicy(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "granular" in value) return "granular";
+  return undefined;
+}
+
+/** Codex SandboxPolicy/SandboxMode을 09 §8.2 표의 kebab badge 값으로 축약한다. */
+export function formatCodexSandbox(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return undefined;
+  const type = (value as { type?: unknown }).type;
+  if (type === "dangerFullAccess") return "danger-full-access";
+  if (type === "readOnly") return "read-only";
+  if (type === "workspaceWrite") return "workspace-write";
+  if (type === "externalSandbox") return "external-sandbox";
+  if (typeof type === "string") return type;
+  return undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -541,6 +567,30 @@ export function mapCodexNotification(
       return [
         { type: "session_status_changed", ref: refOf({ threadId }), status: mapThreadStatus(status) },
       ];
+    }
+
+    // 서버가 권위 thread 설정을 다시 알린다(우리 turn/start override 적용 후, provider default 정규화,
+    // 타 클라이언트 변경 등). approval/sandbox/model/effort 권위값을 metadata로 갱신해 UI 위험 표시가
+    // 실제 thread 정책과 어긋나지 않게 한다(09 §8.2, ②-C). 비밀 아님 — 표시/위험 판정용.
+    case "thread/settings/updated": {
+      const threadId = p.threadId as string;
+      const s = (p.threadSettings ?? {}) as {
+        approvalPolicy?: unknown;
+        approvalsReviewer?: unknown;
+        sandboxPolicy?: unknown;
+        model?: unknown;
+        effort?: unknown;
+      };
+      const metadata: AgentRuntimeMetadataUpdate = {};
+      const approvalPolicy = formatCodexApprovalPolicy(s.approvalPolicy);
+      if (approvalPolicy !== undefined) metadata.approvalPolicy = approvalPolicy;
+      const sandbox = formatCodexSandbox(s.sandboxPolicy);
+      if (sandbox !== undefined) metadata.sandbox = sandbox;
+      if (typeof s.approvalsReviewer === "string") metadata.approvalsReviewer = s.approvalsReviewer;
+      if (typeof s.model === "string" && s.model) metadata.model = s.model;
+      if (typeof s.effort === "string" && s.effort) metadata.effort = s.effort;
+      if (Object.keys(metadata).length === 0) return [];
+      return [{ type: "runtime_metadata_changed", ref: refOf({ threadId }), metadata }];
     }
 
     case "turn/started": {

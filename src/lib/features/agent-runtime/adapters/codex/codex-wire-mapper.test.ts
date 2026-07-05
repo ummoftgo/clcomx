@@ -50,6 +50,48 @@ describe("thread/turn lifecycle (CX-1/CX-3/CX-4)", () => {
     expect(events[0]).toMatchObject({ type: "session_status_changed", status: "requires_action" });
   });
 
+  it("②-C: thread/settings/updated → 권위 approval/sandbox/model/effort를 runtime_metadata_changed로 반영한다", () => {
+    const r = new CodexRouting();
+    const events = mapCodexNotification(
+      "thread/settings/updated",
+      {
+        threadId: "th_1",
+        threadSettings: {
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandboxPolicy: { type: "dangerFullAccess" },
+          model: "gpt-x",
+          effort: "high",
+        },
+      },
+      r,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "runtime_metadata_changed",
+      metadata: {
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: "danger-full-access",
+        model: "gpt-x",
+        effort: "high",
+      },
+    });
+  });
+
+  it("②-C: thread/settings/updated의 granular approvalPolicy는 'granular'로 축약한다(scalar 아님)", () => {
+    const r = new CodexRouting();
+    const events = mapCodexNotification(
+      "thread/settings/updated",
+      { threadId: "th_1", threadSettings: { approvalPolicy: { granular: {} } } },
+      r,
+    );
+    expect(events[0]).toMatchObject({
+      type: "runtime_metadata_changed",
+      metadata: { approvalPolicy: "granular" },
+    });
+  });
+
   it("CX-4: thread/status/changed systemError → failed", () => {
     const r = new CodexRouting();
     const events = mapCodexNotification(

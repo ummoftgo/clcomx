@@ -42,7 +42,7 @@ import {
   mapAgentContentToUserInput,
   OPTION_KIND_TO_DECISION,
 } from "./codex-wire-mapper";
-import { mapItemCompleted } from "./codex-wire-mapper";
+import { mapItemCompleted, formatCodexApprovalPolicy, formatCodexSandbox } from "./codex-wire-mapper";
 import type { Thread } from "../../generated/codex-app-server/v2/Thread";
 import type { FuzzyFileSearchResponse } from "../../generated/codex-app-server/FuzzyFileSearchResponse";
 import type { FuzzyFileSearchResult } from "../../generated/codex-app-server/FuzzyFileSearchResult";
@@ -121,32 +121,12 @@ interface ThreadResponse {
   reasoningEffort?: unknown;
 }
 
-/** Codex AskForApproval을 session badge용 짧은 문자열로 축약한다. */
-function formatApprovalPolicy(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (value && typeof value === "object" && "granular" in value) return "granular";
-  return undefined;
-}
-
-/** Codex SandboxPolicy/SandboxMode을 09 §8.2 표의 badge 값으로 축약한다. */
-function formatSandbox(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (!value || typeof value !== "object") return undefined;
-  const type = (value as { type?: unknown }).type;
-  if (type === "dangerFullAccess") return "danger-full-access";
-  if (type === "readOnly") return "read-only";
-  if (type === "workspaceWrite") return "workspace-write";
-  if (type === "externalSandbox") return "external-sandbox";
-  if (typeof type === "string") return type;
-  return undefined;
-}
-
-/** Codex thread start/resume response에서 UI 표시용 policy metadata를 추출한다. */
+/** Codex thread start/resume response에서 UI 표시용 policy metadata를 추출한다. 포맷터는 wire-mapper와 공유. */
 function buildCodexPolicyMetadata(
   resp: ThreadResponse,
 ): Pick<SessionStartResult, "sandbox" | "approvalPolicy" | "approvalsReviewer" | "model" | "effort"> {
-  const sandbox = formatSandbox(resp.sandbox);
-  const approvalPolicy = formatApprovalPolicy(resp.approvalPolicy);
+  const sandbox = formatCodexSandbox(resp.sandbox);
+  const approvalPolicy = formatCodexApprovalPolicy(resp.approvalPolicy);
   return {
     ...(sandbox ? { sandbox } : {}),
     ...(approvalPolicy ? { approvalPolicy } : {}),

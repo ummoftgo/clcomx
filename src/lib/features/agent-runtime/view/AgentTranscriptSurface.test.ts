@@ -898,6 +898,29 @@ describe("AgentTranscriptSurface", () => {
     expect(toggle.textContent).toContain("High Risk");
   });
 
+  it("②-C: thread/settings/updated로 approvalPolicy가 never로 바뀌면(override 없음) 고위험으로 갱신한다", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, {
+      props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }),
+    });
+    const metadata = await findByTestId(TEST_IDS.agentRuntimeMetadata);
+    // 시작값 on-request → 고위험 아님.
+    await waitFor(() => expect(metadata.textContent).toContain("on-request"));
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    expect(toggle.textContent).not.toContain("High Risk");
+    // 서버가 권위 설정을 never로 다시 알림 → 로컬 override 없으므로 실효 정책=never → 고위험.
+    emit({
+      type: "runtime_metadata_changed",
+      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+      metadata: { approvalPolicy: "never" },
+    });
+    await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
+    const approval = [...metadata.querySelectorAll(".metadata-item[data-risk='high']")].find((el) =>
+      el.textContent?.includes("Approval"),
+    );
+    expect(approval).toBeTruthy();
+  });
+
   it("②-C: approvalPolicy 미상(replay resume)이면 fail-closed로 고위험 표시한다", async () => {
     // startApprovalPolicy 미지정 → SessionStartResult에 approvalPolicy 없음(thread/read replay 경로 모사).
     const { port } = makeFakePort();
