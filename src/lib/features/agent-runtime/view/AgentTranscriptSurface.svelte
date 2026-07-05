@@ -284,17 +284,6 @@
     }
     const metadata: AgentRuntimeMetadata = { ...runtimeMetadata, ...patch };
     runtimeMetadata = metadata;
-    // sentinel 해소는 **null override가 커밋된 뒤**(prompt 전송) 도착한 권위 approval echo에서만 한다 —
-    // prompt 전 도착한 echo는 revert 이전 정책이라 해소에 쓰면 다음 turn의 provider-default 위험(never 가능)을
-    // 숨긴다. 커밋 후 echo만 revert 결과를 확정하므로 그때 권위값으로 표시/위험을 재계산한다(Codex medium 12차).
-    if (
-      patch.approvalPolicy !== undefined &&
-      approvalSelection === APPROVAL_DEFAULT_SELECTION &&
-      approvalSentinelCommitted
-    ) {
-      approvalSelection = undefined;
-      approvalSentinelCommitted = false;
-    }
     await persistAgentRuntimeMetadata(metadata);
   }
 
@@ -472,48 +461,41 @@
       CODEX_APPROVAL_POLICIES.includes(runtimeMetadata.approvalPolicy as (typeof CODEX_APPROVAL_POLICIES)[number]),
   );
   // 사용자의 명시적 선택(3-state): undefined=미설정→base 사용, APPROVAL_DEFAULT_SELECTION=provider 기본값(null),
-  // scalar=override 값. base가 granular/미상이어도 default sentinel로 항상 provider default로 되돌릴 수 있다(Codex 리뷰).
+  // scalar=override 값. base가 granular/미상이어도 default sentinel로 항상 provider default로 되돌릴 수 있다.
   let approvalSelection = $state<string | undefined>(undefined);
-  // sentinel(provider 기본값)의 null override는 다음 turn/start에서야 적용된다 — prompt가 전송돼 null이
-  // wire에 도달한 뒤 도착한 settings echo만 그 결과를 권위로 확정한다. prompt 전 도착한 echo는 revert 이전
-  // 정책이라 sentinel 해소에 쓰면 다음 turn 위험(never 가능)을 숨긴다(Codex medium 12차). 이 플래그는
-  // sentinel 선택 후 prompt가 전송(null 커밋)됐는지를 추적한다.
-  let approvalSentinelCommitted = $state(false);
-  // prompt submit이 turn/start 응답을 받기까지(in-flight) turn 옵션 셀렉터를 잠근다(Codex high 15차).
-  // boolean이 아닌 pending count다 — send는 in-flight 중에도 가능해 submit이 겹칠 수 있으므로, 모든 submit이
-  // settle될 때까지 잠금을 유지해 조기 해제로 오커밋 창이 다시 열리지 않게 한다(Codex high 16차).
+  // prompt submit이 turn/start 응답을 받기까지(in-flight) turn 옵션 셀렉터를 잠근다 — pending count(겹친 submit
+  // 대비, Codex high 15·16차). 옵션 변경이 in-flight turn과 경합해 혼란스러운 중간 상태를 만들지 않게 한다.
   let submitInFlightCount = $state(0);
   const submitInFlight = $derived(submitInFlightCount > 0);
   // 셀렉터 표시값: 사용자가 고른 값(sentinel 포함) 우선, 없으면 base가 scalar일 때만 그 값(아니면 placeholder).
   const selectedApprovalPolicy = $derived<string | undefined>(
     approvalSelection ?? (approvalBaseIsScalar ? runtimeMetadata?.approvalPolicy : undefined),
   );
-  // 다음 turn에 적용될 실효 정책(위험 판정 권위):
-  //  - scalar override → 그 값(base가 never여도 은닉 없이 표시, Codex high 1차).
-  //  - provider 기본값 sentinel → provider/server default로 revert하는데 그 결과 정책을 client가 알 수 없다
-  //    (start metadata와 다를 수 있음) → undefined(미상)로 둬 fail-closed(Codex high 4차).
-  //  - 미설정(사용자 미선택) → base(thread 시작 정책; replay면 undefined).
-  const effectiveApprovalPolicy = $derived<string | undefined>(
-    approvalSelection === APPROVAL_DEFAULT_SELECTION
-      ? undefined
-      : (approvalSelection ?? runtimeMetadata?.approvalPolicy),
+  // ── 위험 판정: **현재 권위 정책**과 **다음 turn override intent**를 분리해 둘 중 하나라도 위험하면 고위험 ──
+  // (Codex high 21차). setTurnOptions는 다음 turn intent만 저장하고 현재 thread 권위는 서버 echo 전까지 그대로다.
+  // 현재 권위 정책(base)이 never이거나, known scalar로 확인 불가(granular/replay 미상/미인식)면 고위험이다.
+  // 안전 scalar override를 고른다고 base=never의 위험을 축소 표시하지 않는다 — echo가 base를 갱신해야 풀린다.
+  const currentAuthorityApprovalHighRisk = $derived<boolean>(
+    provider === "codex" &&
+      !!runtimeMetadata &&
+      (isHighRiskApprovalPolicy(runtimeMetadata.approvalPolicy) || !approvalBaseIsScalar),
   );
-  // 실효 정책이 우리가 판정 가능한 scalar 후보인지(never 포함). granular(experimental) 객체나 replay로
-  // 미상(undefined)이면 안전 여부를 확인할 수 없다.
-  const approvalEffectiveIsKnownScalar = $derived<boolean>(
-    effectiveApprovalPolicy !== undefined &&
-      CODEX_APPROVAL_POLICIES.includes(effectiveApprovalPolicy as (typeof CODEX_APPROVAL_POLICIES)[number]),
-  );
-  // replay resume(thread/read)는 approvalPolicy를 주지 않고, granular는 우리가 파싱하지 않는다 — 실제 정책이
-  // never여도 알 수 없다. 세션이 성립했는데(codex) 실효 정책을 known scalar로 확인하지 못하면 안전한 상태로
-  // 보이지 않게 fail-closed로 고위험 취급한다(Codex high 재지적). 사용자가 명시 scalar를 고르면 미상이 해소된다.
-  const approvalPolicyUnknown = $derived<boolean>(
-    provider === "codex" && !!runtimeMetadata && !approvalEffectiveIsKnownScalar,
+  // 다음 turn override intent가 위험: never scalar를 override하거나, provider 기본값 sentinel(결과 미상 → fail-closed).
+  const nextTurnApprovalHighRisk = $derived<boolean>(
+    approvalSelection === APPROVAL_DEFAULT_SELECTION || isHighRiskApprovalPolicy(approvalSelection),
   );
   const approvalHighRisk = $derived<boolean>(
-    isHighRiskApprovalPolicy(effectiveApprovalPolicy) || approvalPolicyUnknown,
+    currentAuthorityApprovalHighRisk || nextTurnApprovalHighRisk,
   );
-  // override chip: 사용자가 base와 실제로 다른 정책으로 바꿔 "다음 turn 정책"이 base badge와 어긋나는 경우에만.
+  // 현재 권위 approval을 known scalar로 확인 못 하면 badge를 unknown으로 표시한다(stale/granular 값 오인 방지).
+  const approvalBadgeUnknown = $derived<boolean>(
+    provider === "codex" && !!runtimeMetadata && !approvalBaseIsScalar,
+  );
+  // override chip: 사용자가 base와 다른 정책으로 바꿔 "다음 turn 정책"이 base badge와 어긋나는 경우.
+  // scalar override(base와 다른 값) 또는 provider 기본값 sentinel을 노출한다.
+  const approvalSelectionIsDefault = $derived<boolean>(
+    approvalSelection === APPROVAL_DEFAULT_SELECTION,
+  );
   const approvalOverrideActive = $derived<string | undefined>(
     approvalSelection !== undefined &&
       approvalSelection !== APPROVAL_DEFAULT_SELECTION &&
@@ -522,32 +504,20 @@
       : undefined,
   );
 
-  // sentinel 활성 중 **실제 turn/start 성공**(raw session_status_changed running + turnId)이 관찰되면
-  // null override가 그 turn의 wire에 성공 적용된 것이다 — 이후 도착한 settings echo가 revert 결과를 확정할
-  // 수 있게 커밋으로 표시한다. 파생 store.status가 아닌 raw 이벤트라 late previous-turn delta로 인한 generic
-  // running 전이를 커밋으로 오인하지 않고, turn/start 실패(H3: error+ready)도 running+turnId를 내지 않아
-  // 커밋되지 않는다(Codex high 14차). 셀렉터는 ready/idle에서만 열려 sentinel 선택 시 active turn이 없으므로
-  // 이후 turn/start는 sentinel prompt의 turn이다.
-  function onTurnStarted(): void {
-    if (approvalSelection === APPROVAL_DEFAULT_SELECTION) approvalSentinelCommitted = true;
-  }
-
   function onApprovalPolicyChange(policyId: string): void {
     if (policyId === APPROVAL_DEFAULT_SELECTION) {
-      // provider 기본값으로 override 해제 — base가 granular/미상이어도 항상 도달 가능한 revert 경로.
+      // provider 기본값으로 override 해제 — base가 granular/미상이어도 항상 도달 가능한 revert 경로. 결과 정책을
+      // client가 알 수 없어(never 가능) 선택 중에는 계속 fail-closed 고위험으로 둔다(서버 echo와 상관 없이).
       approvalSelection = APPROVAL_DEFAULT_SELECTION;
-      approvalSentinelCommitted = false; // 아직 prompt 전송 전 — null 미커밋.
       controller?.setTurnOptions({ approvalPolicy: null });
       return;
     }
     // granular/미지원 값은 무시(정적 scalar 후보 밖).
     if (!availableApprovalPolicies.includes(policyId)) return;
     approvalSelection = policyId;
-    approvalSentinelCommitted = false; // sentinel을 떠나므로 커밋 추적 해제.
     // 명시 scalar는 base와 같아도 그대로 전송한다. runtimeMetadata.approvalPolicy는 start/resume 시점 값이라
-    // 이후 turn/start override로 실제 thread 정책이 바뀌어도 갱신되지 않는다 — base-equality로 null(provider
-    // default revert)을 보내면 UI 표시(scalar)와 wire(provider default)가 분리돼 위험을 숨길 수 있다(Codex high).
-    // null revert는 오직 "provider 기본값" sentinel에서만 보낸다.
+    // 이후 override로 실제 thread 정책이 바뀌어도 갱신되지 않는다 — base-equality로 null을 보내면 UI 표시(scalar)와
+    // wire(provider default)가 분리돼 위험을 숨길 수 있다(Codex high). null revert는 오직 sentinel에서만 보낸다.
     controller?.setTurnOptions({ approvalPolicy: policyId });
   }
 
@@ -575,7 +545,6 @@
       store: createAttemptScopedStore(attemptId),
       onRuntimeMetadataChange: (metadata) => publishAgentRuntimeMetadataPatch(metadata, attemptId),
       onSessionTitleChange: (title) => publishSessionTitleChange(title, attemptId),
-      onTurnStarted,
     });
     controller = fresh;
     try {
@@ -618,7 +587,6 @@
       store: createAttemptScopedStore(attemptId),
       onRuntimeMetadataChange: (metadata) => publishAgentRuntimeMetadataPatch(metadata, attemptId),
       onSessionTitleChange: (title) => publishSessionTitleChange(title, attemptId),
-      onTurnStarted,
     });
     controller = next;
     // OQ-16 Task 10: resume 소스가 없고(id 없음/미지원) 캐시 히스토리가 있으면 캐시를 read-only로
@@ -1063,7 +1031,7 @@
             </dd>
           </div>
         {/if}
-        {#if runtimeMetadata.approvalPolicy || approvalOverrideActive || approvalPolicyUnknown}
+        {#if runtimeMetadata.approvalPolicy || approvalOverrideActive || approvalSelectionIsDefault || approvalBadgeUnknown}
           <div
             class="metadata-item"
             class:metadata-item--warning={approvalHighRisk}
@@ -1071,13 +1039,13 @@
           >
             <dt>{$t("agentRuntime.metadata.approval")}</dt>
             <dd>
-              <!-- 실효 정책이 미상(replay 또는 provider 기본값 revert)이면 stale base scalar를 안전한 것처럼
-                   보여주지 않고 unknown으로 표기한다(Codex high 4차). -->
-              {approvalPolicyUnknown
+              <!-- 현재 권위 정책 badge. known scalar로 확인 못 하면(granular/replay 미상) unknown으로 표기해
+                   stale/미인식 값을 안전한 것처럼 보이지 않게 한다. -->
+              {approvalBadgeUnknown
                 ? $t("agentRuntime.metadata.unknownValue")
                 : (runtimeMetadata.approvalPolicy ?? $t("agentRuntime.metadata.unknownValue"))}
               {#if approvalOverrideActive}
-                <!-- 다음 turn에 적용될 override가 세션 시작 권위값과 달라 위험을 숨기지 않도록 chip으로 노출한다. -->
+                <!-- 다음 turn에 적용될 scalar override가 현재 권위값과 달라 위험을 숨기지 않도록 chip으로 노출한다. -->
                 <span
                   class="metadata-override-chip"
                   class:metadata-override-chip--warning={isHighRiskApprovalPolicy(approvalOverrideActive)}
@@ -1085,9 +1053,19 @@
                 >
                   {$t("agentRuntime.metadata.overrideChip", { values: { value: approvalOverrideActive } })}
                 </span>
+              {:else if approvalSelectionIsDefault}
+                <!-- provider 기본값(sentinel) override — 다음 turn은 provider default(결과 미상)로 revert한다. -->
+                <span
+                  class="metadata-override-chip metadata-override-chip--warning"
+                  data-testid={TEST_IDS.agentRuntimeApprovalOverride}
+                >
+                  {$t("agentRuntime.metadata.overrideChip", {
+                    values: { value: $t("agentRuntime.composer.approvalDefault") },
+                  })}
+                </span>
               {/if}
               {#if approvalHighRisk}
-                <!-- 실효 정책(override ?? base)이 never면 base가 이미 never인 경우에도 고위험 표시한다(은닉 방지). -->
+                <!-- 현재 권위 또는 다음 turn intent 중 하나라도 위험하면 고위험 표시(안전 override로 축소 안 함). -->
                 <span class="metadata-risk-label">{$t("agentRuntime.metadata.highRisk")}</span>
               {/if}
             </dd>

@@ -885,6 +885,28 @@ describe("AgentTranscriptSurface", () => {
     expect(chip.closest("[data-risk='high']")).toBeTruthy();
   });
 
+  it("②-C: 현재 권위가 never면 안전 scalar override를 골라도 고위험을 유지한다(권위 축소 표시 방지)", async () => {
+    // 현재 thread 권위 정책이 never. 안전 override는 다음 turn intent일 뿐 현재 wire는 여전히 never다.
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "never" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    const readyRef = { provider: "codex" as const, threadId: "thread-1", sessionId: "session-tree-1" };
+    emit({ type: "session_status_changed", ref: readyRef, status: "ready" });
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
+    // 안전 scalar(on-request) override 선택 → 다음 turn chip은 뜨지만 현재 권위(never)의 고위험은 유지된다.
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await fireEvent.change(approvalSelect, { target: { value: "on-request" } });
+    expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: "on-request" });
+    // override chip(다음 turn: on-request)은 뜨지만 현재 권위 never라 고위험 유지.
+    expect(await findByTestId(TEST_IDS.agentRuntimeApprovalOverride)).toBeTruthy();
+    expect(toggle.textContent).toContain("High Risk");
+    // 서버가 override 적용을 echo(base→on-request)해야 비로소 고위험이 풀린다.
+    emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
+    await waitFor(() => expect(toggle.textContent).not.toContain("High Risk"));
+  });
+
   it("②-C: 세션이 이미 never로 시작하면 override 없이도 고위험으로 표시한다(위험 은닉 방지)", async () => {
     const { port } = makeFakePort({ startApprovalPolicy: "never" });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
@@ -1001,7 +1023,7 @@ describe("AgentTranscriptSurface", () => {
     expect(approval).toBeTruthy();
   });
 
-  it("②-C: sentinel은 null 커밋(prompt 전송) 전 echo로 해소되지 않고, 커밋 후 echo에서만 해소된다", async () => {
+  it("②-C: sentinel(provider 기본값)은 echo/turn과 무관하게 고위험을 유지하고 명시 scalar 선택으로만 해소된다", async () => {
     const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
     await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
@@ -1010,21 +1032,23 @@ describe("AgentTranscriptSurface", () => {
     await openSurfaceOptions(findByTestId);
     const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
     await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
-    // provider 기본값 선택(확인 게이트) → sentinel 대기(fail-closed 고위험).
+    // provider 기본값 선택(확인 게이트) → sentinel(다음 turn provider default = 결과 미상).
     await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
     await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
     const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
     await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
 
-    // (1) turn 시작(running) 전 도착한 echo는 revert 이전 정책 → sentinel 해소하지 않는다(계속 고위험).
+    // sentinel은 adapter가 매 turn null을 재전송하므로(결과 미상), running/echo가 와도 계속 fail-closed 고위험이다.
+    emit({ type: "session_status_changed", ref: { ...readyRef, turnId: "turn-1" }, status: "running" });
     emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
     await tick();
     expect(toggle.textContent).toContain("High Risk");
 
-    // (2) turn/start 성공(running + turnId)으로 null override가 적용 커밋됨 → 이후 도착한 echo만 확정.
-    emit({ type: "session_status_changed", ref: { ...readyRef, turnId: "turn-1" }, status: "running" });
-    await tick();
-    emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
+    // 명시 scalar(on-request)를 골라야만 미상이 해소된다 — 다음 turn이 그 known scalar로 확정되기 때문.
+    emit({ type: "session_status_changed", ref: readyRef, status: "ready" });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect2 = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await fireEvent.change(approvalSelect2, { target: { value: "on-request" } });
     await waitFor(() => expect(toggle.textContent).not.toContain("High Risk"));
   });
 
@@ -1077,47 +1101,6 @@ describe("AgentTranscriptSurface", () => {
     // 두 번째까지 settle → 해제.
     resolvers[1]();
     await waitFor(() => expect(approvalSelect.disabled).toBe(false));
-  });
-
-  it("②-C: late previous-turn delta(turnId 없는 running)는 sentinel을 커밋하지 않는다(causal)", async () => {
-    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
-    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
-    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
-    const readyRef = { provider: "codex" as const, threadId: "thread-1", sessionId: "session-tree-1" };
-    emit({ type: "session_status_changed", ref: readyRef, status: "ready" });
-    await openSurfaceOptions(findByTestId);
-    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
-    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
-    await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
-    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
-    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
-    await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
-    // turnId 없는 running(파생 status 전이/late delta 모사)은 실제 turn/start 성공이 아니다 → 커밋 안 됨.
-    emit({ type: "session_status_changed", ref: readyRef, status: "running" });
-    await tick();
-    emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
-    await tick();
-    // 실제 turn/start 성공이 없었으므로 echo가 와도 sentinel은 fail-closed 고위험을 유지한다.
-    expect(toggle.textContent).toContain("High Risk");
-  });
-
-  it("②-C: turn/start 실패(running 미전이)면 이후 echo가 와도 sentinel을 해소하지 않는다(fail-closed 유지)", async () => {
-    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
-    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
-    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
-    const readyRef = { provider: "codex" as const, threadId: "thread-1", sessionId: "session-tree-1" };
-    emit({ type: "session_status_changed", ref: readyRef, status: "ready" });
-    await openSurfaceOptions(findByTestId);
-    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
-    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
-    await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
-    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
-    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
-    await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
-    // turn/start 실패는 running으로 전이하지 않는다(H3: error + ready). 커밋 안 됨 → echo가 와도 고위험 유지.
-    emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
-    await tick();
-    expect(toggle.textContent).toContain("High Risk");
   });
 
   it("②-C: base가 granular/미상이어도 provider 기본값 옵션으로 override를 null 해제할 수 있다", async () => {
