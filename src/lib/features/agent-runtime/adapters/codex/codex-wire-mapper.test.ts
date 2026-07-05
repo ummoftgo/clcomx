@@ -92,6 +92,20 @@ describe("thread/turn lifecycle (CX-1/CX-3/CX-4)", () => {
     expect(metadata.approvalPolicy).toBeUndefined();
   });
 
+  it("②-C: thread/settings/updated의 malformed sandboxPolicy도 undefined로 clear한다(fail-closed)", () => {
+    const r = new CodexRouting();
+    const events = mapCodexNotification(
+      "thread/settings/updated",
+      // type 없는 malformed sandbox(formatCodexSandbox undefined 반환) — future string type은 그대로 표시되므로 제외.
+      { threadId: "th_1", threadSettings: { approvalPolicy: "on-request", sandboxPolicy: {} } },
+      r,
+    );
+    const metadata = (events[0] as unknown as { metadata: Record<string, unknown> }).metadata;
+    // sandbox도 full snapshot 권위라 미인식이면 키를 undefined로 포함해 이전 안전 배지를 지운다.
+    expect("sandbox" in metadata).toBe(true);
+    expect(metadata.sandbox).toBeUndefined();
+  });
+
   it("②-C: thread/settings/updated의 granular approvalPolicy는 'granular'로 축약한다(scalar 아님)", () => {
     const r = new CodexRouting();
     const events = mapCodexNotification(

@@ -580,13 +580,13 @@ export function mapCodexNotification(
         approvalsReviewer?: unknown;
         sandboxPolicy?: unknown;
       };
-      // approvalPolicy는 full snapshot의 권위값이다 — 인식 불가(future/malformed)여도 키를 undefined로 포함해
-      // 이전 안전 scalar를 clear한다. surface는 미상 approval을 fail-closed 고위험으로 떨어뜨린다(Codex medium 17차).
+      // approvalPolicy·sandbox는 full snapshot의 권위값이다 — 인식 불가(future/malformed)여도 키를 undefined로
+      // 포함해 이전 안전 배지를 clear한다. surface는 미상 approval을 fail-closed 고위험으로 떨어뜨리고, sandbox도
+      // stale 안전값이 남지 않는다(Codex medium 17·18차).
       const metadata: AgentRuntimeMetadataUpdate = {
         approvalPolicy: formatCodexApprovalPolicy(s.approvalPolicy),
+        sandbox: formatCodexSandbox(s.sandboxPolicy),
       };
-      const sandbox = formatCodexSandbox(s.sandboxPolicy);
-      if (sandbox !== undefined) metadata.sandbox = sandbox;
       if (typeof s.approvalsReviewer === "string") metadata.approvalsReviewer = s.approvalsReviewer;
       return [{ type: "runtime_metadata_changed", ref: refOf({ threadId }), metadata }];
     }
