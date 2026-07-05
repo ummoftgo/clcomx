@@ -593,16 +593,35 @@ describe("AgentComposer", () => {
     expect(onModeChange).not.toHaveBeenCalledWith("bypassPermissions");
   });
 
-  it("options popover: 토글로 열고 Escape로 닫는다", async () => {
+  it("options popover: 토글로 열면 popover로 포커스가 옮겨지고 Escape로 닫으며 토글로 복원한다", async () => {
     const { getByTestId, queryByTestId } = render(AgentComposer, {
       props: approvalProps(),
     });
     expect(queryByTestId(TEST_IDS.agentComposerOptionsPopover)).toBeNull();
-    await fireEvent.click(getByTestId(TEST_IDS.agentComposerOptionsToggle));
+    const toggle = getByTestId(TEST_IDS.agentComposerOptionsToggle);
+    await fireEvent.click(toggle);
     const popover = getByTestId(TEST_IDS.agentComposerOptionsPopover);
-    expect(popover).toBeTruthy();
-    await fireEvent.keyDown(popover, { key: "Escape" });
+    // 열면 포커스가 popover(role=dialog)로 이동 → 실제 활성 요소에서 Escape가 동작한다.
+    await waitFor(() => expect(document.activeElement).toBe(popover));
+    await fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
     expect(queryByTestId(TEST_IDS.agentComposerOptionsPopover)).toBeNull();
+    // 닫으면 포커스를 토글로 복원한다.
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it("approval selector: never 확인 배너가 뜨면 accept 버튼으로 포커스가 이동한다", async () => {
+    const { getByTestId } = render(AgentComposer, {
+      props: approvalProps(),
+    });
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), { target: { value: "never" } });
+    // popover가 닫히고 확인 배너의 accept로 포커스가 옮겨져 키보드/SR 경로가 유지된다.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerApprovalConfirmAccept)),
+    );
+    // 취소하면 포커스를 토글로 복원한다.
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerApprovalConfirmCancel));
+    expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerOptionsToggle));
   });
 
   it("opens the slash command palette and filters by query", async () => {

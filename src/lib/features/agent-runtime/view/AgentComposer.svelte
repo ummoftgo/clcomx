@@ -7,6 +7,7 @@
   status가 running/requires_action이면 stop, requires_action이면 입력 비활성+승인 대기 안내.
 -->
 <script lang="ts">
+  import { tick } from "svelte";
   import { formatImageSize, MAX_CLIPBOARD_IMAGE_BYTES } from "../../../clipboard";
   import { t } from "../../../i18n";
   import { TEST_IDS } from "../../../testids";
@@ -193,9 +194,10 @@
     select.value = currentModeId ?? "";
     if (!onModeChange || nextModeId === (currentModeId ?? "")) return;
     if (isHighRiskSessionModeId(nextModeId)) {
-      // 고위험 진입: 즉시 보내지 않고 확인 게이트를 띄운다. popover는 닫아 확인 배너로 초점을 옮긴다.
+      // 고위험 진입: 즉시 보내지 않고 확인 게이트를 띄운다. popover는 닫고 확인 배너 accept로 포커스를 옮긴다.
       pendingHighRiskModeId = nextModeId;
       optionsOpen = false;
+      void focusPendingConfirm("mode");
       return;
     }
     // 안전 모드 선택은 미확정 고위험 mode pending을 무효화한다(approval과 대칭, stale accept 덮어쓰기 방지).
@@ -206,6 +208,7 @@
   async function confirmHighRiskMode(): Promise<void> {
     const modeId = pendingHighRiskModeId;
     pendingHighRiskModeId = null;
+    optionsToggleEl?.focus(); // 배너 종료 후 포커스를 토글로 복원.
     // 확인 배너가 떠 있는 사이 상태가 바뀌었을 수 있으므로 셀렉터와 동일한 readiness/후보 유효성을
     // 재검사한다 — active turn/승인 대기/복원 중에는 고위험 전환을 보내지 않는다(Codex 13차).
     if (!modeId || !modeSelectEnabled) return;
@@ -215,6 +218,7 @@
 
   function cancelHighRiskMode(): void {
     pendingHighRiskModeId = null;
+    optionsToggleEl?.focus();
   }
 
   // ②-C: turn 옵션 통합 popover + Codex approval policy override.
@@ -237,9 +241,22 @@
 
   let optionsPopoverEl = $state<HTMLDivElement | undefined>();
   let optionsToggleEl = $state<HTMLButtonElement | undefined>();
+  let modeConfirmAcceptEl = $state<HTMLButtonElement | undefined>();
+  let approvalConfirmAcceptEl = $state<HTMLButtonElement | undefined>();
 
-  function toggleOptions(): void {
+  async function toggleOptions(): Promise<void> {
     optionsOpen = !optionsOpen;
+    if (optionsOpen) {
+      // 포커스를 popover(role=dialog)로 옮겨 Escape/키보드 탐색이 실제 활성 요소에서 동작하게 한다(a11y).
+      await tick();
+      optionsPopoverEl?.focus();
+    }
+  }
+
+  /** 고위험 확인 배너가 뜨면 accept 버튼으로 포커스를 옮긴다(키보드/SR 사용자 경로 유지). */
+  async function focusPendingConfirm(kind: "mode" | "approval"): Promise<void> {
+    await tick();
+    (kind === "mode" ? modeConfirmAcceptEl : approvalConfirmAcceptEl)?.focus();
   }
 
   function closeOptions(): void {
@@ -282,6 +299,7 @@
       select.value = selectedApprovalPolicy ?? "";
       pendingHighRiskApprovalId = nextPolicy;
       optionsOpen = false;
+      void focusPendingConfirm("approval");
       return;
     }
     // 안전(비-gated) 선택은 미확정 고위험 approval pending을 무효화한다 — 방금 낮춘 정책을 stale 확인 배너의
@@ -293,6 +311,7 @@
   function confirmHighRiskApproval(): void {
     const policyId = pendingHighRiskApprovalId;
     pendingHighRiskApprovalId = null;
+    optionsToggleEl?.focus(); // 배너 종료 후 포커스를 토글로 복원.
     // 배너가 떠 있는 사이 상태가 바뀌었을 수 있으므로 셀렉터와 동일한 readiness/후보 유효성을 재검사한다.
     if (!policyId || !modeSelectEnabled) return;
     // sentinel은 후보 목록 밖의 정당한 값이므로 별도 허용한다.
@@ -304,6 +323,7 @@
 
   function cancelHighRiskApproval(): void {
     pendingHighRiskApprovalId = null;
+    optionsToggleEl?.focus();
   }
 
   // 셀렉터가 비활성(비 ready/idle·restoring·pending)이 되면 미확정 고위험 확인 배너를 취소한다 —
@@ -876,6 +896,7 @@
           type="button"
           class="high-risk-confirm-btn danger"
           data-testid={TEST_IDS.agentComposerModeConfirmAccept}
+          bind:this={modeConfirmAcceptEl}
           onclick={confirmHighRiskMode}
         >
           {$t("agentRuntime.composer.highRiskModeAccept")}
@@ -904,6 +925,7 @@
           type="button"
           class="high-risk-confirm-btn danger"
           data-testid={TEST_IDS.agentComposerApprovalConfirmAccept}
+          bind:this={approvalConfirmAcceptEl}
           onclick={confirmHighRiskApproval}
         >
           {approvalConfirmAcceptLabel}
