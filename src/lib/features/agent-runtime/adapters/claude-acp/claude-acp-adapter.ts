@@ -741,17 +741,22 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       rpcReject = reject;
     });
     const runOne = async (): Promise<void> => {
-      const isHighRisk = isHighRiskMode(modeId);
+      // 보수(fail-safe) 판정: 고위험 모드로 **진입**하거나, 고위험 모드에서 **이탈**하는 전환 창 전체를
+      // escalation 대상으로 본다. 이탈 창까지 escalation을 유지하는 이유는, ACP가 전환 식별자를
+      // 제공하지 않아 다운그레이드 확정 echo를 정밀 상관할 수 없기 때문이다(같은 값의 stale echo가
+      // 조기 확정할 수 있는 이론적 잔여 edge). 안전측(과잉 escalation)으로 편향해 이탈 창 동안에도
+      // 승인을 modal escalation으로 처리한다. 잔여 edge는 프로토콜 한계로 문서화한다.
+      const conservativeHighRisk = isHighRiskMode(modeId) || isHighRiskMode(rt.currentModeId);
       // 전송 전(in-flight)부터 보수 반영 — provider가 set_mode 응답 전에 모드를 적용하고 승인 요청을
       // 먼저 보내도 그 창의 승인을 escalation으로 판정한다(Codex 7차).
-      if (isHighRisk) rt.pendingHighRiskMode = true;
+      if (conservativeHighRisk) rt.pendingHighRiskMode = true;
       // echo waiter를 RPC **전에** 등록한다 — provider가 set_mode 응답 전에 config_option_update를
       // 먼저 보내도 그 echo를 놓치지 않고 체인이 진행되게 한다(Codex 12차 데드락 방지).
       const echo = registerModeEchoWaiter(rt, modeId);
       try {
         await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
       } catch (err) {
-        if (isHighRisk) rt.pendingHighRiskMode = false; // 실패 — 이 전환의 보수 반영 해제.
+        if (conservativeHighRisk) rt.pendingHighRiskMode = false; // 실패 — 이 전환의 보수 반영 해제.
         echo.dispose(); // 소비되지 않은 waiter 제거(오소비/leak 방지).
         rpcReject(err);
         return;

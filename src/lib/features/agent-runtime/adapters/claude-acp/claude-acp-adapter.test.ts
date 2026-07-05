@@ -510,6 +510,41 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "bypassPermissions" });
   });
 
+  it("setSessionMode: 고위험에서 이탈하는 전환 창에도 승인은 보수적으로 escalation이다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "bypassPermissions", availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass" }] },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    // 현재 bypass. plan으로 다운그레이드 요청(저위험 target이지만 이탈 창이라 보수 escalation 유지).
+    const plan = adapter.setSessionMode!("A", "plan");
+    await h.waitForOutbound("session/set_mode");
+
+    // 아직 echo 전 — 승인은 escalation(이탈 창 보수 판정).
+    h.inject({
+      jsonrpc: "2.0",
+      id: 1401,
+      method: "session/request_permission",
+      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-9", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
+    });
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as { request: { severity: string } } | undefined;
+    expect(approvalEvent?.request.severity).toBe("escalation");
+
+    // plan echo(요청 target)로 확정 → pending 해제.
+    const req = (h.outbound.filter((m) => "method" in m && m.method === "session/set_mode") as { id: string | number }[])[0];
+    h.inject({ jsonrpc: "2.0", id: req.id, result: {} });
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } } });
+    await plan;
+    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "plan" });
+  });
+
   it("setSessionMode: availableModes에 없는 모드는 wire 전송 없이 거부한다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);

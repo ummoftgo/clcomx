@@ -392,6 +392,13 @@ ACP와 Codex app-server는 MCP/client tool 흐름을 가질 수 있다(ref-acp �
 - Claude `bypassPermissions`는 어댑터 측에서 `ALLOW_BYPASS = !IS_ROOT || !!IS_SANDBOX`로 게이트되며 root에서는 비활성이다(ref-claude-agent-acp §1, §3). CLCOMX는 이 게이트를 **무력화하는 env(`IS_SANDBOX`)를 v1에서 주입하지 않는다**(§4.4) — root에서 bypass를 강제로 켜지 않는다.
 - ExitPlanMode에서 `bypassPermissions` 옵션은 `ALLOW_BYPASS`일 때만 노출되는 어댑터 동작을 그대로 존중한다(ref-claude-agent-acp §3 ExitPlanMode 표).
 
+**모드 셀렉터(composer) 전환 severity 처리(②-A 후속 구현, 2026-07-05).** direct Claude 세션의 composer 모드 셀렉터로 사용자가 모드를 전환할 때, 승인 severity가 provider의 실제 모드보다 낮게 새지 않도록 다음을 보장한다:
+> - **진입 확인 게이트**: 고위험 모드(`bypassPermissions`)로의 진입은 즉시 전송하지 않고 composer 확인 배너를 거친다(진입 자체가 escalation 경계). 확인 배너는 셀렉터와 동일한 readiness 게이트(ready/idle에서만, 전환 진행 중·복원 중·승인 대기 중 비활성)를 따르며, 배너 표시 중 비활성 상태로 바뀌면 자동 취소된다.
+> - **전환 창 보수 판정**: 어댑터는 모드 전환 요청의 in-flight~권위 echo 확정 창 동안 승인을 보수적으로 escalation 판정한다. 고위험으로 **진입**하는 전환뿐 아니라 고위험에서 **이탈**하는 전환의 창도 escalation을 유지한다 — ACP `set_mode`/`current_mode_update`가 전환 식별자를 제공하지 않아 다운그레이드 확정 echo를 정밀 상관할 수 없으므로, 안전측(과잉 escalation)으로 편향한다.
+> - **잔여 한계(프로토콜)**: 위 상관관계 부재로, 고위험→저위험 전환 중 provider가 요청 target과 **같은 값의 stale echo**를 실제 전환보다 먼저 보내면 그 창의 severity가 이론적으로 조기에 저위험으로 낮아질 수 있다. 이는 ACP 프로토콜에 전환 correlation이 없어 근본 해소가 불가능한 잔여 edge이며, 흔한 provider 동작 순서에서는 발생하지 않는다(bypass 상태에서는 최근 저위험 echo 이력이 없음). v1은 이 잔여 edge를 보수적 편향(진입 확인 게이트 + 이탈 창 escalation 유지)으로 완화하고 수용한다. 정밀 해소는 provider가 전환 id/readback을 제공할 때의 후속 범위다.
+
+증거: `claude-acp-adapter.test.ts`의 모드 전환 severity 계열(진입 in-flight/echo 전 escalation, 이탈 창 escalation 유지, 비매칭 stale echo가 fail-safe 미해제, echo-before-response 데드락 없음), `AgentComposer.test.ts`의 확인 게이트/취소/readiness 계열.
+
 ### 8.4 legacy PTY fallback 경계
 
 legacy PTY fallback은 provider terminal policy에 맡기되, CLCOMX UI는 direct runtime과 **같은 수준의 구조화 권한 보장을 제공하지 않는다**고 명시 표시한다. legacy 경로는 `terminal_output_delta`(15 §3)로만 다루고 transcript/approval 모델로 끌어올리지 않는다(04 §3.5).
