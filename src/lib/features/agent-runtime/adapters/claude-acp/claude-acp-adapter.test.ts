@@ -389,6 +389,45 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(approvalEvent?.request.severity).toBe("normal");
   });
 
+  it("setSessionMode: 미확정 bypass 뒤 하위 모드 재요청이 fail-safe를 덮지 못한다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: {
+        currentModeId: "default",
+        availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass" }],
+      },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    // bypass 전환 성공(echo 아직 없음).
+    const bypass = adapter.setSessionMode!("A", "bypassPermissions");
+    await h.respondToLast("session/set_mode", {});
+    await bypass;
+
+    // 그 사이 하위 모드(plan)를 다시 요청(성공). 카운터라서 미확정 bypass fail-safe를 덮지 않는다.
+    const plan = adapter.setSessionMode!("A", "plan");
+    await h.respondToLast("session/set_mode", {});
+    await plan;
+
+    // 두 echo 모두 오기 전에 승인 요청 도착 — currentModeId=default지만 미확정 bypass가 있어 escalation.
+    h.inject({
+      jsonrpc: "2.0",
+      id: 801,
+      method: "session/request_permission",
+      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-5", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
+    });
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
+      | { request: { severity: string } }
+      | undefined;
+    expect(approvalEvent?.request.severity).toBe("escalation");
+  });
+
   it("setSessionMode: 비매칭 stale echo는 고위험 pending fail-safe를 풀지 않는다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);

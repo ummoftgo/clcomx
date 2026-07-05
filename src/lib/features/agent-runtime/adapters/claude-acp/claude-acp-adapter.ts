@@ -57,11 +57,12 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
   providerSessionId?: string;
   caps?: ParsedInitialize;
   /**
-   * set_mode RPC는 성공했으나 provider의 권위 echo(current_mode_update)가 아직 안 온 "요청된 모드".
-   * 이 창에서 도착한 승인 요청은 currentModeId(구값)뿐 아니라 이 pending 값으로도 severity를 보수적으로
-   * 판정한다 — 고위험 모드 전환 직후 승인이 normal로 새는 것을 fail-safe로 막는다. echo가 오면 해제한다.
+   * 아직 provider 권위 echo로 확정되지 않은 **고위험(bypassPermissions) 모드 전환 시도** 수.
+   * 전송 전부터 증가시키고(응답 전 창 보호), RPC 실패 시 감소, 고위험 echo 확정 시 0으로 리셋한다.
+   * severity는 이 값이 >0이면 보수적으로 escalation 판정한다 — 하위 모드 재요청은 이 카운터를
+   * 건드리지 않으므로 미확정 고위험 전환을 하위 요청이 덮어 승인이 normal로 새는 것을 막는다(fail-safe).
    */
-  pendingRequestedMode?: string;
+  pendingHighRiskModeCount: number;
   /** turnId 합성 카운터(04 §turn id 합성). */
   turnSeq: number;
   activeTurnId?: string;
@@ -299,17 +300,14 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
   }
 
   /**
-   * provider 권위 echo 도착 시 pendingRequestedMode(echo 전 승인 보수 판정용)를 해제할지 결정한다.
-   * echo가 요청 모드와 일치하면 확정됐으므로 해제한다. 비매칭 echo(이전/stale echo)는:
-   * - 고위험(bypassPermissions) pending은 **유지**한다 — 요청한 고위험 모드의 실제 echo가 오기 전
-   *   저위험 stale echo가 fail-safe를 조기에 풀어 승인이 normal로 새는 것을 막는다(Codex 6차).
-   * - 저위험 pending은 해제해도 severity에 영향이 없으므로 해제한다.
+   * provider 권위 echo 도착 시 미확정 고위험 pending 카운터를 리셋할지 결정한다.
+   * 고위험(bypassPermissions) echo가 오면 currentModeId가 bypass로 확정돼(그 자체로 escalation)
+   * 미확정 고위험 시도를 전부 해소한 것으로 보고 0으로 리셋한다. 저위험(비-bypass) echo는 미확정
+   * 고위험 전환의 실제 echo가 아니므로 카운터를 유지한다 — stale 저위험 echo가 fail-safe를 조기에
+   * 풀어 승인이 normal로 새는 것을 막는다(Codex 6차).
    */
-  function clearPendingModeOnEcho(rt: ClaudeAcpSessionRuntime, echoMode: string): void {
-    if (rt.pendingRequestedMode === undefined) return;
-    if (rt.pendingRequestedMode === echoMode || !isHighRiskMode(rt.pendingRequestedMode)) {
-      rt.pendingRequestedMode = undefined;
-    }
+  function resetPendingHighRiskOnEcho(rt: ClaudeAcpSessionRuntime, echoMode: string): void {
+    if (isHighRiskMode(echoMode)) rt.pendingHighRiskModeCount = 0;
   }
 
   /** ACP session/update에서 metadata로 노출할 mode patch를 추출한다. */
@@ -318,7 +316,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     update: { sessionUpdate?: string; currentModeId?: unknown; configOptions?: unknown[] },
   ): AgentRuntimeMetadataUpdate | undefined {
     if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
-      clearPendingModeOnEcho(rt, update.currentModeId);
+      resetPendingHighRiskOnEcho(rt, update.currentModeId);
       rt.currentModeId = update.currentModeId;
       if (rt.modes) rt.modes = { ...rt.modes, currentModeId: update.currentModeId };
       return { sessionMode: update.currentModeId, permissionMode: update.currentModeId };
@@ -326,7 +324,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (update.sessionUpdate === "config_option_update") {
       const mode = extractModeConfigValue(update.configOptions);
       if (mode) {
-        clearPendingModeOnEcho(rt, mode);
+        resetPendingHighRiskOnEcho(rt, mode);
         rt.currentModeId = mode;
         if (rt.modes) rt.modes = { ...rt.modes, currentModeId: mode };
         return { sessionMode: mode, permissionMode: mode };
@@ -343,6 +341,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       sessionHandle: handle,
       runtimeId,
       turnSeq: 0,
+      pendingHighRiskModeCount: 0,
       pendingRequests: new Map(),
       pendingApprovals: new Map(),
       loadingReplay: false,
@@ -695,17 +694,18 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (!known) throw new Error(`claude adapter: unknown session mode: ${modeId}`);
 
     // RPC 응답을 기다리는 동안에도 provider가 모드를 적용하고 승인 요청을 먼저 보낼 수 있으므로,
-    // 전송 전(in-flight)부터 요청 모드를 pending으로 기록해 그 창의 승인도 보수적으로 판정한다(fail-safe).
-    const prev = rt.pendingRequestedMode;
-    rt.pendingRequestedMode = modeId;
+    // 고위험(bypass) 전환은 전송 전(in-flight)부터 미확정 카운터를 올려 그 창의 승인도 보수적으로
+    // 판정한다(fail-safe). 카운터라서 하위 모드 재요청이 미확정 고위험을 덮지 못한다(Codex 8차).
+    const isHighRisk = isHighRiskMode(modeId);
+    if (isHighRisk) rt.pendingHighRiskModeCount += 1;
     try {
       await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
     } catch (err) {
-      // 수락 실패 — 이 시도가 남긴 pending만 되돌린다(그 사이 echo/새 요청이 바꿨으면 그쪽을 존중).
-      if (rt.pendingRequestedMode === modeId) rt.pendingRequestedMode = prev;
+      // 수락 실패 — 이 시도가 올린 미확정 고위험 카운트를 되돌린다(0 미만 방지).
+      if (isHighRisk && rt.pendingHighRiskModeCount > 0) rt.pendingHighRiskModeCount -= 1;
       throw err;
     }
-    // 성공. 권위 echo(current_mode_update)가 오면 clearPendingModeOnEcho가 pending을 해제한다.
+    // 성공. 고위험 echo(current_mode_update)가 오면 resetPendingHighRiskOnEcho가 카운터를 0으로 리셋한다.
   }
 
   /** subscribeEvents: listener 등록 → AgentEvent 수신. 반환된 fn으로 해제. */
