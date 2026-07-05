@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "../types";
 import { invokeMock } from "../../test/mocks/tauri";
 import {
+  flushSettingsSave,
   getSettings,
   initializeSettings,
   normalizeSettings,
@@ -202,5 +203,29 @@ describe("settings store", () => {
     // null 재지정(상속 복귀)도 반영된다.
     updateSettings({ agentRuntime: { fontSize: null } });
     expect(getSettings().agentRuntime.fontSize).toBeNull();
+  });
+
+  it("agentRuntime: flushSettingsSave가 구독 인증 토글 저장이 디스크에 반영된 뒤 resolve된다", async () => {
+    invokeMock.mockClear();
+
+    // 토글 직후 launch 레이스 방어: flush가 끝나면 save_settings가 최신 값(true)으로 호출돼 있어야 한다.
+    updateSettings({ agentRuntime: { claudeAllowSubscriptionAuth: true } });
+    await flushSettingsSave();
+
+    const saveCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "save_settings");
+    expect(saveCalls.length).toBeGreaterThan(0);
+    const lastSnapshot = saveCalls[saveCalls.length - 1]?.[1] as {
+      settings: { agentRuntime: { claudeAllowSubscriptionAuth: boolean } };
+    };
+    expect(lastSnapshot.settings.agentRuntime.claudeAllowSubscriptionAuth).toBe(true);
+
+    // revoke도 동일하게 flush 후 디스크 스냅샷이 false다.
+    updateSettings({ agentRuntime: { claudeAllowSubscriptionAuth: false } });
+    await flushSettingsSave();
+    const revokeCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "save_settings");
+    const revokeSnapshot = revokeCalls[revokeCalls.length - 1]?.[1] as {
+      settings: { agentRuntime: { claudeAllowSubscriptionAuth: boolean } };
+    };
+    expect(revokeSnapshot.settings.agentRuntime.claudeAllowSubscriptionAuth).toBe(false);
   });
 });

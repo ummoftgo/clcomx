@@ -36,7 +36,7 @@ import {
   agentRuntimeStart,
   agentRuntimeResolveAdapterEntry,
 } from "./transport";
-import { getSettings } from "../../../stores/settings.svelte";
+import { flushSettingsSave, getSettings } from "../../../stores/settings.svelte";
 
 /** 단조 증가 JSON-RPC id 발급기(세션 간 공유 카운터). */
 function makeIdGen(): () => number {
@@ -115,17 +115,18 @@ function makeListenRuntime() {
  * 채운다. S1 경계 유지: 절대경로 resolve는 backend가 하고, 실제 start 시 allowlist가 args[0]를 재검증한다.
  * node command(executable)는 backend가 provider로 resolve하므로 여기서 돌려주지 않는다(non-secret env만 전달).
  */
-function defaultClaudeResolveLaunch(
+async function defaultClaudeResolveLaunch(
   p: StartSessionParams | ResumeSessionParams,
 ): Promise<ResolvedLaunch> {
-  return agentRuntimeResolveAdapterEntry("claude", p.distro).then(
-    (adapterEntryPath) => ({
-      adapterEntryPath,
-      // 구독 인증 opt-in(agentRuntime 설정)은 launch 시점에 읽는다 — 설정 변경은
-      // 새로 시작/재개하는 세션부터 적용되고, 떠 있는 세션은 재시작이 필요하다.
-      allowSubscriptionAuth: getSettings().agentRuntime.claudeAllowSubscriptionAuth,
-    }),
-  );
+  // 구독 인증 opt-in의 최종 판정은 backend가 디스크 저장 설정으로 한다(09 §9). launch 전에
+  // 저장 큐를 flush해 "토글 직후 launch"가 stale 디스크 값으로 판정되는 레이스를 닫는다.
+  await flushSettingsSave();
+  const adapterEntryPath = await agentRuntimeResolveAdapterEntry("claude", p.distro);
+  return {
+    adapterEntryPath,
+    // launch intent(args 형태)용 — 설정 변경은 새로 시작/재개하는 세션부터 적용된다.
+    allowSubscriptionAuth: getSettings().agentRuntime.claudeAllowSubscriptionAuth,
+  };
 }
 
 /** Claude ACP deps를 transport 기반으로 채운다. */

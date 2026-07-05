@@ -96,6 +96,16 @@ export function getSettings(): Settings {
   return settings;
 }
 
+/**
+ * 지금까지 큐잉된 설정 저장(save_settings)이 디스크에 반영될 때까지 기다린다.
+ * backend가 저장 설정을 권위로 읽는 경로(예: Claude 구독 인증 opt-in의 allowlist 판정) 직전에
+ * 호출해, in-memory 토글과 디스크 상태의 불일치 레이스를 닫는다. 저장 실패는 내부에서
+ * 삼켜지므로(콘솔 로깅) 이 promise는 reject되지 않는다.
+ */
+export function flushSettingsSave(): Promise<void> {
+  return saveQueue.catch(() => {});
+}
+
 export function initializeSettings(persisted?: DeepPartial<Settings> | null) {
   const normalized = normalizeSettings(persisted);
   Object.assign(settings, normalized);
