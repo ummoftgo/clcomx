@@ -413,6 +413,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       workDir: params.workDir,
       adapterEntryPath: resolved.adapterEntryPath,
       env: resolved.env,
+      allowSubscriptionAuth: resolved.allowSubscriptionAuth,
     });
     const runtimeId = await deps.startRuntime(launchParams);
     const rt = createRuntime(params.sessionHandle, runtimeId);
@@ -463,6 +464,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       workDir: params.workDir,
       adapterEntryPath: resolved.adapterEntryPath,
       env: resolved.env,
+      allowSubscriptionAuth: resolved.allowSubscriptionAuth,
     });
     const runtimeId = await deps.startRuntime(launchParams);
     const rt = createRuntime(params.sessionHandle, runtimeId);

@@ -610,8 +610,28 @@ fn rs9b_claude_untrusted_or_multi_args_rejected() {
     assert!(
         validate_and_extract(&stdio("claude", &[entry, "--x"], None), ok_exe, ok_entry).is_err()
     );
-    // hide flag 누락
-    assert!(validate_and_extract(&stdio("claude", &[entry], None), ok_exe, ok_entry).is_err());
+    // 3개 이상 argv(플래그 + 임의 추가)도 거부된다.
+    assert!(validate_and_extract(
+        &stdio("claude", &[entry, "--hide-claude-auth", "--x"], None),
+        ok_exe,
+        ok_entry
+    )
+    .is_err());
+}
+
+#[test]
+fn rs9c_claude_entry_without_hide_flag_allowed_for_subscription_opt_in() {
+    // 구독 인증 opt-in(agentRuntime.claudeAllowSubscriptionAuth) 형태: [entry] 단독 허용.
+    let entry = "/opt/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
+    let launch = validate_and_extract(&stdio("claude", &[entry], None), ok_exe, ok_entry)
+        .expect("claude subscription opt-in ok");
+    assert_eq!(launch.executable, "/usr/bin/node");
+    assert_eq!(launch.argv, vec![entry]);
+
+    // opt-in 형태에서도 entry 신뢰 검증은 그대로다.
+    assert!(
+        validate_and_extract(&stdio("claude", &["/tmp/x.js"], None), ok_exe, ok_entry).is_err()
+    );
 }
 
 #[test]

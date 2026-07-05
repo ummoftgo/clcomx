@@ -555,6 +555,8 @@ const en = {
       openPty: "Open in terminal instead",
       retry: "Retry direct runtime",
       cancel: "Cancel",
+      subscriptionAuthHint:
+        "Claude subscription (claude.ai) login is blocked by default. Enable subscription auth in Settings > Agent Chat, then retry.",
     },
   },
 } as const;

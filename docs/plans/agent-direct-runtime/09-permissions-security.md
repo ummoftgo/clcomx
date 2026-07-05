@@ -188,13 +188,13 @@ renderer는 신뢰 경계 밖(TB-1)이므로 frontend 검증만으로는 부족�
 
 | provider | 허용 executable (절대경로/backend-resolved) | 허용 core `args` 형태 (정확 일치) | 근거 |
 |---|---|---|---|
-| `claude` | node 절대경로(`CLAUDE_RUNTIME_NODE` 등으로 핀, backend resolve 또는 사전 등록 절대경로) | `args.length == 2` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `…/claude-agent-acp/dist/index.js` 패턴), `args[1]`이 고정 `--hide-claude-auth`. 임의 `.js`/임의 바이너리/임의 argv 거부 | ref-claude-agent-acp §1, §5; 07 §8.1; 06 §2.2 |
+| `claude` | node 절대경로(`CLAUDE_RUNTIME_NODE` 등으로 핀, backend resolve 또는 사전 등록 절대경로) | `args[0]`이 검증된 `adapterEntryPath`(절대경로, `…/claude-agent-acp/dist/index.js` 패턴)이고, 전체 형태는 `[entry, "--hide-claude-auth"]`(기본) 또는 `[entry]`(구독 인증 opt-in, §9)의 둘 중 하나. 임의 `.js`/임의 바이너리/임의 argv 거부 | ref-claude-agent-acp §1, §5; 07 §8.1; 06 §2.2 |
 | `codex` | `codex` 바이너리 절대경로(backend resolve 또는 사전 등록 절대경로) | `args`가 정확히 `["app-server","--stdio"]`. experimental flag는 §0 experimental 경고 게이트 뒤에서만 | ref-codex §1.1 (app-server 기본 stdio); 07 §8.1 |
 
 allowlist 검증 규칙(Rust handler — 정본 07 §8.1, basename-only 금지):
 
 1. **executable 절대경로 검증 (basename-only 금지)**: executable은 renderer가 넘기지 않고 backend가 `provider`로 resolve한다. resolve 결과는 (a) backend가 resolve한 신뢰 절대경로이거나 (b) 사전 등록된 절대경로 화이트리스트에 속해야 한다. **basename 일치만으로 통과시키지 않는다** — basename이 `codex`/`node`인 임의 경로(`/tmp/codex` 등)는 거부. PATH lookup으로 임의 바이너리를 찾지 않는다(nvm 등 비표준 node는 절대경로 핀, ref-claude-agent-acp §5). resolve owner/cache/entry 탐색은 OQ-36 정본처럼 `agent_runtime/resolver.rs`가 담당한다.
-2. **args 정확 검증 (provider별 exact match)**: Codex는 `args`가 정확히 `["app-server","--stdio"]`일 것. Claude는 `args.length == 2` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴), `args[1]`이 고정 `--hide-claude-auth`일 것. 임의 `.js`/임의 바이너리/임의 argv는 거부한다. shell 메타문자 검사는 **방어용으로 유지**하되(`wsl.exe -e`가 shell을 거치지 않더라도, `research/codebase-backend.md` §2.2 "executable + argv 배열" 규칙), 일차 방어선은 위 정확 일치다(free shell string 합성 금지).
+2. **args 정확 검증 (provider별 exact match)**: Codex는 `args`가 정확히 `["app-server","--stdio"]`일 것. Claude는 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴)이고 전체가 `[entry, "--hide-claude-auth"]`(기본) 또는 `[entry]`(구독 인증 opt-in, §9)의 두 형태 중 하나일 것. 임의 `.js`/임의 바이너리/임의 argv는 거부한다. shell 메타문자 검사는 **방어용으로 유지**하되(`wsl.exe -e`가 shell을 거치지 않더라도, `research/codebase-backend.md` §2.2 "executable + argv 배열" 규칙), 일차 방어선은 위 정확 일치다(free shell string 합성 금지).
 3. **`npx` 등 비결정 launch 거부(claude)**: 검증된 `adapterEntryPath` 외의 진입(특히 `npx`)은 비결정성/네트워크 fetch 때문에 runtime launch에서 거부한다(ref-claude-agent-acp §1 표 "npx 비권장").
 4. **env key allowlist (§4.4)**: env key는 `^[A-Za-z_][A-Za-z0-9_]*$` 형식 + provider별 허용 key 집합을 모두 통과한 키만 child env에 합성하고, 값은 non-secret(§5.3). 그 외 key는 `Err(String)`으로 거부한다.
 
@@ -214,7 +214,7 @@ provider env는 credential 주입 경로이자 권한 상승 경로다(예: `IS_
 > **구현 시 점검 (§4 — untrusted renderer 재검증, 07 §8.1 정본)**
 > - [x] `agent_runtime_start` Rust handler가 executable을 renderer 입력이 아니라 **backend-resolved 절대경로(또는 사전 등록 화이트리스트)** 로 확정하고, **basename-only 비교를 쓰지 않는가**(`/tmp/codex`·`/dev/shm/node` 류 거부). 증거: `agent_runtime::tests` RS-8/9/10c/10d/10e/10f/10g, `allowlist::validate_and_extract`, `resolver.rs`.
 > - [x] Codex `args`가 정확히 `["app-server","--stdio"]`인지 검증하는가(임의 args 거부). 증거: `agent_runtime::tests` RS-8/8b.
-> - [x] Claude `args.length == 2` 이고 `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴), `args[1]`이 고정 `--hide-claude-auth`인지 검증하는가(임의 `.js`/임의 바이너리/임의 argv 거부). 증거: `agent_runtime::tests` RS-9/9b/10e.
+> - [x] Claude `args[0]`이 검증된 `adapterEntryPath`(절대경로, `claude-agent-acp dist/index.js` 패턴)이고 전체가 `[entry,"--hide-claude-auth"]` 또는 `[entry]`(구독 opt-in) 두 형태 중 하나인지 검증하는가(임의 `.js`/임의 바이너리/임의 argv 거부). 증거: `agent_runtime::tests` RS-9/9b/9c/10e.
 > - [x] env key가 `^[A-Za-z_][A-Za-z0-9_]*$` 형식 + **provider별 허용 key 집합**을 모두 통과하는가(형식만 맞고 allowlist 밖인 key는 drop). 증거: `agent_runtime::tests` RS-12/12b.
 > - [x] child를 shell 없이 executable+argv로 spawn하고, shell 메타문자 검사를 방어용으로 유지하는가(free shell string 합성 없음). 증거: `process::build_wsl_command`, `agent_runtime::tests` RS-11/AC-10b.
 > - [x] `IS_SANDBOX` 등 권한 상승 env가 v1에서 차단되는가(§8.3 결정 따라). 증거: provider별 env allowlist 밖 key는 `Err`로 거부하는 `agent_runtime::tests` RS-12b.
@@ -415,7 +415,7 @@ legacy PTY fallback은 provider terminal policy에 맡기되, CLCOMX UI는 direc
 
 - agent provider는 표시하되(예: "Claude" / "Codex" provider 라벨), Claude Code/Anthropic **공식 앱처럼 오인될 수 있는 branding, 로고, ASCII art, visual copy를 사용하지 않는다**. UX 패턴은 참고하되 시각/브랜딩/카피는 복제하지 않는다(`research/ux-reference.md` 라인 11 명시).
 - Anthropic 공식 Agent SDK overview는 third-party product가 Claude app credentials/rate limits를 제공하는 것을 허용하지 않고 API key 사용을 권장한다. 또한 branding guidelines는 제품이 Anthropic이 만들었거나 후원/보증한 것처럼 암시하지 말라고 요구한다. v1 기본 인증 경로를 API key/기존 WSL 측 자격으로 두고, 구독 로그인 흐름을 1차 기능으로 전면에 내세우지 않는다.
-- adapter `--hide-claude-auth` 플래그(ref-claude-agent-acp §1)는 claude 구독 로그인 method 노출을 줄이는 어댑터 옵션이다. v1은 기본으로 이 플래그를 붙이고, backend allowlist도 `[adapterEntryPath, "--hide-claude-auth"]`만 통과시킨다. terminal/gateway interactive auth capability도 광고하지 않는다(OQ-43).
+- adapter `--hide-claude-auth` 플래그(ref-claude-agent-acp §1)는 claude 구독 로그인 method 노출을 줄이는 어댑터 옵션이다. **기본은 이 플래그를 붙인다**(보수 정책). 단, 개인 사용 opt-in으로 `agentRuntime.claudeAllowSubscriptionAuth` 설정(기본 false)을 켜면 플래그를 생략해 기존 WSL 측 구독 로그인(`~/.claude`)을 direct 세션에서도 재사용할 수 있다 — 어댑터는 플래그가 있으면 구독 크레덴셜 감지 시 인증 에러를 던지므로, 이 opt-in이 없으면 구독 계정은 direct에서 항상 거부된다. backend allowlist는 `[adapterEntryPath, "--hide-claude-auth"]`(기본)와 `[adapterEntryPath]`(opt-in)의 **두 형태만** 정확 허용한다(자유 argv 금지 유지). terminal/gateway interactive auth capability는 여전히 광고하지 않는다(OQ-43) — opt-in은 기존 자격 재사용일 뿐 앱 내 로그인 flow를 열지 않는다. 배포/출시 시에는 이 opt-in의 약관 적합성을 재확인한다(13 OQ-09).
 
 > **공식 근거(2026-06-28)**: https://code.claude.com/docs/en/agent-sdk/overview 의 "Authentication requirements" 및 "Branding guidelines". 출시/배포 전에는 같은 공식 문서를 다시 확인한다.
 
@@ -423,7 +423,7 @@ legacy PTY fallback은 provider terminal policy에 맡기되, CLCOMX UI는 direc
 > - [x] UI에 Anthropic/Claude Code 공식 로고·ASCII art·공식 카피를 복제하지 않는가. built-in `AgentIcon` 설정은 Claude/Codex 공식 로고 asset(`light`/`dark`/`monochrome`)을 번들하지 않고 중립 fallback text(`Cl`/`Cx`)만 사용하며, `AgentIcon.svelte`도 asset이 없으면 fallback text만 렌더한다. UI copy의 `Claude Code` 명칭은 legacy PTY agent label과 Terminal settings의 Claude CLI 옵션 설명 같은 기술적 참조에 한정된다. direct runtime launcher/history는 `launcher.directRuntime.providerLabel`(`제공자: Claude`/`Provider: Claude`)을 사용해 공식 앱명처럼 표시하지 않는다. 증거: `agents/icons.ts`, `AgentIcon.svelte`, `registry.test.ts`, `SessionLauncher.test.ts`, UI copy `rg` 점검.
 > - [x] provider 라벨이 "공식 앱"이 아닌 "provider 선택"으로 읽히는가. 증거: direct runtime launcher 선택 버튼과 direct history/delete metadata는 `launcher.directRuntime.providerLabel`(`제공자: Claude`/`Provider: Claude`)을 사용하고, 기존 PTY agent label(`Claude Code`)을 direct provider 라벨로 재사용하지 않는다. `SessionLauncher.test.ts`가 direct history 및 direct toggle 선택 표시에서 `Claude Code` 미노출을 검증한다.
 > - [x] 기본 인증 경로가 API key/기존 자격이고, 구독 로그인을 1차로 강요하지 않는가. 증거: `DEFAULT_CLIENT_CAPABILITIES`가 `auth.terminal=false`, `_meta["terminal-auth"]=false`, `auth._meta.gateway=false`를 전송하고, `claude-acp-initialize.test.ts` OQ-43이 이를 고정한다.
-> - [x] `--hide-claude-auth` 사용 정책을 결정·문서화했는가. 증거: `buildClaudeAcpLaunchParams`가 `args:[adapterEntryPath,"--hide-claude-auth"]`를 생성하고, `allowlist.rs`가 같은 정확 argv만 허용한다. `claude-acp-launch.test.ts`와 `agent_runtime::tests` RS-9/9b가 이를 검증한다.
+> - [x] `--hide-claude-auth` 사용 정책을 결정·문서화했는가. 증거: `buildClaudeAcpLaunchParams`가 기본 `args:[adapterEntryPath,"--hide-claude-auth"]`를, `agentRuntime.claudeAllowSubscriptionAuth` opt-in 시 `[adapterEntryPath]`를 생성하고, `allowlist.rs`가 그 두 형태만 정확 허용한다. `claude-acp-launch.test.ts`와 `agent_runtime::tests` RS-9/9b/9c가 이를 검증한다.
 
 ---
 

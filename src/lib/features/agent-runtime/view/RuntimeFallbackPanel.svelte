@@ -52,6 +52,10 @@
     {#if message}
       <div class="fallback-reason">{message}</div>
     {/if}
+    {#if message?.includes("claude.ai subscriptions")}
+      <!-- 구독 인증 차단(--hide-claude-auth 기본 정책) 안내 — 설정 opt-in 경로를 알려준다. -->
+      <div class="fallback-hint">{$t("agentRuntime.fallback.subscriptionAuthHint")}</div>
+    {/if}
 
     <div class="fallback-actions">
       <button
@@ -114,6 +118,14 @@
     font-size: var(--ui-font-size-sm);
     opacity: 0.85;
   }
+  .fallback-hint {
+    font-size: var(--ui-font-size-sm);
+    padding: 0.4rem 0.5rem;
+    border-radius: 0.4rem;
+    background: var(--ui-bg-code, rgba(127, 127, 127, 0.08));
+    color: var(--ui-text-primary);
+  }
+
   .fallback-reason {
     font-size: var(--ui-font-size-sm);
     opacity: 0.7;

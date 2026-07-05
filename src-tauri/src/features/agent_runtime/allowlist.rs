@@ -116,8 +116,17 @@ where
             }
         }
         "claude" => {
-            // 1차 argv 검증: 신뢰 adapterEntryPath + 고정 auth 숨김 플래그만 허용한다.
-            if args.len() != 2 || args[1] != CLAUDE_HIDE_AUTH_ARG {
+            // 1차 argv 검증: 두 형태만 정확 허용한다(자유 argv 금지 유지) —
+            //   [entry, "--hide-claude-auth"]  기본(09 §9 보수 정책)
+            //   [entry]                        구독 인증 opt-in(agentRuntime.claudeAllowSubscriptionAuth)
+            // 플래그 생략은 어댑터가 기존 claude.ai 구독 크레덴셜(~/.claude)을 받아들이게 할 뿐,
+            // 다른 argv 확장을 허용하지 않는다.
+            let shape_ok = match args.len() {
+                1 => true,
+                2 => args[1] == CLAUDE_HIDE_AUTH_ARG,
+                _ => false,
+            };
+            if !shape_ok {
                 return Err("claude args must match the trusted adapter entry contract".into());
             }
             let entry = &args[0];

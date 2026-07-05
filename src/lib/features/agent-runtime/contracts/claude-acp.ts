@@ -239,6 +239,11 @@ export interface ResolvedLaunch {
   adapterEntryPath: string;
   /** non-secret env 전용(C1). */
   env?: Record<string, string>;
+  /**
+   * claude.ai 구독 크레덴셜 사용 허용(agentRuntime.claudeAllowSubscriptionAuth 설정).
+   * true면 launch args에서 `--hide-claude-auth`를 생략한다. 새로 시작하는 세션부터 적용.
+   */
+  allowSubscriptionAuth?: boolean;
 }
 
 /**

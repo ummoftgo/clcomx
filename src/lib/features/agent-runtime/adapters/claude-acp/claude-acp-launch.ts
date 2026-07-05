@@ -27,6 +27,12 @@ export interface ClaudeAcpLaunchConfig {
    * 이 env는 launch argv `-e env KEY=VAL` 경로로 흘러 OS 관측면(ps, /proc/<pid>/cmdline)에 평문 노출된다.
    */
   env?: Record<string, string>;
+  /**
+   * claude.ai 구독 크레덴셜 사용 허용(agentRuntime.claudeAllowSubscriptionAuth 설정, 기본 false).
+   * true면 `--hide-claude-auth`를 생략해 어댑터가 기존 구독 로그인(~/.claude)을 받아들인다.
+   * backend allowlist는 [entry] / [entry, 플래그] 두 형태만 정확 허용한다(자유 argv 금지 유지).
+   */
+  allowSubscriptionAuth?: boolean;
 }
 
 /**
@@ -40,8 +46,12 @@ export function buildClaudeAcpLaunchParams(cfg: ClaudeAcpLaunchConfig): AgentRun
     provider: "claude",
     distro: cfg.distro,
     workDir: cfg.workDir,
-    // backend allowlist(07 §8.1)는 검증된 adapterEntryPath와 고정 auth 숨김 플래그만 허용한다.
-    args: [cfg.adapterEntryPath, CLAUDE_ACP_HIDE_AUTH_ARG],
+    // backend allowlist(07 §8.1)는 검증된 adapterEntryPath 단독 또는 + 고정 auth 숨김 플래그의
+    // 두 형태만 허용한다. 플래그 생략은 구독 인증 opt-in(설정) 경로다.
+    args:
+      cfg.allowSubscriptionAuth === true
+        ? [cfg.adapterEntryPath]
+        : [cfg.adapterEntryPath, CLAUDE_ACP_HIDE_AUTH_ARG],
     // C1 경계: env는 non-secret 전용이다.
     env: cfg.env,
   };

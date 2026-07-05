@@ -555,6 +555,8 @@ const ko = {
       openPty: "터미널로 대신 열기",
       retry: "다이렉트 런타임 다시 시도",
       cancel: "취소",
+      subscriptionAuthHint:
+        "Claude 구독(claude.ai) 로그인은 기본적으로 차단됩니다. 설정 > 에이전트 대화에서 구독 인증을 허용한 뒤 다시 시도하세요.",
     },
   },
 } as const;

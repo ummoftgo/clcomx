@@ -36,6 +36,7 @@ import {
   agentRuntimeStart,
   agentRuntimeResolveAdapterEntry,
 } from "./transport";
+import { getSettings } from "../../../stores/settings.svelte";
 
 /** 단조 증가 JSON-RPC id 발급기(세션 간 공유 카운터). */
 function makeIdGen(): () => number {
@@ -118,7 +119,12 @@ function defaultClaudeResolveLaunch(
   p: StartSessionParams | ResumeSessionParams,
 ): Promise<ResolvedLaunch> {
   return agentRuntimeResolveAdapterEntry("claude", p.distro).then(
-    (adapterEntryPath) => ({ adapterEntryPath }),
+    (adapterEntryPath) => ({
+      adapterEntryPath,
+      // 구독 인증 opt-in(agentRuntime 설정)은 launch 시점에 읽는다 — 설정 변경은
+      // 새로 시작/재개하는 세션부터 적용되고, 떠 있는 세션은 재시작이 필요하다.
+      allowSubscriptionAuth: getSettings().agentRuntime.claudeAllowSubscriptionAuth,
+    }),
   );
 }
 

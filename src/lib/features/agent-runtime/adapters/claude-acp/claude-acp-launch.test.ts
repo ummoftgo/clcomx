@@ -26,6 +26,21 @@ describe("buildClaudeAcpLaunchParams", () => {
     });
   });
 
+  it("omits --hide-claude-auth only when subscription auth is explicitly allowed", () => {
+    // 기본(미지정)은 보수 정책 유지 — 플래그 포함.
+    expect(buildClaudeAcpLaunchParams(base)).toMatchObject({
+      args: [base.adapterEntryPath, "--hide-claude-auth"],
+    });
+    expect(buildClaudeAcpLaunchParams({ ...base, allowSubscriptionAuth: false })).toMatchObject({
+      args: [base.adapterEntryPath, "--hide-claude-auth"],
+    });
+
+    // opt-in(true)일 때만 [entry] 단독 형태.
+    expect(buildClaudeAcpLaunchParams({ ...base, allowSubscriptionAuth: true })).toMatchObject({
+      args: [base.adapterEntryPath],
+    });
+  });
+
   it("rejects secret-shaped env keys and values before runtime start", () => {
     expect(() =>
       buildClaudeAcpLaunchParams({
