@@ -228,4 +228,18 @@ describe("settings store", () => {
     };
     expect(revokeSnapshot.settings.agentRuntime.claudeAllowSubscriptionAuth).toBe(false);
   });
+
+  it("agentRuntime: 저장 실패 시 flushSettingsSave가 reject된다(revoke 미반영 상태로 launch 진행 방지)", async () => {
+    invokeMock.mockClear();
+    invokeMock.mockRejectedValueOnce(new Error("disk full"));
+
+    // revoke 저장이 실패하면 디스크(backend 권위)에는 stale opt-in이 남을 수 있다 —
+    // flush 호출자(Claude launch 판정)는 이 reject로 진행을 중단해야 한다.
+    updateSettings({ agentRuntime: { claudeAllowSubscriptionAuth: false } });
+    await expect(flushSettingsSave()).rejects.toThrow("disk full");
+
+    // 다음 저장이 성공하면 flush도 다시 resolve된다(복구).
+    updateSettings({ agentRuntime: { claudeAllowSubscriptionAuth: false } });
+    await expect(flushSettingsSave()).resolves.toBeUndefined();
+  });
 });

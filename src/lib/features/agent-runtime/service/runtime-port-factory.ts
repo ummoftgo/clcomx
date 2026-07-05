@@ -120,7 +120,14 @@ async function defaultClaudeResolveLaunch(
 ): Promise<ResolvedLaunch> {
   // 구독 인증 opt-in의 최종 판정은 backend가 디스크 저장 설정으로 한다(09 §9). launch 전에
   // 저장 큐를 flush해 "토글 직후 launch"가 stale 디스크 값으로 판정되는 레이스를 닫는다.
-  await flushSettingsSave();
+  // flush 실패 = 디스크(권위)가 stale일 수 있음(예: revoke 미반영) → launch를 진행하지 않는다.
+  try {
+    await flushSettingsSave();
+  } catch (error) {
+    throw new Error(
+      `settings save failed; cannot verify Claude auth consent state: ${String(error)}`,
+    );
+  }
   const adapterEntryPath = await agentRuntimeResolveAdapterEntry("claude", p.distro);
   return {
     adapterEntryPath,

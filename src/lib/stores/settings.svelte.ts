@@ -4,6 +4,9 @@ import { type DeepPartial, type Settings, DEFAULT_SETTINGS } from "../types";
 let settings = $state<Settings>(cloneDefaults());
 let settingsLoaded = false;
 let saveQueue: Promise<void> = Promise.resolve();
+// 마지막 저장 시도(실패 보존). 큐 체인은 실패를 삼켜 계속 진행하지만, 보안 민감 설정의
+// flush 호출자(예: Claude 구독 인증 launch 판정)는 이 promise로 실패를 감지해야 한다.
+let lastSaveAttempt: Promise<void> | null = null;
 
 function cloneDefaults(): Settings {
   return {
@@ -99,11 +102,12 @@ export function getSettings(): Settings {
 /**
  * 지금까지 큐잉된 설정 저장(save_settings)이 디스크에 반영될 때까지 기다린다.
  * backend가 저장 설정을 권위로 읽는 경로(예: Claude 구독 인증 opt-in의 allowlist 판정) 직전에
- * 호출해, in-memory 토글과 디스크 상태의 불일치 레이스를 닫는다. 저장 실패는 내부에서
- * 삼켜지므로(콘솔 로깅) 이 promise는 reject되지 않는다.
+ * 호출해, in-memory 토글과 디스크 상태의 불일치 레이스를 닫는다.
+ * [중요] 마지막 저장 시도가 실패했으면 **reject된다** — 디스크(backend 권위)가 stale일 수
+ * 있다는 뜻이므로, 보안 민감 판정을 하는 호출자는 진행을 중단해야 한다(revoke 미반영 방지).
  */
 export function flushSettingsSave(): Promise<void> {
-  return saveQueue.catch(() => {});
+  return lastSaveAttempt ?? Promise.resolve();
 }
 
 export function initializeSettings(persisted?: DeepPartial<Settings> | null) {
@@ -172,13 +176,13 @@ export function updateSettings(partial: DeepPartial<Settings>) {
   if (!settingsLoaded) return;
 
   const snapshot = normalizeSettings(JSON.parse(JSON.stringify(settings)) as Settings);
-  saveQueue = saveQueue
+  const attempt = saveQueue
     .catch(() => {})
-    .then(async () => {
-      try {
-        await invoke("save_settings", { settings: snapshot });
-      } catch (error) {
-        console.error("Failed to save settings", error);
-      }
-    });
+    .then(() => invoke("save_settings", { settings: snapshot }))
+    .then(() => {});
+  // flush용으로 실패를 보존하고(위 lastSaveAttempt 주석), 큐 체인은 실패를 로깅 후 계속 진행한다.
+  lastSaveAttempt = attempt;
+  saveQueue = attempt.catch((error) => {
+    console.error("Failed to save settings", error);
+  });
 }
