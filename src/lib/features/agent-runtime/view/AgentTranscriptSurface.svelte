@@ -409,20 +409,21 @@
     availableModels = models;
     if (models.length === 0) return;
     if (selectedModel !== undefined) return;
-    // 초기 선택 권위 우선순위: (1) 세션의 실제 current model/effort(thread 응답, resume 시 non-default
-    // 모델도 정확), (2) catalog 기본 모델(isDefault), (3) 첫 모델. (1)/(2)는 override 없이도 wire와
-    // 일치하므로 setTurnOptions를 호출하지 않는다 — 사용자가 명시적으로 바꿀 때만 override를 건다.
+    // 초기 선택은 **세션의 실제 current model이 알려진 경우에만** 자동 확정한다. 이 값은 override 없이도
+    // wire와 일치하므로 setTurnOptions를 호출하지 않는다. 실제 model을 모르는 경로(replay resume —
+    // thread/read는 model/effort를 안 준다)에서는 catalog default를 잘못 표시하지 않도록 미선택으로
+    // 두고, composer가 placeholder를 보여준다. 사용자가 명시적으로 고르면 그때 override를 건다(Codex 리뷰).
     const authoritative = authoritativeModelId
       ? models.find((m) => m.id === authoritativeModelId)
       : undefined;
-    const initial = authoritative ?? models.find((m) => m.isDefault) ?? models[0];
-    selectedModel = initial.id;
+    if (!authoritative) return;
+    selectedModel = authoritative.id;
     // 실제 current effort가 이 모델의 후보에 있으면 그 값, 없으면 모델 기본값.
-    const authoritativeEffort = authoritative ? runtimeMetadata?.effort : undefined;
+    const authoritativeEffort = runtimeMetadata?.effort;
     selectedEffort =
-      authoritativeEffort && initial.efforts.some((e) => e.id === authoritativeEffort)
+      authoritativeEffort && authoritative.efforts.some((e) => e.id === authoritativeEffort)
         ? authoritativeEffort
-        : (initial.defaultEffort ?? initial.efforts[0]?.id);
+        : (authoritative.defaultEffort ?? authoritative.efforts[0]?.id);
   }
 
   function onModelChange(modelId: string): void {

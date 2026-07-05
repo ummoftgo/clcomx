@@ -462,6 +462,7 @@ const ko = {
       commandResume: "이전 세션 이어가기",
       modeSelect: "모드 전환",
       modelSelect: "모델 선택",
+      modelPlaceholder: "모델 선택…",
       effortSelect: "추론 강도 선택",
       highRiskModeTitle: "고위험 모드 전환 확인",
       highRiskModeConfirm: "'{mode}' 모드는 도구 실행을 승인 없이 허용할 수 있습니다. 계속할까요?",

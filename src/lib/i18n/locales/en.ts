@@ -462,6 +462,7 @@ const en = {
       commandResume: "Resume a previous session",
       modeSelect: "Change session mode",
       modelSelect: "Select model",
+      modelPlaceholder: "Select model…",
       effortSelect: "Select reasoning effort",
       highRiskModeTitle: "Confirm high-risk mode",
       highRiskModeConfirm: "The '{mode}' mode can allow tool execution without approval. Continue?",

@@ -701,8 +701,10 @@ describe("AgentTranscriptSurface", () => {
     });
   });
 
-  it("②-B: 세션 시작 후 모델 목록을 채우고 초기엔 기본 모델을 override 없이 선택한다", async () => {
+  it("②-B: 세션 시작 후 모델 목록을 채우고 세션 실제 모델을 override 없이 선택한다", async () => {
     const { port } = makeFakePort({
+      startModel: "gpt-b",
+      startEffort: "medium",
       models: [
         { id: "gpt-a", label: "GPT A", efforts: [{ id: "low" }, { id: "high" }], defaultEffort: "low" },
         { id: "gpt-b", label: "GPT B", efforts: [{ id: "medium" }], defaultEffort: "medium", isDefault: true },
@@ -712,10 +714,10 @@ describe("AgentTranscriptSurface", () => {
       props: baseProps(port),
     });
 
-    // model/list가 채워지면 셀렉터가 뜨고, isDefault 모델(gpt-b)이 초기 선택된다.
+    // model/list가 채워지면 셀렉터가 뜨고, 세션 실제 모델(gpt-b)이 초기 선택된다.
     const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe("gpt-b"));
-    // 초기 선택은 provider default와 일치하므로 setTurnOptions를 부르지 않는다(화면=wire).
+    // 초기 선택은 세션 실제 모델과 일치하므로 setTurnOptions를 부르지 않는다(화면=wire).
     expect(port.setTurnOptions).not.toHaveBeenCalled();
 
     // 사용자가 다른 모델로 바꾸면 그때 override를 건다.
@@ -744,6 +746,21 @@ describe("AgentTranscriptSurface", () => {
     expect(port.setTurnOptions).not.toHaveBeenCalled();
   });
 
+  it("②-B: 실제 model을 모르는 경로(replay resume)는 모델을 자동 선택하지 않고 placeholder를 둔다", async () => {
+    // startModel 미지정 → SessionStartResult에 model 없음(thread/read replay 경로 모사).
+    const { port } = makeFakePort({
+      models: [
+        { id: "gpt-a", label: "GPT A", efforts: [{ id: "low" }] },
+        { id: "gpt-default", label: "GPT Default", efforts: [{ id: "medium" }], defaultEffort: "medium", isDefault: true },
+      ],
+    });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
+    // catalog default(gpt-default)를 잘못 표시하지 않는다 — value는 빈 값(placeholder).
+    await waitFor(() => expect(modelSelect.value).toBe(""));
+    expect(port.setTurnOptions).not.toHaveBeenCalled();
+  });
+
   it("②-B: 실제 current model이 catalog에 없으면 합성 옵션으로 표시가 어긋나지 않게 한다", async () => {
     const { port } = makeFakePort({
       startModel: "gpt-legacy",
@@ -760,6 +777,8 @@ describe("AgentTranscriptSurface", () => {
 
   it("②-B: effort 미지원 모델로 바꾸면 effort override를 null로 해제한다", async () => {
     const { port } = makeFakePort({
+      startModel: "gpt-a",
+      startEffort: "low",
       models: [
         { id: "gpt-a", label: "GPT A", efforts: [{ id: "low" }], defaultEffort: "low", isDefault: true },
         { id: "gpt-noeffort", label: "No Effort", efforts: [] },

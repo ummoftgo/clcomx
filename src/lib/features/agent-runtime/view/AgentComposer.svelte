@@ -785,6 +785,10 @@
           aria-label={$t("agentRuntime.composer.modelSelect")}
           onchange={(event) => onModelChange?.((event.target as HTMLSelectElement).value)}
         >
+          {#if selectedModel === undefined}
+            <!-- 실제 모델 미상(replay resume) — 잘못된 모델을 활성처럼 보이지 않도록 placeholder. -->
+            <option value="" disabled selected>{$t("agentRuntime.composer.modelPlaceholder")}</option>
+          {/if}
           {#each availableModels as model (model.id)}
             <option value={model.id}>{model.label}</option>
           {/each}
