@@ -332,6 +332,34 @@ describe("sendPrompt (turn/start outbound)", () => {
     ]);
   });
 
+  it("②-B: listModels가 nextCursor를 따라 모든 페이지를 수집해 뒤 페이지 isDefault도 본다", async () => {
+    const page1 = {
+      data: [{ id: "gpt-a", model: "gpt-a", displayName: "GPT A", hidden: false, supportedReasoningEfforts: [], defaultReasoningEffort: "low" }],
+      nextCursor: "cur-2",
+    };
+    const page2 = {
+      data: [{ id: "gpt-default", model: "gpt-default", displayName: "GPT Default", hidden: false, isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "high" }], defaultReasoningEffort: "high" }],
+      nextCursor: null,
+    };
+    const h = makeHarness({
+      autoRespond: (m) => {
+        if ("method" in m && m.method === "model/list") {
+          const cursor = (m as { params?: { cursor?: string } }).params?.cursor;
+          return cursor === "cur-2" ? page2 : page1;
+        }
+        return autoResponder(m);
+      },
+    });
+    const adapter = createCodexAppServerAdapter(h.deps);
+    await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "Ubuntu", workDir: "/work" });
+
+    const models = await adapter.listModels!("H");
+    expect(models.map((mm) => mm.id)).toEqual(["gpt-a", "gpt-default"]);
+    expect(models.find((mm) => mm.isDefault)?.id).toBe("gpt-default");
+    // model/list가 두 번(페이지 1, 2) 호출됐다.
+    expect(h.sent.filter((m) => "method" in m && (m as { method: string }).method === "model/list").length).toBe(2);
+  });
+
   it("CX-4c: does not send turn/start when all prompt content is unsupported", async () => {
     const { adapter, events, h } = await startReadySession();
     h.sent.length = 0;

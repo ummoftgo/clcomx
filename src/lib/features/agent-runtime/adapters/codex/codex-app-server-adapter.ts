@@ -771,45 +771,58 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
   }
 
 
-  /** model/list — 사용 가능한 모델 + effort 후보를 비밀 아닌 표시 정보로 정규화한다(②-B). */
+  /**
+   * model/list — 사용 가능한 모델 + effort 후보를 비밀 아닌 표시 정보로 정규화한다(②-B).
+   * `nextCursor`를 끝까지 따라가 **모든 페이지**를 수집한다 — 기본 모델(`isDefault`)이 뒤 페이지에
+   * 있어도 초기 선택이 provider default와 어긋나지 않게 한다(Codex 리뷰). 무한 루프 방지로 페이지 수를 캡.
+   */
   async function listModels(handle: AgentSessionHandle): Promise<AgentModelOption[]> {
     const rt = sessions.get(handle);
     if (!rt) throw new Error("codex adapter: unknown session handle");
-    const resp = (await rpcRequest(rt, "model/list", {})) as {
-      data?: Array<{
-        id?: unknown;
-        model?: unknown;
-        displayName?: unknown;
-        hidden?: unknown;
-        isDefault?: unknown;
-        supportedReasoningEfforts?: Array<{ reasoningEffort?: unknown; description?: unknown }>;
-        defaultReasoningEffort?: unknown;
-      }>;
+    type RawModel = {
+      id?: unknown;
+      model?: unknown;
+      displayName?: unknown;
+      hidden?: unknown;
+      isDefault?: unknown;
+      supportedReasoningEfforts?: Array<{ reasoningEffort?: unknown; description?: unknown }>;
+      defaultReasoningEffort?: unknown;
     };
     const models: AgentModelOption[] = [];
-    for (const m of resp.data ?? []) {
-      if (m.hidden === true) continue;
-      const id = typeof m.id === "string" ? m.id : typeof m.model === "string" ? m.model : undefined;
-      if (!id) continue;
-      const label = typeof m.displayName === "string" && m.displayName.trim() ? m.displayName : id;
-      const efforts: AgentEffortOption[] = [];
-      for (const e of m.supportedReasoningEfforts ?? []) {
-        if (typeof e.reasoningEffort === "string") {
-          efforts.push({
-            id: e.reasoningEffort,
-            ...(typeof e.description === "string" ? { description: e.description } : {}),
-          });
+    let cursor: string | undefined;
+    const MAX_PAGES = 20; // 방어적 상한(정상 카탈로그는 수 페이지 이내).
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const resp = (await rpcRequest(rt, "model/list", cursor ? { cursor } : {})) as {
+        data?: RawModel[];
+        nextCursor?: unknown;
+      };
+      for (const m of resp.data ?? []) {
+        if (m.hidden === true) continue;
+        const id =
+          typeof m.id === "string" ? m.id : typeof m.model === "string" ? m.model : undefined;
+        if (!id) continue;
+        const label = typeof m.displayName === "string" && m.displayName.trim() ? m.displayName : id;
+        const efforts: AgentEffortOption[] = [];
+        for (const e of m.supportedReasoningEfforts ?? []) {
+          if (typeof e.reasoningEffort === "string") {
+            efforts.push({
+              id: e.reasoningEffort,
+              ...(typeof e.description === "string" ? { description: e.description } : {}),
+            });
+          }
         }
+        models.push({
+          id,
+          label,
+          efforts,
+          ...(typeof m.defaultReasoningEffort === "string"
+            ? { defaultEffort: m.defaultReasoningEffort }
+            : {}),
+          ...(m.isDefault === true ? { isDefault: true } : {}),
+        });
       }
-      models.push({
-        id,
-        label,
-        efforts,
-        ...(typeof m.defaultReasoningEffort === "string"
-          ? { defaultEffort: m.defaultReasoningEffort }
-          : {}),
-        ...(m.isDefault === true ? { isDefault: true } : {}),
-      });
+      cursor = typeof resp.nextCursor === "string" && resp.nextCursor ? resp.nextCursor : undefined;
+      if (!cursor) break; // 마지막 페이지.
     }
     return models;
   }
