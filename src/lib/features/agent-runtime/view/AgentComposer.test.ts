@@ -645,6 +645,38 @@ describe("AgentComposer", () => {
     await waitFor(() => expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerOptionsToggle)));
   });
 
+  it("고위험 확인: mode 대기 중 approval 고위험을 고르면 mode pending이 무효화된다(cross-pending)", async () => {
+    const onModeChange = vi.fn().mockResolvedValue(undefined);
+    const onApprovalPolicyChange = vi.fn();
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "codex",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "bypassPermissions", name: "Bypass" },
+        ],
+        currentModeId: "default",
+        onModeChange,
+        availableApprovalPolicies: APPROVAL_POLICIES,
+        selectedApprovalPolicy: "on-request",
+        onApprovalPolicyChange,
+      },
+    });
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), { target: { value: "bypassPermissions" } });
+    expect(getByTestId(TEST_IDS.agentComposerModeConfirm)).toBeTruthy();
+    // approval 고위험(never) 선택 → mode 확인 배너가 사라지고 approval 배너만 남는다.
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), { target: { value: "never" } });
+    expect(queryByTestId(TEST_IDS.agentComposerModeConfirm)).toBeNull();
+    expect(getByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeTruthy();
+    // 남아 있던 mode 배너로 bypass가 뒤늦게 적용되지 않는다.
+    expect(onModeChange).not.toHaveBeenCalledWith("bypassPermissions");
+  });
+
   it("options popover: 토글로 열면 popover로 포커스가 옮겨지고 Escape로 닫으며 토글로 복원한다", async () => {
     const { getByTestId, queryByTestId } = render(AgentComposer, {
       props: approvalProps(),

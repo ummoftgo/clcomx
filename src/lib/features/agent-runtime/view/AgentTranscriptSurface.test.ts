@@ -965,6 +965,32 @@ describe("AgentTranscriptSurface", () => {
     expect(approval).toBeTruthy();
   });
 
+  it("②-C: provider 기본값 대기 중 settings echo(on-request)가 오면 sentinel을 해소해 권위값으로 안전 표시한다", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    emit({
+      type: "session_status_changed",
+      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+      status: "ready",
+    });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
+    // provider 기본값 선택(확인 게이트) → sentinel 대기(fail-closed 고위험).
+    await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
+    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
+    // 서버가 권위 approval echo(on-request)를 알림 → sentinel 해소, 실효=권위값 → 고위험 아님.
+    emit({
+      type: "runtime_metadata_changed",
+      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+      metadata: { approvalPolicy: "on-request" },
+    });
+    await waitFor(() => expect(toggle.textContent).not.toContain("High Risk"));
+  });
+
   it("②-C: base가 granular/미상이어도 provider 기본값 옵션으로 override를 null 해제할 수 있다", async () => {
     // granular base — scalar 후보에 없어 placeholder로 시작하고 fail-closed 고위험이다.
     const { port, emit } = makeFakePort({ startApprovalPolicy: "granular" });

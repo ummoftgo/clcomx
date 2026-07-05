@@ -195,6 +195,9 @@
     if (!onModeChange || nextModeId === (currentModeId ?? "")) return;
     if (isHighRiskSessionModeId(nextModeId)) {
       // 고위험 진입: 즉시 보내지 않고 확인 게이트를 띄운다. popover는 닫고 확인 배너 accept로 포커스를 옮긴다.
+      // 다른 축(approval)의 미확정 고위험 pending은 무효화한다 — stale 배너 accept로 지난 고위험 의도가
+      // 뒤늦게 적용되지 않게 한다(Codex medium 11차, 단일 고위험 확인 불변식).
+      pendingHighRiskApprovalId = null;
       pendingHighRiskModeId = nextModeId;
       optionsOpen = false;
       void focusPendingConfirm("mode");
@@ -308,6 +311,8 @@
       // 고위험(never) 또는 provider 기본값(결과 미상, never로 풀릴 수 있음): 즉시 적용하지 않고 확인 게이트를
       // 띄운다. native 표시는 권위 값으로 되돌리고 popover는 닫아 확인 배너(composer 레벨)로 초점을 옮긴다.
       select.value = selectedApprovalPolicy ?? "";
+      // 다른 축(mode)의 미확정 고위험 pending을 무효화한다(cross-pending 방지, Codex medium 11차).
+      pendingHighRiskModeId = null;
       pendingHighRiskApprovalId = nextPolicy;
       optionsOpen = false;
       void focusPendingConfirm("approval");

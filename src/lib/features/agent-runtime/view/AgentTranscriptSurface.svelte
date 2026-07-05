@@ -282,6 +282,11 @@
     }
     const metadata: AgentRuntimeMetadata = { ...runtimeMetadata, ...patch };
     runtimeMetadata = metadata;
+    // provider 기본값(sentinel) 대기 중 권위 approval echo(thread/settings/updated)가 도착하면, null revert의
+    // 결과가 확정된 것이므로 sentinel 미상 상태를 해소해 권위값으로 표시/위험을 재계산한다(Codex medium 11차).
+    if (patch.approvalPolicy !== undefined && approvalSelection === APPROVAL_DEFAULT_SELECTION) {
+      approvalSelection = undefined;
+    }
     await persistAgentRuntimeMetadata(metadata);
   }
 

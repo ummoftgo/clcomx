@@ -581,6 +581,7 @@ export function mapCodexNotification(
         model?: unknown;
         effort?: unknown;
       };
+      // ThreadSettings는 권위 full snapshot이다 — 각 필드를 그대로 반영한다.
       const metadata: AgentRuntimeMetadataUpdate = {};
       const approvalPolicy = formatCodexApprovalPolicy(s.approvalPolicy);
       if (approvalPolicy !== undefined) metadata.approvalPolicy = approvalPolicy;
@@ -588,7 +589,10 @@ export function mapCodexNotification(
       if (sandbox !== undefined) metadata.sandbox = sandbox;
       if (typeof s.approvalsReviewer === "string") metadata.approvalsReviewer = s.approvalsReviewer;
       if (typeof s.model === "string" && s.model) metadata.model = s.model;
+      // effort는 nullable(ReasoningEffort | null) — null이면 명시적 clear(undefined)로 stale effort를 지운다.
+      // shallow merge에서 undefined 값이 이전 값을 덮어써 지운다(Codex medium 11차).
       if (typeof s.effort === "string" && s.effort) metadata.effort = s.effort;
+      else if (s.effort === null) metadata.effort = undefined; // 키를 만들어(clear) shallow merge가 지운다.
       if (Object.keys(metadata).length === 0) return [];
       return [{ type: "runtime_metadata_changed", ref: refOf({ threadId }), metadata }];
     }

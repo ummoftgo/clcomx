@@ -92,6 +92,20 @@ describe("thread/turn lifecycle (CX-1/CX-3/CX-4)", () => {
     });
   });
 
+  it("②-C: thread/settings/updated effort:null은 stale effort를 지우도록 clear를 emit한다", () => {
+    const r = new CodexRouting();
+    const events = mapCodexNotification(
+      "thread/settings/updated",
+      { threadId: "th_1", threadSettings: { approvalPolicy: "on-request", effort: null } },
+      r,
+    );
+    expect(events).toHaveLength(1);
+    const metadata = (events[0] as unknown as { metadata: Record<string, unknown> }).metadata;
+    // effort 키가 undefined로 존재해 shallow merge가 이전 값을 덮어써 지운다.
+    expect("effort" in metadata).toBe(true);
+    expect(metadata.effort).toBeUndefined();
+  });
+
   it("CX-4: thread/status/changed systemError → failed", () => {
     const r = new CodexRouting();
     const events = mapCodexNotification(
