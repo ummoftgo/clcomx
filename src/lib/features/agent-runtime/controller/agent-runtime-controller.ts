@@ -80,6 +80,9 @@ export interface AgentRuntimeControllerDeps {
   store: AgentRuntimeStore;
   onRuntimeMetadataChange?: (metadata: AgentRuntimeMetadataUpdate) => void | Promise<void>;
   onSessionTitleChange?: (title: string | null) => void | Promise<void>;
+  /** 실제 turn/start 성공(raw session_status_changed running + turnId)을 알린다. 파생 store.status가
+   *  아니라 raw 이벤트라 late previous-turn delta 등 generic running 전이와 구분된다(②-C sentinel 커밋). */
+  onTurnStarted?: (turnId: string) => void;
   windowLabel?: string;
 }
 
@@ -147,6 +150,11 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
         void Promise.resolve(this.deps.onSessionTitleChange?.(event.title)).catch(() => {
           // title 저장 실패는 transcript lifecycle 실패로 승격하지 않는다.
         });
+      }
+      // 실제 turn/start 성공 신호: adapter는 running+turnId를 turn/start 성공(또는 turn/started)에서만
+      // emit한다 — late delta는 running session_status_changed를 내지 않는다(파생 status와 구분, ②-C).
+      if (event.type === "session_status_changed" && event.status === "running" && event.ref.turnId) {
+        this.deps.onTurnStarted?.(event.ref.turnId);
       }
       this.deps.store.dispatch(event);
     });

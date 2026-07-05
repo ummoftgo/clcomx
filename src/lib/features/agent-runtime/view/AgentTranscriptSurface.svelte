@@ -515,15 +515,15 @@
       : undefined,
   );
 
-  // sentinel 활성 중 turn이 실제로 시작(running)되면 null override가 turn/start로 성공 적용된 것이다 — 이후
-  // 도착한 settings echo가 revert 결과를 확정할 수 있게 커밋으로 표시한다. turn/start 실패(H3)는 running으로
-  // 전이하지 않으므로 실패를 커밋으로 오인하지 않는다(Codex high 13차, 낙관적 onSend 커밋 대체). 셀렉터는
-  // ready/idle에서만 열려 sentinel 선택 시 active turn이 없으므로, 이후 running은 sentinel prompt의 turn이다.
-  $effect(() => {
-    if (store.status === "running" && approvalSelection === APPROVAL_DEFAULT_SELECTION) {
-      approvalSentinelCommitted = true;
-    }
-  });
+  // sentinel 활성 중 **실제 turn/start 성공**(raw session_status_changed running + turnId)이 관찰되면
+  // null override가 그 turn의 wire에 성공 적용된 것이다 — 이후 도착한 settings echo가 revert 결과를 확정할
+  // 수 있게 커밋으로 표시한다. 파생 store.status가 아닌 raw 이벤트라 late previous-turn delta로 인한 generic
+  // running 전이를 커밋으로 오인하지 않고, turn/start 실패(H3: error+ready)도 running+turnId를 내지 않아
+  // 커밋되지 않는다(Codex high 14차). 셀렉터는 ready/idle에서만 열려 sentinel 선택 시 active turn이 없으므로
+  // 이후 turn/start는 sentinel prompt의 turn이다.
+  function onTurnStarted(): void {
+    if (approvalSelection === APPROVAL_DEFAULT_SELECTION) approvalSentinelCommitted = true;
+  }
 
   function onApprovalPolicyChange(policyId: string): void {
     if (policyId === APPROVAL_DEFAULT_SELECTION) {
@@ -568,6 +568,7 @@
       store: createAttemptScopedStore(attemptId),
       onRuntimeMetadataChange: (metadata) => publishAgentRuntimeMetadataPatch(metadata, attemptId),
       onSessionTitleChange: (title) => publishSessionTitleChange(title, attemptId),
+      onTurnStarted,
     });
     controller = fresh;
     try {
@@ -610,6 +611,7 @@
       store: createAttemptScopedStore(attemptId),
       onRuntimeMetadataChange: (metadata) => publishAgentRuntimeMetadataPatch(metadata, attemptId),
       onSessionTitleChange: (title) => publishSessionTitleChange(title, attemptId),
+      onTurnStarted,
     });
     controller = next;
     // OQ-16 Task 10: resume 소스가 없고(id 없음/미지원) 캐시 히스토리가 있으면 캐시를 read-only로

@@ -985,11 +985,33 @@ describe("AgentTranscriptSurface", () => {
     await tick();
     expect(toggle.textContent).toContain("High Risk");
 
-    // (2) turn/start 성공(running)으로 null override가 적용 커밋됨 → 이후 도착한 echo만 revert 결과를 확정.
-    emit({ type: "session_status_changed", ref: readyRef, status: "running" });
+    // (2) turn/start 성공(running + turnId)으로 null override가 적용 커밋됨 → 이후 도착한 echo만 확정.
+    emit({ type: "session_status_changed", ref: { ...readyRef, turnId: "turn-1" }, status: "running" });
     await tick();
     emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
     await waitFor(() => expect(toggle.textContent).not.toContain("High Risk"));
+  });
+
+  it("②-C: late previous-turn delta(turnId 없는 running)는 sentinel을 커밋하지 않는다(causal)", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    const readyRef = { provider: "codex" as const, threadId: "thread-1", sessionId: "session-tree-1" };
+    emit({ type: "session_status_changed", ref: readyRef, status: "ready" });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
+    await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
+    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
+    // turnId 없는 running(파생 status 전이/late delta 모사)은 실제 turn/start 성공이 아니다 → 커밋 안 됨.
+    emit({ type: "session_status_changed", ref: readyRef, status: "running" });
+    await tick();
+    emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
+    await tick();
+    // 실제 turn/start 성공이 없었으므로 echo가 와도 sentinel은 fail-closed 고위험을 유지한다.
+    expect(toggle.textContent).toContain("High Risk");
   });
 
   it("②-C: turn/start 실패(running 미전이)면 이후 echo가 와도 sentinel을 해소하지 않는다(fail-closed 유지)", async () => {
