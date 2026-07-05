@@ -143,6 +143,67 @@ describe("AgentComposer", () => {
     expect(onModeChange).toHaveBeenCalledWith("plan");
   });
 
+  it("mode selector: 거부되면 셀렉터를 권위 값으로 롤백한다", async () => {
+    const onModeChange = vi.fn().mockRejectedValue(new Error("rejected"));
+    const { getByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+        currentModeId: "default",
+        onModeChange,
+      },
+    });
+
+    const select = getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "plan" } });
+    expect(onModeChange).toHaveBeenCalledWith("plan");
+    // 거부 후 권위 값(default)으로 롤백된다.
+    await waitFor(() => expect(select.value).toBe("default"));
+  });
+
+  it("mode selector: 비-idle/ready 상태에서는 비활성이다", () => {
+    const { getByTestId } = render(AgentComposer, {
+      props: {
+        status: "requires_action",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+        currentModeId: "default",
+        onModeChange: vi.fn(),
+      },
+    });
+    expect((getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement).disabled).toBe(true);
+  });
+
+  it("mode selector: restoring 중에는 비활성이다", () => {
+    const { getByTestId } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        restoring: true,
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+        currentModeId: "default",
+        onModeChange: vi.fn(),
+      },
+    });
+    expect((getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement).disabled).toBe(true);
+  });
+
   it("mode selector: availableModes가 없으면(미지원 provider) 셀렉터를 노출하지 않는다", () => {
     const { queryByTestId } = render(AgentComposer, {
       props: {

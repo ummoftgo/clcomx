@@ -73,8 +73,9 @@
     availableModes?: AgentSessionModeOption[];
     /** 현재 세션 모드 id(셀렉터 선택값). */
     currentModeId?: string;
-    /** 모드 셀렉터 변경 콜백(지원 provider만 전달). */
-    onModeChange?: (modeId: string) => void;
+    /** 모드 셀렉터 변경 콜백(지원 provider만 전달). 거부/실패 시 reject하는 promise를 돌려주면
+     *  셀렉터를 권위 값으로 롤백한다. */
+    onModeChange?: (modeId: string) => void | Promise<void>;
     /** provider prompt capability. image 버튼 노출과 전송 gate에 사용한다. */
     capabilities?: ComposerCapabilities;
     /** `@` mention query를 workspace/resource 후보로 변환하는 검색 함수. */
@@ -120,6 +121,29 @@
   const inputEnabled = $derived(
     !restoring && (status === "ready" || status === "idle" || status === "running"),
   );
+  // 모드 셀렉터: idle/ready에서만 활성(전송 중·승인 대기·시작/종료 중에는 잠금). 변경 요청이
+  // 진행 중이면 잠가 이중 요청을 막고, 거부 시 권위 값으로 롤백해 provider 상태와의 desync를 막는다.
+  let modeChangePending = $state(false);
+  const modeSelectEnabled = $derived(
+    !restoring && !modeChangePending && (status === "ready" || status === "idle"),
+  );
+
+  async function handleModeChange(event: Event): Promise<void> {
+    const select = event.target as HTMLSelectElement;
+    const nextModeId = select.value;
+    if (!onModeChange || nextModeId === (currentModeId ?? "")) return;
+    modeChangePending = true;
+    try {
+      await onModeChange(nextModeId);
+      // 성공: 권위 metadata가 currentModeId를 갱신하면 reactive value 바인딩이 native select를 맞춘다.
+    } catch {
+      // 거부/실패: 권위 값(currentModeId)으로 즉시 롤백해 잘못된 모드가 표시되지 않게 한다.
+      select.value = currentModeId ?? "";
+    } finally {
+      modeChangePending = false;
+    }
+  }
+
   const placeholder = $derived(
     restoring
       ? $t("agentRuntime.composer.restoring")
@@ -651,8 +675,9 @@
           class="mode-select"
           data-testid={TEST_IDS.agentComposerModeSelect}
           value={currentModeId ?? ""}
+          disabled={!modeSelectEnabled}
           aria-label={$t("agentRuntime.composer.modeSelect")}
-          onchange={(event) => onModeChange?.((event.target as HTMLSelectElement).value)}
+          onchange={handleModeChange}
         >
           {#each availableModes as mode (mode.id)}
             <option value={mode.id}>{mode.name ?? mode.id}</option>

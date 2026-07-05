@@ -691,9 +691,10 @@
     void controller?.cancel();
   }
 
-  /** 세션 모드 셀렉터 → controller.setSessionMode(지원 provider만). */
-  function onModeChange(modeId: string): void {
-    void controller?.setSessionMode(modeId);
+  /** 세션 모드 셀렉터 → controller.setSessionMode(지원 provider만). 거부 시 composer가
+   *  권위 값으로 롤백하도록 promise를 그대로 전달한다(실패를 삼키지 않는다). */
+  function onModeChange(modeId: string): Promise<void> {
+    return controller?.setSessionMode(modeId) ?? Promise.resolve();
   }
 
   /** approval 응답(inline/modal 공통) → controller.approve(store 멱등 기록 + wire 전송). */
