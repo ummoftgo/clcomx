@@ -3,6 +3,7 @@ import InterfaceSettingsSection from "./sections/InterfaceSettingsSection.svelte
 import WorkspaceSettingsSection from "./sections/WorkspaceSettingsSection.svelte";
 import TerminalSettingsSection from "./sections/TerminalSettingsSection.svelte";
 import EditorSettingsSection from "./sections/EditorSettingsSection.svelte";
+import AgentRuntimeSettingsSection from "./sections/AgentRuntimeSettingsSection.svelte";
 import StorageSettingsSection from "./sections/StorageSettingsSection.svelte";
 import HistorySettingsSection from "./sections/HistorySettingsSection.svelte";
 
@@ -11,6 +12,7 @@ export type SettingsSectionId =
   | "workspace"
   | "terminal"
   | "editor"
+  | "agentRuntime"
   | "storage"
   | "history";
 
@@ -45,6 +47,12 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     titleKey: "settings.sections.editor",
     descriptionKey: "settings.sections.editorHint",
     component: EditorSettingsSection,
+  },
+  {
+    id: "agentRuntime",
+    titleKey: "settings.sections.agentRuntime",
+    descriptionKey: "settings.sections.agentRuntimeHint",
+    component: AgentRuntimeSettingsSection,
   },
   {
     id: "storage",

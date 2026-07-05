@@ -38,6 +38,7 @@
   } from "../service/transcript-cache";
   import type { AgentRuntimePort, SessionStartResult } from "../contracts/runtime-port";
   import type { TranscriptModel } from "../contracts/transcript";
+  import { getSettings } from "../../../stores/settings.svelte";
   import MessageList from "./MessageList.svelte";
   import AgentComposer from "./AgentComposer.svelte";
   import ApprovalModal from "./ApprovalModal.svelte";
@@ -770,12 +771,27 @@
         ?.scrollIntoView({ block: "nearest" });
     });
   });
+
+  // FE-25 후속: agentRuntime 설정을 scoped CSS 변수로만 주입한다(--ui-* 전역 토큰과 분리).
+  // null(상속)은 변수 자체를 내보내지 않아 CSS fallback(var(--agent-…, var(--ui-…)))이 동작한다.
+  const appSettings = getSettings();
+  const agentTranscriptStyleVars = $derived.by(() => {
+    const s = appSettings.agentRuntime;
+    const vars: string[] = [];
+    if (s.fontSize !== null) vars.push(`--agent-transcript-font-size: ${s.fontSize}px`);
+    if (s.fontFamily !== null) vars.push(`--agent-transcript-font-stack: ${s.fontFamily}`);
+    if (s.codeFontFamily !== null) {
+      vars.push(`--agent-transcript-code-font-stack: ${s.codeFontFamily}`);
+    }
+    return vars.join("; ");
+  });
 </script>
 
 <div
   class="agent-runtime-shell"
   class:hidden={!props.visible}
   data-testid={TEST_IDS.agentRuntimeShell}
+  style={agentTranscriptStyleVars}
 >
   <div
     class="transcript-region"
@@ -966,9 +982,10 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    /* host baseline: UI 글꼴/크기 토큰을 명시 상속(테마·uiScale·uiFont 자동 반영, 08 §설정). */
-    font-family: var(--ui-font-stack);
-    font-size: var(--ui-font-size-base);
+    /* host baseline: UI 글꼴/크기 토큰을 명시 상속(테마·uiScale·uiFont 자동 반영, 08 §설정).
+       agentRuntime 설정이 있으면 scoped 변수(--agent-transcript-*)가 우선한다(FE-25 후속). */
+    font-family: var(--agent-transcript-font-stack, var(--ui-font-stack));
+    font-size: var(--agent-transcript-font-size, var(--ui-font-size-base));
     color: var(--ui-text-primary);
   }
   /* 비활성 탭: unmount하지 않고 off-screen으로 숨긴다(구독·store 유지). */

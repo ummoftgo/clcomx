@@ -132,12 +132,31 @@ export interface HistorySettings {
   tabLimit: number;
 }
 
+/**
+ * direct(agent transcript) 인터페이스 전용 설정(FE-25 후속 확장).
+ * `null`은 "상속"을 뜻한다 — 글꼴은 interface/terminal 토큰을, 크기는 UI 기본을 그대로 쓴다.
+ */
+export interface AgentRuntimeSettings {
+  /** transcript 본문 폰트 크기(px). null이면 UI 기본(--ui-font-size-base) 상속. */
+  fontSize: number | null;
+  /** transcript 본문 폰트. null이면 인터페이스 UI 폰트(--ui-font-stack) 상속. */
+  fontFamily: string | null;
+  /** 코드/pre 블록 폰트. null이면 모노 기본(--ui-font-mono-stack) 상속. */
+  codeFontFamily: string | null;
+  /**
+   * Claude direct 세션에서 claude.ai 구독 크레덴셜 사용 허용(`--hide-claude-auth` 생략).
+   * 기본 false — v1 보수 정책(09 §9) 유지. 개인 사용 한정 옵션이며 새 direct 세션부터 적용된다.
+   */
+  claudeAllowSubscriptionAuth: boolean;
+}
+
 export interface Settings {
   language: LanguagePreference;
   interface: InterfaceSettings;
   workspace: WorkspaceSettings;
   terminal: TerminalSettings;
   editor: EditorSettings;
+  agentRuntime: AgentRuntimeSettings;
   history: HistorySettings;
   mainWindow: WindowPlacement | null;
 }
@@ -240,6 +259,12 @@ export const DEFAULT_SETTINGS: Settings = {
     fontFamily: "JetBrains Mono, Cascadia Code, Consolas",
     fontFamilyFallback: "Malgun Gothic, NanumGothicCoding, monospace",
     fontSize: 14,
+  },
+  agentRuntime: {
+    fontSize: null,
+    fontFamily: null,
+    codeFontFamily: null,
+    claudeAllowSubscriptionAuth: false,
   },
   history: {
     tabLimit: 10,

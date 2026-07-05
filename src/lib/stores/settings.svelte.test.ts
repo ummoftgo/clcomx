@@ -150,4 +150,57 @@ describe("settings store", () => {
     expect(getSettings().editor.fontFamilyFallback).toBe("monospace");
     expect(getSettings().editor.fontSize).toBe(17);
   });
+
+  it("agentRuntime: 기본값은 전부 상속(null)이고 구독 인증은 꺼져 있다(FE-25 후속)", () => {
+    const settings = normalizeSettings(null);
+
+    expect(settings.agentRuntime).toEqual({
+      fontSize: null,
+      fontFamily: null,
+      codeFontFamily: null,
+      claudeAllowSubscriptionAuth: false,
+    });
+  });
+
+  it("agentRuntime: 빈 문자열/공백/비유한 숫자는 null(상속)로 접는다", () => {
+    const settings = normalizeSettings({
+      agentRuntime: {
+        fontSize: Number.NaN,
+        fontFamily: "   ",
+        codeFontFamily: "",
+        claudeAllowSubscriptionAuth: true,
+      },
+    });
+
+    expect(settings.agentRuntime.fontSize).toBeNull();
+    expect(settings.agentRuntime.fontFamily).toBeNull();
+    expect(settings.agentRuntime.codeFontFamily).toBeNull();
+    expect(settings.agentRuntime.claudeAllowSubscriptionAuth).toBe(true);
+  });
+
+  it("agentRuntime: 지정 값은 정규화를 거쳐도 보존되고 updateSettings로 갱신된다", () => {
+    const settings = normalizeSettings({
+      agentRuntime: {
+        fontSize: 16,
+        fontFamily: "Pretendard",
+        codeFontFamily: "JetBrains Mono",
+        claudeAllowSubscriptionAuth: true,
+      },
+    });
+
+    expect(settings.agentRuntime).toEqual({
+      fontSize: 16,
+      fontFamily: "Pretendard",
+      codeFontFamily: "JetBrains Mono",
+      claudeAllowSubscriptionAuth: true,
+    });
+
+    updateSettings({ agentRuntime: { fontSize: 18, claudeAllowSubscriptionAuth: true } });
+    expect(getSettings().agentRuntime.fontSize).toBe(18);
+    expect(getSettings().agentRuntime.claudeAllowSubscriptionAuth).toBe(true);
+
+    // null 재지정(상속 복귀)도 반영된다.
+    updateSettings({ agentRuntime: { fontSize: null } });
+    expect(getSettings().agentRuntime.fontSize).toBeNull();
+  });
 });

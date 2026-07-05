@@ -139,7 +139,8 @@
     opacity: 0.6;
   }
   .message-body {
-    font-size: var(--ui-font-size-base);
+    /* agentRuntime 설정(--agent-transcript-*)이 있으면 우선, 없으면 UI 토큰 상속(FE-25 후속). */
+    font-size: var(--agent-transcript-font-size, var(--ui-font-size-base));
     line-height: 1.5;
   }
   .message-content-block {
@@ -147,7 +148,10 @@
     padding: 0.45rem 0.55rem;
     border-radius: 0.35rem;
     background: var(--ui-bg-code, rgba(127, 127, 127, 0.08));
-    font-family: var(--ui-font-mono-stack, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-family: var(
+      --agent-transcript-code-font-stack,
+      var(--ui-font-mono-stack, ui-monospace, SFMono-Regular, Menlo, monospace)
+    );
     font-size: var(--ui-font-size-sm);
     line-height: 1.45;
     overflow: auto;

@@ -20,8 +20,21 @@ function cloneDefaults(): Settings {
     editor: {
       ...DEFAULT_SETTINGS.editor,
     },
+    agentRuntime: { ...DEFAULT_SETTINGS.agentRuntime },
     history: { ...DEFAULT_SETTINGS.history },
   };
+}
+
+/** agentRuntime "상속" 표현 정규화 — 빈 문자열/공백은 null(상속)로 접는다. */
+function normalizeInheritableString(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/** agentRuntime fontSize 정규화 — 유한 숫자만 허용, 그 외는 null(상속). */
+function normalizeInheritableFontSize(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function normalizeStringRecord(
@@ -65,6 +78,12 @@ export function normalizeSettings(partial?: DeepPartial<Settings> | null): Setti
       fontFamily: partial?.editor?.fontFamily ?? terminal.fontFamily,
       fontFamilyFallback: partial?.editor?.fontFamilyFallback ?? terminal.fontFamilyFallback,
       fontSize: partial?.editor?.fontSize ?? terminal.fontSize,
+    },
+    agentRuntime: {
+      fontSize: normalizeInheritableFontSize(partial?.agentRuntime?.fontSize),
+      fontFamily: normalizeInheritableString(partial?.agentRuntime?.fontFamily),
+      codeFontFamily: normalizeInheritableString(partial?.agentRuntime?.codeFontFamily),
+      claudeAllowSubscriptionAuth: partial?.agentRuntime?.claudeAllowSubscriptionAuth === true,
     },
     history: {
       ...DEFAULT_SETTINGS.history,
@@ -123,6 +142,10 @@ export function updateSettings(partial: DeepPartial<Settings>) {
     Object.assign(settings.editor, partial.editor);
   }
 
+  if (partial.agentRuntime) {
+    Object.assign(settings.agentRuntime, partial.agentRuntime);
+  }
+
   if (partial.history) {
     Object.assign(settings.history, partial.history);
   }
@@ -132,6 +155,7 @@ export function updateSettings(partial: DeepPartial<Settings>) {
   delete remainder.workspace;
   delete remainder.terminal;
   delete remainder.editor;
+  delete remainder.agentRuntime;
   delete remainder.history;
   Object.assign(settings, remainder);
 
