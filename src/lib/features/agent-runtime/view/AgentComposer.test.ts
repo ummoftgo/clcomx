@@ -593,6 +593,46 @@ describe("AgentComposer", () => {
     expect(onModeChange).not.toHaveBeenCalledWith("bypassPermissions");
   });
 
+  it("approval selector: 비-ready 자동취소로 배너가 닫히면 포커스를 토글로 복원한다", async () => {
+    const { getByTestId, queryByTestId, rerender } = render(AgentComposer, {
+      props: approvalProps(),
+    });
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), { target: { value: "never" } });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerApprovalConfirmAccept)),
+    );
+    // turn 시작(running)으로 자동취소 → 배너 unmount. 포커스가 body로 떨어지지 않고 토글로 복원된다.
+    await rerender(approvalProps({ status: "running" }));
+    expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerOptionsToggle)));
+  });
+
+  it("mode selector: restoring 자동취소로 배너가 닫히면 포커스를 토글로 복원한다", async () => {
+    const modeProps = (extra: Record<string, unknown> = {}) => ({
+      status: "ready" as const,
+      providerLabel: "claude",
+      onSend: vi.fn(),
+      onStop: vi.fn(),
+      availableModes: [
+        { id: "default", name: "Default" },
+        { id: "bypassPermissions", name: "Bypass" },
+      ],
+      currentModeId: "default",
+      onModeChange: vi.fn().mockResolvedValue(undefined),
+      ...extra,
+    });
+    const { getByTestId, queryByTestId, rerender } = render(AgentComposer, { props: modeProps() });
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), { target: { value: "bypassPermissions" } });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerModeConfirmAccept)),
+    );
+    await rerender(modeProps({ restoring: true }));
+    expect(queryByTestId(TEST_IDS.agentComposerModeConfirm)).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerOptionsToggle)));
+  });
+
   it("options popover: 토글로 열면 popover로 포커스가 옮겨지고 Escape로 닫으며 토글로 복원한다", async () => {
     const { getByTestId, queryByTestId } = render(AgentComposer, {
       props: approvalProps(),

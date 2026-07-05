@@ -330,8 +330,16 @@
   // 상태 전환 중 accept 경로로 lockout 불변식이 깨지지 않게 한다(mode·approval 공통).
   $effect(() => {
     if (!modeSelectEnabled) {
+      const hadPending = pendingHighRiskModeId !== null || pendingHighRiskApprovalId !== null;
+      // DOM 패치 전이라 배너/포커스가 아직 살아 있다 — 자동취소로 확인 버튼이 제거되면 포커스가 body로
+      // 떨어지므로, 현재 포커스가 확인 배너 안이면 배너 unmount 후 토글로 복원한다(Codex medium 8차).
+      const active = document.activeElement;
+      const focusInConfirm = active instanceof HTMLElement && !!active.closest(".high-risk-confirm");
       if (pendingHighRiskModeId !== null) pendingHighRiskModeId = null;
       if (pendingHighRiskApprovalId !== null) pendingHighRiskApprovalId = null;
+      if (hadPending && focusInConfirm) {
+        void tick().then(() => optionsToggleEl?.focus());
+      }
     }
   });
 
