@@ -282,10 +282,16 @@
     }
     const metadata: AgentRuntimeMetadata = { ...runtimeMetadata, ...patch };
     runtimeMetadata = metadata;
-    // provider 기본값(sentinel) 대기 중 권위 approval echo(thread/settings/updated)가 도착하면, null revert의
-    // 결과가 확정된 것이므로 sentinel 미상 상태를 해소해 권위값으로 표시/위험을 재계산한다(Codex medium 11차).
-    if (patch.approvalPolicy !== undefined && approvalSelection === APPROVAL_DEFAULT_SELECTION) {
+    // sentinel 해소는 **null override가 커밋된 뒤**(prompt 전송) 도착한 권위 approval echo에서만 한다 —
+    // prompt 전 도착한 echo는 revert 이전 정책이라 해소에 쓰면 다음 turn의 provider-default 위험(never 가능)을
+    // 숨긴다. 커밋 후 echo만 revert 결과를 확정하므로 그때 권위값으로 표시/위험을 재계산한다(Codex medium 12차).
+    if (
+      patch.approvalPolicy !== undefined &&
+      approvalSelection === APPROVAL_DEFAULT_SELECTION &&
+      approvalSentinelCommitted
+    ) {
       approvalSelection = undefined;
+      approvalSentinelCommitted = false;
     }
     await persistAgentRuntimeMetadata(metadata);
   }
@@ -466,6 +472,11 @@
   // 사용자의 명시적 선택(3-state): undefined=미설정→base 사용, APPROVAL_DEFAULT_SELECTION=provider 기본값(null),
   // scalar=override 값. base가 granular/미상이어도 default sentinel로 항상 provider default로 되돌릴 수 있다(Codex 리뷰).
   let approvalSelection = $state<string | undefined>(undefined);
+  // sentinel(provider 기본값)의 null override는 다음 turn/start에서야 적용된다 — prompt가 전송돼 null이
+  // wire에 도달한 뒤 도착한 settings echo만 그 결과를 권위로 확정한다. prompt 전 도착한 echo는 revert 이전
+  // 정책이라 sentinel 해소에 쓰면 다음 turn 위험(never 가능)을 숨긴다(Codex medium 12차). 이 플래그는
+  // sentinel 선택 후 prompt가 전송(null 커밋)됐는지를 추적한다.
+  let approvalSentinelCommitted = $state(false);
   // 셀렉터 표시값: 사용자가 고른 값(sentinel 포함) 우선, 없으면 base가 scalar일 때만 그 값(아니면 placeholder).
   const selectedApprovalPolicy = $derived<string | undefined>(
     approvalSelection ?? (approvalBaseIsScalar ? runtimeMetadata?.approvalPolicy : undefined),
@@ -508,12 +519,14 @@
     if (policyId === APPROVAL_DEFAULT_SELECTION) {
       // provider 기본값으로 override 해제 — base가 granular/미상이어도 항상 도달 가능한 revert 경로.
       approvalSelection = APPROVAL_DEFAULT_SELECTION;
+      approvalSentinelCommitted = false; // 아직 prompt 전송 전 — null 미커밋.
       controller?.setTurnOptions({ approvalPolicy: null });
       return;
     }
     // granular/미지원 값은 무시(정적 scalar 후보 밖).
     if (!availableApprovalPolicies.includes(policyId)) return;
     approvalSelection = policyId;
+    approvalSentinelCommitted = false; // sentinel을 떠나므로 커밋 추적 해제.
     // 명시 scalar는 base와 같아도 그대로 전송한다. runtimeMetadata.approvalPolicy는 start/resume 시점 값이라
     // 이후 turn/start override로 실제 thread 정책이 바뀌어도 갱신되지 않는다 — base-equality로 null(provider
     // default revert)을 보내면 UI 표시(scalar)와 wire(provider default)가 분리돼 위험을 숨길 수 있다(Codex high).
@@ -828,6 +841,9 @@
 
   /** composer 전송 → controller.submit. */
   function onSend(content: import("../contracts/normalized").AgentContent[]): void {
+    // sentinel 활성 중 prompt를 보내면 null override가 이 turn/start로 wire에 도달한다 — 이후 도착하는
+    // settings echo가 revert 결과를 권위로 확정할 수 있게 커밋으로 표시한다(Codex medium 12차).
+    if (approvalSelection === APPROVAL_DEFAULT_SELECTION) approvalSentinelCommitted = true;
     void controller?.submit(content);
   }
 

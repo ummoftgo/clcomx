@@ -965,15 +965,12 @@ describe("AgentTranscriptSurface", () => {
     expect(approval).toBeTruthy();
   });
 
-  it("②-C: provider 기본값 대기 중 settings echo(on-request)가 오면 sentinel을 해소해 권위값으로 안전 표시한다", async () => {
+  it("②-C: sentinel은 null 커밋(prompt 전송) 전 echo로 해소되지 않고, 커밋 후 echo에서만 해소된다", async () => {
     const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
     await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
-    emit({
-      type: "session_status_changed",
-      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
-      status: "ready",
-    });
+    const readyRef = { provider: "codex" as const, threadId: "thread-1", sessionId: "session-tree-1" };
+    emit({ type: "session_status_changed", ref: readyRef, status: "ready" });
     await openSurfaceOptions(findByTestId);
     const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
     await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
@@ -982,12 +979,17 @@ describe("AgentTranscriptSurface", () => {
     await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
     const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
     await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
-    // 서버가 권위 approval echo(on-request)를 알림 → sentinel 해소, 실효=권위값 → 고위험 아님.
-    emit({
-      type: "runtime_metadata_changed",
-      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
-      metadata: { approvalPolicy: "on-request" },
-    });
+
+    // (1) prompt 전송 전 도착한 echo는 revert 이전 정책 → sentinel 해소하지 않는다(계속 고위험).
+    emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
+    await tick();
+    expect(toggle.textContent).toContain("High Risk");
+
+    // (2) prompt 전송(null 커밋) 후 도착한 echo만 revert 결과를 확정 → sentinel 해소, 고위험 해제.
+    const input = (await findByTestId(TEST_IDS.agentComposerInput)) as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: "go" } });
+    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerSend));
+    emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
     await waitFor(() => expect(toggle.textContent).not.toContain("High Risk"));
   });
 
