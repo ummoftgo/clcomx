@@ -49,6 +49,28 @@ describe("renderAgentMarkdown", () => {
     expect(html).toContain("<td");
   });
 
+  it("data-*/aria-* 속성을 제거한다(transcript anchor·testid 충돌 방지)", () => {
+    const html = renderAgentMarkdown(
+      '<p data-approval-anchor data-testid="x" aria-label="y">text</p>',
+    );
+    expect(html).not.toContain("data-approval-anchor");
+    expect(html).not.toContain("data-testid");
+    expect(html).not.toContain("aria-label");
+    expect(html).toContain("text");
+  });
+
+  it("mailto:/tel:/protocol-relative 등 non-web scheme 링크를 차단한다", () => {
+    const mailto = renderAgentMarkdown("[m](mailto:a@b.com)");
+    expect(mailto).not.toContain("mailto:");
+    const tel = renderAgentMarkdown("[t](tel:12345)");
+    expect(tel).not.toContain("tel:");
+    // protocol-relative href도 http/https 정책에 걸려 제거된다.
+    const rel = renderAgentMarkdown('<a href="//evil.example/x">x</a>');
+    expect(rel).not.toContain("evil.example");
+    // http/https는 유지된다.
+    expect(renderAgentMarkdown("[o](https://ok.example)")).toContain("https://ok.example");
+  });
+
   it("같은 입력은 캐시로 동일 결과를 재사용한다", () => {
     const first = renderAgentMarkdown("# cached");
     const second = renderAgentMarkdown("# cached");

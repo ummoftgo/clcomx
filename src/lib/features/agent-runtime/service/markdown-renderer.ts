@@ -46,6 +46,10 @@ const ALLOWED_TAGS = [
 
 const ALLOWED_ATTR = ["href", "title", "class", "align", "start"];
 
+// 링크 scheme은 기존 terminal link 정책과 동일하게 http/https만 허용한다(mailto:/tel:/cid:/
+// protocol-relative/relative 등 DOMPurify 기본 통과 scheme 차단). 앵커 텍스트는 sanitize가 유지한다.
+const ALLOWED_URI_REGEXP = /^https?:\/\//i;
+
 let linkHookRegistered = false;
 
 /** 링크를 새 창 + noopener/noreferrer로 강제하는 sanitize 훅(1회 등록). */
@@ -77,6 +81,11 @@ export function renderAgentMarkdown(redactedText: string): string {
   const html = DOMPurify.sanitize(parsed, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
+    // 기본값을 이 표면에 맞게 잠근다: data-*/aria-* 속성 금지(transcript의 data-* anchor·
+    // testid와 충돌 방지), 링크 scheme은 http/https만(위 정책).
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
+    ALLOWED_URI_REGEXP,
   });
 
   if (cache.size >= CACHE_MAX) {
