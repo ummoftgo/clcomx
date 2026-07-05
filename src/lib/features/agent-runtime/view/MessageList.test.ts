@@ -119,6 +119,86 @@ describe("MessageList", () => {
     expect(bubble.textContent).toContain("partial");
   });
 
+  it("markdown: 완성된 agent 메시지는 서식(HTML)으로 렌더된다", async () => {
+    const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
+    const { findByTestId } = render(MessageList, { props: { store } });
+
+    store.dispatch({
+      type: "agent_message",
+      ref: codexRef({ itemId: "md-final" }),
+      content: [{ type: "text", text: "**bold** and `code`\n\n- one" }],
+      mode: "replace",
+    });
+    await tick();
+
+    const bubble = await findByTestId(TEST_IDS.agentMessageBubble);
+    expect(bubble.querySelector("strong")?.textContent).toBe("bold");
+    expect(bubble.querySelector("code")?.textContent).toBe("code");
+    expect(bubble.querySelector("li")?.textContent).toBe("one");
+    // raw 마커가 그대로 노출되지 않는다.
+    expect(bubble.textContent).not.toContain("**bold**");
+  });
+
+  it("markdown: user 메시지는 평문을 유지한다", async () => {
+    const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
+    const { findByTestId } = render(MessageList, { props: { store } });
+
+    store.dispatch({
+      type: "user_message",
+      ref: codexRef({ itemId: "u-md" }),
+      content: [{ type: "text", text: "**not markdown**" }],
+      mode: "replace",
+    });
+    await tick();
+
+    const bubble = await findByTestId(TEST_IDS.agentMessageBubble);
+    expect(bubble.querySelector("strong")).toBeNull();
+    expect(bubble.textContent).toContain("**not markdown**");
+  });
+
+  it("markdown: 스트리밍 중에는 평문, 완성 후에만 파싱한다", async () => {
+    const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
+    const { findByTestId } = render(MessageList, { props: { store } });
+
+    store.dispatch({
+      type: "agent_message_delta",
+      ref: codexRef({ itemId: "md-stream" }),
+      delta: "**bo",
+    });
+    await tick();
+    let bubble = await findByTestId(TEST_IDS.agentMessageBubble);
+    // 스트리밍 중: 파싱하지 않고 raw 마커 그대로.
+    expect(bubble.textContent).toContain("**bo");
+    expect(bubble.querySelector("strong")).toBeNull();
+
+    store.dispatch({
+      type: "agent_message",
+      ref: codexRef({ itemId: "md-stream" }),
+      content: [{ type: "text", text: "**bold**" }],
+      mode: "replace",
+    });
+    await tick();
+    bubble = await findByTestId(TEST_IDS.agentMessageBubble);
+    expect(bubble.querySelector("strong")?.textContent).toBe("bold");
+  });
+
+  it("markdown: redaction이 파싱보다 먼저 적용된다(서식 안 비밀도 마스킹)", async () => {
+    const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
+    const { findByTestId } = render(MessageList, { props: { store } });
+
+    store.dispatch({
+      type: "agent_message",
+      ref: codexRef({ itemId: "md-secret" }),
+      content: [{ type: "text", text: "use **Bearer account-token-123** now" }],
+      mode: "replace",
+    });
+    await tick();
+
+    const bubble = await findByTestId(TEST_IDS.agentMessageBubble);
+    expect(bubble.textContent).toContain("[REDACTED]");
+    expect(bubble.textContent).not.toContain("account-token-123");
+  });
+
   it("renders thought channel messages as a collapsed reasoning block with an ARIA toggle", async () => {
     const store = createAgentRuntimeStore({ sessionHandle: "A", provider: "codex" });
     const { findByTestId, queryByText, findByText } = render(MessageList, { props: { store } });
