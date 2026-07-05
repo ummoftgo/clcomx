@@ -65,8 +65,12 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
   pendingHighRiskMode: boolean;
   /** 모드 변경 직렬화 체인(요청 순서 보존 + 미확정 1건 보장). */
   modeChangeChain: Promise<void>;
-  /** 다음 권위 mode echo를 기다리는 resolver 큐(직렬화라 사실상 최대 1개). echo 도착 시 하나 소비. */
-  modeEchoWaiters: Array<() => void>;
+  /**
+   * 요청 mode의 권위 echo를 기다리는 waiter 큐(직렬화라 사실상 최대 1개). 각 waiter는 자신이 기다리는
+   * modeId를 갖고, **그 값과 일치하는** echo만 소비한다 — stale/비매칭 저위험 echo가 고위험 전환의
+   * waiter를 조기에 풀어 fail-safe가 새는 것을 막는다(Codex 13차).
+   */
+  modeEchoWaiters: Array<{ modeId: string; resolve: () => void }>;
   /** turnId 합성 카운터(04 §turn id 합성). */
   turnSeq: number;
   activeTurnId?: string;
@@ -302,9 +306,14 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
   const isHighRiskMode = isHighRiskSessionModeId;
 
   /** 권위 mode echo 도착 — 대기 중인 전환 1건의 확정으로 소비한다(직렬화라 최대 1개 대기). */
-  function consumeModeEchoConfirmation(rt: ClaudeAcpSessionRuntime): void {
-    const waiter = rt.modeEchoWaiters.shift();
-    if (waiter) waiter();
+  function consumeModeEchoConfirmation(rt: ClaudeAcpSessionRuntime, echoMode: string): void {
+    // head waiter(직렬화라 사실상 유일)가 이 echo mode를 기다리고 있을 때만 소비한다. 비매칭 echo는
+    // 다른 전환의 것이거나 stale이므로 waiter를 유지한다(고위험 fail-safe 조기 해제 방지).
+    const head = rt.modeEchoWaiters[0];
+    if (head && head.modeId === echoMode) {
+      rt.modeEchoWaiters.shift();
+      head.resolve();
+    }
   }
 
   /**
@@ -313,14 +322,18 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
    * 있으므로, waiter는 RPC 전송 전에 등록해야 echo를 놓쳐 체인이 영구 대기하는 것을 막는다(Codex 12차).
    * dispose는 소비되지 않은 waiter를 큐에서 제거하고 매달린 await를 풀어준다(RPC 실패 시 leak/오소비 방지).
    */
-  function registerModeEchoWaiter(rt: ClaudeAcpSessionRuntime): { promise: Promise<void>; dispose: () => void } {
+  function registerModeEchoWaiter(
+    rt: ClaudeAcpSessionRuntime,
+    modeId: string,
+  ): { promise: Promise<void>; dispose: () => void } {
     let resolveFn!: () => void;
     const promise = new Promise<void>((resolve) => {
       resolveFn = resolve;
     });
-    rt.modeEchoWaiters.push(resolveFn);
+    const waiter = { modeId, resolve: resolveFn };
+    rt.modeEchoWaiters.push(waiter);
     const dispose = () => {
-      const i = rt.modeEchoWaiters.indexOf(resolveFn);
+      const i = rt.modeEchoWaiters.indexOf(waiter);
       if (i >= 0) rt.modeEchoWaiters.splice(i, 1);
       resolveFn();
     };
@@ -333,7 +346,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     update: { sessionUpdate?: string; currentModeId?: unknown; configOptions?: unknown[] },
   ): AgentRuntimeMetadataUpdate | undefined {
     if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
-      consumeModeEchoConfirmation(rt);
+      consumeModeEchoConfirmation(rt, update.currentModeId);
       rt.currentModeId = update.currentModeId;
       if (rt.modes) rt.modes = { ...rt.modes, currentModeId: update.currentModeId };
       return { sessionMode: update.currentModeId, permissionMode: update.currentModeId };
@@ -341,7 +354,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (update.sessionUpdate === "config_option_update") {
       const mode = extractModeConfigValue(update.configOptions);
       if (mode) {
-        consumeModeEchoConfirmation(rt);
+        consumeModeEchoConfirmation(rt, mode);
         rt.currentModeId = mode;
         if (rt.modes) rt.modes = { ...rt.modes, currentModeId: mode };
         return { sessionMode: mode, permissionMode: mode };
@@ -452,7 +465,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     const waiters = rt.modeEchoWaiters;
     rt.modeEchoWaiters = [];
     rt.pendingHighRiskMode = false;
-    for (const w of waiters) w();
+    for (const w of waiters) w.resolve();
   }
 
   // ───────────────────────── Port 메서드 ─────────────────────────
@@ -734,7 +747,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       if (isHighRisk) rt.pendingHighRiskMode = true;
       // echo waiter를 RPC **전에** 등록한다 — provider가 set_mode 응답 전에 config_option_update를
       // 먼저 보내도 그 echo를 놓치지 않고 체인이 진행되게 한다(Codex 12차 데드락 방지).
-      const echo = registerModeEchoWaiter(rt);
+      const echo = registerModeEchoWaiter(rt, modeId);
       try {
         await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
       } catch (err) {

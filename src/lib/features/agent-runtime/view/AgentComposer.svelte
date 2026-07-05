@@ -164,12 +164,24 @@
   async function confirmHighRiskMode(): Promise<void> {
     const modeId = pendingHighRiskModeId;
     pendingHighRiskModeId = null;
-    if (modeId) await requestModeChange(modeId);
+    // 확인 배너가 떠 있는 사이 상태가 바뀌었을 수 있으므로 셀렉터와 동일한 readiness/후보 유효성을
+    // 재검사한다 — active turn/승인 대기/복원 중에는 고위험 전환을 보내지 않는다(Codex 13차).
+    if (!modeId || !modeSelectEnabled) return;
+    if (!availableModes?.some((m) => m.id === modeId)) return;
+    await requestModeChange(modeId);
   }
 
   function cancelHighRiskMode(): void {
     pendingHighRiskModeId = null;
   }
+
+  // 셀렉터가 비활성(비 ready/idle·restoring·pending)이 되면 미확정 고위험 확인 배너를 취소한다 —
+  // 상태 전환 중 accept 경로로 lockout 불변식이 깨지지 않게 한다.
+  $effect(() => {
+    if (pendingHighRiskModeId !== null && !modeSelectEnabled) {
+      pendingHighRiskModeId = null;
+    }
+  });
 
   const placeholder = $derived(
     restoring

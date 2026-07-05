@@ -473,6 +473,43 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     await second;
   });
 
+  it("setSessionMode: stale 비매칭 echo는 bypass waiter를 소비하지 않아 fail-safe가 유지된다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass" }] },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    // bypass 전환 in-flight. echo waiter는 modeId="bypassPermissions"로 등록된다.
+    const bypass = adapter.setSessionMode!("A", "bypassPermissions");
+    const req = (await h.waitForOutbound("session/set_mode")) as { id: string | number };
+
+    // 실제 bypass echo 전에 stale 저위험 echo(plan)가 도착 — waiter modeId와 불일치 → 소비 안 됨.
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } } });
+    h.inject({ jsonrpc: "2.0", id: req.id, result: {} });
+    await bypass;
+
+    // currentModeId=plan(저위험)이지만 미확정 bypass waiter가 살아 pendingHighRiskMode 유지 → escalation.
+    h.inject({
+      jsonrpc: "2.0",
+      id: 1301,
+      method: "session/request_permission",
+      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-8", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
+    });
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as { request: { severity: string } } | undefined;
+    expect(approvalEvent?.request.severity).toBe("escalation");
+
+    // 실제 bypass echo가 오면 waiter 소비 → pending 해제.
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } } });
+    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "bypassPermissions" });
+  });
+
   it("setSessionMode: availableModes에 없는 모드는 wire 전송 없이 거부한다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);

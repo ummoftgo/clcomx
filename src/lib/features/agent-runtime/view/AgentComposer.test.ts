@@ -281,6 +281,45 @@ describe("AgentComposer", () => {
     expect(queryByTestId(TEST_IDS.agentComposerModeConfirm)).toBeNull();
   });
 
+  it("mode selector: 확인 배너가 뜬 뒤 비-ready 상태로 바뀌면 accept가 요청하지 않는다", async () => {
+    const onModeChange = vi.fn().mockResolvedValue(undefined);
+    const { getByTestId, queryByTestId, rerender } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "bypassPermissions", name: "Bypass" },
+        ],
+        currentModeId: "default",
+        onModeChange,
+      },
+    });
+
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), {
+      target: { value: "bypassPermissions" },
+    });
+    expect(getByTestId(TEST_IDS.agentComposerModeConfirm)).toBeTruthy();
+
+    // 확인 대기 중 turn이 시작(running)되면 배너가 사라지고 요청되지 않는다(lockout 불변식).
+    await rerender({
+      status: "running",
+      providerLabel: "claude",
+      onSend: vi.fn(),
+      onStop: vi.fn(),
+      availableModes: [
+        { id: "default", name: "Default" },
+        { id: "bypassPermissions", name: "Bypass" },
+      ],
+      currentModeId: "default",
+      onModeChange,
+    });
+    expect(queryByTestId(TEST_IDS.agentComposerModeConfirm)).toBeNull();
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
+
   it("mode selector: 저위험 모드는 확인 없이 바로 요청한다", async () => {
     const onModeChange = vi.fn().mockResolvedValue(undefined);
     const { getByTestId, queryByTestId } = render(AgentComposer, {
