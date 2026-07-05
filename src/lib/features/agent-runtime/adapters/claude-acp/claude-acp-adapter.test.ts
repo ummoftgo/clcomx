@@ -181,7 +181,7 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     ]);
   });
 
-  it("setSessionMode: 알려진 모드는 session/set_mode wire 전송 + 낙관적 metadata를 emit한다", async () => {
+  it("setSessionMode: session/set_mode wire를 보내고, 모드 표시는 provider current_mode_update가 권위다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
     const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
@@ -210,10 +210,21 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     h.inject({ jsonrpc: "2.0", id: req.id, result: {} });
     await setPromise;
 
+    // 낙관적 반영 없음 — RPC 성공만으로는 metadata event를 만들지 않는다(경쟁 원천 제거).
+    expect(metadataEvents(events).length).toBe(0);
+
+    // provider가 current_mode_update로 확정하면 그때 권위 metadata가 반영된다.
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } },
+    });
     expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "plan", permissionMode: "plan" });
   });
 
-  it("setSessionMode: 연속 요청은 직렬화되어 마지막 요청 순서대로 반영된다", async () => {
+  it("setSessionMode: 이전 요청의 늦은 current_mode_update가 최신 요청 확정을 오염시키지 않는다", async () => {
+    // 낙관적 반영이 없으므로 모든 모드 표시는 provider echo의 arrival order로 수렴한다:
+    // plan 성공 → (아직 echo 없음) → acceptEdits 성공 → 늦은 plan echo 도착 → acceptEdits echo 도착.
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
     const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
@@ -233,69 +244,37 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     const events: AgentEvent[] = [];
     adapter.subscribeEvents("A", (e) => events.push(e));
 
-    // 두 요청을 연달아 낸다. 직렬화되므로 첫 요청이 완료되어야 두 번째 set_mode가 전송된다.
     const first = adapter.setSessionMode!("A", "plan");
-    const second = adapter.setSessionMode!("A", "acceptEdits");
-
-    await h.respondToLast("session/set_mode", {}); // plan 완료
+    await h.respondToLast("session/set_mode", {});
     await first;
-    await h.respondToLast("session/set_mode", {}); // acceptEdits 완료
+    const second = adapter.setSessionMode!("A", "acceptEdits");
+    await h.respondToLast("session/set_mode", {});
     await second;
 
-    // 마지막 요청(acceptEdits)이 최종 반영된다.
-    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "acceptEdits" });
-  });
-
-  it("setSessionMode: 최신 요청이 실패해도 앞선 성공 요청의 결과가 유지된다", async () => {
-    const h = makeHarness();
-    const adapter = createClaudeAcpAdapter(h.deps);
-    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
-    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
-    await h.respondToLast("session/new", {
-      sessionId: "sess-1",
-      modes: {
-        currentModeId: "default",
-        availableModes: [
-          { id: "default", name: "Default" },
-          { id: "plan", name: "Plan" },
-          { id: "acceptEdits", name: "Accept Edits" },
-        ],
-      },
+    // provider echo가 요청 순서대로 도착한다(plan 먼저, acceptEdits 나중).
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } },
     });
-    await startPromise;
-    const events: AgentEvent[] = [];
-    adapter.subscribeEvents("A", (e) => events.push(e));
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "acceptEdits" } },
+    });
 
-    const first = adapter.setSessionMode!("A", "plan");
-    const second = adapter.setSessionMode!("A", "acceptEdits");
-
-    // plan 성공, acceptEdits는 provider가 error로 거부.
-    const planReq = (await h.waitForOutbound("session/set_mode")) as { id: string | number };
-    h.inject({ jsonrpc: "2.0", id: planReq.id, result: {} });
-    await first;
-    const acceptReq = (await h.waitForOutbound("session/set_mode")) as { id: string | number };
-    h.inject({ jsonrpc: "2.0", id: acceptReq.id, error: { code: -32000, message: "rejected" } });
-    await expect(second).rejects.toBeTruthy();
-
-    // 실패한 acceptEdits는 반영되지 않고, 성공한 plan이 최종 권위 값으로 유지된다.
-    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "plan" });
+    // 최종 권위 값은 마지막 echo(acceptEdits)다 — 낙관적 반영이 없어 이전 요청의 echo가 최신을 덮지 않는다.
+    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "acceptEdits", permissionMode: "acceptEdits" });
   });
 
-  it("setSessionMode: 대기 중 도착한 provider current_mode_update가 stale 완료를 이긴다", async () => {
+  it("setSessionMode: RPC 실패는 reject되고 모드 표시를 바꾸지 않는다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
     const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
     await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
     await h.respondToLast("session/new", {
       sessionId: "sess-1",
-      modes: {
-        currentModeId: "default",
-        availableModes: [
-          { id: "default", name: "Default" },
-          { id: "plan", name: "Plan" },
-          { id: "bypassPermissions", name: "Bypass" },
-        ],
-      },
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }] },
     });
     await startPromise;
     const events: AgentEvent[] = [];
@@ -303,17 +282,11 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
 
     const setPromise = adapter.setSessionMode!("A", "plan");
     const req = (await h.waitForOutbound("session/set_mode")) as { id: string | number };
-    // set_mode 응답 전에 provider가 권위 모드 갱신(bypassPermissions)을 보낸다.
-    h.inject({
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } },
-    });
-    h.inject({ jsonrpc: "2.0", id: req.id, result: {} });
-    await setPromise;
+    h.inject({ jsonrpc: "2.0", id: req.id, error: { code: -32000, message: "rejected" } });
+    await expect(setPromise).rejects.toBeTruthy();
 
-    // 최종 권위 값은 provider가 알린 bypassPermissions다(늦은 plan 완료가 덮어쓰지 않음).
-    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "bypassPermissions" });
+    // 거부는 어떤 모드 metadata event도 만들지 않는다(composer가 권위 값으로 롤백).
+    expect(metadataEvents(events).length).toBe(0);
   });
 
   it("setSessionMode: availableModes에 없는 모드는 wire 전송 없이 거부한다", async () => {

@@ -56,15 +56,6 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
   runtimeId: RuntimeId;
   providerSessionId?: string;
   caps?: ParsedInitialize;
-  /**
-   * provider 권위 모드 갱신 순번(경합 가드). current_mode_update / config_option_update가 도착할 때만
-   * 증가한다. setSessionMode는 enqueue 시점의 값을 기억했다가, RPC 성공 후 이 값이 그대로면
-   * (그 사이 provider 권위 갱신 없음) 낙관적 반영을 적용한다 — provider 권위 값이 항상 우선한다.
-   * set 실패는 이 순번을 건드리지 않으므로 실패한 요청이 이전/이후 성공을 오염시키지 않는다.
-   */
-  providerModeSeq: number;
-  /** 모드 변경 직렬화 체인 — 여러 set 요청을 요청 순서대로 한 번에 하나씩 처리(마지막 요청이 마지막에 반영). */
-  modeChangeChain: Promise<void>;
   /** turnId 합성 카운터(04 §turn id 합성). */
   turnSeq: number;
   activeTurnId?: string;
@@ -302,8 +293,6 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     update: { sessionUpdate?: string; currentModeId?: unknown; configOptions?: unknown[] },
   ): AgentRuntimeMetadataUpdate | undefined {
     if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
-      // provider 권위 갱신 — 순번을 올려 이 시점 이전에 enqueue된 in-flight setSessionMode의 낙관적 반영을 무효화한다.
-      rt.providerModeSeq += 1;
       rt.currentModeId = update.currentModeId;
       if (rt.modes) rt.modes = { ...rt.modes, currentModeId: update.currentModeId };
       return { sessionMode: update.currentModeId, permissionMode: update.currentModeId };
@@ -311,7 +300,6 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (update.sessionUpdate === "config_option_update") {
       const mode = extractModeConfigValue(update.configOptions);
       if (mode) {
-        rt.providerModeSeq += 1;
         rt.currentModeId = mode;
         if (rt.modes) rt.modes = { ...rt.modes, currentModeId: mode };
         return { sessionMode: mode, permissionMode: mode };
@@ -328,8 +316,6 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       sessionHandle: handle,
       runtimeId,
       turnSeq: 0,
-      providerModeSeq: 0,
-      modeChangeChain: Promise.resolve(),
       pendingRequests: new Map(),
       pendingApprovals: new Map(),
       loadingReplay: false,
@@ -669,42 +655,18 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
   /**
    * setSessionMode: session/set_mode wire로 모드를 전환한다(ref-acp §10).
    * modeId는 provider가 알린 availableModes에 존재해야 한다(미존재는 wire 전 거부).
-   * provider는 성공 시 current_mode_update로 새 모드를 알리지만, 낙관적으로 runtime state와
-   * metadata를 즉시 반영해 셀렉터 표시 지연을 없앤다(update가 오면 동일 값으로 수렴).
+   *
+   * [설계] 낙관적 반영을 하지 않는다. 모드 표시(runtime_metadata_changed)의 유일 권위는 provider의
+   * current_mode_update / config_option_update다 — 그래야 낙관적 값과 권위 값의 순서 경쟁이 원천
+   * 없어지고, 이 값을 쓰는 셀렉터·고위험 배지·approval severity가 항상 provider가 실제 수락한 모드를
+   * 반영한다. 이 함수는 RPC 성공(수락)이면 resolve, 실패면 reject만 한다(호출부 composer가 거부 시 롤백).
    */
   async function setSessionMode(handle: AgentSessionHandle, modeId: string): Promise<void> {
     const rt = byHandle(handle);
     if (!rt.providerSessionId) throw new Error("claude adapter: session not ready (no sessionId)");
     const known = rt.modes?.availableModes.some((m) => m.id === modeId) ?? false;
     if (!known) throw new Error(`claude adapter: unknown session mode: ${modeId}`);
-
-    // 요청 순서를 보존하려 직렬화 체인에 매단다(마지막 요청이 마지막에 반영). 앞 요청의 실패는
-    // 뒤 요청을 막지 않는다(체인은 settle 기준). 반환 promise는 이 요청 자신의 결과다.
-    const run = rt.modeChangeChain.then(
-      () => applyModeChange(rt, modeId),
-      () => applyModeChange(rt, modeId),
-    );
-    rt.modeChangeChain = run.then(
-      () => {},
-      () => {},
-    );
-    return run;
-  }
-
-  /** setSessionMode 1건 실행(직렬화 체인 내부). provider 권위 갱신이 그 사이 있었으면 낙관적 반영을 건너뛴다. */
-  async function applyModeChange(rt: ClaudeAcpSessionRuntime, modeId: string): Promise<void> {
-    const seenProviderSeq = rt.providerModeSeq;
     await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
-    // RPC 성공만 권위로 반영한다(실패는 throw로 전파 — currentModeId 미변경). 그 사이 provider가
-    // 권위 갱신을 보냈으면(providerModeSeq 증가) 그 값이 우선이므로 낙관적 반영을 생략한다.
-    if (rt.providerModeSeq !== seenProviderSeq) return;
-    rt.currentModeId = modeId;
-    if (rt.modes) rt.modes = { ...rt.modes, currentModeId: modeId };
-    emit(rt, {
-      type: "runtime_metadata_changed",
-      ref: refFor(rt),
-      metadata: currentModeMetadata(rt),
-    });
   }
 
   /** subscribeEvents: listener 등록 → AgentEvent 수신. 반환된 fn으로 해제. */
