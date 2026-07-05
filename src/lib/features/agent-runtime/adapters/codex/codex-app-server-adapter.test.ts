@@ -276,7 +276,7 @@ describe("sendPrompt (turn/start outbound)", () => {
     expect(turnStart.params).not.toHaveProperty("effort");
   });
 
-  it("②-B: setTurnOptions null은 해당 override를 해제한다", async () => {
+  it("②-B: setTurnOptions null은 turn/start에 명시적 null을 실어 override를 revert한다", async () => {
     const { adapter, h } = await startReadySession();
     adapter.setTurnOptions!("H", { model: "gpt-x", effort: "high" });
     adapter.setTurnOptions!("H", { model: null });
@@ -285,7 +285,8 @@ describe("sendPrompt (turn/start outbound)", () => {
     const turnStart = h.sent.find(
       (m) => "method" in m && (m as { method: string }).method === "turn/start",
     ) as { params: Record<string, unknown> };
-    expect(turnStart.params).not.toHaveProperty("model");
+    // null clear는 wire로 전달돼야 provider override가 revert된다(누수 방지).
+    expect(turnStart.params).toHaveProperty("model", null);
     expect(turnStart.params).toMatchObject({ effort: "high" }); // effort는 유지.
   });
 

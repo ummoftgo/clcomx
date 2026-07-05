@@ -95,9 +95,13 @@ interface CodexSessionRuntime {
    * 발동해 shutdown 중 process_exited가 누락된다(분리 필수).
    */
   tearingDown: boolean;
-  /** 다음 turn 이후에 적용할 model/effort override(②-B, 세션 메모리 범위). undefined면 provider default. */
-  turnModel?: string;
-  turnEffort?: string;
+  /**
+   * 다음 turn 이후에 적용할 model/effort override(②-B, 세션 메모리 범위). 3-state:
+   * undefined=미설정(turn/start에 미포함, provider default), null=명시적 해제(`model:null`/`effort:null`을
+   * turn/start에 실어 provider override를 revert), string=override 값.
+   */
+  turnModel?: string | null;
+  turnEffort?: string | null;
 }
 
 /** thread/start·thread/resume·thread/read response의 공통 부분(thread 보유). */
@@ -518,9 +522,15 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       });
       return;
     }
-    // 사용자가 model/effort override를 설정했으면 turn/start에 실어 이 turn 이후에 적용한다(②-B).
-    // 미설정이면 provider/server default(OQ-20 기존 동작 유지).
-    const turnParams: { threadId: string; input: typeof codexInput; model?: string; effort?: string } = {
+    // model/effort override를 turn/start에 실어 이 turn 이후에 적용한다(②-B). 3-state:
+    // undefined=미포함(provider default, OQ-20 기존 동작), null=명시적 해제(override revert),
+    // string=값. null을 실어야 이전 turn override가 provider 쪽에 누수되지 않고 해제된다.
+    const turnParams: {
+      threadId: string;
+      input: typeof codexInput;
+      model?: string | null;
+      effort?: string | null;
+    } = {
       threadId,
       input: codexInput,
     };
@@ -771,6 +781,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
         model?: unknown;
         displayName?: unknown;
         hidden?: unknown;
+        isDefault?: unknown;
         supportedReasoningEfforts?: Array<{ reasoningEffort?: unknown; description?: unknown }>;
         defaultReasoningEffort?: unknown;
       }>;
@@ -797,6 +808,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
         ...(typeof m.defaultReasoningEffort === "string"
           ? { defaultEffort: m.defaultReasoningEffort }
           : {}),
+        ...(m.isDefault === true ? { isDefault: true } : {}),
       });
     }
     return models;
@@ -809,8 +821,9 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
   ): void {
     const rt = sessions.get(handle);
     if (!rt) return;
-    if (options.model !== undefined) rt.turnModel = options.model ?? undefined;
-    if (options.effort !== undefined) rt.turnEffort = options.effort ?? undefined;
+    // null을 보존한다(3-state) — 다음 turn/start가 명시적 해제를 wire로 전달해 override를 revert한다.
+    if (options.model !== undefined) rt.turnModel = options.model;
+    if (options.effort !== undefined) rt.turnEffort = options.effort;
   }
 
   return {

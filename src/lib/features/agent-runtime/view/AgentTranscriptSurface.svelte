@@ -391,11 +391,13 @@
     const models = (await controller?.listModels()) ?? [];
     availableModels = models;
     if (models.length === 0) return;
-    // 기본 선택: provider가 알린 첫 모델 + 그 모델의 defaultEffort(사용자가 아직 안 골랐을 때만).
+    // 초기 선택은 provider 카탈로그 기본 모델(isDefault, 없으면 첫 모델)로 맞춘다. 이때 setTurnOptions는
+    // 호출하지 않는다 — override 없이 provider default로 실행되며 그 값이 곧 표시된 기본 모델이므로
+    // 화면과 wire가 일치한다(불일치 방지, Codex 리뷰). 사용자가 명시적으로 바꿀 때만 override를 건다.
     if (selectedModel === undefined) {
-      const first = models[0];
-      selectedModel = first.id;
-      selectedEffort = first.defaultEffort ?? first.efforts[0]?.id;
+      const initial = models.find((m) => m.isDefault) ?? models[0];
+      selectedModel = initial.id;
+      selectedEffort = initial.defaultEffort ?? initial.efforts[0]?.id;
     }
   }
 

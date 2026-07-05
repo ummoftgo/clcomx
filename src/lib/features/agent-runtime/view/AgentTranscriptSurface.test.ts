@@ -61,7 +61,9 @@ vi.mock("../service/transcript-cache", () => ({
   deserializeTranscript: transcriptCacheMocks.deserializeTranscript,
 }));
 
-function makeFakePort(options: { canResume?: boolean; canLoad?: boolean } = {}) {
+function makeFakePort(
+  options: { canResume?: boolean; canLoad?: boolean; models?: unknown[] } = {},
+) {
   let listener: ((e: AgentEvent) => void) | null = null;
   // 실제 adapter 계약을 모사: 구독 전 emit된 event를 버퍼링했다가 구독 시 flush한다.
   // controller가 start/resume 전에 구독하지만 adapter deferred 계약도 같이 지킨다(Finding 1).
@@ -84,6 +86,8 @@ function makeFakePort(options: { canResume?: boolean; canLoad?: boolean } = {}) 
     sendPrompt: vi.fn().mockResolvedValue(undefined),
     cancelTurn: vi.fn().mockResolvedValue(undefined),
     respondApproval: vi.fn().mockResolvedValue(undefined),
+    listModels: vi.fn().mockResolvedValue(options.models ?? []),
+    setTurnOptions: vi.fn(),
     subscribeEvents: vi.fn((_h, l) => {
       listener = l;
       for (const e of buffer.splice(0)) l(e);
@@ -687,6 +691,45 @@ describe("AgentTranscriptSurface", () => {
         canLoad: true,
       });
     });
+  });
+
+  it("②-B: 세션 시작 후 모델 목록을 채우고 초기엔 기본 모델을 override 없이 선택한다", async () => {
+    const { port } = makeFakePort({
+      models: [
+        { id: "gpt-a", label: "GPT A", efforts: [{ id: "low" }, { id: "high" }], defaultEffort: "low" },
+        { id: "gpt-b", label: "GPT B", efforts: [{ id: "medium" }], defaultEffort: "medium", isDefault: true },
+      ],
+    });
+    const { findByTestId, getByTestId } = render(AgentTranscriptSurface, {
+      props: baseProps(port),
+    });
+
+    // model/list가 채워지면 셀렉터가 뜨고, isDefault 모델(gpt-b)이 초기 선택된다.
+    const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(modelSelect.value).toBe("gpt-b"));
+    // 초기 선택은 provider default와 일치하므로 setTurnOptions를 부르지 않는다(화면=wire).
+    expect(port.setTurnOptions).not.toHaveBeenCalled();
+
+    // 사용자가 다른 모델로 바꾸면 그때 override를 건다.
+    await fireEvent.change(modelSelect, { target: { value: "gpt-a" } });
+    expect(port.setTurnOptions).toHaveBeenCalledWith("S1", { model: "gpt-a", effort: "low" });
+    // gpt-a는 effort 지원 → effort 셀렉터 노출.
+    expect(getByTestId(TEST_IDS.agentComposerEffortSelect)).toBeTruthy();
+  });
+
+  it("②-B: effort 미지원 모델로 바꾸면 effort override를 null로 해제한다", async () => {
+    const { port } = makeFakePort({
+      models: [
+        { id: "gpt-a", label: "GPT A", efforts: [{ id: "low" }], defaultEffort: "low", isDefault: true },
+        { id: "gpt-noeffort", label: "No Effort", efforts: [] },
+      ],
+    });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(modelSelect.value).toBe("gpt-a"));
+
+    await fireEvent.change(modelSelect, { target: { value: "gpt-noeffort" } });
+    expect(port.setTurnOptions).toHaveBeenCalledWith("S1", { model: "gpt-noeffort", effort: null });
   });
 
   it("OQ-16: persists resume keys immediately and a debounced transcript cache snapshot when metadata is saved", async () => {

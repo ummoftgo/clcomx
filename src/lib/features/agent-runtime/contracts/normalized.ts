@@ -170,6 +170,8 @@ export interface AgentModelOption {
   efforts: AgentEffortOption[];
   /** 기본 effort id. */
   defaultEffort?: string;
+  /** provider 카탈로그 기본 모델 여부(초기 선택 기준 — 이 모델이면 override 없이도 wire와 일치). */
+  isDefault?: boolean;
 }
 
 /** 세션 모드 선택 후보 1건(composer 모드 셀렉터 소스). 비밀 아님(id/표시명만). */
