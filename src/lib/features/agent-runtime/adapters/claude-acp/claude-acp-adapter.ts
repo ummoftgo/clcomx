@@ -693,9 +693,19 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (!rt.providerSessionId) throw new Error("claude adapter: session not ready (no sessionId)");
     const known = rt.modes?.availableModes.some((m) => m.id === modeId) ?? false;
     if (!known) throw new Error(`claude adapter: unknown session mode: ${modeId}`);
-    await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
-    // 수락됨. 권위 echo 전 창의 승인 severity를 보수적으로 판정하도록 요청 모드를 기억한다(echo 시 해제).
+
+    // RPC 응답을 기다리는 동안에도 provider가 모드를 적용하고 승인 요청을 먼저 보낼 수 있으므로,
+    // 전송 전(in-flight)부터 요청 모드를 pending으로 기록해 그 창의 승인도 보수적으로 판정한다(fail-safe).
+    const prev = rt.pendingRequestedMode;
     rt.pendingRequestedMode = modeId;
+    try {
+      await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
+    } catch (err) {
+      // 수락 실패 — 이 시도가 남긴 pending만 되돌린다(그 사이 echo/새 요청이 바꿨으면 그쪽을 존중).
+      if (rt.pendingRequestedMode === modeId) rt.pendingRequestedMode = prev;
+      throw err;
+    }
+    // 성공. 권위 echo(current_mode_update)가 오면 clearPendingModeOnEcho가 pending을 해제한다.
   }
 
   /** subscribeEvents: listener 등록 → AgentEvent 수신. 반환된 fn으로 해제. */

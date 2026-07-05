@@ -325,6 +325,70 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(approvalEvent?.request.severity).toBe("escalation");
   });
 
+  it("setSessionMode: set_mode 응답 전 도착한 승인도 요청 모드(bypass)로 escalation 판정한다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }] },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    // set_mode를 냈지만 아직 응답하지 않은 상태(in-flight).
+    const setPromise = adapter.setSessionMode!("A", "bypassPermissions");
+    await h.waitForOutbound("session/set_mode");
+
+    // 응답 전에 승인 요청이 먼저 도착 — pending이 in-flight 단계부터 잡혀 escalation이어야 한다.
+    h.inject({
+      jsonrpc: "2.0",
+      id: 701,
+      method: "session/request_permission",
+      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-3", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
+    });
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
+      | { request: { severity: string } }
+      | undefined;
+    expect(approvalEvent?.request.severity).toBe("escalation");
+
+    await h.respondToLast("session/set_mode", {});
+    await setPromise;
+  });
+
+  it("setSessionMode: RPC 실패 시 이 시도가 남긴 pending을 되돌린다(정리 불변식)", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }] },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    const setPromise = adapter.setSessionMode!("A", "bypassPermissions");
+    const req = (await h.waitForOutbound("session/set_mode")) as { id: string | number };
+    h.inject({ jsonrpc: "2.0", id: req.id, error: { code: -32000, message: "rejected" } });
+    await expect(setPromise).rejects.toBeTruthy();
+
+    // 실패로 pending이 해제됐으므로, 이후 승인은 currentModeId(default) 기준 normal이다.
+    h.inject({
+      jsonrpc: "2.0",
+      id: 702,
+      method: "session/request_permission",
+      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-4", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
+    });
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
+      | { request: { severity: string } }
+      | undefined;
+    expect(approvalEvent?.request.severity).toBe("normal");
+  });
+
   it("setSessionMode: 비매칭 stale echo는 고위험 pending fail-safe를 풀지 않는다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
