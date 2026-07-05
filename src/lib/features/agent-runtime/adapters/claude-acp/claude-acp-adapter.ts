@@ -56,6 +56,12 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
   runtimeId: RuntimeId;
   providerSessionId?: string;
   caps?: ParsedInitialize;
+  /**
+   * 모드 변경 순번(경합 가드). setSessionMode 진입 시 증가시키고, provider 권위 모드 갱신
+   * (current_mode_update / config_option_update)도 증가시킨다. in-flight setSessionMode의 낙관적
+   * 반영은 자신의 순번이 아직 최신일 때만 적용해, 늦게 도착한 stale 완료가 더 새 값을 덮어쓰지 못하게 한다.
+   */
+  modeIntentSeq: number;
   /** turnId 합성 카운터(04 §turn id 합성). */
   turnSeq: number;
   activeTurnId?: string;
@@ -293,13 +299,18 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     update: { sessionUpdate?: string; currentModeId?: unknown; configOptions?: unknown[] },
   ): AgentRuntimeMetadataUpdate | undefined {
     if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
+      // provider 권위 갱신 — 순번을 올려 in-flight setSessionMode의 stale 낙관적 반영을 무효화한다.
+      rt.modeIntentSeq += 1;
       rt.currentModeId = update.currentModeId;
+      if (rt.modes) rt.modes = { ...rt.modes, currentModeId: update.currentModeId };
       return { sessionMode: update.currentModeId, permissionMode: update.currentModeId };
     }
     if (update.sessionUpdate === "config_option_update") {
       const mode = extractModeConfigValue(update.configOptions);
       if (mode) {
+        rt.modeIntentSeq += 1;
         rt.currentModeId = mode;
+        if (rt.modes) rt.modes = { ...rt.modes, currentModeId: mode };
         return { sessionMode: mode, permissionMode: mode };
       }
     }
@@ -314,6 +325,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       sessionHandle: handle,
       runtimeId,
       turnSeq: 0,
+      modeIntentSeq: 0,
       pendingRequests: new Map(),
       pendingApprovals: new Map(),
       loadingReplay: false,
@@ -662,7 +674,11 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     const known = rt.modes?.availableModes.some((m) => m.id === modeId) ?? false;
     if (!known) throw new Error(`claude adapter: unknown session mode: ${modeId}`);
 
+    // 이 요청의 순번을 확보한다. RPC 대기 중 더 새 set 요청이나 provider 권위 갱신이 순번을 올리면,
+    // 아래 완료 후 낙관적 반영을 건너뛴다(늦게 도착한 stale 완료가 더 새 값을 덮어쓰지 않게 한다).
+    const seq = (rt.modeIntentSeq += 1);
     await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
+    if (rt.modeIntentSeq !== seq) return; // 더 새 모드 변경이 이미 반영됨 — 낙관적 반영 생략.
 
     rt.currentModeId = modeId;
     if (rt.modes) rt.modes = { ...rt.modes, currentModeId: modeId };
