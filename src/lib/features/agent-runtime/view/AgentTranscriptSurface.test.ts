@@ -859,6 +859,34 @@ describe("AgentTranscriptSurface", () => {
     expect(chip.closest("[data-risk='high']")).toBeTruthy();
   });
 
+  it("②-C: 세션이 이미 never로 시작하면 override 없이도 고위험으로 표시한다(위험 은닉 방지)", async () => {
+    const { port } = makeFakePort({ startApprovalPolicy: "never" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    // override를 걸지 않아도 실효 정책(base=never)이 고위험이므로 metadata 항목에 data-risk=high가 붙는다.
+    const approval = await findByTestId(TEST_IDS.agentRuntimeMetadata);
+    await waitFor(() =>
+      expect(approval.querySelector(".metadata-item[data-risk='high']")).toBeTruthy(),
+    );
+    // 옵션 토글에도 고위험 표시가 붙는다.
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    expect(toggle.textContent).toContain("High Risk");
+  });
+
+  it("②-C: base가 granular/미상이어도 provider 기본값 옵션으로 override를 null 해제할 수 있다", async () => {
+    // granular base — scalar 후보에 없어 placeholder로 시작한다.
+    const { port } = makeFakePort({ startApprovalPolicy: "granular" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    // granular는 scalar 후보 밖 → placeholder(빈 값).
+    await waitFor(() => expect(approvalSelect.value).toBe(""));
+    // scalar override를 건 뒤에도 provider 기본값으로 되돌릴 수 있어야 한다.
+    await fireEvent.change(approvalSelect, { target: { value: "on-request" } });
+    expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: "on-request" });
+    await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
+    expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: null });
+  });
+
   it("OQ-16: persists resume keys immediately and a debounced transcript cache snapshot when metadata is saved", async () => {
     vi.useFakeTimers();
     try {

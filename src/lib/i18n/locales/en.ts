@@ -477,6 +477,7 @@ const en = {
       approvalLabel: "Approval",
       approvalSelect: "Change approval policy",
       approvalPlaceholder: "Approval policy…",
+      approvalDefault: "Provider default",
       highRiskApprovalTitle: "Confirm high-risk approval policy",
       highRiskApprovalConfirm:
         "Approval policy 'never' turns off all approval requests for this session's subsequent turns. Continue?",

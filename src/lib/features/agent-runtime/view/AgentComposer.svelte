@@ -18,7 +18,11 @@
     AgentSessionModeOption,
     AgentSessionStatus,
   } from "../contracts/normalized";
-  import { isHighRiskSessionModeId, isHighRiskApprovalPolicy } from "../contracts/normalized";
+  import {
+    isHighRiskSessionModeId,
+    isHighRiskApprovalPolicy,
+    APPROVAL_DEFAULT_SELECTION,
+  } from "../contracts/normalized";
   import type { ComposerCapabilities } from "../contracts/transcript";
 
   const DEFAULT_CAPABILITIES: ComposerCapabilities = {
@@ -93,10 +97,10 @@
     onEffortChange?: (effortId: string) => void;
     /** Codex approval policy 후보(있으면 approval 셀렉터 노출, Codex 전용, ②-C). scalar AskForApproval만. */
     availableApprovalPolicies?: readonly string[];
-    /** 셀렉터 표시값(override 있으면 override 값, 없으면 세션 시작 권위값; 미상이면 undefined→placeholder). */
+    /** 셀렉터 표시값(선택 sentinel 포함; 미상이면 undefined→placeholder). */
     selectedApprovalPolicy?: string;
-    /** 세션 시작 권위값과 달라 다음 turn에 적용될 override(경고 강조용). 없으면 undefined. */
-    approvalOverrideActive?: string;
+    /** 다음 turn 실효 정책(override ?? base)이 고위험(never)인지 — 토글/셀렉터 강조용. base가 never여도 true. */
+    approvalHighRisk?: boolean;
     /** 현재 provider sandbox 표시값(approval never 확인 문구 강조에 사용). */
     currentSandbox?: string;
     /** approval 셀렉터 변경 콜백(고위험 never는 확인 게이트 통과 후에만 호출). */
@@ -127,7 +131,7 @@
     onEffortChange,
     availableApprovalPolicies,
     selectedApprovalPolicy,
-    approvalOverrideActive,
+    approvalHighRisk = false,
     currentSandbox,
     onApprovalPolicyChange,
     capabilities = DEFAULT_CAPABILITIES,
@@ -961,7 +965,7 @@
         </label>
       {/if}
       {#if hasApprovalSelector}
-        <label class="options-row" class:options-row--warning={isHighRiskApprovalPolicy(approvalOverrideActive)}>
+        <label class="options-row" class:options-row--warning={approvalHighRisk}>
           <span class="options-row-label">{$t("agentRuntime.composer.approvalLabel")}</span>
           <select
             class="mode-select"
@@ -972,9 +976,11 @@
             onchange={handleApprovalChange}
           >
             {#if selectedApprovalPolicy === undefined}
-              <!-- 실제 정책 미상(replay resume 등) — 잘못된 값을 활성처럼 보이지 않도록 placeholder. -->
+              <!-- 실제 정책 미상(replay resume/granular base 등) — 값을 활성처럼 보이지 않도록 placeholder. -->
               <option value="" disabled selected>{$t("agentRuntime.composer.approvalPlaceholder")}</option>
             {/if}
+            <!-- provider 기본값(override 해제): base가 granular/미상이어도 항상 도달 가능한 revert 경로. -->
+            <option value={APPROVAL_DEFAULT_SELECTION}>{$t("agentRuntime.composer.approvalDefault")}</option>
             {#each availableApprovalPolicies ?? [] as policy (policy)}
               <option value={policy}>{policy}</option>
             {/each}
@@ -991,7 +997,7 @@
         <button
           type="button"
           class="options-toggle"
-          class:options-toggle--warning={isHighRiskApprovalPolicy(approvalOverrideActive)}
+          class:options-toggle--warning={approvalHighRisk}
           data-testid={TEST_IDS.agentComposerOptionsToggle}
           aria-haspopup="dialog"
           aria-expanded={optionsOpen}
@@ -999,7 +1005,7 @@
           onclick={toggleOptions}
         >
           {$t("agentRuntime.composer.optionsButton")}
-          {#if approvalOverrideActive && isHighRiskApprovalPolicy(approvalOverrideActive)}
+          {#if approvalHighRisk}
             <span class="options-toggle-risk">{$t("agentRuntime.metadata.highRisk")}</span>
           {/if}
         </button>

@@ -523,12 +523,26 @@ describe("AgentComposer", () => {
     expect((getByTestId(TEST_IDS.agentComposerApprovalSelect) as HTMLSelectElement).value).toBe("");
   });
 
-  it("options toggle: never override가 활성이면 토글에 고위험 표시가 붙는다", () => {
+  it("options toggle: 실효 정책이 고위험(never)이면 토글에 고위험 표시가 붙는다", () => {
     const { getByTestId } = render(AgentComposer, {
-      props: approvalProps({ selectedApprovalPolicy: "never", approvalOverrideActive: "never" }),
+      props: approvalProps({ selectedApprovalPolicy: "never", approvalHighRisk: true }),
     });
     const toggle = getByTestId(TEST_IDS.agentComposerOptionsToggle);
     expect(toggle.textContent).toContain("High Risk");
+  });
+
+  it("approval selector: provider 기본값 옵션은 확인 없이 override를 해제(sentinel)한다", async () => {
+    const onApprovalPolicyChange = vi.fn();
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: approvalProps({ selectedApprovalPolicy: "never", approvalHighRisk: true, onApprovalPolicyChange }),
+    });
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), {
+      target: { value: "__provider_default__" },
+    });
+    // 기본값 복귀는 위험 감소이므로 확인 게이트 없이 즉시 sentinel을 콜백한다.
+    expect(onApprovalPolicyChange).toHaveBeenCalledWith("__provider_default__");
+    expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
   });
 
   it("options popover: 토글로 열고 Escape로 닫는다", async () => {

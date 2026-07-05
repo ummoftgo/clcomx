@@ -477,6 +477,7 @@ const ko = {
       approvalLabel: "승인 정책",
       approvalSelect: "승인 정책 변경",
       approvalPlaceholder: "승인 정책…",
+      approvalDefault: "provider 기본값",
       highRiskApprovalTitle: "고위험 승인 정책 확인",
       highRiskApprovalConfirm:
         "승인 정책 'never'는 이 세션의 이후 turn에서 모든 승인 요청을 끕니다. 계속할까요?",

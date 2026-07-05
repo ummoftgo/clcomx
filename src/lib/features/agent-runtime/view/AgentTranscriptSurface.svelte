@@ -23,7 +23,11 @@
     AgentSessionStatus,
     FileLocation,
   } from "../contracts/normalized";
-  import { CODEX_APPROVAL_POLICIES, isHighRiskApprovalPolicy } from "../contracts/normalized";
+  import {
+    CODEX_APPROVAL_POLICIES,
+    APPROVAL_DEFAULT_SELECTION,
+    isHighRiskApprovalPolicy,
+  } from "../contracts/normalized";
   import { createAgentRuntimeStore, type AgentRuntimeStore } from "../state/agent-runtime-store.svelte";
   import {
     createAgentRuntimeController,
@@ -448,27 +452,48 @@
   const availableApprovalPolicies = $derived<readonly string[]>(
     provider === "codex" ? CODEX_APPROVAL_POLICIES : [],
   );
-  // 사용자가 명시적으로 건 override(3-state: undefined=미설정→base badge 사용, string=override 값).
-  // base(세션 시작 권위값)와 다르면 "다음 turn에 적용될 실제 정책"이 base badge와 어긋나므로 override chip으로
-  // 노출한다 — 위험을 숨기지 않는다(Codex ②-C 핵심 지적). model/effort와 달리 approval은 보안 정책이라 별도 추적.
-  let approvalOverride = $state<string | undefined>(undefined);
-  // 셀렉터 표시값: override가 있으면 그것, 없으면 세션 시작 권위값(known일 때만; 미상이면 placeholder).
-  const selectedApprovalPolicy = $derived<string | undefined>(
-    approvalOverride ?? runtimeMetadata?.approvalPolicy,
+  // base(세션 시작 권위값)가 scalar 후보인지 — granular/미상이면 셀렉터 표시값을 base로 잡지 않고 placeholder.
+  const approvalBaseIsScalar = $derived<boolean>(
+    provider === "codex" &&
+      !!runtimeMetadata?.approvalPolicy &&
+      CODEX_APPROVAL_POLICIES.includes(runtimeMetadata.approvalPolicy as (typeof CODEX_APPROVAL_POLICIES)[number]),
   );
-  // override가 base와 실제로 달라 "다음 turn 정책"이 badge와 어긋나는 경우에만 chip을 세운다.
+  // 사용자의 명시적 선택(3-state): undefined=미설정→base 사용, APPROVAL_DEFAULT_SELECTION=provider 기본값(null),
+  // scalar=override 값. base가 granular/미상이어도 default sentinel로 항상 provider default로 되돌릴 수 있다(Codex 리뷰).
+  let approvalSelection = $state<string | undefined>(undefined);
+  // 셀렉터 표시값: 사용자가 고른 값(sentinel 포함) 우선, 없으면 base가 scalar일 때만 그 값(아니면 placeholder).
+  const selectedApprovalPolicy = $derived<string | undefined>(
+    approvalSelection ?? (approvalBaseIsScalar ? runtimeMetadata?.approvalPolicy : undefined),
+  );
+  // 다음 turn에 적용될 실효 정책(위험 판정 권위): scalar override면 그 값, 미설정/기본복귀면 base(thread 정책).
+  // base가 이미 `never`여도 실효 위험을 표시하도록 base를 포함한다 — 위험 은닉 방지(Codex high 지적).
+  const effectiveApprovalPolicy = $derived<string | undefined>(
+    approvalSelection !== undefined && approvalSelection !== APPROVAL_DEFAULT_SELECTION
+      ? approvalSelection
+      : runtimeMetadata?.approvalPolicy,
+  );
+  const approvalHighRisk = $derived<boolean>(isHighRiskApprovalPolicy(effectiveApprovalPolicy));
+  // override chip: 사용자가 base와 실제로 다른 정책으로 바꿔 "다음 turn 정책"이 base badge와 어긋나는 경우에만.
   const approvalOverrideActive = $derived<string | undefined>(
-    approvalOverride !== undefined && approvalOverride !== runtimeMetadata?.approvalPolicy
-      ? approvalOverride
+    approvalSelection !== undefined &&
+      approvalSelection !== APPROVAL_DEFAULT_SELECTION &&
+      approvalSelection !== runtimeMetadata?.approvalPolicy
+      ? approvalSelection
       : undefined,
   );
 
   function onApprovalPolicyChange(policyId: string): void {
-    // granular/미지원 값은 무시(정적 후보 밖). base와 같으면 override 해제(null)로 provider default 복귀.
+    if (policyId === APPROVAL_DEFAULT_SELECTION) {
+      // provider 기본값으로 override 해제 — base가 granular/미상이어도 항상 도달 가능한 revert 경로.
+      approvalSelection = APPROVAL_DEFAULT_SELECTION;
+      controller?.setTurnOptions({ approvalPolicy: null });
+      return;
+    }
+    // granular/미지원 값은 무시(정적 scalar 후보 밖).
     if (!availableApprovalPolicies.includes(policyId)) return;
-    approvalOverride = policyId;
+    approvalSelection = policyId;
     const base = runtimeMetadata?.approvalPolicy;
-    // base가 알려져 있고 그 값으로 되돌리면 명시적 해제(null)로 wire override를 revert, 아니면 값 전송.
+    // base(scalar)와 같은 값이면 명시적 해제(null)로 wire override를 revert, 아니면 값 전송.
     controller?.setTurnOptions({ approvalPolicy: base !== undefined && policyId === base ? null : policyId });
   }
 
@@ -976,8 +1001,8 @@
         {#if runtimeMetadata.approvalPolicy || approvalOverrideActive}
           <div
             class="metadata-item"
-            class:metadata-item--warning={isHighRiskApprovalPolicy(approvalOverrideActive)}
-            data-risk={isHighRiskApprovalPolicy(approvalOverrideActive) ? "high" : undefined}
+            class:metadata-item--warning={approvalHighRisk}
+            data-risk={approvalHighRisk ? "high" : undefined}
           >
             <dt>{$t("agentRuntime.metadata.approval")}</dt>
             <dd>
@@ -991,9 +1016,10 @@
                 >
                   {$t("agentRuntime.metadata.overrideChip", { values: { value: approvalOverrideActive } })}
                 </span>
-                {#if isHighRiskApprovalPolicy(approvalOverrideActive)}
-                  <span class="metadata-risk-label">{$t("agentRuntime.metadata.highRisk")}</span>
-                {/if}
+              {/if}
+              {#if approvalHighRisk}
+                <!-- 실효 정책(override ?? base)이 never면 base가 이미 never인 경우에도 고위험 표시한다(은닉 방지). -->
+                <span class="metadata-risk-label">{$t("agentRuntime.metadata.highRisk")}</span>
               {/if}
             </dd>
           </div>
@@ -1087,7 +1113,7 @@
     {onStop}
     {availableApprovalPolicies}
     {selectedApprovalPolicy}
-    approvalOverrideActive={approvalOverrideActive}
+    approvalHighRisk={approvalHighRisk}
     currentSandbox={runtimeMetadata?.sandbox}
     {onModeChange}
     {onModelChange}
