@@ -63,6 +63,12 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
    * 건드리지 않으므로 미확정 고위험 전환을 하위 요청이 덮어 승인이 normal로 새는 것을 막는다(fail-safe).
    */
   pendingHighRiskModeCount: number;
+  /**
+   * 마지막으로 관측한 권위 mode echo 값(current_mode_update / config_option_update 공통).
+   * 같은 transition이 두 variant로 중복 도착할 때(값이 직전과 동일) 고위험 카운터를 이중 차감하지
+   * 않도록 dedup 기준으로 쓴다 — transition 경계는 "값 변화"로 본다(Codex 10차).
+   */
+  lastEchoedModeId?: string;
   /** turnId 합성 카운터(04 §turn id 합성). */
   turnSeq: number;
   activeTurnId?: string;
@@ -307,6 +313,9 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
    * 카운터를 건드리지 않는다(stale 저위험 echo가 fail-safe를 조기에 풀지 못하게, Codex 6차).
    */
   function resetPendingHighRiskOnEcho(rt: ClaudeAcpSessionRuntime, echoMode: string): void {
+    // 같은 transition의 중복 variant echo(값 동일)는 이중 차감하지 않는다.
+    if (echoMode === rt.lastEchoedModeId) return;
+    rt.lastEchoedModeId = echoMode;
     if (isHighRiskMode(echoMode) && rt.pendingHighRiskModeCount > 0) {
       rt.pendingHighRiskModeCount -= 1;
     }

@@ -472,6 +472,60 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(approvalEvent?.request.severity).toBe("escalation");
   });
 
+  it("setSessionMode: 같은 bypass transition이 두 variant(current/config)로 와도 한 번만 차감한다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: {
+        currentModeId: "default",
+        availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass" }],
+      },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    // bypass → bypass (두 요청 성공, echo 아직). count=2.
+    const b1 = adapter.setSessionMode!("A", "bypassPermissions");
+    await h.respondToLast("session/set_mode", {});
+    await b1;
+    const b2 = adapter.setSessionMode!("A", "bypassPermissions");
+    await h.respondToLast("session/set_mode", {});
+    await b2;
+
+    // 첫 bypass transition이 current_mode_update + config_option_update 두 variant로 도착.
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } } });
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "sess-1",
+        update: {
+          sessionUpdate: "config_option_update",
+          configOptions: [{ id: "mode", name: "Mode", type: "select", currentValue: "bypassPermissions", options: [{ id: "bypassPermissions", name: "Bypass" }] }],
+        },
+      },
+    });
+
+    // 두 variant는 같은 transition이므로 count는 2→1(한 번만 차감). 이후 plan echo로 currentModeId 저위험 전환.
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } } });
+
+    // 미확정 bypass 1건이 남아 approval은 escalation이어야 한다.
+    h.inject({
+      jsonrpc: "2.0",
+      id: 1001,
+      method: "session/request_permission",
+      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-7", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
+    });
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
+      | { request: { severity: string } }
+      | undefined;
+    expect(approvalEvent?.request.severity).toBe("escalation");
+  });
+
   it("setSessionMode: 비매칭 stale echo는 고위험 pending fail-safe를 풀지 않는다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
