@@ -110,6 +110,9 @@ interface ThreadResponse {
   approvalPolicy?: unknown;
   approvalsReviewer?: unknown;
   sandbox?: unknown;
+  /** thread/start·thread/resume 응답의 실제 current model/effort(②-B 초기 선택 권위). */
+  model?: unknown;
+  reasoningEffort?: unknown;
 }
 
 /** Codex AskForApproval을 session badge용 짧은 문자열로 축약한다. */
@@ -133,13 +136,20 @@ function formatSandbox(value: unknown): string | undefined {
 }
 
 /** Codex thread start/resume response에서 UI 표시용 policy metadata를 추출한다. */
-function buildCodexPolicyMetadata(resp: ThreadResponse): Pick<SessionStartResult, "sandbox" | "approvalPolicy" | "approvalsReviewer"> {
+function buildCodexPolicyMetadata(
+  resp: ThreadResponse,
+): Pick<SessionStartResult, "sandbox" | "approvalPolicy" | "approvalsReviewer" | "model" | "effort"> {
   const sandbox = formatSandbox(resp.sandbox);
   const approvalPolicy = formatApprovalPolicy(resp.approvalPolicy);
   return {
     ...(sandbox ? { sandbox } : {}),
     ...(approvalPolicy ? { approvalPolicy } : {}),
     ...(typeof resp.approvalsReviewer === "string" ? { approvalsReviewer: resp.approvalsReviewer } : {}),
+    // thread의 실제 current model/effort — 셀렉터 초기값을 catalog default가 아닌 이 권위 값에 맞춘다.
+    ...(typeof resp.model === "string" && resp.model ? { model: resp.model } : {}),
+    ...(typeof resp.reasoningEffort === "string" && resp.reasoningEffort
+      ? { effort: resp.reasoningEffort }
+      : {}),
   };
 }
 

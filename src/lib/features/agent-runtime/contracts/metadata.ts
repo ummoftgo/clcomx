@@ -48,6 +48,10 @@ export interface AgentRuntimeMetadata {
   /** 세션 모드 전환 후보 목록(셀렉터 노출용, 비밀 아님). 세션 시작 시 provider가 다시 알리므로
    *  영속화돼도 무해하지만 복원의 권위 소스는 아니다(재시작 시 갱신). */
   availableModes?: AgentSessionModeOption[];
+  /** 세션의 실제 current model id(Codex, ②-B 셀렉터 초기값 권위). */
+  model?: string;
+  /** 세션의 실제 current reasoning effort id(Codex, ②-B). */
+  effort?: string;
   /** replay 없는 재개 가능 여부(ACP resume / Codex thread/resume). */
   canResume?: boolean;
   /** replay 가능 여부(ACP loadSession / Codex thread/read). */

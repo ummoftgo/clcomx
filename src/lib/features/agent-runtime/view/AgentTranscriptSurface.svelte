@@ -161,6 +161,8 @@
     if (result.permissionMode !== undefined) metadata.permissionMode = result.permissionMode;
     if (result.sessionMode !== undefined) metadata.sessionMode = result.sessionMode;
     if (result.availableModes !== undefined) metadata.availableModes = result.availableModes;
+    if (result.model !== undefined) metadata.model = result.model;
+    if (result.effort !== undefined) metadata.effort = result.effort;
     return metadata;
   }
 
@@ -388,17 +390,39 @@
 
   /** 세션 시작 후 사용 가능한 모델 목록을 조회해 셀렉터를 채운다(Codex만; 미지원이면 빈 배열). */
   async function refreshAvailableModels(): Promise<void> {
-    const models = (await controller?.listModels()) ?? [];
+    let models = (await controller?.listModels()) ?? [];
+    // 세션의 실제 current model이 catalog에 없으면(예: hidden/구버전 모델로 resume) 표시가 어긋나지
+    // 않도록 합성 옵션을 추가한다 — 화면이 항상 실제 실행 모델을 보여주게 한다(Codex 리뷰).
+    const authoritativeModelId = runtimeMetadata?.model;
+    if (authoritativeModelId && !models.some((m) => m.id === authoritativeModelId)) {
+      const effortId = runtimeMetadata?.effort;
+      models = [
+        {
+          id: authoritativeModelId,
+          label: authoritativeModelId,
+          efforts: effortId ? [{ id: effortId }] : [],
+          ...(effortId ? { defaultEffort: effortId } : {}),
+        },
+        ...models,
+      ];
+    }
     availableModels = models;
     if (models.length === 0) return;
-    // 초기 선택은 provider 카탈로그 기본 모델(isDefault, 없으면 첫 모델)로 맞춘다. 이때 setTurnOptions는
-    // 호출하지 않는다 — override 없이 provider default로 실행되며 그 값이 곧 표시된 기본 모델이므로
-    // 화면과 wire가 일치한다(불일치 방지, Codex 리뷰). 사용자가 명시적으로 바꿀 때만 override를 건다.
-    if (selectedModel === undefined) {
-      const initial = models.find((m) => m.isDefault) ?? models[0];
-      selectedModel = initial.id;
-      selectedEffort = initial.defaultEffort ?? initial.efforts[0]?.id;
-    }
+    if (selectedModel !== undefined) return;
+    // 초기 선택 권위 우선순위: (1) 세션의 실제 current model/effort(thread 응답, resume 시 non-default
+    // 모델도 정확), (2) catalog 기본 모델(isDefault), (3) 첫 모델. (1)/(2)는 override 없이도 wire와
+    // 일치하므로 setTurnOptions를 호출하지 않는다 — 사용자가 명시적으로 바꿀 때만 override를 건다.
+    const authoritative = authoritativeModelId
+      ? models.find((m) => m.id === authoritativeModelId)
+      : undefined;
+    const initial = authoritative ?? models.find((m) => m.isDefault) ?? models[0];
+    selectedModel = initial.id;
+    // 실제 current effort가 이 모델의 후보에 있으면 그 값, 없으면 모델 기본값.
+    const authoritativeEffort = authoritative ? runtimeMetadata?.effort : undefined;
+    selectedEffort =
+      authoritativeEffort && initial.efforts.some((e) => e.id === authoritativeEffort)
+        ? authoritativeEffort
+        : (initial.defaultEffort ?? initial.efforts[0]?.id);
   }
 
   function onModelChange(modelId: string): void {

@@ -62,7 +62,13 @@ vi.mock("../service/transcript-cache", () => ({
 }));
 
 function makeFakePort(
-  options: { canResume?: boolean; canLoad?: boolean; models?: unknown[] } = {},
+  options: {
+    canResume?: boolean;
+    canLoad?: boolean;
+    models?: unknown[];
+    startModel?: string;
+    startEffort?: string;
+  } = {},
 ) {
   let listener: ((e: AgentEvent) => void) | null = null;
   // 실제 adapter 계약을 모사: 구독 전 emit된 event를 버퍼링했다가 구독 시 flush한다.
@@ -77,6 +83,8 @@ function makeFakePort(
       ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
       canResume,
       canLoad,
+      ...(options.startModel ? { model: options.startModel } : {}),
+      ...(options.startEffort ? { effort: options.startEffort } : {}),
     }),
     resumeSession: vi.fn().mockResolvedValue({
       ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
@@ -715,6 +723,39 @@ describe("AgentTranscriptSurface", () => {
     expect(port.setTurnOptions).toHaveBeenCalledWith("S1", { model: "gpt-a", effort: "low" });
     // gpt-a는 effort 지원 → effort 셀렉터 노출.
     expect(getByTestId(TEST_IDS.agentComposerEffortSelect)).toBeTruthy();
+  });
+
+  it("②-B: 세션의 실제 current model(비 default)을 초기 선택으로 우선한다", async () => {
+    const { port } = makeFakePort({
+      startModel: "gpt-a",
+      startEffort: "high",
+      models: [
+        { id: "gpt-a", label: "GPT A", efforts: [{ id: "low" }, { id: "high" }], defaultEffort: "low" },
+        { id: "gpt-default", label: "GPT Default", efforts: [{ id: "medium" }], defaultEffort: "medium", isDefault: true },
+      ],
+    });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
+    // isDefault는 gpt-default지만 세션 실제 모델(gpt-a)이 초기 선택된다.
+    await waitFor(() => expect(modelSelect.value).toBe("gpt-a"));
+    const effortSelect = (await findByTestId(TEST_IDS.agentComposerEffortSelect)) as HTMLSelectElement;
+    expect(effortSelect.value).toBe("high"); // 실제 current effort.
+    // 권위 값과 일치하므로 override는 안 건다.
+    expect(port.setTurnOptions).not.toHaveBeenCalled();
+  });
+
+  it("②-B: 실제 current model이 catalog에 없으면 합성 옵션으로 표시가 어긋나지 않게 한다", async () => {
+    const { port } = makeFakePort({
+      startModel: "gpt-legacy",
+      startEffort: "high",
+      models: [
+        { id: "gpt-default", label: "GPT Default", efforts: [{ id: "medium" }], defaultEffort: "medium", isDefault: true },
+      ],
+    });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(modelSelect.value).toBe("gpt-legacy"));
+    expect(port.setTurnOptions).not.toHaveBeenCalled();
   });
 
   it("②-B: effort 미지원 모델로 바꾸면 effort override를 null로 해제한다", async () => {

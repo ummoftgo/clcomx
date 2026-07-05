@@ -89,6 +89,10 @@ export interface SessionStartResult {
   sessionMode?: string;
   /** 세션 모드 전환 후보 목록(셀렉터 노출용). provider가 알린 availableModes. */
   availableModes?: AgentSessionModeOption[];
+  /** 세션의 실제 current model id(Codex thread 응답). 셀렉터 초기값 권위. */
+  model?: string;
+  /** 세션의 실제 current reasoning effort id(Codex thread 응답). */
+  effort?: string;
 }
 
 /**

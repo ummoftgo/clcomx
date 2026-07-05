@@ -332,6 +332,24 @@ describe("sendPrompt (turn/start outbound)", () => {
     ]);
   });
 
+  it("②-B: thread/start 응답의 실제 model/effort를 SessionStartResult로 전달한다", async () => {
+    const h = makeHarness({
+      autoRespond: (m) => {
+        if ("method" in m && m.method === "thread/start") {
+          return {
+            thread: { id: "th_1", sessionId: "s1", cwd: "/work", turns: [] },
+            model: "gpt-actual",
+            reasoningEffort: "high",
+          };
+        }
+        return autoResponder(m);
+      },
+    });
+    const adapter = createCodexAppServerAdapter(h.deps);
+    const result = await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "Ubuntu", workDir: "/work" });
+    expect(result).toMatchObject({ model: "gpt-actual", effort: "high" });
+  });
+
   it("②-B: listModels가 nextCursor를 따라 모든 페이지를 수집해 뒤 페이지 isDefault도 본다", async () => {
     const page1 = {
       data: [{ id: "gpt-a", model: "gpt-a", displayName: "GPT A", hidden: false, supportedReasoningEfforts: [], defaultReasoningEffort: "low" }],
