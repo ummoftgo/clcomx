@@ -165,7 +165,7 @@ cold restore에서 재개 키가 없거나(암호화 저장소에도 없음/복�
 
 **탭 삭제 GC**: 사용자가 direct 세션을 **명시적으로 버릴 때만** 암호화 재개 id(`clearResumeKeys`)와 transcript 캐시(`clearTranscriptCache`)를 정리한다. 해당 경로는 두 곳이다 — (1) 탭 닫기(`App.svelte::handleCloseTab` → `session-lifecycle-controller.ts::handleCloseTab`), (2) direct→PTY 폴백 선택(`App.svelte::handleFallbackToPty` → `handleFallbackToPtyClose`; §4.6의 "터미널로 열기"는 실패한 direct 세션을 닫고 **새 id**의 PTY 세션으로 대체하므로, 남겨두면 이전 실행이 저장한 파일이 영구 고아가 된다). 반대로 **앱 종료 경로**(`window-close-orchestration-controller.ts`)는 `captureResumeIdsBeforeAppClose`로 재개 id를 **보존**해 다음 cold restore에 대비한다 — teardown(webview reload/컴포넌트 destroy 등)에서는 GC를 하지 않는다. "세션을 버린다"와 "앱을 끈다"를 GC 관점에서 반대로 처리하는 것이 의도된 동작이다.
 
-**E2E**: `e2e/agent-runtime/agent-runtime.test.ts`에 E2E-13a(캐시 즉시 렌더 + resume 성공 시 이어가기)와 E2E-13b(resume 미지원 시 read-only 히스토리 + composer는 fresh 세션 시작 후 사용 가능)를 추가했다. 두 테스트는 **작성·통과 확인은 로컬에서 했으나 Windows E2E 러너에서는 아직 실행하지 않았다**(이 개발 환경 제약) — 실제 Windows app-boundary 회귀 확인은 남은 작업이다.
+**E2E**: `e2e/agent-runtime/agent-runtime.test.ts`에 E2E-13a(캐시 즉시 렌더 + resume 성공 시 이어가기)와 E2E-13b(resume 미지원 시 read-only 히스토리 + composer는 fresh 세션 시작 후 사용 가능)를 추가했고, **2026-07-05 Windows E2E 러너에서 agent-runtime pack 20/20으로 통과했다**. E2E-13a의 재개 id는 workspace.json 폴백이 아니라(§3.2/§6의 읽기 경로 방어 scrub 때문에 성립 불가) **test-mode 고정 앱 키(debug 빌드 한정 `#[cfg(debug_assertions)]`)로 암호화한 실제 저장소 파일 시드**로 검증한다 — 즉 TB-5 복호화 → `thread/resume`(replay 없는 재개, 캐시 유지) 경로가 app-boundary에서 그대로 돈다.
 
 ### 4.5 scrub와 cold restore의 상호작용 (중요한 함의)
 
