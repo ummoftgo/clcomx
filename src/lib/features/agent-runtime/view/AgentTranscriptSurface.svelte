@@ -515,6 +515,16 @@
       : undefined,
   );
 
+  // sentinel 활성 중 turn이 실제로 시작(running)되면 null override가 turn/start로 성공 적용된 것이다 — 이후
+  // 도착한 settings echo가 revert 결과를 확정할 수 있게 커밋으로 표시한다. turn/start 실패(H3)는 running으로
+  // 전이하지 않으므로 실패를 커밋으로 오인하지 않는다(Codex high 13차, 낙관적 onSend 커밋 대체). 셀렉터는
+  // ready/idle에서만 열려 sentinel 선택 시 active turn이 없으므로, 이후 running은 sentinel prompt의 turn이다.
+  $effect(() => {
+    if (store.status === "running" && approvalSelection === APPROVAL_DEFAULT_SELECTION) {
+      approvalSentinelCommitted = true;
+    }
+  });
+
   function onApprovalPolicyChange(policyId: string): void {
     if (policyId === APPROVAL_DEFAULT_SELECTION) {
       // provider 기본값으로 override 해제 — base가 granular/미상이어도 항상 도달 가능한 revert 경로.
@@ -841,9 +851,6 @@
 
   /** composer 전송 → controller.submit. */
   function onSend(content: import("../contracts/normalized").AgentContent[]): void {
-    // sentinel 활성 중 prompt를 보내면 null override가 이 turn/start로 wire에 도달한다 — 이후 도착하는
-    // settings echo가 revert 결과를 권위로 확정할 수 있게 커밋으로 표시한다(Codex medium 12차).
-    if (approvalSelection === APPROVAL_DEFAULT_SELECTION) approvalSentinelCommitted = true;
     void controller?.submit(content);
   }
 

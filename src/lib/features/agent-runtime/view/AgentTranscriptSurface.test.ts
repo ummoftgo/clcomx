@@ -980,17 +980,35 @@ describe("AgentTranscriptSurface", () => {
     const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
     await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
 
-    // (1) prompt 전송 전 도착한 echo는 revert 이전 정책 → sentinel 해소하지 않는다(계속 고위험).
+    // (1) turn 시작(running) 전 도착한 echo는 revert 이전 정책 → sentinel 해소하지 않는다(계속 고위험).
     emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
     await tick();
     expect(toggle.textContent).toContain("High Risk");
 
-    // (2) prompt 전송(null 커밋) 후 도착한 echo만 revert 결과를 확정 → sentinel 해소, 고위험 해제.
-    const input = (await findByTestId(TEST_IDS.agentComposerInput)) as HTMLTextAreaElement;
-    await fireEvent.input(input, { target: { value: "go" } });
-    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerSend));
+    // (2) turn/start 성공(running)으로 null override가 적용 커밋됨 → 이후 도착한 echo만 revert 결과를 확정.
+    emit({ type: "session_status_changed", ref: readyRef, status: "running" });
+    await tick();
     emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
     await waitFor(() => expect(toggle.textContent).not.toContain("High Risk"));
+  });
+
+  it("②-C: turn/start 실패(running 미전이)면 이후 echo가 와도 sentinel을 해소하지 않는다(fail-closed 유지)", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    const readyRef = { provider: "codex" as const, threadId: "thread-1", sessionId: "session-tree-1" };
+    emit({ type: "session_status_changed", ref: readyRef, status: "ready" });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
+    await fireEvent.change(approvalSelect, { target: { value: "__provider_default__" } });
+    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
+    // turn/start 실패는 running으로 전이하지 않는다(H3: error + ready). 커밋 안 됨 → echo가 와도 고위험 유지.
+    emit({ type: "runtime_metadata_changed", ref: readyRef, metadata: { approvalPolicy: "on-request" } });
+    await tick();
+    expect(toggle.textContent).toContain("High Risk");
   });
 
   it("②-C: base가 granular/미상이어도 provider 기본값 옵션으로 override를 null 해제할 수 있다", async () => {
