@@ -872,8 +872,24 @@ describe("AgentTranscriptSurface", () => {
     expect(toggle.textContent).toContain("High Risk");
   });
 
+  it("②-C: approvalPolicy 미상(replay resume)이면 fail-closed로 고위험 표시한다", async () => {
+    // startApprovalPolicy 미지정 → SessionStartResult에 approvalPolicy 없음(thread/read replay 경로 모사).
+    const { port } = makeFakePort();
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    // 실제 정책을 확인할 수 없으므로 안전한 상태로 보이지 않게 approval 항목이 data-risk=high로 남는다.
+    const metadata = await findByTestId(TEST_IDS.agentRuntimeMetadata);
+    await waitFor(() => {
+      const approval = [...metadata.querySelectorAll(".metadata-item[data-risk='high']")].find((el) =>
+        el.textContent?.includes("Approval"),
+      );
+      expect(approval).toBeTruthy();
+    });
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    expect(toggle.textContent).toContain("High Risk");
+  });
+
   it("②-C: base가 granular/미상이어도 provider 기본값 옵션으로 override를 null 해제할 수 있다", async () => {
-    // granular base — scalar 후보에 없어 placeholder로 시작한다.
+    // granular base — scalar 후보에 없어 placeholder로 시작하고 fail-closed 고위험이다.
     const { port } = makeFakePort({ startApprovalPolicy: "granular" });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
     await openSurfaceOptions(findByTestId);
@@ -1075,6 +1091,8 @@ describe("AgentTranscriptSurface", () => {
       ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
       sandbox: "danger-full-access",
       permissionMode: "bypassPermissions",
+      // approval은 known scalar를 줘 이 테스트를 sandbox/mode 배지에 집중시킨다(approval unknown fail-closed는 별도).
+      approvalPolicy: "on-request",
     });
     const { findByTestId } = render(AgentTranscriptSurface, {
       props: baseProps(port),

@@ -472,7 +472,21 @@
       ? approvalSelection
       : runtimeMetadata?.approvalPolicy,
   );
-  const approvalHighRisk = $derived<boolean>(isHighRiskApprovalPolicy(effectiveApprovalPolicy));
+  // 실효 정책이 우리가 판정 가능한 scalar 후보인지(never 포함). granular(experimental) 객체나 replay로
+  // 미상(undefined)이면 안전 여부를 확인할 수 없다.
+  const approvalEffectiveIsKnownScalar = $derived<boolean>(
+    effectiveApprovalPolicy !== undefined &&
+      CODEX_APPROVAL_POLICIES.includes(effectiveApprovalPolicy as (typeof CODEX_APPROVAL_POLICIES)[number]),
+  );
+  // replay resume(thread/read)는 approvalPolicy를 주지 않고, granular는 우리가 파싱하지 않는다 — 실제 정책이
+  // never여도 알 수 없다. 세션이 성립했는데(codex) 실효 정책을 known scalar로 확인하지 못하면 안전한 상태로
+  // 보이지 않게 fail-closed로 고위험 취급한다(Codex high 재지적). 사용자가 명시 scalar를 고르면 미상이 해소된다.
+  const approvalPolicyUnknown = $derived<boolean>(
+    provider === "codex" && !!runtimeMetadata && !approvalEffectiveIsKnownScalar,
+  );
+  const approvalHighRisk = $derived<boolean>(
+    isHighRiskApprovalPolicy(effectiveApprovalPolicy) || approvalPolicyUnknown,
+  );
   // override chip: 사용자가 base와 실제로 다른 정책으로 바꿔 "다음 turn 정책"이 base badge와 어긋나는 경우에만.
   const approvalOverrideActive = $derived<string | undefined>(
     approvalSelection !== undefined &&
@@ -998,7 +1012,7 @@
             </dd>
           </div>
         {/if}
-        {#if runtimeMetadata.approvalPolicy || approvalOverrideActive}
+        {#if runtimeMetadata.approvalPolicy || approvalOverrideActive || approvalPolicyUnknown}
           <div
             class="metadata-item"
             class:metadata-item--warning={approvalHighRisk}
