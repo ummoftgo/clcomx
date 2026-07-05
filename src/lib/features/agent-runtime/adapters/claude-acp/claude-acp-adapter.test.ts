@@ -325,6 +325,52 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(approvalEvent?.request.severity).toBe("escalation");
   });
 
+  it("setSessionMode: 비매칭 stale echo는 고위험 pending fail-safe를 풀지 않는다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }] },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    // bypass 전환 성공 → pendingRequestedMode=bypassPermissions.
+    const setPromise = adapter.setSessionMode!("A", "bypassPermissions");
+    await h.respondToLast("session/set_mode", {});
+    await setPromise;
+
+    // 실제 bypass echo 전에 저위험 stale echo(default)가 먼저 도착한다.
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "default" } },
+    });
+
+    // 그 뒤 승인 요청 도착 — currentModeId는 default(저위험)지만 고위험 pending이 유지돼 escalation이어야 한다.
+    h.inject({
+      jsonrpc: "2.0",
+      id: 601,
+      method: "session/request_permission",
+      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-2", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
+    });
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
+      | { request: { severity: string } }
+      | undefined;
+    expect(approvalEvent?.request.severity).toBe("escalation");
+
+    // 실제 bypass echo가 오면 pending이 해제된다(이후 승인은 currentModeId 기준).
+    h.inject({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } },
+    });
+    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "bypassPermissions" });
+  });
+
   it("setSessionMode: availableModes에 없는 모드는 wire 전송 없이 거부한다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);

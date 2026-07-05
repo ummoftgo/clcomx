@@ -293,14 +293,32 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     }
   }
 
+  /** severity 보수 판정에 쓰는 고위험 모드 판정(classifySeverity와 동일 기준). */
+  function isHighRiskMode(mode: string | undefined): boolean {
+    return mode === "bypassPermissions";
+  }
+
+  /**
+   * provider 권위 echo 도착 시 pendingRequestedMode(echo 전 승인 보수 판정용)를 해제할지 결정한다.
+   * echo가 요청 모드와 일치하면 확정됐으므로 해제한다. 비매칭 echo(이전/stale echo)는:
+   * - 고위험(bypassPermissions) pending은 **유지**한다 — 요청한 고위험 모드의 실제 echo가 오기 전
+   *   저위험 stale echo가 fail-safe를 조기에 풀어 승인이 normal로 새는 것을 막는다(Codex 6차).
+   * - 저위험 pending은 해제해도 severity에 영향이 없으므로 해제한다.
+   */
+  function clearPendingModeOnEcho(rt: ClaudeAcpSessionRuntime, echoMode: string): void {
+    if (rt.pendingRequestedMode === undefined) return;
+    if (rt.pendingRequestedMode === echoMode || !isHighRiskMode(rt.pendingRequestedMode)) {
+      rt.pendingRequestedMode = undefined;
+    }
+  }
+
   /** ACP session/update에서 metadata로 노출할 mode patch를 추출한다. */
   function modeMetadataFromUpdate(
     rt: ClaudeAcpSessionRuntime,
     update: { sessionUpdate?: string; currentModeId?: unknown; configOptions?: unknown[] },
   ): AgentRuntimeMetadataUpdate | undefined {
     if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
-      // 권위 echo 도착 — currentModeId가 진실이 되었으므로 pending 보수 판정을 해제한다.
-      rt.pendingRequestedMode = undefined;
+      clearPendingModeOnEcho(rt, update.currentModeId);
       rt.currentModeId = update.currentModeId;
       if (rt.modes) rt.modes = { ...rt.modes, currentModeId: update.currentModeId };
       return { sessionMode: update.currentModeId, permissionMode: update.currentModeId };
@@ -308,7 +326,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (update.sessionUpdate === "config_option_update") {
       const mode = extractModeConfigValue(update.configOptions);
       if (mode) {
-        rt.pendingRequestedMode = undefined;
+        clearPendingModeOnEcho(rt, mode);
         rt.currentModeId = mode;
         if (rt.modes) rt.modes = { ...rt.modes, currentModeId: mode };
         return { sessionMode: mode, permissionMode: mode };
