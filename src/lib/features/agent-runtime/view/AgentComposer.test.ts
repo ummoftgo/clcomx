@@ -8,6 +8,11 @@ import { initializeI18n } from "../../../i18n";
 import { TEST_IDS } from "../../../testids";
 import AgentComposer from "./AgentComposer.svelte";
 
+/** ②-C: mode/model/effort/approval 셀렉터는 turn 옵션 popover 뒤로 통합됐다. 셀렉터 접근 전 popover를 연다. */
+async function openOptions(getByTestId: (id: string) => HTMLElement): Promise<void> {
+  await fireEvent.click(getByTestId(TEST_IDS.agentComposerOptionsToggle));
+}
+
 function imageTransfer(file: File): DataTransfer {
   return {
     files: [file],
@@ -137,6 +142,7 @@ describe("AgentComposer", () => {
       },
     });
 
+    await openOptions(getByTestId);
     const select = getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement;
     expect(select.value).toBe("default");
     await fireEvent.change(select, { target: { value: "plan" } });
@@ -160,6 +166,7 @@ describe("AgentComposer", () => {
       },
     });
 
+    await openOptions(getByTestId);
     const select = getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement;
     await fireEvent.change(select, { target: { value: "plan" } });
     expect(onModeChange).toHaveBeenCalledWith("plan");
@@ -182,6 +189,7 @@ describe("AgentComposer", () => {
         onModeChange: vi.fn().mockResolvedValue(undefined),
       },
     });
+    await openOptions(getByTestId);
     const select = getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement;
     expect(select.value).toBe("default");
 
@@ -190,7 +198,7 @@ describe("AgentComposer", () => {
     expect(select.value).toBe("plan");
   });
 
-  it("mode selector: 비-idle/ready 상태에서는 비활성이다", () => {
+  it("mode selector: 비-idle/ready 상태에서는 비활성이다", async () => {
     const { getByTestId } = render(AgentComposer, {
       props: {
         status: "requires_action",
@@ -205,10 +213,11 @@ describe("AgentComposer", () => {
         onModeChange: vi.fn(),
       },
     });
+    await openOptions(getByTestId);
     expect((getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement).disabled).toBe(true);
   });
 
-  it("mode selector: restoring 중에는 비활성이다", () => {
+  it("mode selector: restoring 중에는 비활성이다", async () => {
     const { getByTestId } = render(AgentComposer, {
       props: {
         status: "ready",
@@ -224,6 +233,7 @@ describe("AgentComposer", () => {
         onModeChange: vi.fn(),
       },
     });
+    await openOptions(getByTestId);
     expect((getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement).disabled).toBe(true);
   });
 
@@ -244,6 +254,7 @@ describe("AgentComposer", () => {
       },
     });
 
+    await openOptions(getByTestId);
     const select = getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement;
     await fireEvent.change(select, { target: { value: "bypassPermissions" } });
     // 즉시 요청하지 않고 확인 게이트를 띄운다.
@@ -273,6 +284,7 @@ describe("AgentComposer", () => {
       },
     });
 
+    await openOptions(getByTestId);
     await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), {
       target: { value: "bypassPermissions" },
     });
@@ -298,6 +310,7 @@ describe("AgentComposer", () => {
       },
     });
 
+    await openOptions(getByTestId);
     await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), {
       target: { value: "bypassPermissions" },
     });
@@ -336,6 +349,7 @@ describe("AgentComposer", () => {
         onModeChange,
       },
     });
+    await openOptions(getByTestId);
     await fireEvent.change(getByTestId(TEST_IDS.agentComposerModeSelect), {
       target: { value: "plan" },
     });
@@ -364,6 +378,7 @@ describe("AgentComposer", () => {
       },
     });
 
+    await openOptions(getByTestId);
     const modelSelect = getByTestId(TEST_IDS.agentComposerModelSelect) as HTMLSelectElement;
     expect(modelSelect.value).toBe("gpt-a");
     await fireEvent.change(modelSelect, { target: { value: "gpt-b" } });
@@ -390,7 +405,7 @@ describe("AgentComposer", () => {
     expect(queryByTestId(TEST_IDS.agentComposerEffortSelect)).toBeNull();
   });
 
-  it("model selector: 선택 모델이 effort를 지원하지 않으면 effort 셀렉터를 감춘다", () => {
+  it("model selector: 선택 모델이 effort를 지원하지 않으면 effort 셀렉터를 감춘다", async () => {
     const { queryByTestId, getByTestId } = render(AgentComposer, {
       props: {
         status: "ready",
@@ -404,6 +419,7 @@ describe("AgentComposer", () => {
         onEffortChange: vi.fn(),
       },
     });
+    await openOptions(getByTestId);
     expect(getByTestId(TEST_IDS.agentComposerModelSelect)).toBeTruthy();
     expect(queryByTestId(TEST_IDS.agentComposerEffortSelect)).toBeNull();
   });
@@ -420,6 +436,111 @@ describe("AgentComposer", () => {
       },
     });
     expect(queryByTestId(TEST_IDS.agentComposerModeSelect)).toBeNull();
+  });
+
+  // ─────────────────────── ②-C: approval override + turn 옵션 popover ───────────────────────
+  const APPROVAL_POLICIES = ["untrusted", "on-failure", "on-request", "never"] as const;
+
+  function approvalProps(overrides: Record<string, unknown> = {}) {
+    return {
+      status: "ready" as const,
+      providerLabel: "codex",
+      onSend: vi.fn(),
+      onStop: vi.fn(),
+      availableApprovalPolicies: APPROVAL_POLICIES,
+      selectedApprovalPolicy: "on-request",
+      onApprovalPolicyChange: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  it("approval selector: 저위험 정책은 확인 없이 바로 콜백한다", async () => {
+    const onApprovalPolicyChange = vi.fn();
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: approvalProps({ onApprovalPolicyChange }),
+    });
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), {
+      target: { value: "on-failure" },
+    });
+    expect(onApprovalPolicyChange).toHaveBeenCalledWith("on-failure");
+    expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
+  });
+
+  it("approval selector: never(고위험)는 확인 후에만 콜백하고 popover를 닫는다", async () => {
+    const onApprovalPolicyChange = vi.fn();
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: approvalProps({ onApprovalPolicyChange }),
+    });
+    await openOptions(getByTestId);
+    const select = getByTestId(TEST_IDS.agentComposerApprovalSelect) as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "never" } });
+    // 즉시 콜백하지 않고 확인 배너를 띄우며 popover를 닫는다(숨은 pending 방지).
+    expect(onApprovalPolicyChange).not.toHaveBeenCalled();
+    expect(getByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeTruthy();
+    expect(queryByTestId(TEST_IDS.agentComposerOptionsPopover)).toBeNull();
+
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
+    expect(onApprovalPolicyChange).toHaveBeenCalledWith("never");
+    expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
+  });
+
+  it("approval selector: never 확인을 취소하면 콜백하지 않는다", async () => {
+    const onApprovalPolicyChange = vi.fn();
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: approvalProps({ onApprovalPolicyChange }),
+    });
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), {
+      target: { value: "never" },
+    });
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerApprovalConfirmCancel));
+    expect(onApprovalPolicyChange).not.toHaveBeenCalled();
+    expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
+  });
+
+  it("approval selector: never 확인 대기 중 비-ready 상태가 되면 accept가 콜백하지 않는다", async () => {
+    const onApprovalPolicyChange = vi.fn();
+    const { getByTestId, queryByTestId, rerender } = render(AgentComposer, {
+      props: approvalProps({ onApprovalPolicyChange }),
+    });
+    await openOptions(getByTestId);
+    await fireEvent.change(getByTestId(TEST_IDS.agentComposerApprovalSelect), {
+      target: { value: "never" },
+    });
+    expect(getByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeTruthy();
+    // turn 시작(running)되면 배너가 사라지고 요청되지 않는다(lockout 불변식, mode와 동일).
+    await rerender(approvalProps({ onApprovalPolicyChange, status: "running" }));
+    expect(queryByTestId(TEST_IDS.agentComposerApprovalConfirm)).toBeNull();
+    expect(onApprovalPolicyChange).not.toHaveBeenCalled();
+  });
+
+  it("approval selector: 실제 정책 미상이면 placeholder를 두고 값을 활성처럼 보이지 않는다", async () => {
+    const { getByTestId } = render(AgentComposer, {
+      props: approvalProps({ selectedApprovalPolicy: undefined }),
+    });
+    await openOptions(getByTestId);
+    expect((getByTestId(TEST_IDS.agentComposerApprovalSelect) as HTMLSelectElement).value).toBe("");
+  });
+
+  it("options toggle: never override가 활성이면 토글에 고위험 표시가 붙는다", () => {
+    const { getByTestId } = render(AgentComposer, {
+      props: approvalProps({ selectedApprovalPolicy: "never", approvalOverrideActive: "never" }),
+    });
+    const toggle = getByTestId(TEST_IDS.agentComposerOptionsToggle);
+    expect(toggle.textContent).toContain("High Risk");
+  });
+
+  it("options popover: 토글로 열고 Escape로 닫는다", async () => {
+    const { getByTestId, queryByTestId } = render(AgentComposer, {
+      props: approvalProps(),
+    });
+    expect(queryByTestId(TEST_IDS.agentComposerOptionsPopover)).toBeNull();
+    await fireEvent.click(getByTestId(TEST_IDS.agentComposerOptionsToggle));
+    const popover = getByTestId(TEST_IDS.agentComposerOptionsPopover);
+    expect(popover).toBeTruthy();
+    await fireEvent.keyDown(popover, { key: "Escape" });
+    expect(queryByTestId(TEST_IDS.agentComposerOptionsPopover)).toBeNull();
   });
 
   it("opens the slash command palette and filters by query", async () => {

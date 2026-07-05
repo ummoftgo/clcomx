@@ -18,7 +18,7 @@
     AgentSessionModeOption,
     AgentSessionStatus,
   } from "../contracts/normalized";
-  import { isHighRiskSessionModeId } from "../contracts/normalized";
+  import { isHighRiskSessionModeId, isHighRiskApprovalPolicy } from "../contracts/normalized";
   import type { ComposerCapabilities } from "../contracts/transcript";
 
   const DEFAULT_CAPABILITIES: ComposerCapabilities = {
@@ -91,6 +91,16 @@
     onModelChange?: (modelId: string) => void;
     /** effort 셀렉터 변경 콜백. */
     onEffortChange?: (effortId: string) => void;
+    /** Codex approval policy 후보(있으면 approval 셀렉터 노출, Codex 전용, ②-C). scalar AskForApproval만. */
+    availableApprovalPolicies?: readonly string[];
+    /** 셀렉터 표시값(override 있으면 override 값, 없으면 세션 시작 권위값; 미상이면 undefined→placeholder). */
+    selectedApprovalPolicy?: string;
+    /** 세션 시작 권위값과 달라 다음 turn에 적용될 override(경고 강조용). 없으면 undefined. */
+    approvalOverrideActive?: string;
+    /** 현재 provider sandbox 표시값(approval never 확인 문구 강조에 사용). */
+    currentSandbox?: string;
+    /** approval 셀렉터 변경 콜백(고위험 never는 확인 게이트 통과 후에만 호출). */
+    onApprovalPolicyChange?: (policyId: string) => void;
     /** provider prompt capability. image 버튼 노출과 전송 gate에 사용한다. */
     capabilities?: ComposerCapabilities;
     /** `@` mention query를 workspace/resource 후보로 변환하는 검색 함수. */
@@ -115,6 +125,11 @@
     modelEfforts,
     onModelChange,
     onEffortChange,
+    availableApprovalPolicies,
+    selectedApprovalPolicy,
+    approvalOverrideActive,
+    currentSandbox,
+    onApprovalPolicyChange,
     capabilities = DEFAULT_CAPABILITIES,
     resourceSearch,
     restoring = false,
@@ -174,8 +189,9 @@
     select.value = currentModeId ?? "";
     if (!onModeChange || nextModeId === (currentModeId ?? "")) return;
     if (isHighRiskSessionModeId(nextModeId)) {
-      // 고위험 진입: 즉시 보내지 않고 확인 게이트를 띄운다.
+      // 고위험 진입: 즉시 보내지 않고 확인 게이트를 띄운다. popover는 닫아 확인 배너로 초점을 옮긴다.
       pendingHighRiskModeId = nextModeId;
+      optionsOpen = false;
       return;
     }
     await requestModeChange(nextModeId);
@@ -195,13 +211,109 @@
     pendingHighRiskModeId = null;
   }
 
-  // 셀렉터가 비활성(비 ready/idle·restoring·pending)이 되면 미확정 고위험 확인 배너를 취소한다 —
-  // 상태 전환 중 accept 경로로 lockout 불변식이 깨지지 않게 한다.
+  // ②-C: turn 옵션 통합 popover + Codex approval policy override.
+  // popover 열림 상태. 셀렉터(mode/model/effort/approval)를 한 버튼 뒤로 묶어 footer 과밀을 없앤다.
+  let optionsOpen = $state(false);
+  // 고위험 승인 정책(never) 확인 대기 id. bypass 모드 게이트와 대칭. 확인 배너는 popover가 아니라
+  // composer 레벨에 렌더링해 popover를 닫아도 숨은 pending이 남지 않게 한다(Codex ②-C 조건).
+  let pendingHighRiskApprovalId = $state<string | null>(null);
+
+  const hasModeSelector = $derived(!!onModeChange && !!availableModes && availableModes.length > 0);
+  const hasModelSelector = $derived(!!onModelChange && !!availableModels && availableModels.length > 0);
+  const hasEffortSelector = $derived(!!onEffortChange && !!modelEfforts && modelEfforts.length > 0);
+  const hasApprovalSelector = $derived(
+    !!onApprovalPolicyChange && !!availableApprovalPolicies && availableApprovalPolicies.length > 0,
+  );
+  // popover는 셀렉터가 하나라도 있을 때만 노출한다(없으면 read-only modeLabel만 표시).
+  const hasTurnOptions = $derived(
+    hasModeSelector || hasModelSelector || hasEffortSelector || hasApprovalSelector,
+  );
+
+  let optionsPopoverEl = $state<HTMLDivElement | undefined>();
+  let optionsToggleEl = $state<HTMLButtonElement | undefined>();
+
+  function toggleOptions(): void {
+    optionsOpen = !optionsOpen;
+  }
+
+  function closeOptions(): void {
+    optionsOpen = false;
+  }
+
+  function onOptionsKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      closeOptions();
+      optionsToggleEl?.focus();
+    }
+  }
+
+  // popover 바깥 클릭 시 닫는다(pending 고위험 확인 배너는 composer 레벨이라 영향 없음).
   $effect(() => {
-    if (pendingHighRiskModeId !== null && !modeSelectEnabled) {
-      pendingHighRiskModeId = null;
+    if (!optionsOpen) return;
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (optionsPopoverEl?.contains(target) || optionsToggleEl?.contains(target)) return;
+      optionsOpen = false;
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  });
+
+  async function handleApprovalChange(event: Event): Promise<void> {
+    const select = event.target as HTMLSelectElement;
+    const nextPolicy = select.value;
+    if (!onApprovalPolicyChange || nextPolicy === (selectedApprovalPolicy ?? "")) return;
+    if (isHighRiskApprovalPolicy(nextPolicy)) {
+      // 고위험(never): 즉시 적용하지 않고 확인 게이트를 띄운다. native 표시는 권위 값으로 되돌리고
+      // popover는 닫아 확인 배너(composer 레벨)로 초점을 옮긴다 — 숨은 미확정 상태를 만들지 않는다.
+      select.value = selectedApprovalPolicy ?? "";
+      pendingHighRiskApprovalId = nextPolicy;
+      optionsOpen = false;
+      return;
+    }
+    onApprovalPolicyChange(nextPolicy);
+  }
+
+  function confirmHighRiskApproval(): void {
+    const policyId = pendingHighRiskApprovalId;
+    pendingHighRiskApprovalId = null;
+    // 배너가 떠 있는 사이 상태가 바뀌었을 수 있으므로 셀렉터와 동일한 readiness/후보 유효성을 재검사한다.
+    if (!policyId || !modeSelectEnabled) return;
+    if (!availableApprovalPolicies?.includes(policyId)) return;
+    onApprovalPolicyChange?.(policyId);
+  }
+
+  function cancelHighRiskApproval(): void {
+    pendingHighRiskApprovalId = null;
+  }
+
+  // 셀렉터가 비활성(비 ready/idle·restoring·pending)이 되면 미확정 고위험 확인 배너를 취소한다 —
+  // 상태 전환 중 accept 경로로 lockout 불변식이 깨지지 않게 한다(mode·approval 공통).
+  $effect(() => {
+    if (!modeSelectEnabled) {
+      if (pendingHighRiskModeId !== null) pendingHighRiskModeId = null;
+      if (pendingHighRiskApprovalId !== null) pendingHighRiskApprovalId = null;
     }
   });
+
+  // popover가 닫히거나 turn 옵션이 사라지면 popover 상태도 정리한다. 확인 배너는 composer 레벨이라
+  // popover 닫힘과 독립적으로 계속 보이므로(숨김 없음) pending 고위험은 여기서 건드리지 않는다.
+  $effect(() => {
+    if (!hasTurnOptions && optionsOpen) optionsOpen = false;
+  });
+
+  const approvalConfirmText = $derived(
+    currentSandbox && isHighRiskRuntimeSandbox(currentSandbox)
+      ? $t("agentRuntime.composer.highRiskApprovalConfirmDanger", { values: { sandbox: currentSandbox } })
+      : $t("agentRuntime.composer.highRiskApprovalConfirm"),
+  );
+
+  /** sandbox 표시값이 전체 접근(danger-full-access) 계열인지 — approval never 확인 문구 강조에 쓴다. */
+  function isHighRiskRuntimeSandbox(sandbox: string): boolean {
+    return sandbox === "danger-full-access";
+  }
 
   const placeholder = $derived(
     restoring
@@ -755,59 +867,144 @@
       </div>
     </div>
   {/if}
+  {#if pendingHighRiskApprovalId}
+    <div
+      class="high-risk-confirm"
+      role="alertdialog"
+      aria-label={$t("agentRuntime.composer.highRiskApprovalTitle")}
+      data-testid={TEST_IDS.agentComposerApprovalConfirm}
+    >
+      <span class="high-risk-confirm-text">{approvalConfirmText}</span>
+      <div class="high-risk-confirm-actions">
+        <button
+          type="button"
+          class="high-risk-confirm-btn danger"
+          data-testid={TEST_IDS.agentComposerApprovalConfirmAccept}
+          onclick={confirmHighRiskApproval}
+        >
+          {$t("agentRuntime.composer.highRiskApprovalAccept")}
+        </button>
+        <button
+          type="button"
+          class="high-risk-confirm-btn"
+          data-testid={TEST_IDS.agentComposerApprovalConfirmCancel}
+          onclick={cancelHighRiskApproval}
+        >
+          {$t("common.actions.cancel")}
+        </button>
+      </div>
+    </div>
+  {/if}
+  {#if optionsOpen && hasTurnOptions}
+    <div
+      class="options-popover"
+      role="dialog"
+      aria-label={$t("agentRuntime.composer.optionsTitle")}
+      data-testid={TEST_IDS.agentComposerOptionsPopover}
+      bind:this={optionsPopoverEl}
+      tabindex="-1"
+      onkeydown={onOptionsKeydown}
+    >
+      {#if hasModeSelector}
+        <label class="options-row">
+          <span class="options-row-label">{$t("agentRuntime.composer.modeLabel")}</span>
+          <select
+            class="mode-select"
+            data-testid={TEST_IDS.agentComposerModeSelect}
+            value={currentModeId ?? ""}
+            disabled={!modeSelectEnabled}
+            aria-label={$t("agentRuntime.composer.modeSelect")}
+            onchange={handleModeChange}
+          >
+            {#each availableModes ?? [] as mode (mode.id)}
+              <option value={mode.id}>{mode.name ?? mode.id}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      {#if hasModelSelector}
+        <label class="options-row">
+          <span class="options-row-label">{$t("agentRuntime.composer.modelLabel")}</span>
+          <select
+            class="mode-select"
+            data-testid={TEST_IDS.agentComposerModelSelect}
+            value={selectedModel ?? ""}
+            disabled={!modeSelectEnabled}
+            aria-label={$t("agentRuntime.composer.modelSelect")}
+            onchange={(event) => onModelChange?.((event.target as HTMLSelectElement).value)}
+          >
+            {#if selectedModel === undefined}
+              <!-- 실제 모델 미상(replay resume) — 잘못된 모델을 활성처럼 보이지 않도록 placeholder. -->
+              <option value="" disabled selected>{$t("agentRuntime.composer.modelPlaceholder")}</option>
+            {/if}
+            {#each availableModels ?? [] as model (model.id)}
+              <option value={model.id}>{model.label}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      {#if hasEffortSelector}
+        <label class="options-row">
+          <span class="options-row-label">{$t("agentRuntime.composer.effortLabel")}</span>
+          <select
+            class="mode-select"
+            data-testid={TEST_IDS.agentComposerEffortSelect}
+            value={selectedEffort ?? ""}
+            disabled={!modeSelectEnabled}
+            aria-label={$t("agentRuntime.composer.effortSelect")}
+            onchange={(event) => onEffortChange?.((event.target as HTMLSelectElement).value)}
+          >
+            {#each modelEfforts ?? [] as effort (effort.id)}
+              <option value={effort.id} title={effort.description ?? ""}>{effort.id}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      {#if hasApprovalSelector}
+        <label class="options-row" class:options-row--warning={isHighRiskApprovalPolicy(approvalOverrideActive)}>
+          <span class="options-row-label">{$t("agentRuntime.composer.approvalLabel")}</span>
+          <select
+            class="mode-select"
+            data-testid={TEST_IDS.agentComposerApprovalSelect}
+            value={selectedApprovalPolicy ?? ""}
+            disabled={!modeSelectEnabled}
+            aria-label={$t("agentRuntime.composer.approvalSelect")}
+            onchange={handleApprovalChange}
+          >
+            {#if selectedApprovalPolicy === undefined}
+              <!-- 실제 정책 미상(replay resume 등) — 잘못된 값을 활성처럼 보이지 않도록 placeholder. -->
+              <option value="" disabled selected>{$t("agentRuntime.composer.approvalPlaceholder")}</option>
+            {/if}
+            {#each availableApprovalPolicies ?? [] as policy (policy)}
+              <option value={policy}>{policy}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+    </div>
+  {/if}
   <div class="composer-footer">
     <div class="composer-indicators">
       <span class="provider-label" title={providerLabel}>{providerLabel}</span>
-      {#if onModeChange && availableModes && availableModes.length > 0}
-        <!-- 모드 셀렉터: provider가 availableModes를 알린 경우에만(예: Claude plan/acceptEdits 등). -->
-        <select
-          class="mode-select"
-          data-testid={TEST_IDS.agentComposerModeSelect}
-          value={currentModeId ?? ""}
-          disabled={!modeSelectEnabled}
-          aria-label={$t("agentRuntime.composer.modeSelect")}
-          onchange={handleModeChange}
+      {#if hasTurnOptions}
+        <!-- ②-C: 모든 turn 옵션 셀렉터(mode/model/effort/approval)를 한 버튼 뒤 popover로 통합한다. -->
+        <button
+          type="button"
+          class="options-toggle"
+          class:options-toggle--warning={isHighRiskApprovalPolicy(approvalOverrideActive)}
+          data-testid={TEST_IDS.agentComposerOptionsToggle}
+          aria-haspopup="dialog"
+          aria-expanded={optionsOpen}
+          bind:this={optionsToggleEl}
+          onclick={toggleOptions}
         >
-          {#each availableModes as mode (mode.id)}
-            <option value={mode.id}>{mode.name ?? mode.id}</option>
-          {/each}
-        </select>
+          {$t("agentRuntime.composer.optionsButton")}
+          {#if approvalOverrideActive && isHighRiskApprovalPolicy(approvalOverrideActive)}
+            <span class="options-toggle-risk">{$t("agentRuntime.metadata.highRisk")}</span>
+          {/if}
+        </button>
       {:else if visibleModeLabel}
         <span class="mode-label" title={visibleModeLabel}>{visibleModeLabel}</span>
-      {/if}
-      {#if onModelChange && availableModels && availableModels.length > 0}
-        <!-- 모델 셀렉터(Codex 전용). model/list 후보에서 선택. -->
-        <select
-          class="mode-select"
-          data-testid={TEST_IDS.agentComposerModelSelect}
-          value={selectedModel ?? ""}
-          disabled={!modeSelectEnabled}
-          aria-label={$t("agentRuntime.composer.modelSelect")}
-          onchange={(event) => onModelChange?.((event.target as HTMLSelectElement).value)}
-        >
-          {#if selectedModel === undefined}
-            <!-- 실제 모델 미상(replay resume) — 잘못된 모델을 활성처럼 보이지 않도록 placeholder. -->
-            <option value="" disabled selected>{$t("agentRuntime.composer.modelPlaceholder")}</option>
-          {/if}
-          {#each availableModels as model (model.id)}
-            <option value={model.id}>{model.label}</option>
-          {/each}
-        </select>
-      {/if}
-      {#if onEffortChange && modelEfforts && modelEfforts.length > 0}
-        <!-- effort 셀렉터(선택된 모델이 지원할 때만). -->
-        <select
-          class="mode-select"
-          data-testid={TEST_IDS.agentComposerEffortSelect}
-          value={selectedEffort ?? ""}
-          disabled={!modeSelectEnabled}
-          aria-label={$t("agentRuntime.composer.effortSelect")}
-          onchange={(event) => onEffortChange?.((event.target as HTMLSelectElement).value)}
-        >
-          {#each modelEfforts as effort (effort.id)}
-            <option value={effort.id} title={effort.description ?? ""}>{effort.id}</option>
-          {/each}
-        </select>
       {/if}
     </div>
     <div class="composer-controls">
@@ -1025,14 +1222,64 @@
     white-space: nowrap;
   }
   .mode-select {
-    margin-left: 0.35rem;
     padding: 0.1rem 0.3rem;
     border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.3));
     border-radius: var(--ui-radius-sm, 0.25rem);
     background: var(--ui-bg-elevated, transparent);
     color: inherit;
     font-size: var(--ui-font-size-xs);
-    max-width: 12ch;
+    max-width: 16ch;
+  }
+  .options-toggle {
+    margin-left: 0.35rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.12rem 0.45rem;
+    border: 1px solid var(--ui-border-subtle, rgba(127, 127, 127, 0.3));
+    border-radius: var(--ui-radius-sm, 0.25rem);
+    background: var(--ui-bg-elevated, transparent);
+    color: inherit;
+    font: inherit;
+    font-size: var(--ui-font-size-xs);
+    cursor: pointer;
+  }
+  .options-toggle--warning {
+    border-color: var(--ui-danger-border, rgba(220, 80, 80, 0.6));
+  }
+  .options-toggle-risk {
+    padding: 0 0.25rem;
+    border-radius: 999px;
+    background: var(--ui-danger, #f85149);
+    color: var(--ui-accent-text, #fff);
+    font-size: var(--ui-font-size-xs);
+  }
+  .options-popover {
+    position: absolute;
+    left: 0.75rem;
+    bottom: calc(100% - 0.4rem);
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--ui-border-strong, rgba(127, 127, 127, 0.4));
+    border-radius: var(--ui-radius-md, 0.5rem);
+    background: var(--ui-bg-elevated, #1c1c1c);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  }
+  .options-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .options-row-label {
+    font-size: var(--ui-font-size-xs);
+    color: var(--ui-text-muted);
+  }
+  .options-row--warning .options-row-label {
+    color: var(--ui-danger-text, #d05050);
   }
   .high-risk-confirm {
     display: flex;

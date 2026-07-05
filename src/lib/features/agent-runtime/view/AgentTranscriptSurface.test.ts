@@ -19,6 +19,17 @@ import type { TranscriptModel } from "../contracts/transcript";
 import { resetRegistry } from "../controller/agent-event-router";
 import AgentTranscriptSurface from "./AgentTranscriptSurface.svelte";
 
+/**
+ * ②-C: turn 옵션 셀렉터(mode/model/effort/approval)는 composer의 옵션 popover 뒤로 통합됐다.
+ * 셀렉터가 채워지면 옵션 토글이 뜨므로, 이를 기다렸다 열어 셀렉터에 접근한다.
+ */
+async function openSurfaceOptions(
+  findByTestId: (id: string) => Promise<HTMLElement>,
+): Promise<void> {
+  const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+  await fireEvent.click(toggle);
+}
+
 const editorMocks = vi.hoisted(() => ({
   searchSessionFiles: vi.fn(),
 }));
@@ -68,6 +79,7 @@ function makeFakePort(
     models?: unknown[];
     startModel?: string;
     startEffort?: string;
+    startApprovalPolicy?: string;
   } = {},
 ) {
   let listener: ((e: AgentEvent) => void) | null = null;
@@ -85,6 +97,7 @@ function makeFakePort(
       canLoad,
       ...(options.startModel ? { model: options.startModel } : {}),
       ...(options.startEffort ? { effort: options.startEffort } : {}),
+      ...(options.startApprovalPolicy ? { approvalPolicy: options.startApprovalPolicy } : {}),
     }),
     resumeSession: vi.fn().mockResolvedValue({
       ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
@@ -715,6 +728,7 @@ describe("AgentTranscriptSurface", () => {
     });
 
     // model/list가 채워지면 셀렉터가 뜨고, 세션 실제 모델(gpt-b)이 초기 선택된다.
+    await openSurfaceOptions(findByTestId);
     const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe("gpt-b"));
     // 초기 선택은 세션 실제 모델과 일치하므로 setTurnOptions를 부르지 않는다(화면=wire).
@@ -737,6 +751,7 @@ describe("AgentTranscriptSurface", () => {
       ],
     });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await openSurfaceOptions(findByTestId);
     const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
     // isDefault는 gpt-default지만 세션 실제 모델(gpt-a)이 초기 선택된다.
     await waitFor(() => expect(modelSelect.value).toBe("gpt-a"));
@@ -755,6 +770,7 @@ describe("AgentTranscriptSurface", () => {
       ],
     });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await openSurfaceOptions(findByTestId);
     const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
     // catalog default(gpt-default)를 잘못 표시하지 않는다 — value는 빈 값(placeholder).
     await waitFor(() => expect(modelSelect.value).toBe(""));
@@ -770,6 +786,7 @@ describe("AgentTranscriptSurface", () => {
       ],
     });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await openSurfaceOptions(findByTestId);
     const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe("gpt-legacy"));
     expect(port.setTurnOptions).not.toHaveBeenCalled();
@@ -785,11 +802,61 @@ describe("AgentTranscriptSurface", () => {
       ],
     });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await openSurfaceOptions(findByTestId);
     const modelSelect = (await findByTestId(TEST_IDS.agentComposerModelSelect)) as HTMLSelectElement;
     await waitFor(() => expect(modelSelect.value).toBe("gpt-a"));
 
     await fireEvent.change(modelSelect, { target: { value: "gpt-noeffort" } });
     expect(port.setTurnOptions).toHaveBeenCalledWith("S1", { model: "gpt-noeffort", effort: null });
+  });
+
+  it("②-C: 세션 시작 approvalPolicy를 approval 셀렉터 초기값으로 두고 저위험 변경을 override로 건다", async () => {
+    const { port } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
+    // 초기값은 세션 시작 권위값과 일치 → override 미설정.
+    expect(port.setTurnOptions).not.toHaveBeenCalled();
+
+    await fireEvent.change(approvalSelect, { target: { value: "on-failure" } });
+    // base("on-request")와 다른 저위험 값 → 즉시 override 전달(확인 게이트 없음).
+    expect(port.setTurnOptions).toHaveBeenCalledWith("S1", { approvalPolicy: "on-failure" });
+  });
+
+  it("②-C: approval을 세션 시작 권위값으로 되돌리면 null(해제)로 override를 revert한다", async () => {
+    const { port } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
+    await fireEvent.change(approvalSelect, { target: { value: "on-failure" } });
+    await fireEvent.change(approvalSelect, { target: { value: "on-request" } });
+    // base로 복귀 → 명시적 null 해제(누수 방지).
+    expect(port.setTurnOptions).toHaveBeenLastCalledWith("S1", { approvalPolicy: null });
+  });
+
+  it("②-C: never override 확정 시 metadata에 고위험 override chip이 뜬다", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId, queryByTestId } = render(AgentTranscriptSurface, { props: baseProps(port) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    // 고위험 확인 게이트는 ready/idle에서만 유지된다 → ready 상태를 emit해 modeSelectEnabled를 만든다.
+    emit({
+      type: "session_status_changed",
+      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+      status: "ready",
+    });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.value).toBe("on-request"));
+    // never는 확인 게이트를 거쳐야 적용된다.
+    await fireEvent.change(approvalSelect, { target: { value: "never" } });
+    expect(queryByTestId(TEST_IDS.agentRuntimeApprovalOverride)).toBeNull(); // 확인 전엔 override 미확정.
+    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerApprovalConfirmAccept));
+    expect(port.setTurnOptions).toHaveBeenCalledWith("S1", { approvalPolicy: "never" });
+    // base badge는 유지되고, 다음 turn에 적용될 never가 고위험 chip으로 노출된다(위험 숨김 방지).
+    const chip = await findByTestId(TEST_IDS.agentRuntimeApprovalOverride);
+    expect(chip.closest("[data-risk='high']")).toBeTruthy();
   });
 
   it("OQ-16: persists resume keys immediately and a debounced transcript cache snapshot when metadata is saved", async () => {

@@ -152,6 +152,22 @@ export function isHighRiskSessionModeId(modeId: string | undefined): boolean {
   return modeId !== undefined && (HIGH_RISK_SESSION_MODE_IDS as readonly string[]).includes(modeId);
 }
 
+/**
+ * Codex `AskForApproval` scalar 후보(②-C approval override 셀렉터 소스). granular 객체 variant는
+ * experimental이라 후보/override wire에서 제외한다(표시만 — buildCodexPolicyMetadata가 "granular"로 축약).
+ * 순서는 위험도 오름차순(untrusted→never)이 아니라 wire enum 순서를 따른다.
+ */
+export const CODEX_APPROVAL_POLICIES = ["untrusted", "on-failure", "on-request", "never"] as const;
+
+/**
+ * 고위험 approval policy id. `never`는 이후 turn의 **모든 승인 요청을 끈다**(구조화 권한 흐름 무력화)이므로
+ * 세션 모드 bypassPermissions와 동일하게 진입 확인 게이트 대상이다(09 §8.3). adapter는 이 값을 wire로
+ * 그대로 보내되(provider가 최종 권위), UI는 선택/override 표시를 고위험으로 강조한다.
+ */
+export function isHighRiskApprovalPolicy(policyId: string | undefined): boolean {
+  return policyId === "never";
+}
+
 /** reasoning effort 후보 1건(모델별 지원 목록). 비밀 아님(id/표시명만). */
 export interface AgentEffortOption {
   /** effort id(예: minimal/low/medium/high). turn override에 그대로 쓴다. */

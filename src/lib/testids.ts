@@ -75,6 +75,14 @@ export const TEST_IDS = {
   agentComposerModeConfirm: "agent-composer-mode-confirm",
   agentComposerModeConfirmAccept: "agent-composer-mode-confirm-accept",
   agentComposerModeConfirmCancel: "agent-composer-mode-confirm-cancel",
+  // ②-C: turn 옵션 통합 popover + Codex approval policy override 셀렉터/고위험 확인 게이트.
+  agentComposerOptionsToggle: "agent-composer-options-toggle",
+  agentComposerOptionsPopover: "agent-composer-options-popover",
+  agentComposerApprovalSelect: "agent-composer-approval-select",
+  agentComposerApprovalConfirm: "agent-composer-approval-confirm",
+  agentComposerApprovalConfirmAccept: "agent-composer-approval-confirm-accept",
+  agentComposerApprovalConfirmCancel: "agent-composer-approval-confirm-cancel",
+  agentRuntimeApprovalOverride: "agent-runtime-approval-override",
   // Stage 2: tool/command/diff 카드 + approval + replay (08 §4·§7, T5.3·T5.4·T5.6)
   agentToolCallCard: "agent-tool-call-card",
   agentToolCallToggle: "agent-tool-call-toggle",

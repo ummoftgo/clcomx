@@ -99,8 +99,8 @@ export interface AgentRuntimeController {
   setSessionMode(modeId: string): Promise<void>;
   /** 사용 가능한 모델 목록 조회(지원 provider만). 미지원이면 빈 배열. */
   listModels(): Promise<AgentModelOption[]>;
-  /** model/effort turn override 설정(지원 provider만). 미지원이면 no-op. */
-  setTurnOptions(options: { model?: string | null; effort?: string | null }): void;
+  /** model/effort/approvalPolicy turn override 설정(지원 provider만). 미지원이면 no-op. */
+  setTurnOptions(options: { model?: string | null; effort?: string | null; approvalPolicy?: string | null }): void;
   /** auto-follow 토글(store 표면 갱신). */
   setAutoFollow(value: boolean): void;
   /** teardown: unsubscribe + shutdown(멱등). */
@@ -224,7 +224,7 @@ class AgentRuntimeControllerImpl implements AgentRuntimeController {
     return this.port.listModels(this.sessionHandle);
   }
 
-  setTurnOptions(options: { model?: string | null; effort?: string | null }): void {
+  setTurnOptions(options: { model?: string | null; effort?: string | null; approvalPolicy?: string | null }): void {
     if (!this.port?.setTurnOptions || !this.sessionHandle || this.disposed) return;
     this.port.setTurnOptions(this.sessionHandle, options);
   }

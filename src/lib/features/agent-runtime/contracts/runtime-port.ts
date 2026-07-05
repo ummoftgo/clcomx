@@ -132,13 +132,15 @@ export interface AgentRuntimePort {
   listModels?(sessionHandle: AgentSessionHandle): Promise<AgentModelOption[]>;
 
   /**
-   * 다음 turn 이후에 적용할 model/effort override를 설정한다(Codex turn/start override).
+   * 다음 turn 이후에 적용할 model/effort/approvalPolicy override를 설정한다(Codex turn/start override).
    * 미지원 provider는 이 메서드를 정의하지 않는다. 세션 메모리 범위(영속 안 함) — 새 세션은 기본값.
-   * undefined 필드는 변경하지 않고, null은 해당 override 해제를 뜻한다.
+   * undefined 필드는 변경하지 않고, null은 해당 override 해제(provider default 복귀)를 뜻한다.
+   * approvalPolicy는 scalar `AskForApproval`(untrusted/on-failure/on-request/never)만 실린다 —
+   * granular 객체는 노출/전송하지 않는다(②-C, 09 §8.2/§8.3).
    */
   setTurnOptions?(
     sessionHandle: AgentSessionHandle,
-    options: { model?: string | null; effort?: string | null },
+    options: { model?: string | null; effort?: string | null; approvalPolicy?: string | null },
   ): void;
 
   /**

@@ -368,7 +368,7 @@ ACP와 Codex app-server는 MCP/client tool 흐름을 가질 수 있다(ref-acp �
 
 ### 8.2 provider sandbox / permission mode 표시 (Elevation 방어, 비우회 원칙)
 
-**CLCOMX는 provider의 sandbox/approval policy를 UI에 표시만 하고, 앱이 provider sandbox를 우회해 명령을 실행하지 않는다**(`research/ux-reference.md` 라인 146, 339; 08). 즉 권한 결정의 source of truth는 provider이며 client는 이를 시각화·전달만 한다.
+**CLCOMX는 앱이 provider sandbox를 우회해 명령을 실행하지 않는다**(`research/ux-reference.md` 라인 146, 339; 08). 즉 권한 결정의 source of truth는 provider이며 client는 이를 시각화·전달만 한다. sandbox policy는 **표시 전용**이다(②-C에서도 유지). approval policy는 v1에서 표시 전용이었으나, **②-C(2026-07-05)에서 Codex `approvalPolicy`를 사용자 선택 override로 노출한다** — 이는 우회가 아니라 provider가 지원하는 `turn/start.approvalPolicy` override를 provider에 전달하는 것이며, 정책 집행 권위는 여전히 provider다. scalar `AskForApproval`(untrusted/on-failure/on-request/never)만 전송하고 granular 객체는 표시·전송 모두 제외하며, `sandboxPolicy`는 복합 객체(writableRoots/networkAccess 등)라 클라이언트가 세션 실제 필드 없이 안전하게 재구성할 수 없어 override를 노출하지 않는다(표시 전용 유지). 고위험 값(`never`)의 게이트는 §8.3.
 
 표시 대상(session metadata badge, `research/ux-reference.md` 라인 339, 08):
 
@@ -398,6 +398,14 @@ ACP와 Codex app-server는 MCP/client tool 흐름을 가질 수 있다(ref-acp �
 > - **잔여 한계(프로토콜)**: 위 상관관계 부재로, 고위험→저위험 전환 중 provider가 요청 target과 **같은 값의 stale echo**를 실제 전환보다 먼저 보내면 그 창의 severity가 이론적으로 조기에 저위험으로 낮아질 수 있다. 이는 ACP 프로토콜에 전환 correlation이 없어 근본 해소가 불가능한 잔여 edge이며, 흔한 provider 동작 순서에서는 발생하지 않는다(bypass 상태에서는 최근 저위험 echo 이력이 없음). v1은 이 잔여 edge를 보수적 편향(진입 확인 게이트 + 이탈 창 escalation 유지)으로 완화하고 수용한다. 정밀 해소는 provider가 전환 id/readback을 제공할 때의 후속 범위다.
 
 증거: `claude-acp-adapter.test.ts`의 모드 전환 severity 계열(진입 in-flight/echo 전 escalation, 이탈 창 escalation 유지, 비매칭 stale echo가 fail-safe 미해제, echo-before-response 데드락 없음), `AgentComposer.test.ts`의 확인 게이트/취소/readiness 계열.
+
+**Codex approval policy override(composer) 게이트(②-C 구현, 2026-07-05).** Codex direct 세션 composer의 turn 옵션 popover에 `approvalPolicy` 셀렉터(untrusted/on-failure/on-request/never)를 노출한다. 선택값은 `turn/start.approvalPolicy` override로 다음 turn 이후에 적용되며 세션 메모리 범위(영속 안 함)다. 보안 처리:
+> - **고위험(`never`) 진입 확인 게이트**: `never`는 이후 turn의 **모든 승인 요청을 끄므로**(구조화 권한 흐름 무력화) 세션 모드 `bypassPermissions`와 동일하게 즉시 적용하지 않고 composer 확인 배너를 거친다. 배너는 셀렉터와 동일한 readiness 게이트(ready/idle에서만)를 따르며, 비활성 상태로 바뀌면 자동 취소된다. 확인 배너는 popover가 아니라 composer 레벨에 렌더링해 popover를 닫아도 숨은 미확정 상태가 남지 않는다. `never` 선택 시 popover를 닫아 확인 배너로 초점을 옮긴다.
+> - **위험 비은닉(override chip)**: 세션 시작 권위값(`metadata.approvalPolicy`) badge는 그대로 두고, 사용자가 건 override가 그 값과 다르면 별도 override chip("다음 turn: {값}")으로 노출한다. override가 `never`면 chip과 옵션 토글에 고위험 표시를 붙이고, 확인/전송 전까지 고위험 표시를 조기 해제하지 않는다. 이는 "세션 시작값 badge만 두고 셀렉터만 바꿔 실제 다음 turn 위험을 숨기는" 설계를 피하기 위함이다(Codex ②-C 지적).
+> - **sandbox 강조**: 현재 sandbox가 `danger-full-access`이면 `never` 확인 문구를 "전체 접근 + 승인 없음"의 더 강한 경고로 바꾼다.
+> - **3-state override**: undefined=미설정(turn/start 미포함, provider default = OQ-20 기존 동작), null=명시적 해제(`approvalPolicy:null`을 turn/start에 실어 provider override revert), string=값. base 권위값으로 되돌리면 null 해제를 전달한다. model/effort와 독립적으로 갱신돼 부분 업데이트가 서로 clobber하지 않는다.
+
+증거: `codex-app-server-adapter.test.ts`의 ②-C 계열(never override wire 전송, 미설정 시 미포함, null revert, model/effort/approval no-clobber), `AgentComposer.test.ts`의 approval 셀렉터/never 확인 게이트(accept/cancel/readiness)/popover open·close 계열, `AgentTranscriptSurface.test.ts`의 approval 초기값·null revert·never override chip(고위험 data-risk) 계열.
 
 ### 8.4 legacy PTY fallback 경계
 

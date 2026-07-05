@@ -102,6 +102,12 @@ interface CodexSessionRuntime {
    */
   turnModel?: string | null;
   turnEffort?: string | null;
+  /**
+   * 다음 turn 이후에 적용할 approvalPolicy override(②-C, 세션 메모리 범위). 3-state는 turnModel과 동일:
+   * undefined=미설정(turn/start 미포함, provider default), null=명시적 해제(`approvalPolicy:null`을
+   * turn/start에 실어 override revert), string=scalar `AskForApproval` 값(untrusted/on-failure/on-request/never).
+   */
+  turnApprovalPolicy?: string | null;
 }
 
 /** thread/start·thread/resume·thread/read response의 공통 부분(thread 보유). */
@@ -532,7 +538,7 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       });
       return;
     }
-    // model/effort override를 turn/start에 실어 이 turn 이후에 적용한다(②-B). 3-state:
+    // model/effort/approvalPolicy override를 turn/start에 실어 이 turn 이후에 적용한다(②-B/②-C). 3-state:
     // undefined=미포함(provider default, OQ-20 기존 동작), null=명시적 해제(override revert),
     // string=값. null을 실어야 이전 turn override가 provider 쪽에 누수되지 않고 해제된다.
     const turnParams: {
@@ -540,12 +546,14 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
       input: typeof codexInput;
       model?: string | null;
       effort?: string | null;
+      approvalPolicy?: string | null;
     } = {
       threadId,
       input: codexInput,
     };
     if (rt.turnModel !== undefined) turnParams.model = rt.turnModel;
     if (rt.turnEffort !== undefined) turnParams.effort = rt.turnEffort;
+    if (rt.turnApprovalPolicy !== undefined) turnParams.approvalPolicy = rt.turnApprovalPolicy;
     let resp: { turn: { id: string } };
     try {
       resp = (await rpcRequest(rt, "turn/start", turnParams)) as {
@@ -837,16 +845,18 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
     return models;
   }
 
-  /** 다음 turn 이후에 적용할 model/effort override를 세션 메모리에 저장한다(②-B). null은 해제. */
+  /** 다음 turn 이후에 적용할 model/effort/approvalPolicy override를 세션 메모리에 저장한다(②-B/②-C). null은 해제. */
   function setTurnOptions(
     handle: AgentSessionHandle,
-    options: { model?: string | null; effort?: string | null },
+    options: { model?: string | null; effort?: string | null; approvalPolicy?: string | null },
   ): void {
     const rt = sessions.get(handle);
     if (!rt) return;
     // null을 보존한다(3-state) — 다음 turn/start가 명시적 해제를 wire로 전달해 override를 revert한다.
+    // 각 필드는 독립적으로 갱신한다 — 부분 업데이트가 서로를 clobber하지 않는다(Codex ②-C 지적).
     if (options.model !== undefined) rt.turnModel = options.model;
     if (options.effort !== undefined) rt.turnEffort = options.effort;
+    if (options.approvalPolicy !== undefined) rt.turnApprovalPolicy = options.approvalPolicy;
   }
 
   return {

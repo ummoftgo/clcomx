@@ -290,6 +290,59 @@ describe("sendPrompt (turn/start outbound)", () => {
     expect(turnStart.params).toMatchObject({ effort: "high" }); // effort는 유지.
   });
 
+  it("②-C: turn/start에 설정된 approvalPolicy override(never)를 실어 보낸다", async () => {
+    const { adapter, h } = await startReadySession();
+    h.sent.length = 0;
+    adapter.setTurnOptions!("H", { approvalPolicy: "never" });
+    await adapter.sendPrompt("H", { content: [{ type: "text", text: "hi" }] });
+    const turnStart = h.sent.find(
+      (m) => "method" in m && (m as { method: string }).method === "turn/start",
+    ) as { params: { threadId: string; approvalPolicy?: string } };
+    expect(turnStart.params).toMatchObject({ threadId: "th_1", approvalPolicy: "never" });
+  });
+
+  it("②-C: approvalPolicy 미설정이면 turn/start에 approvalPolicy를 넣지 않는다", async () => {
+    const { adapter, h } = await startReadySession();
+    h.sent.length = 0;
+    adapter.setTurnOptions!("H", { model: "gpt-x" });
+    await adapter.sendPrompt("H", { content: [{ type: "text", text: "hi" }] });
+    const turnStart = h.sent.find(
+      (m) => "method" in m && (m as { method: string }).method === "turn/start",
+    ) as { params: Record<string, unknown> };
+    expect(turnStart.params).not.toHaveProperty("approvalPolicy");
+  });
+
+  it("②-C: setTurnOptions null은 approvalPolicy override를 명시적으로 revert한다", async () => {
+    const { adapter, h } = await startReadySession();
+    adapter.setTurnOptions!("H", { approvalPolicy: "never" });
+    adapter.setTurnOptions!("H", { approvalPolicy: null });
+    h.sent.length = 0;
+    await adapter.sendPrompt("H", { content: [{ type: "text", text: "hi" }] });
+    const turnStart = h.sent.find(
+      (m) => "method" in m && (m as { method: string }).method === "turn/start",
+    ) as { params: Record<string, unknown> };
+    expect(turnStart.params).toHaveProperty("approvalPolicy", null);
+  });
+
+  it("②-C: model/effort/approvalPolicy 부분 업데이트는 서로 clobber하지 않는다", async () => {
+    const { adapter, h } = await startReadySession();
+    // 각각 다른 호출로 설정 — 하나를 갱신해도 나머지는 유지돼야 한다.
+    adapter.setTurnOptions!("H", { model: "gpt-x" });
+    adapter.setTurnOptions!("H", { effort: "high" });
+    adapter.setTurnOptions!("H", { approvalPolicy: "on-request" });
+    adapter.setTurnOptions!("H", { model: "gpt-y" }); // model만 갱신.
+    h.sent.length = 0;
+    await adapter.sendPrompt("H", { content: [{ type: "text", text: "hi" }] });
+    const turnStart = h.sent.find(
+      (m) => "method" in m && (m as { method: string }).method === "turn/start",
+    ) as { params: Record<string, unknown> };
+    expect(turnStart.params).toMatchObject({
+      model: "gpt-y",
+      effort: "high",
+      approvalPolicy: "on-request",
+    });
+  });
+
   it("②-B: listModels가 model/list를 정규화하고 hidden 모델을 제외한다", async () => {
     const h = makeHarness({
       autoRespond: (m) => {
