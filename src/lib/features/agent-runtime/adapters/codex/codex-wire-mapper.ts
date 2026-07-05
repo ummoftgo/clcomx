@@ -570,30 +570,24 @@ export function mapCodexNotification(
     }
 
     // 서버가 권위 thread 설정을 다시 알린다(우리 turn/start override 적용 후, provider default 정규화,
-    // 타 클라이언트 변경 등). approval/sandbox/model/effort 권위값을 metadata로 갱신해 UI 위험 표시가
-    // 실제 thread 정책과 어긋나지 않게 한다(09 §8.2, ②-C). 비밀 아님 — 표시/위험 판정용.
+    // 타 클라이언트 변경 등). approval/sandbox 권위값을 metadata로 갱신해 UI 위험 표시가 실제 thread 정책과
+    // 어긋나지 않게 한다(09 §8.2, ②-C). 비밀 아님 — 표시/위험 판정용. model/effort는 셀렉터가 별도 상태라
+    // 여기서 echo하지 않는다(selector 재조정은 ②-C 범위 밖 후속). ThreadSettings는 권위 full snapshot이다.
     case "thread/settings/updated": {
       const threadId = p.threadId as string;
       const s = (p.threadSettings ?? {}) as {
         approvalPolicy?: unknown;
         approvalsReviewer?: unknown;
         sandboxPolicy?: unknown;
-        model?: unknown;
-        effort?: unknown;
       };
-      // ThreadSettings는 권위 full snapshot이다 — 각 필드를 그대로 반영한다.
-      const metadata: AgentRuntimeMetadataUpdate = {};
-      const approvalPolicy = formatCodexApprovalPolicy(s.approvalPolicy);
-      if (approvalPolicy !== undefined) metadata.approvalPolicy = approvalPolicy;
+      // approvalPolicy는 full snapshot의 권위값이다 — 인식 불가(future/malformed)여도 키를 undefined로 포함해
+      // 이전 안전 scalar를 clear한다. surface는 미상 approval을 fail-closed 고위험으로 떨어뜨린다(Codex medium 17차).
+      const metadata: AgentRuntimeMetadataUpdate = {
+        approvalPolicy: formatCodexApprovalPolicy(s.approvalPolicy),
+      };
       const sandbox = formatCodexSandbox(s.sandboxPolicy);
       if (sandbox !== undefined) metadata.sandbox = sandbox;
       if (typeof s.approvalsReviewer === "string") metadata.approvalsReviewer = s.approvalsReviewer;
-      if (typeof s.model === "string" && s.model) metadata.model = s.model;
-      // effort는 nullable(ReasoningEffort | null) — null이면 명시적 clear(undefined)로 stale effort를 지운다.
-      // shallow merge에서 undefined 값이 이전 값을 덮어써 지운다(Codex medium 11차).
-      if (typeof s.effort === "string" && s.effort) metadata.effort = s.effort;
-      else if (s.effort === null) metadata.effort = undefined; // 키를 만들어(clear) shallow merge가 지운다.
-      if (Object.keys(metadata).length === 0) return [];
       return [{ type: "runtime_metadata_changed", ref: refOf({ threadId }), metadata }];
     }
 

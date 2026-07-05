@@ -218,10 +218,6 @@ export interface AgentRuntimeMetadataUpdate {
   sessionMode?: string;
   /** 세션 모드 전환 후보 목록(provider가 알린 availableModes). 셀렉터 노출용. */
   availableModes?: AgentSessionModeOption[];
-  /** 세션의 실제 current model id(Codex thread/settings/updated 권위 갱신). */
-  model?: string;
-  /** 세션의 실제 current reasoning effort id(Codex thread/settings/updated 권위 갱신). */
-  effort?: string;
 }
 
 /** 슬래시 커맨드 1건(composer 팔레트 소스). provider가 알린 server-side 커맨드. */

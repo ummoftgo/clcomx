@@ -708,6 +708,18 @@ describe("AgentComposer", () => {
     expect(document.activeElement).toBe(getByTestId(TEST_IDS.agentComposerOptionsToggle));
   });
 
+  it("footer: turn 옵션 버튼과 별개로 sandbox/mode indicator를 계속 노출하고 고위험은 강조한다", () => {
+    const { getByTestId, getByText } = render(AgentComposer, {
+      props: approvalProps({ modeLabel: "danger-full-access" }),
+    });
+    // 옵션 버튼과 modeLabel indicator가 함께 렌더된다(indicator가 버튼에 밀려 숨지 않는다).
+    expect(getByTestId(TEST_IDS.agentComposerOptionsToggle)).toBeTruthy();
+    const label = getByText("danger-full-access");
+    expect(label).toBeTruthy();
+    // 전체접근 계열은 warning 강조를 유지한다.
+    expect(label.className).toContain("mode-label--warning");
+  });
+
   it("opens the slash command palette and filters by query", async () => {
     const { getByTestId, queryByTestId, getAllByTestId } = render(AgentComposer, {
       props: {

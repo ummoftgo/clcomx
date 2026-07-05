@@ -476,6 +476,40 @@ describe("sendPrompt (turn/start outbound)", () => {
     const lastStatus = events.filter((e) => e.type === "session_status_changed").pop() as Extract<AgentEvent, { type: "session_status_changed" }>;
     expect(lastStatus.status).toBe("ready");
   });
+
+  it("②-C: 다른 turn이 active(겹친 submit 성공)면 turn/start 실패는 ready로 되돌리지 않는다", async () => {
+    let turnStartCount = 0;
+    const h = makeHarness({
+      autoRespond: (m) => {
+        if (!("method" in m)) return undefined;
+        // 첫 turn/start는 성공(active turn 생성), 두 번째는 아래 send 래퍼가 error 주입.
+        if (m.method === "turn/start") {
+          turnStartCount += 1;
+          if (turnStartCount === 1) return { turn: { id: "t1", status: "inProgress" } };
+          return undefined;
+        }
+        return autoResponder(m);
+      },
+    });
+    const realSend = h.deps.send;
+    h.deps.send = async (rid, message) => {
+      await realSend(rid, message);
+      if ("method" in message && message.method === "turn/start" && turnStartCount === 2) {
+        queueMicrotask(() => h.inject({ id: (message as { id: number }).id, error: { code: -32000, message: "second turn failed" } }));
+      }
+    };
+    const adapter = createCodexAppServerAdapter(h.deps);
+    const events: AgentEvent[] = [];
+    await adapter.startSession({ sessionHandle: "H", provider: "codex", distro: "U", workDir: "/work" });
+    adapter.subscribeEvents("H", (e) => events.push(e));
+    // 첫 submit 성공 → active turn t1 + running.
+    await adapter.sendPrompt("H", { content: [{ type: "text", text: "one" }] });
+    events.length = 0;
+    // 두 번째 submit turn/start 실패 → error는 알리되, active turn t1이 있으므로 ready로 되돌리지 않는다.
+    await adapter.sendPrompt("H", { content: [{ type: "text", text: "two" }] });
+    expect(events.some((e) => e.type === "error" && e.message === "second turn failed")).toBe(true);
+    expect(events.some((e) => e.type === "session_status_changed" && e.status === "ready")).toBe(false);
+  });
 });
 
 describe("provider-backed resource search (OQ-56)", () => {

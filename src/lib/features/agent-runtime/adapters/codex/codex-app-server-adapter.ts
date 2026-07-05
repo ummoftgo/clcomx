@@ -540,10 +540,15 @@ export function createCodexAppServerAdapter(deps: CodexAdapterDeps): AgentRuntim
         turn: { id: string };
       };
     } catch (err) {
-      // H3: turn/start error → setActiveTurn/running 전이 전이라 롤백 대상 없음. error+ready 복원(04 §5).
+      // H3: turn/start error → 이 turn은 setActiveTurn 전이라 롤백 대상 없음. error는 항상 알린다.
       const message = err instanceof Error ? err.message : String(err);
       emitToListeners(rt, { type: "error", ref: { provider: "codex", threadId }, message, recoverable: true });
-      emitToListeners(rt, { type: "session_status_changed", ref: { provider: "codex", threadId }, status: "ready" });
+      // 단 다른 turn이 이미 active(겹친 submit 중 하나가 먼저 성공)면 ready로 되돌리지 않는다 — running 중인
+      // turn을 ready로 덮으면 UI가 stop 버튼·turn 옵션 잠금을 잘못 풀 수 있다(Codex high 17차). active turn이
+      // 없을 때만 ready 복원(04 §5).
+      if (rt.routing.activeTurnOf(threadId) === undefined) {
+        emitToListeners(rt, { type: "session_status_changed", ref: { provider: "codex", threadId }, status: "ready" });
+      }
       return;
     }
     rt.routing.setActiveTurn(threadId, resp.turn.id);

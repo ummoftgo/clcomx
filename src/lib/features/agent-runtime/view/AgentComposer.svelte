@@ -399,6 +399,10 @@
           : $t("agentRuntime.composer.disabled"),
   );
   const visibleModeLabel = $derived(modeLabel?.trim() ?? "");
+  // 표시 라벨이 전체접근/bypass 계열 고위험 값이면 warning 강조를 유지한다(09 §8.3 metadata strip과 정합).
+  const modeLabelHighRisk = $derived(
+    /danger-full-access|bypassPermissions|full access/i.test(visibleModeLabel),
+  );
   const imageAttachAvailable = $derived(capabilities.image === true);
   const hasImageAttachmentFeedback = $derived(imageAttachments.length !== 0 || imageError !== null);
   const canSendPrompt = $derived(
@@ -1081,8 +1085,14 @@
             <span class="options-toggle-risk">{$t("agentRuntime.metadata.highRisk")}</span>
           {/if}
         </button>
-      {:else if visibleModeLabel}
-        <span class="mode-label" title={visibleModeLabel}>{visibleModeLabel}</span>
+      {/if}
+      {#if visibleModeLabel}
+        <!-- sandbox/permission 맥락은 옵션 popover와 별개로 prompt 옆에 계속 노출한다(Codex medium 17차).
+             danger-full-access 등 고위험 표시값은 warning 강조를 유지한다. -->
+        <span
+          class="mode-label"
+          class:mode-label--warning={modeLabelHighRisk}
+          title={visibleModeLabel}>{visibleModeLabel}</span>
       {/if}
     </div>
     <div class="composer-controls">
@@ -1298,6 +1308,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .mode-label--warning {
+    color: var(--ui-danger-text, #d05050);
+    opacity: 1;
   }
   .mode-select {
     padding: 0.1rem 0.3rem;

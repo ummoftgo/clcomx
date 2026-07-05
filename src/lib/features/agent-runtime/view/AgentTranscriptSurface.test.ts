@@ -921,6 +921,22 @@ describe("AgentTranscriptSurface", () => {
     expect(approval).toBeTruthy();
   });
 
+  it("②-C: 인식 불가 approvalPolicy echo(undefined clear)는 stale 안전값을 지우고 fail-closed로 떨어진다", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
+    const metadata = await findByTestId(TEST_IDS.agentRuntimeMetadata);
+    await waitFor(() => expect(metadata.textContent).toContain("on-request"));
+    const toggle = await findByTestId(TEST_IDS.agentComposerOptionsToggle);
+    expect(toggle.textContent).not.toContain("High Risk");
+    // full snapshot echo에서 approvalPolicy가 미인식(undefined) → 이전 on-request를 clear → fail-closed.
+    emit({
+      type: "runtime_metadata_changed",
+      ref: { provider: "codex", threadId: "thread-1", sessionId: "session-tree-1" },
+      metadata: { approvalPolicy: undefined },
+    });
+    await waitFor(() => expect(toggle.textContent).toContain("High Risk"));
+  });
+
   it("②-C: approvalPolicy 미상(replay resume)이면 fail-closed로 고위험 표시한다", async () => {
     // startApprovalPolicy 미지정 → SessionStartResult에 approvalPolicy 없음(thread/read replay 경로 모사).
     const { port } = makeFakePort();

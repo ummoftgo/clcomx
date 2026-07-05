@@ -50,7 +50,7 @@ describe("thread/turn lifecycle (CX-1/CX-3/CX-4)", () => {
     expect(events[0]).toMatchObject({ type: "session_status_changed", status: "requires_action" });
   });
 
-  it("②-C: thread/settings/updated → 권위 approval/sandbox/model/effort를 runtime_metadata_changed로 반영한다", () => {
+  it("②-C: thread/settings/updated → 권위 approval/sandbox를 runtime_metadata_changed로 반영한다(model/effort 제외)", () => {
     const r = new CodexRouting();
     const events = mapCodexNotification(
       "thread/settings/updated",
@@ -67,16 +67,29 @@ describe("thread/turn lifecycle (CX-1/CX-3/CX-4)", () => {
       r,
     );
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      type: "runtime_metadata_changed",
-      metadata: {
-        approvalPolicy: "never",
-        approvalsReviewer: "user",
-        sandbox: "danger-full-access",
-        model: "gpt-x",
-        effort: "high",
-      },
+    const metadata = (events[0] as unknown as { metadata: Record<string, unknown> }).metadata;
+    expect(metadata).toMatchObject({
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: "danger-full-access",
     });
+    // model/effort는 셀렉터 별도 상태라 echo하지 않는다(재조정은 후속).
+    expect("model" in metadata).toBe(false);
+    expect("effort" in metadata).toBe(false);
+  });
+
+  it("②-C: thread/settings/updated의 인식 불가 approvalPolicy는 undefined로 clear한다(fail-closed)", () => {
+    const r = new CodexRouting();
+    const events = mapCodexNotification(
+      "thread/settings/updated",
+      { threadId: "th_1", threadSettings: { approvalPolicy: { futureVariant: {} } } },
+      r,
+    );
+    expect(events).toHaveLength(1);
+    const metadata = (events[0] as unknown as { metadata: Record<string, unknown> }).metadata;
+    // full snapshot의 권위 approvalPolicy가 미인식이면 key를 undefined로 포함해 stale 안전값을 지운다.
+    expect("approvalPolicy" in metadata).toBe(true);
+    expect(metadata.approvalPolicy).toBeUndefined();
   });
 
   it("②-C: thread/settings/updated의 granular approvalPolicy는 'granular'로 축약한다(scalar 아님)", () => {
@@ -90,20 +103,6 @@ describe("thread/turn lifecycle (CX-1/CX-3/CX-4)", () => {
       type: "runtime_metadata_changed",
       metadata: { approvalPolicy: "granular" },
     });
-  });
-
-  it("②-C: thread/settings/updated effort:null은 stale effort를 지우도록 clear를 emit한다", () => {
-    const r = new CodexRouting();
-    const events = mapCodexNotification(
-      "thread/settings/updated",
-      { threadId: "th_1", threadSettings: { approvalPolicy: "on-request", effort: null } },
-      r,
-    );
-    expect(events).toHaveLength(1);
-    const metadata = (events[0] as unknown as { metadata: Record<string, unknown> }).metadata;
-    // effort 키가 undefined로 존재해 shallow merge가 이전 값을 덮어써 지운다.
-    expect("effort" in metadata).toBe(true);
-    expect(metadata.effort).toBeUndefined();
   });
 
   it("CX-4: thread/status/changed systemError → failed", () => {
