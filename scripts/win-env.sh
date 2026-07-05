@@ -7,8 +7,27 @@
 #   CLCOMX_WIN_NODE_DIR=<Windows or WSL path to node.exe directory>
 #   CLCOMX_WIN_EXTRA_PATHS=<extra Windows path list joined by ;>
 
+_resolve_powershell_exe() {
+  # PATH의 powershell.exe를 우선 쓰되, WSL interop PATH가 없는 셸(비로그인/샌드박스)에서는
+  # 표준 시스템 경로로 폴백한다(e2e-smoke-windows.sh와 동일 패턴).
+  if command -v powershell.exe >/dev/null 2>&1; then
+    printf '%s' "powershell.exe"
+    return 0
+  fi
+  local fallback="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+  if [ -x "$fallback" ]; then
+    printf '%s' "$fallback"
+    return 0
+  fi
+  return 1
+}
+
 _run_powershell() {
-  powershell.exe -NoProfile -Command "$1" 2>/dev/null | tr -d '\r'
+  local ps_exe
+  if ! ps_exe="$(_resolve_powershell_exe)"; then
+    return 1
+  fi
+  "$ps_exe" -NoProfile -Command "$1" 2>/dev/null | tr -d '\r'
 }
 
 _normalize_override_dir() {
