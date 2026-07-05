@@ -112,6 +112,8 @@
     resourceSearch?: (query: string) => Promise<ResourceMentionSuggestion[]>;
     /** session/load replay 복원 중인지 여부(복원 중에는 입력을 잠근다). */
     restoring?: boolean;
+    /** prompt submit in-flight 등 turn 옵션 변경을 잠가야 하는지(셀렉터만 잠금, 입력은 유지). */
+    turnOptionsLocked?: boolean;
   }
 
   let {
@@ -138,6 +140,7 @@
     capabilities = DEFAULT_CAPABILITIES,
     resourceSearch,
     restoring = false,
+    turnOptionsLocked = false,
   }: Props = $props();
 
   let draft = $state("");
@@ -166,7 +169,7 @@
   // 진행 중이면 잠가 이중 요청을 막고, 거부 시 권위 값으로 롤백해 provider 상태와의 desync를 막는다.
   let modeChangePending = $state(false);
   const modeSelectEnabled = $derived(
-    !restoring && !modeChangePending && (status === "ready" || status === "idle"),
+    !restoring && !modeChangePending && !turnOptionsLocked && (status === "ready" || status === "idle"),
   );
 
   // 고위험 모드(bypassPermissions 등) 진입은 별도 확인을 거친다 — provider가 request 없이 tool을

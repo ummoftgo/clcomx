@@ -992,6 +992,28 @@ describe("AgentTranscriptSurface", () => {
     await waitFor(() => expect(toggle.textContent).not.toContain("High Risk"));
   });
 
+  it("②-C: prompt submit in-flight 동안 turn 옵션 셀렉터가 잠긴다(sentinel 오커밋 창 차단)", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    // sendPrompt를 수동 제어해 in-flight 창을 만든다.
+    let resolveSend: () => void = () => {};
+    port.sendPrompt = vi.fn().mockImplementation(() => new Promise<void>((r) => (resolveSend = r)));
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    const readyRef = { provider: "codex" as const, threadId: "thread-1", sessionId: "session-tree-1" };
+    emit({ type: "session_status_changed", ref: readyRef, status: "ready" });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.disabled).toBe(false));
+    // prompt 전송 → submit in-flight(turn/start 응답 전) 동안 셀렉터가 잠긴다.
+    const input = (await findByTestId(TEST_IDS.agentComposerInput)) as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: "go" } });
+    await fireEvent.click(await findByTestId(TEST_IDS.agentComposerSend));
+    await waitFor(() => expect(approvalSelect.disabled).toBe(true));
+    // turn/start 응답(submit resolve) 후 잠금 해제.
+    resolveSend();
+    await waitFor(() => expect(approvalSelect.disabled).toBe(false));
+  });
+
   it("②-C: late previous-turn delta(turnId 없는 running)는 sentinel을 커밋하지 않는다(causal)", async () => {
     const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
