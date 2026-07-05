@@ -1014,6 +1014,35 @@ describe("AgentTranscriptSurface", () => {
     await waitFor(() => expect(approvalSelect.disabled).toBe(false));
   });
 
+  it("②-C: 겹친 submit에서 첫 submit이 먼저 settle돼도 두 번째가 pending이면 셀렉터가 계속 잠긴다", async () => {
+    const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
+    const resolvers: Array<() => void> = [];
+    port.sendPrompt = vi.fn().mockImplementation(() => new Promise<void>((r) => resolvers.push(r)));
+    const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });
+    await waitFor(() => expect(port.startSession).toHaveBeenCalledOnce());
+    const readyRef = { provider: "codex" as const, threadId: "thread-1", sessionId: "session-tree-1" };
+    emit({ type: "session_status_changed", ref: readyRef, status: "ready" });
+    await openSurfaceOptions(findByTestId);
+    const approvalSelect = (await findByTestId(TEST_IDS.agentComposerApprovalSelect)) as HTMLSelectElement;
+    await waitFor(() => expect(approvalSelect.disabled).toBe(false));
+    const input = (await findByTestId(TEST_IDS.agentComposerInput)) as HTMLTextAreaElement;
+    const send = await findByTestId(TEST_IDS.agentComposerSend);
+    // 겹친 submit 2건(send는 in-flight 중에도 가능).
+    await fireEvent.input(input, { target: { value: "one" } });
+    await fireEvent.click(send);
+    await fireEvent.input(input, { target: { value: "two" } });
+    await fireEvent.click(send);
+    await waitFor(() => expect(resolvers).toHaveLength(2));
+    await waitFor(() => expect(approvalSelect.disabled).toBe(true));
+    // 첫 submit만 settle → 두 번째가 pending이라 잠금 유지(count>0, 조기 해제 없음).
+    resolvers[0]();
+    await tick();
+    expect(approvalSelect.disabled).toBe(true);
+    // 두 번째까지 settle → 해제.
+    resolvers[1]();
+    await waitFor(() => expect(approvalSelect.disabled).toBe(false));
+  });
+
   it("②-C: late previous-turn delta(turnId 없는 running)는 sentinel을 커밋하지 않는다(causal)", async () => {
     const { port, emit } = makeFakePort({ startApprovalPolicy: "on-request" });
     const { findByTestId } = render(AgentTranscriptSurface, { props: baseProps(port, { onAgentRuntimeMetadataChange: vi.fn() }) });

@@ -477,8 +477,11 @@
   // 정책이라 sentinel 해소에 쓰면 다음 turn 위험(never 가능)을 숨긴다(Codex medium 12차). 이 플래그는
   // sentinel 선택 후 prompt가 전송(null 커밋)됐는지를 추적한다.
   let approvalSentinelCommitted = $state(false);
-  // prompt submit이 turn/start 응답을 받기까지(in-flight) turn 옵션 셀렉터를 잠그는 게이트(Codex high 15차).
-  let submitInFlight = $state(false);
+  // prompt submit이 turn/start 응답을 받기까지(in-flight) turn 옵션 셀렉터를 잠근다(Codex high 15차).
+  // boolean이 아닌 pending count다 — send는 in-flight 중에도 가능해 submit이 겹칠 수 있으므로, 모든 submit이
+  // settle될 때까지 잠금을 유지해 조기 해제로 오커밋 창이 다시 열리지 않게 한다(Codex high 16차).
+  let submitInFlightCount = $state(0);
+  const submitInFlight = $derived(submitInFlightCount > 0);
   // 셀렉터 표시값: 사용자가 고른 값(sentinel 포함) 우선, 없으면 base가 scalar일 때만 그 값(아니면 placeholder).
   const selectedApprovalPolicy = $derived<string | undefined>(
     approvalSelection ?? (approvalBaseIsScalar ? runtimeMetadata?.approvalPolicy : undefined),
@@ -859,11 +862,11 @@
   // 잘못 커밋할 수 있으므로, submit 동안 셀렉터를 잠근다(Codex high 15차). submit promise는 turn/start
   // 성공·실패(H3) 모두에서 resolve하므로 await로 잠금 창을 turn/start 응답까지로 정확히 한정한다.
   async function onSend(content: import("../contracts/normalized").AgentContent[]): Promise<void> {
-    submitInFlight = true;
+    submitInFlightCount += 1;
     try {
       await controller?.submit(content);
     } finally {
-      submitInFlight = false;
+      submitInFlightCount -= 1;
     }
   }
 
