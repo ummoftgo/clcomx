@@ -131,14 +131,16 @@
   async function handleModeChange(event: Event): Promise<void> {
     const select = event.target as HTMLSelectElement;
     const nextModeId = select.value;
+    // 셀렉터는 provider가 확정한 권위 모드(currentModeId)만 표시한다. 사용자의 선택은 요청만 보내고,
+    // 화면 값은 즉시 권위 값으로 되돌린다 — 요청이 수락되면 current_mode_update가 currentModeId를
+    // 갱신해 reactive value 바인딩이 옮기고, 실패/미확정이면 계속 권위 값에 머문다(desync 없음).
+    select.value = currentModeId ?? "";
     if (!onModeChange || nextModeId === (currentModeId ?? "")) return;
     modeChangePending = true;
     try {
       await onModeChange(nextModeId);
-      // 성공: 권위 metadata가 currentModeId를 갱신하면 reactive value 바인딩이 native select를 맞춘다.
     } catch {
-      // 거부/실패: 권위 값(currentModeId)으로 즉시 롤백해 잘못된 모드가 표시되지 않게 한다.
-      select.value = currentModeId ?? "";
+      // 거부/실패: 이미 권위 값으로 표시 중이므로 추가 롤백 불필요.
     } finally {
       modeChangePending = false;
     }

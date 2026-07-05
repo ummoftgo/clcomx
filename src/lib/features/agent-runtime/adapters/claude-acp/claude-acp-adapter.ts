@@ -56,6 +56,12 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
   runtimeId: RuntimeId;
   providerSessionId?: string;
   caps?: ParsedInitialize;
+  /**
+   * set_mode RPC는 성공했으나 provider의 권위 echo(current_mode_update)가 아직 안 온 "요청된 모드".
+   * 이 창에서 도착한 승인 요청은 currentModeId(구값)뿐 아니라 이 pending 값으로도 severity를 보수적으로
+   * 판정한다 — 고위험 모드 전환 직후 승인이 normal로 새는 것을 fail-safe로 막는다. echo가 오면 해제한다.
+   */
+  pendingRequestedMode?: string;
   /** turnId 합성 카운터(04 §turn id 합성). */
   turnSeq: number;
   activeTurnId?: string;
@@ -293,6 +299,8 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     update: { sessionUpdate?: string; currentModeId?: unknown; configOptions?: unknown[] },
   ): AgentRuntimeMetadataUpdate | undefined {
     if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
+      // 권위 echo 도착 — currentModeId가 진실이 되었으므로 pending 보수 판정을 해제한다.
+      rt.pendingRequestedMode = undefined;
       rt.currentModeId = update.currentModeId;
       if (rt.modes) rt.modes = { ...rt.modes, currentModeId: update.currentModeId };
       return { sessionMode: update.currentModeId, permissionMode: update.currentModeId };
@@ -300,6 +308,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (update.sessionUpdate === "config_option_update") {
       const mode = extractModeConfigValue(update.configOptions);
       if (mode) {
+        rt.pendingRequestedMode = undefined;
         rt.currentModeId = mode;
         if (rt.modes) rt.modes = { ...rt.modes, currentModeId: mode };
         return { sessionMode: mode, permissionMode: mode };
@@ -667,6 +676,8 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     const known = rt.modes?.availableModes.some((m) => m.id === modeId) ?? false;
     if (!known) throw new Error(`claude adapter: unknown session mode: ${modeId}`);
     await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
+    // 수락됨. 권위 echo 전 창의 승인 severity를 보수적으로 판정하도록 요청 모드를 기억한다(echo 시 해제).
+    rt.pendingRequestedMode = modeId;
   }
 
   /** subscribeEvents: listener 등록 → AgentEvent 수신. 반환된 fn으로 해제. */

@@ -143,7 +143,7 @@ describe("AgentComposer", () => {
     expect(onModeChange).toHaveBeenCalledWith("plan");
   });
 
-  it("mode selector: 거부되면 셀렉터를 권위 값으로 롤백한다", async () => {
+  it("mode selector: 요청만 보내고 화면 값은 권위 값에 머문다(수락 전/거부 모두 desync 없음)", async () => {
     const onModeChange = vi.fn().mockRejectedValue(new Error("rejected"));
     const { getByTestId } = render(AgentComposer, {
       props: {
@@ -163,8 +163,31 @@ describe("AgentComposer", () => {
     const select = getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement;
     await fireEvent.change(select, { target: { value: "plan" } });
     expect(onModeChange).toHaveBeenCalledWith("plan");
-    // 거부 후 권위 값(default)으로 롤백된다.
+    // 선택 즉시 권위 값(default)으로 되돌아가고, 거부돼도 그대로 유지된다(비권위 모드 미표시).
     await waitFor(() => expect(select.value).toBe("default"));
+  });
+
+  it("mode selector: 권위 currentModeId가 갱신되면 셀렉터가 그 값으로 이동한다", async () => {
+    const { getByTestId, rerender } = render(AgentComposer, {
+      props: {
+        status: "ready",
+        providerLabel: "claude",
+        onSend: vi.fn(),
+        onStop: vi.fn(),
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+        currentModeId: "default",
+        onModeChange: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const select = getByTestId(TEST_IDS.agentComposerModeSelect) as HTMLSelectElement;
+    expect(select.value).toBe("default");
+
+    // provider echo로 currentModeId가 갱신된 상황을 재현한다.
+    await rerender({ currentModeId: "plan" });
+    expect(select.value).toBe("plan");
   });
 
   it("mode selector: 비-idle/ready 상태에서는 비활성이다", () => {

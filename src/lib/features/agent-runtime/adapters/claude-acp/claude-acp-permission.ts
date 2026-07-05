@@ -37,10 +37,13 @@ function mapOptionKind(kind: AcpPermissionOption["kind"]): ApprovalOption["kind"
  */
 export function classifySeverity(
   params: AcpRequestPermissionParams,
-  ctx: { currentModeId?: string },
+  ctx: { currentModeId?: string; pendingRequestedMode?: string },
 ): ApprovalRequest["severity"] {
-  // 신호 1: 현재 mode가 bypassPermissions(고위험 모드 하의 승인).
-  if (ctx.currentModeId === "bypassPermissions") return "escalation";
+  // 신호 1: 현재 mode 또는 확정 대기 중인 요청 mode가 bypassPermissions(고위험 모드 하의 승인).
+  // set_mode RPC 성공 후 권위 echo 전 창에서도 fail-safe로 escalation 처리한다.
+  if (ctx.currentModeId === "bypassPermissions" || ctx.pendingRequestedMode === "bypassPermissions") {
+    return "escalation";
+  }
   // 신호 2: 옵션에 bypassPermissions 노출(ExitPlanMode ALLOW_BYPASS, ref-claude-agent-acp §3).
   const exposesBypass = params.options.some(
     (o) => o.optionId === "bypassPermissions" || /bypass/i.test(o.optionId),
@@ -54,7 +57,7 @@ export function classifySeverity(
  * 원본 JSON-RPC id는 **타입 보존**(R3): rpcId에 원본(string|number), ref.requestId/request.id는 String(id) 문자열 키.
  */
 export function mapRequestPermission(
-  rt: { providerSessionId?: string; activeTurnId?: string; currentModeId?: string },
+  rt: { providerSessionId?: string; activeTurnId?: string; currentModeId?: string; pendingRequestedMode?: string },
   msg: JsonRpcMessage,
 ): { event: AgentEvent; pending: PendingApproval } {
   const m = msg as { id: string | number; params: AcpRequestPermissionParams };
@@ -80,7 +83,10 @@ export function mapRequestPermission(
     title: params.toolCall?.title ?? "",
     toolCallId,
     options,
-    severity: classifySeverity(params, { currentModeId: rt.currentModeId }),
+    severity: classifySeverity(params, {
+      currentModeId: rt.currentModeId,
+      pendingRequestedMode: rt.pendingRequestedMode,
+    }),
   };
   const pending: PendingApproval = { rpcId: id, ref, request };
   return { event: { type: "approval_requested", ref, request }, pending };

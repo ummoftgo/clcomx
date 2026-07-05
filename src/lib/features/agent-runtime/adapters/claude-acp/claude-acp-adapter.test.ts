@@ -289,6 +289,42 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(metadataEvents(events).length).toBe(0);
   });
 
+  it("setSessionMode: RPC 성공 후 echo 전 도착한 승인은 요청 모드(bypassPermissions)로 escalation 판정한다", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }] },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    // bypassPermissions로 전환 RPC 성공(아직 current_mode_update echo 없음).
+    const setPromise = adapter.setSessionMode!("A", "bypassPermissions");
+    await h.respondToLast("session/set_mode", {});
+    await setPromise;
+
+    // echo 전 창에 승인 요청이 먼저 도착 — currentModeId는 아직 default지만 pending 요청 모드로 보수 판정.
+    h.inject({
+      jsonrpc: "2.0",
+      id: 501,
+      method: "session/request_permission",
+      params: {
+        sessionId: "sess-1",
+        toolCall: { toolCallId: "tc-1", title: "run" },
+        options: [{ optionId: "allow", name: "Allow" }],
+      },
+    });
+
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
+      | { request: { severity: string } }
+      | undefined;
+    expect(approvalEvent?.request.severity).toBe("escalation");
+  });
+
   it("setSessionMode: availableModes에 없는 모드는 wire 전송 없이 거부한다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
