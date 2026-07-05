@@ -1,3 +1,4 @@
+import { createCipheriv, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { By, type WebDriver } from "selenium-webdriver";
@@ -184,6 +185,39 @@ export function seedTranscriptCacheFile(
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, `transcript-${encodeSessionHandleForFileName(sessionHandle)}.json`);
   fs.writeFileSync(filePath, JSON.stringify(snapshot), "utf8");
+}
+
+/**
+ * test-mode 고정 앱 키. backend `secret_store::TEST_MODE_APP_KEY`와 바이트가 동일해야 한다
+ * (`CLCOMX_TEST_MODE`에서 backend가 OS 키스토어 대신 이 키를 쓰므로, E2E가 같은 키로
+ * 재개 id 파일을 시드하면 앱의 실제 TB-5 복호화 경로가 그대로 검증된다).
+ */
+const TEST_MODE_APP_KEY = Buffer.from("clcomx-test-mode-app-key-0123456", "ascii");
+
+/**
+ * `<stateDir>/agent-runtime/resume-<encoded sessionHandle>.enc`에 backend
+ * `secret_store::encrypt_resume_keys`와 동일한 형식(nonce(12) || ciphertext||authTag,
+ * AES-256-GCM)으로 암호화 재개 id를 시드한다. test-mode 고정 키 전용(E2E-13a).
+ */
+export function seedResumeKeysFile(
+  stateDir: string,
+  sessionHandle: string,
+  keys: {
+    providerThreadId?: string;
+    providerSessionId?: string;
+    canResume: boolean;
+    canLoad: boolean;
+  },
+): void {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", TEST_MODE_APP_KEY, nonce);
+  const plaintext = Buffer.from(JSON.stringify(keys), "utf8");
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  const dir = path.join(stateDir, "agent-runtime");
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `resume-${encodeSessionHandleForFileName(sessionHandle)}.enc`);
+  fs.writeFileSync(filePath, Buffer.concat([nonce, ciphertext, authTag]));
 }
 
 /** E2E-13a/13b에서 read-only 즉시표시 검증용으로 쓰는 최소 transcript 캐시 스냅샷을 만든다. */

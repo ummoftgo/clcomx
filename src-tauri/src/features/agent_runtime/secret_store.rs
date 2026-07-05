@@ -57,7 +57,15 @@ fn decode_app_key(b64: &str) -> Result<[u8; 32], SecretStoreError> {
 }
 
 /// OS 키스토어에서 앱 키를 로드하고, 없으면 32바이트를 새로 생성해 저장한 뒤 반환한다.
+/// test-mode(E2E) 전용 고정 앱 키. E2E harness가 같은 키로 재개 id 파일을 시드해
+/// TB-5 복호화 경로를 실제로 검증할 수 있게 한다(`e2e/helpers/agent-runtime.ts`와 바이트 동일 유지).
+/// `CLCOMX_TEST_MODE`에서만 쓰이며 OS 키스토어는 접근하지 않는다 — 프로덕션 키 경로 불변.
+const TEST_MODE_APP_KEY: &[u8; 32] = b"clcomx-test-mode-app-key-0123456";
+
 pub fn load_or_create_app_key() -> Result<[u8; 32], SecretStoreError> {
+    if crate::app_env::is_test_mode() {
+        return Ok(*TEST_MODE_APP_KEY);
+    }
     let entry = keyring::Entry::new(KEYSTORE_SERVICE, KEYSTORE_USER)
         .map_err(|e| SecretStoreError::Keystore(e.to_string()))?;
     match entry.get_password() {
@@ -254,6 +262,36 @@ mod tests {
         assert_eq!(rk, back);
         // 다른 키로는 복호화 실패(무결성).
         assert!(decrypt_resume_keys(&blob, &[9u8; 32]).is_err());
+    }
+
+    // ===== test-mode 고정 앱 키 테스트 (키스토어 비의존) =====
+
+    #[test]
+    fn test_mode_uses_fixed_app_key_without_keystore() {
+        let _tm = crate::app_env::test_support::set_test_mode_env();
+        // 키스토어 데몬이 없는 이 환경에서도 성공해야 한다(키스토어 미접근 증명).
+        let key = load_or_create_app_key().expect("test-mode key");
+        assert_eq!(&key, TEST_MODE_APP_KEY);
+    }
+
+    #[test]
+    fn test_mode_save_load_clear_round_trip_without_keystore() {
+        // test-mode 고정 키 덕에 (기존 #[ignore] 키스토어 테스트와 달리) CI에서도 파일
+        // 저장/로드/삭제 왕복을 검증할 수 있다 — E2E harness 시드와 같은 경로/형식.
+        let _tm = crate::app_env::test_support::set_test_mode_env();
+        let _g = crate::app_env::test_support::set_state_dir_env(
+            &std::env::temp_dir().join("clcomx-oq16-testmode"),
+        );
+        let rk = ResumeKeys {
+            provider_thread_id: Some("t-mock".into()),
+            provider_session_id: None,
+            can_resume: true,
+            can_load: false,
+        };
+        save_resume_keys("H-tm", &rk).expect("save");
+        assert_eq!(load_resume_keys("H-tm").expect("load"), Some(rk));
+        clear_resume_keys("H-tm").expect("clear");
+        assert_eq!(load_resume_keys("H-tm").expect("load"), None);
     }
 
     // ===== 세션별 재개 id 파일 저장/로드/삭제 테스트 =====

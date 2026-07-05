@@ -22,6 +22,7 @@ import {
   clickAgentApprovalOption,
   clickAgentToolLocation,
   countVisibleTestIds,
+  seedResumeKeysFile,
   seedTranscriptCacheFile,
   sendAgentComposerValue,
   waitForAgentTranscriptText,
@@ -601,17 +602,23 @@ describe.skipIf(process.platform !== "win32")("CLCOMX agent-runtime pack", () =>
     const stateDir = createE2eStateDir("clcomx-e2e-agent-hybrid-restore-");
     const sessionId = "direct-hybrid-resume-session";
 
-    // 암호화 재개 id + 캐시가 모두 있는 하이브리드 복원 상태를 시드한다. 재개 id 파일(AES-GCM,
-    // OS 키스토어 앱 키 필요)은 이 E2E harness에서 직접 만들 수 없으므로, workspace.json의
-    // agentRuntime.providerThreadId/canResume/canLoad로 같은 조건(resume 가능)을 재현한다 —
-    // AgentTranscriptSurface.buildResumeConfig는 loadResumeKeys가 비어 있으면 props.agentRuntime로
-    // 폴백하므로(코드 경로는 동일) 이 seed로도 hybrid resume 분기를 그대로 검증할 수 있다.
+    // 암호화 재개 id + 캐시가 모두 있는 하이브리드 복원 상태를 시드한다. workspace.json의
+    // provider id는 backend가 로드 경로에서도 scrub하므로(store.rs read 경로 방어) 폴백 소스가
+    // 될 수 없다 — 재개 id는 test-mode 고정 앱 키로 암호화한 **실제 저장소 파일**로 시드해
+    // 앱의 TB-5 복호화 → resume 경로를 그대로 검증한다. canLoad=false로 replay 없는
+    // resume(thread/resume)을 태워 캐시가 read-only로 유지된 채 세션이 이어진다(10 §4.4a —
+    // replay 없는 재개는 provider가 히스토리를 재방출하지 않으므로 캐시를 유지).
     writeSeededDirectWorkspace(stateDir, {
       sessionId,
       agentId: "codex",
       canResume: true,
-      canLoad: true,
+      canLoad: false,
       providerThreadId: "t-mock",
+    });
+    seedResumeKeysFile(stateDir, sessionId, {
+      providerThreadId: "t-mock",
+      canResume: true,
+      canLoad: false,
     });
     seedTranscriptCacheFile(
       stateDir,
