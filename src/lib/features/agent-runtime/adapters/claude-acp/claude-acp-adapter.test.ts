@@ -222,49 +222,41 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "plan", permissionMode: "plan" });
   });
 
-  it("setSessionMode: 이전 요청의 늦은 current_mode_update가 최신 요청 확정을 오염시키지 않는다", async () => {
-    // 낙관적 반영이 없으므로 모든 모드 표시는 provider echo의 arrival order로 수렴한다:
-    // plan 성공 → (아직 echo 없음) → acceptEdits 성공 → 늦은 plan echo 도착 → acceptEdits echo 도착.
+  it("setSessionMode: 직렬화 — 앞 전환의 권위 echo 전까지 다음 전환의 set_mode를 보내지 않는다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
     const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
     await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
     await h.respondToLast("session/new", {
       sessionId: "sess-1",
-      modes: {
-        currentModeId: "default",
-        availableModes: [
-          { id: "default", name: "Default" },
-          { id: "plan", name: "Plan" },
-          { id: "acceptEdits", name: "Accept Edits" },
-        ],
-      },
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "acceptEdits", name: "Accept Edits" }] },
     });
     await startPromise;
     const events: AgentEvent[] = [];
     adapter.subscribeEvents("A", (e) => events.push(e));
 
+    const setModeReqs = () => h.outbound.filter((m) => "method" in m && m.method === "session/set_mode") as { id: string | number }[];
+
+    // plan 전환: RPC 성공(promise resolve)해도 echo 전까지 체인은 hold된다.
     const first = adapter.setSessionMode!("A", "plan");
-    await h.respondToLast("session/set_mode", {});
+    const planReq = (await h.waitForOutbound("session/set_mode")) as { id: string | number };
+    h.inject({ jsonrpc: "2.0", id: planReq.id, result: {} });
     await first;
+
+    // 다음 전환을 큐에 넣는다 — 아직 plan echo가 없으므로 acceptEdits의 set_mode는 전송되지 않는다.
     const second = adapter.setSessionMode!("A", "acceptEdits");
-    await h.respondToLast("session/set_mode", {});
+    await new Promise((r) => setTimeout(r, 0));
+    expect(setModeReqs().length).toBe(1); // plan 것 하나뿐(hold).
+
+    // plan echo가 오면 체인이 진행돼 acceptEdits set_mode가 전송된다.
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } } });
+    await vi.waitFor(() => expect(setModeReqs().length).toBe(2));
+    const acceptReq = setModeReqs()[1];
+    h.inject({ jsonrpc: "2.0", id: acceptReq.id, result: {} });
     await second;
 
-    // provider echo가 요청 순서대로 도착한다(plan 먼저, acceptEdits 나중).
-    h.inject({
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } },
-    });
-    h.inject({
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "acceptEdits" } },
-    });
-
-    // 최종 권위 값은 마지막 echo(acceptEdits)다 — 낙관적 반영이 없어 이전 요청의 echo가 최신을 덮지 않는다.
-    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "acceptEdits", permissionMode: "acceptEdits" });
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "acceptEdits" } } });
+    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "acceptEdits" });
   });
 
   it("setSessionMode: RPC 실패는 reject되고 모드 표시를 바꾸지 않는다", async () => {
@@ -289,42 +281,6 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     expect(metadataEvents(events).length).toBe(0);
   });
 
-  it("setSessionMode: RPC 성공 후 echo 전 도착한 승인은 요청 모드(bypassPermissions)로 escalation 판정한다", async () => {
-    const h = makeHarness();
-    const adapter = createClaudeAcpAdapter(h.deps);
-    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
-    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
-    await h.respondToLast("session/new", {
-      sessionId: "sess-1",
-      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }] },
-    });
-    await startPromise;
-    const events: AgentEvent[] = [];
-    adapter.subscribeEvents("A", (e) => events.push(e));
-
-    // bypassPermissions로 전환 RPC 성공(아직 current_mode_update echo 없음).
-    const setPromise = adapter.setSessionMode!("A", "bypassPermissions");
-    await h.respondToLast("session/set_mode", {});
-    await setPromise;
-
-    // echo 전 창에 승인 요청이 먼저 도착 — currentModeId는 아직 default지만 pending 요청 모드로 보수 판정.
-    h.inject({
-      jsonrpc: "2.0",
-      id: 501,
-      method: "session/request_permission",
-      params: {
-        sessionId: "sess-1",
-        toolCall: { toolCallId: "tc-1", title: "run" },
-        options: [{ optionId: "allow", name: "Allow" }],
-      },
-    });
-
-    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
-      | { request: { severity: string } }
-      | undefined;
-    expect(approvalEvent?.request.severity).toBe("escalation");
-  });
-
   it("setSessionMode: set_mode 응답 전 도착한 승인도 요청 모드(bypass)로 escalation 판정한다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
@@ -338,27 +294,56 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     const events: AgentEvent[] = [];
     adapter.subscribeEvents("A", (e) => events.push(e));
 
-    // set_mode를 냈지만 아직 응답하지 않은 상태(in-flight).
+    // set_mode를 냈지만 아직 응답하지 않은 상태(in-flight) — pending이 전송 전부터 잡힌다.
     const setPromise = adapter.setSessionMode!("A", "bypassPermissions");
     await h.waitForOutbound("session/set_mode");
 
-    // 응답 전에 승인 요청이 먼저 도착 — pending이 in-flight 단계부터 잡혀 escalation이어야 한다.
     h.inject({
       jsonrpc: "2.0",
       id: 701,
       method: "session/request_permission",
       params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-3", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
     });
-    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
-      | { request: { severity: string } }
-      | undefined;
-    expect(approvalEvent?.request.severity).toBe("escalation");
+    const beforeResp = events.find((e) => (e as { type: string }).type === "approval_requested") as { request: { severity: string } } | undefined;
+    expect(beforeResp?.request.severity).toBe("escalation");
 
     await h.respondToLast("session/set_mode", {});
     await setPromise;
   });
 
-  it("setSessionMode: RPC 실패 시 이 시도가 남긴 pending을 되돌린다(정리 불변식)", async () => {
+  it("setSessionMode: RPC 성공 후 echo 전 도착한 승인도 escalation, echo 후에는 currentModeId 기준", async () => {
+    const h = makeHarness();
+    const adapter = createClaudeAcpAdapter(h.deps);
+    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
+    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+    await h.respondToLast("session/new", {
+      sessionId: "sess-1",
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }] },
+    });
+    await startPromise;
+    const events: AgentEvent[] = [];
+    adapter.subscribeEvents("A", (e) => events.push(e));
+
+    const setPromise = adapter.setSessionMode!("A", "bypassPermissions");
+    await h.respondToLast("session/set_mode", {});
+    await setPromise;
+
+    // echo 전: pendingHighRiskMode로 escalation.
+    h.inject({
+      jsonrpc: "2.0",
+      id: 601,
+      method: "session/request_permission",
+      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-x", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
+    });
+    const preEcho = events.find((e) => (e as { type: string }).type === "approval_requested") as { request: { severity: string } } | undefined;
+    expect(preEcho?.request.severity).toBe("escalation");
+
+    // bypass echo 도착 → pending 해제, currentModeId=bypass(그 자체로 escalation).
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } } });
+    expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "bypassPermissions" });
+  });
+
+  it("setSessionMode: RPC 실패 시 pending을 해제해 이후 승인이 normal이다", async () => {
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
     const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
@@ -376,157 +361,59 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     h.inject({ jsonrpc: "2.0", id: req.id, error: { code: -32000, message: "rejected" } });
     await expect(setPromise).rejects.toBeTruthy();
 
-    // 실패로 pending이 해제됐으므로, 이후 승인은 currentModeId(default) 기준 normal이다.
     h.inject({
       jsonrpc: "2.0",
       id: 702,
       method: "session/request_permission",
       params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-4", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
     });
-    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
-      | { request: { severity: string } }
-      | undefined;
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as { request: { severity: string } } | undefined;
     expect(approvalEvent?.request.severity).toBe("normal");
   });
 
-  it("setSessionMode: 미확정 bypass 뒤 하위 모드 재요청이 fail-safe를 덮지 못한다", async () => {
+  it("setSessionMode: 직렬화로 미확정 전환은 항상 1건 — bypass 대기 중 승인은 escalation", async () => {
+    // 직렬화 + hold-until-echo이므로 bypass의 echo 전에는 다음 전환(plan)이 시작조차 안 되어
+    // 미확정 고위험이 다른 요청에 덮이거나 이중 소거될 여지가 없다(Codex 8~11 근본 차단).
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
     const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
     await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
     await h.respondToLast("session/new", {
       sessionId: "sess-1",
-      modes: {
-        currentModeId: "default",
-        availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass" }],
-      },
+      modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass" }] },
     });
     await startPromise;
     const events: AgentEvent[] = [];
     adapter.subscribeEvents("A", (e) => events.push(e));
 
-    // bypass 전환 성공(echo 아직 없음).
+    const setModeReqs = () => h.outbound.filter((m) => "method" in m && m.method === "session/set_mode") as { id: string | number }[];
+
     const bypass = adapter.setSessionMode!("A", "bypassPermissions");
-    await h.respondToLast("session/set_mode", {});
+    const bypassReq = (await h.waitForOutbound("session/set_mode")) as { id: string | number };
+    h.inject({ jsonrpc: "2.0", id: bypassReq.id, result: {} });
     await bypass;
 
-    // 그 사이 하위 모드(plan)를 다시 요청(성공). 카운터라서 미확정 bypass fail-safe를 덮지 않는다.
+    // 다음 전환(plan) 큐잉 — bypass echo 전이라 아직 시작 안 됨. 이 시점 승인은 미확정 bypass로 escalation.
     const plan = adapter.setSessionMode!("A", "plan");
-    await h.respondToLast("session/set_mode", {});
-    await plan;
-
-    // 두 echo 모두 오기 전에 승인 요청 도착 — currentModeId=default지만 미확정 bypass가 있어 escalation.
     h.inject({
       jsonrpc: "2.0",
       id: 801,
       method: "session/request_permission",
       params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-5", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
     });
-    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
-      | { request: { severity: string } }
-      | undefined;
+    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as { request: { severity: string } } | undefined;
     expect(approvalEvent?.request.severity).toBe("escalation");
-  });
 
-  it("setSessionMode: 반복 고위험 전환에서 첫 bypass echo가 이후 미확정 bypass를 지우지 않는다", async () => {
-    const h = makeHarness();
-    const adapter = createClaudeAcpAdapter(h.deps);
-    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
-    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
-    await h.respondToLast("session/new", {
-      sessionId: "sess-1",
-      modes: {
-        currentModeId: "default",
-        availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass" }],
-      },
-    });
-    await startPromise;
-    const events: AgentEvent[] = [];
-    adapter.subscribeEvents("A", (e) => events.push(e));
-
-    // bypass → plan → bypass (세 요청 모두 성공, echo는 아직).
-    const b1 = adapter.setSessionMode!("A", "bypassPermissions");
-    await h.respondToLast("session/set_mode", {});
-    await b1;
-    const p = adapter.setSessionMode!("A", "plan");
-    await h.respondToLast("session/set_mode", {});
-    await p;
-    const b2 = adapter.setSessionMode!("A", "bypassPermissions");
-    await h.respondToLast("session/set_mode", {});
-    await b2;
-
-    // 첫 bypass echo + plan echo가 도착(두 번째 bypass echo는 아직). count: 2 → (bypass echo)1 → (plan echo)1.
+    // bypass echo → pending 해제, 체인 진행 → plan set_mode 전송/응답.
     h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } } });
-    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } } });
-
-    // 이 시점 currentModeId=plan(저위험)이지만 미확정 bypass가 1건 남아 approval은 escalation이어야 한다.
-    h.inject({
-      jsonrpc: "2.0",
-      id: 901,
-      method: "session/request_permission",
-      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-6", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
-    });
-    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
-      | { request: { severity: string } }
-      | undefined;
-    expect(approvalEvent?.request.severity).toBe("escalation");
+    await vi.waitFor(() => expect(setModeReqs().length).toBe(2));
+    h.inject({ jsonrpc: "2.0", id: setModeReqs()[1].id, result: {} });
+    await plan;
   });
 
-  it("setSessionMode: 같은 bypass transition이 두 variant(current/config)로 와도 한 번만 차감한다", async () => {
-    const h = makeHarness();
-    const adapter = createClaudeAcpAdapter(h.deps);
-    const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
-    await h.respondToLast("initialize", { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
-    await h.respondToLast("session/new", {
-      sessionId: "sess-1",
-      modes: {
-        currentModeId: "default",
-        availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass" }],
-      },
-    });
-    await startPromise;
-    const events: AgentEvent[] = [];
-    adapter.subscribeEvents("A", (e) => events.push(e));
-
-    // bypass → bypass (두 요청 성공, echo 아직). count=2.
-    const b1 = adapter.setSessionMode!("A", "bypassPermissions");
-    await h.respondToLast("session/set_mode", {});
-    await b1;
-    const b2 = adapter.setSessionMode!("A", "bypassPermissions");
-    await h.respondToLast("session/set_mode", {});
-    await b2;
-
-    // 첫 bypass transition이 current_mode_update + config_option_update 두 variant로 도착.
-    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } } });
-    h.inject({
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: {
-        sessionId: "sess-1",
-        update: {
-          sessionUpdate: "config_option_update",
-          configOptions: [{ id: "mode", name: "Mode", type: "select", currentValue: "bypassPermissions", options: [{ id: "bypassPermissions", name: "Bypass" }] }],
-        },
-      },
-    });
-
-    // 두 variant는 같은 transition이므로 count는 2→1(한 번만 차감). 이후 plan echo로 currentModeId 저위험 전환.
-    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } } });
-
-    // 미확정 bypass 1건이 남아 approval은 escalation이어야 한다.
-    h.inject({
-      jsonrpc: "2.0",
-      id: 1001,
-      method: "session/request_permission",
-      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-7", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
-    });
-    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
-      | { request: { severity: string } }
-      | undefined;
-    expect(approvalEvent?.request.severity).toBe("escalation");
-  });
-
-  it("setSessionMode: 비매칭 stale echo는 고위험 pending fail-safe를 풀지 않는다", async () => {
+  it("setSessionMode: 같은 transition의 중복 variant echo는 하나의 확정으로만 소비된다", async () => {
+    // 직렬화라 미확정은 1건 — 첫 variant echo가 그 전환을 확정하고, 같은 transition의 두 번째
+    // variant는 대기자가 없어 추가 소비가 없다(이중 소거 없음).
     const h = makeHarness();
     const adapter = createClaudeAcpAdapter(h.deps);
     const startPromise = adapter.startSession({ sessionHandle: "A", provider: "claude", distro: "Ubuntu", workDir: "/home/u/proj" });
@@ -539,36 +426,18 @@ describe("Claude ACP adapter — mode metadata (09 §8)", () => {
     const events: AgentEvent[] = [];
     adapter.subscribeEvents("A", (e) => events.push(e));
 
-    // bypass 전환 성공 → pendingRequestedMode=bypassPermissions.
-    const setPromise = adapter.setSessionMode!("A", "bypassPermissions");
+    const bypass = adapter.setSessionMode!("A", "bypassPermissions");
     await h.respondToLast("session/set_mode", {});
-    await setPromise;
+    await bypass;
 
-    // 실제 bypass echo 전에 저위험 stale echo(default)가 먼저 도착한다.
+    // 첫 variant(current)가 확정 → pending 해제. 두 번째 variant(config)는 대기자 없음(무해).
+    h.inject({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } } });
     h.inject({
       jsonrpc: "2.0",
       method: "session/update",
-      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "default" } },
+      params: { sessionId: "sess-1", update: { sessionUpdate: "config_option_update", configOptions: [{ id: "mode", name: "Mode", type: "select", currentValue: "bypassPermissions", options: [{ id: "bypassPermissions", name: "Bypass" }] }] } },
     });
-
-    // 그 뒤 승인 요청 도착 — currentModeId는 default(저위험)지만 고위험 pending이 유지돼 escalation이어야 한다.
-    h.inject({
-      jsonrpc: "2.0",
-      id: 601,
-      method: "session/request_permission",
-      params: { sessionId: "sess-1", toolCall: { toolCallId: "tc-2", title: "run" }, options: [{ optionId: "allow", name: "Allow" }] },
-    });
-    const approvalEvent = events.find((e) => (e as { type: string }).type === "approval_requested") as
-      | { request: { severity: string } }
-      | undefined;
-    expect(approvalEvent?.request.severity).toBe("escalation");
-
-    // 실제 bypass echo가 오면 pending이 해제된다(이후 승인은 currentModeId 기준).
-    h.inject({
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: { sessionId: "sess-1", update: { sessionUpdate: "current_mode_update", currentModeId: "bypassPermissions" } },
-    });
+    // currentModeId=bypass이므로 승인은 escalation(정상). 이중 variant가 상태를 깨지 않는다.
     expect(lastMetadataEvent(events)?.metadata).toMatchObject({ sessionMode: "bypassPermissions" });
   });
 

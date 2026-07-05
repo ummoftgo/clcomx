@@ -57,18 +57,15 @@ interface ClaudeAcpSessionRuntime extends SessionUpdateRuntime {
   providerSessionId?: string;
   caps?: ParsedInitialize;
   /**
-   * 아직 provider 권위 echo로 확정되지 않은 **고위험(bypassPermissions) 모드 전환 시도** 수.
-   * 전송 전부터 증가시키고(응답 전 창 보호), RPC 실패 시 감소, 고위험 echo 확정 시 0으로 리셋한다.
-   * severity는 이 값이 >0이면 보수적으로 escalation 판정한다 — 하위 모드 재요청은 이 카운터를
-   * 건드리지 않으므로 미확정 고위험 전환을 하위 요청이 덮어 승인이 normal로 새는 것을 막는다(fail-safe).
+   * 현재 미확정 전환이 고위험(bypassPermissions)인지. 모드 변경은 직렬화되고 각 전환은 provider의
+   * 다음 권위 mode echo까지 hold되므로 미확정 전환은 항상 최대 1건 — 그래서 boolean 하나로 충분하다.
+   * severity는 이 값이 true면(또는 currentModeId가 bypass면) 보수적으로 escalation 판정한다(fail-safe).
    */
-  pendingHighRiskModeCount: number;
-  /**
-   * 마지막으로 관측한 권위 mode echo 값(current_mode_update / config_option_update 공통).
-   * 같은 transition이 두 variant로 중복 도착할 때(값이 직전과 동일) 고위험 카운터를 이중 차감하지
-   * 않도록 dedup 기준으로 쓴다 — transition 경계는 "값 변화"로 본다(Codex 10차).
-   */
-  lastEchoedModeId?: string;
+  pendingHighRiskMode: boolean;
+  /** 모드 변경 직렬화 체인(요청 순서 보존 + 미확정 1건 보장). */
+  modeChangeChain: Promise<void>;
+  /** 다음 권위 mode echo를 기다리는 resolver 큐(직렬화라 사실상 최대 1개). echo 도착 시 하나 소비. */
+  modeEchoWaiters: Array<() => void>;
   /** turnId 합성 카운터(04 §turn id 합성). */
   turnSeq: number;
   activeTurnId?: string;
@@ -305,20 +302,15 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     return mode === "bypassPermissions";
   }
 
-  /**
-   * provider 권위 echo 도착 시 미확정 고위험 pending 카운터를 조정한다.
-   * 고위험(bypassPermissions) echo는 미확정 고위험 전환 1건이 확정된 것으로 보고 **1만 감소**한다
-   * (floor 0) — reset-to-0으로 하면 첫 echo가 이후의 다른 미확정 bypass까지 지워 반복/역전 전환에서
-   * fail-safe가 뚫린다(Codex 9차). 저위험(비-bypass) echo는 고위험 전환의 실제 echo가 아니므로
-   * 카운터를 건드리지 않는다(stale 저위험 echo가 fail-safe를 조기에 풀지 못하게, Codex 6차).
-   */
-  function resetPendingHighRiskOnEcho(rt: ClaudeAcpSessionRuntime, echoMode: string): void {
-    // 같은 transition의 중복 variant echo(값 동일)는 이중 차감하지 않는다.
-    if (echoMode === rt.lastEchoedModeId) return;
-    rt.lastEchoedModeId = echoMode;
-    if (isHighRiskMode(echoMode) && rt.pendingHighRiskModeCount > 0) {
-      rt.pendingHighRiskModeCount -= 1;
-    }
+  /** 권위 mode echo 도착 — 대기 중인 전환 1건의 확정으로 소비한다(직렬화라 최대 1개 대기). */
+  function consumeModeEchoConfirmation(rt: ClaudeAcpSessionRuntime): void {
+    const waiter = rt.modeEchoWaiters.shift();
+    if (waiter) waiter();
+  }
+
+  /** 다음 권위 mode echo까지 대기하는 promise. echo 도착 시 consumeModeEchoConfirmation이 resolve한다. */
+  function waitForNextModeEcho(rt: ClaudeAcpSessionRuntime): Promise<void> {
+    return new Promise<void>((resolve) => rt.modeEchoWaiters.push(resolve));
   }
 
   /** ACP session/update에서 metadata로 노출할 mode patch를 추출한다. */
@@ -327,7 +319,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     update: { sessionUpdate?: string; currentModeId?: unknown; configOptions?: unknown[] },
   ): AgentRuntimeMetadataUpdate | undefined {
     if (update.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
-      resetPendingHighRiskOnEcho(rt, update.currentModeId);
+      consumeModeEchoConfirmation(rt);
       rt.currentModeId = update.currentModeId;
       if (rt.modes) rt.modes = { ...rt.modes, currentModeId: update.currentModeId };
       return { sessionMode: update.currentModeId, permissionMode: update.currentModeId };
@@ -335,7 +327,7 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     if (update.sessionUpdate === "config_option_update") {
       const mode = extractModeConfigValue(update.configOptions);
       if (mode) {
-        resetPendingHighRiskOnEcho(rt, mode);
+        consumeModeEchoConfirmation(rt);
         rt.currentModeId = mode;
         if (rt.modes) rt.modes = { ...rt.modes, currentModeId: mode };
         return { sessionMode: mode, permissionMode: mode };
@@ -352,7 +344,9 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       sessionHandle: handle,
       runtimeId,
       turnSeq: 0,
-      pendingHighRiskModeCount: 0,
+      pendingHighRiskMode: false,
+      modeChangeChain: Promise.resolve(),
+      modeEchoWaiters: [],
       pendingRequests: new Map(),
       pendingApprovals: new Map(),
       loadingReplay: false,
@@ -440,6 +434,11 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
       rt.pendingRequests.delete(id);
       pr.reject(new AdapterError(`runtime closed before ${pr.method} response`));
     }
+    // 미확정 모드 전환의 echo 대기를 풀어 직렬화 체인이 매달리지 않게 한다(세션 종료 시).
+    const waiters = rt.modeEchoWaiters;
+    rt.modeEchoWaiters = [];
+    rt.pendingHighRiskMode = false;
+    for (const w of waiters) w();
   }
 
   // ───────────────────────── Port 메서드 ─────────────────────────
@@ -704,19 +703,36 @@ export function createClaudeAcpAdapter(deps: ClaudeAcpAdapterDeps): AgentRuntime
     const known = rt.modes?.availableModes.some((m) => m.id === modeId) ?? false;
     if (!known) throw new Error(`claude adapter: unknown session mode: ${modeId}`);
 
-    // RPC 응답을 기다리는 동안에도 provider가 모드를 적용하고 승인 요청을 먼저 보낼 수 있으므로,
-    // 고위험(bypass) 전환은 전송 전(in-flight)부터 미확정 카운터를 올려 그 창의 승인도 보수적으로
-    // 판정한다(fail-safe). 카운터라서 하위 모드 재요청이 미확정 고위험을 덮지 못한다(Codex 8차).
-    const isHighRisk = isHighRiskMode(modeId);
-    if (isHighRisk) rt.pendingHighRiskModeCount += 1;
-    try {
-      await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
-    } catch (err) {
-      // 수락 실패 — 이 시도가 올린 미확정 고위험 카운트를 되돌린다(0 미만 방지).
-      if (isHighRisk && rt.pendingHighRiskModeCount > 0) rt.pendingHighRiskModeCount -= 1;
-      throw err;
-    }
-    // 성공. 고위험 echo(current_mode_update)가 오면 resetPendingHighRiskOnEcho가 카운터를 0으로 리셋한다.
+    // 모드 변경을 직렬화한다: 각 전환은 provider의 다음 권위 mode echo까지 hold되므로 미확정 전환은
+    // 항상 최대 1건이다. 그래서 pendingHighRiskMode는 boolean 하나로 충분하고, 요청↔echo 상관관계
+    // 없이도 카운팅/중복 variant/interleaving 문제가 원천 없어진다(Codex 8~11차). 반환 promise는
+    // RPC 성공(수락)이면 resolve해 UI를 즉시 풀어주고, echo까지의 hold는 체인 내부에서만 대기한다.
+    let rpcResolve!: () => void;
+    let rpcReject!: (err: unknown) => void;
+    const rpcSettled = new Promise<void>((resolve, reject) => {
+      rpcResolve = resolve;
+      rpcReject = reject;
+    });
+    const runOne = async (): Promise<void> => {
+      const isHighRisk = isHighRiskMode(modeId);
+      // 전송 전(in-flight)부터 보수 반영 — provider가 set_mode 응답 전에 모드를 적용하고 승인 요청을
+      // 먼저 보내도 그 창의 승인을 escalation으로 판정한다(Codex 7차).
+      if (isHighRisk) rt.pendingHighRiskMode = true;
+      try {
+        await rpcRequest(rt, "session/set_mode", { sessionId: rt.providerSessionId, modeId });
+      } catch (err) {
+        if (isHighRisk) rt.pendingHighRiskMode = false; // 실패 — 이 전환의 보수 반영 해제.
+        rpcReject(err);
+        return;
+      }
+      rpcResolve(); // 수락됨 — UI(composer) 즉시 해제.
+      // 고위험이면 pendingHighRiskMode를 유지한 채 다음 권위 echo까지 hold한다. 직렬화라 그동안
+      // 다음 전환은 시작되지 않으므로 미확정 전환은 항상 최대 1건이다.
+      await waitForNextModeEcho(rt);
+      rt.pendingHighRiskMode = false;
+    };
+    rt.modeChangeChain = rt.modeChangeChain.then(runOne, runOne);
+    return rpcSettled;
   }
 
   /** subscribeEvents: listener 등록 → AgentEvent 수신. 반환된 fn으로 해제. */

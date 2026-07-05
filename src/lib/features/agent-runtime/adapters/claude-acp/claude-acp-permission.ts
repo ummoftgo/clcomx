@@ -57,7 +57,7 @@ export function classifySeverity(
  * 원본 JSON-RPC id는 **타입 보존**(R3): rpcId에 원본(string|number), ref.requestId/request.id는 String(id) 문자열 키.
  */
 export function mapRequestPermission(
-  rt: { providerSessionId?: string; activeTurnId?: string; currentModeId?: string; pendingHighRiskModeCount?: number },
+  rt: { providerSessionId?: string; activeTurnId?: string; currentModeId?: string; pendingHighRiskMode?: boolean },
   msg: JsonRpcMessage,
 ): { event: AgentEvent; pending: PendingApproval } {
   const m = msg as { id: string | number; params: AcpRequestPermissionParams };
@@ -85,7 +85,7 @@ export function mapRequestPermission(
     options,
     severity: classifySeverity(params, {
       currentModeId: rt.currentModeId,
-      hasPendingHighRiskMode: (rt.pendingHighRiskModeCount ?? 0) > 0,
+      hasPendingHighRiskMode: rt.pendingHighRiskMode === true,
     }),
   };
   const pending: PendingApproval = { rpcId: id, ref, request };
